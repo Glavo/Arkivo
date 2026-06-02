@@ -7,7 +7,7 @@ Arkivo should provide a modern Java compression and archive library with a unifi
 The primary API surface should be based on Java NIO:
 
 - Use `Path` instead of `File`.
-- Use `ByteChannel`, `ReadableByteChannel`, `WritableByteChannel`, and `SeekableByteChannel` instead of making `InputStream` and `OutputStream` the core abstractions.
+- Use `ByteChannel`, `ReadableByteChannel`, `WritableByteChannel`, and `SeekableByteChannel` as the core I/O abstractions.
 - Provide `InputStream` and `OutputStream` convenience methods only as adapters.
 - Provide convenient APIs based on `FileSystem` where a format can support them naturally.
 - Keep format-specific implementations modular so users can depend only on the formats they need.
@@ -43,7 +43,7 @@ arkivo-all
 
 `arkivo-all` should be an aggregate dependency module that brings in all supported formats.
 
-There should not be a standalone `arkivo-fs` API module. The core `FileSystem` abstractions and reusable support classes belong in `arkivo-base`, while each concrete archive `FileSystem` implementation belongs in the corresponding format module.
+The core `FileSystem` abstractions and reusable support classes belong in `arkivo-base`, while each concrete archive `FileSystem` implementation belongs in the corresponding format module.
 
 ## Naming Model
 
@@ -91,10 +91,6 @@ ZipArkivoReader.open(path)
 ZipArkivoWriter.create(path)
 ```
 
-The project should avoid primary API names such as `ArchiveInputStream`, `ArchiveOutputStream`, `ArchiveEntry`, `ArchiveReader`, and `ArchiveWriter` because they are close to existing libraries and may encourage stream-first usage.
-
-`InputStream` and `OutputStream` names may be used only for convenience adapters when the classes actually extend `java.io.InputStream` or `java.io.OutputStream`. They should not be the main API.
-
 ## Core Abstractions
 
 `arkivo-base` should define the shared contracts used by all format modules.
@@ -113,9 +109,9 @@ Compressor
 Decompressor
 ```
 
-The base module should define the contracts and support code only. It should not depend on any concrete archive or compression implementation.
+The base module should define the contracts and support code as a format-independent foundation.
 
-Format detection and implementation lookup should use a service registration model, such as `ServiceLoader`, so the base module does not need compile-time dependencies on format modules.
+Format detection and implementation lookup should use a service registration model, such as `ServiceLoader`, with concrete providers supplied by format modules.
 
 ## Compression API
 
@@ -147,7 +143,7 @@ Streaming archive APIs should be used for formats that can naturally read or wri
 
 Random-access archive APIs should be used for formats that support central directories, indexes, or seekable structures, such as zip and 7z.
 
-The project should not introduce a separate `Flow` naming family. Sequential and random-access behavior should be described by each reader or writer contract.
+Sequential and random-access behavior should be described by each reader or writer contract.
 
 Potential API families:
 
@@ -270,14 +266,3 @@ RAR support should initially be read-only.
 Some formats may not support efficient random write operations. These formats should expose streaming or copy-on-write APIs instead of pretending to support in-place mutation.
 
 Format-specific capabilities should be represented explicitly so callers can discover whether a format supports streaming read, streaming write, random read, random write, editing, or filesystem views.
-
-## Documentation and Style
-
-All Java code must follow the repository Java style rules:
-
-- Annotate every class with `@NotNullByDefault`.
-- Annotate nullable values explicitly with `@Nullable`.
-- Do not use `Optional`.
-- Prefer Java `record` types when they fit the data model.
-- Document every class, field, and method with Markdown-style Javadoc comments using `///`.
-- Keep code, identifiers, commands, configuration, commit messages, logs, and comments in English.
