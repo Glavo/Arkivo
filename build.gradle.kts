@@ -1,20 +1,37 @@
-plugins {
-    id("java")
-}
-
 group = "org.glavo"
 version = "1.0-SNAPSHOT"
 
-repositories {
-    mavenCentral()
+allprojects {
+    group = rootProject.group
+    version = rootProject.version
+
+    repositories {
+        mavenCentral()
+    }
 }
 
-dependencies {
-    testImplementation(platform("org.junit:junit-bom:6.0.0"))
-    testImplementation("org.junit.jupiter:junit-jupiter")
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-}
+subprojects {
+    apply(plugin = "java-library")
 
-tasks.test {
-    useJUnitPlatform()
+    extensions.configure<JavaPluginExtension> {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(25)
+        }
+    }
+
+    dependencies {
+        "compileOnly"(files(rootProject.layout.projectDirectory.file("gradle/libs/annotations-26.1.0.jar")))
+        "testCompileOnly"(files(rootProject.layout.projectDirectory.file("gradle/libs/annotations-26.1.0.jar")))
+        "testImplementation"(platform("org.junit:junit-bom:6.0.0"))
+        "testImplementation"("org.junit.jupiter:junit-jupiter")
+        "testRuntimeOnly"("org.junit.platform:junit-platform-launcher")
+    }
+
+    tasks.withType<JavaCompile>().configureEach {
+        options.release = 25
+    }
+
+    tasks.withType<Test>().configureEach {
+        useJUnitPlatform()
+    }
 }
