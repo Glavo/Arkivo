@@ -57,7 +57,6 @@ The preferred naming pattern is:
 FormatArkivo       mutable archive handle for editing an existing archive
 FormatArkivoReader read-only random-access reader
 FormatArkivoWriter writer for creating a new archive
-FormatArkivoFlow   streaming reader or writer for formats that support sequential traversal
 FormatArkivoFileSystem
 ```
 
@@ -67,7 +66,6 @@ For ZIP, the primary types should be:
 ZipArkivo
 ZipArkivoReader
 ZipArkivoWriter
-ZipArkivoFlow
 ZipArkivoFileSystem
 ```
 
@@ -76,6 +74,8 @@ ZipArkivoFileSystem
 `ZipArkivoReader` should be read-only.
 
 `ZipArkivoWriter` should create a new archive.
+
+Sequential streaming APIs should still use `FormatArkivoReader` and `FormatArkivoWriter`. The API contract should document whether a reader or writer requires `SeekableByteChannel` or can operate on sequential channels.
 
 Factory names should make these roles explicit:
 
@@ -100,7 +100,6 @@ Arkivo
 ArkivoFormat
 ArkivoReader
 ArkivoWriter
-ArkivoFlow
 ArkivoFileSystem
 ArkivoFileSystemProviderSupport
 CompressionFormat
@@ -142,13 +141,14 @@ Streaming archive APIs should be used for formats that can naturally read or wri
 
 Random-access archive APIs should be used for formats that support central directories, indexes, or seekable structures, such as zip and 7z.
 
+The project should not introduce a separate `Flow` naming family. Sequential and random-access behavior should be described by each reader or writer contract.
+
 Potential API families:
 
 ```java
 Arkivo
 ArkivoReader
 ArkivoWriter
-ArkivoFlow
 ```
 
 `ArkivoReader` and `ArkivoWriter` should prefer `SeekableByteChannel` for random-access formats.
@@ -166,14 +166,12 @@ arkivo-archives-zip
   ZipArkivo
   ZipArkivoReader
   ZipArkivoWriter
-  ZipArkivoFlow
   ZipArkivoFileSystem
   ZipArkivoFileSystemProvider
 
 arkivo-archives-tar
   TarArkivoReader
   TarArkivoWriter
-  TarArkivoFlow
   TarArkivoFileSystem
 ```
 
