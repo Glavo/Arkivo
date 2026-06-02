@@ -54,7 +54,7 @@ This keeps the API distinct from Apache Commons Compress, the JDK ZIP API, and o
 The preferred naming pattern is:
 
 ```text
-FormatArkivo       mutable archive handle for editing an existing archive
+FormatArkivoEditor mutable archive handle for editing an existing archive
 FormatArkivoReader read-only random-access reader
 FormatArkivoWriter writer for creating a new archive
 FormatArkivoStreamingReader sequential-only reader when a format needs a distinct streaming API
@@ -65,7 +65,7 @@ FormatArkivoFileSystem
 For ZIP, the primary types should be:
 
 ```java
-ZipArkivo
+ZipArkivoEditor
 ZipArkivoReader
 ZipArkivoWriter
 ZipArkivoStreamingReader
@@ -73,7 +73,7 @@ ZipArkivoStreamingWriter
 ZipArkivoFileSystem
 ```
 
-`ZipArkivo` should be used to modify an existing archive.
+`ZipArkivoEditor` should be used to modify an existing archive.
 
 `ZipArkivoReader` should be read-only.
 
@@ -86,7 +86,7 @@ Sequential streaming APIs should still use `FormatArkivoReader` and `FormatArkiv
 Primary factory methods should use `open(...)`. The target class name defines the operation role:
 
 ```java
-ZipArkivo.open(path)
+ZipArkivoEditor.open(path)
 ZipArkivoReader.open(path)
 ZipArkivoWriter.open(path)
 ZipArkivoStreamingReader.open(channel)
@@ -102,7 +102,7 @@ ZipArkivoStreamingWriter.open(channel)
 Potential core types include:
 
 ```java
-Arkivo
+ArkivoEditor
 ArkivoFormat
 ArkivoReader
 ArkivoWriter
@@ -152,14 +152,14 @@ Sequential and random-access behavior should be described by each reader or writ
 Potential API families:
 
 ```java
-Arkivo
+ArkivoEditor
 ArkivoReader
 ArkivoWriter
 ```
 
 `ArkivoReader` and `ArkivoWriter` should prefer `SeekableByteChannel` for random-access formats.
 
-`Arkivo` should represent a mutable handle for editing an existing archive. Early implementations may use copy-on-write semantics instead of promising true in-place modification.
+`ArkivoEditor` should represent a mutable handle for editing an existing archive. Early implementations may use copy-on-write semantics instead of promising true in-place modification.
 
 ## FileSystem Integration
 
@@ -169,7 +169,7 @@ For example:
 
 ```text
 arkivo-archives-zip
-  ZipArkivo
+  ZipArkivoEditor
   ZipArkivoReader
   ZipArkivoWriter
   ZipArkivoStreamingReader
@@ -257,7 +257,7 @@ Immutable collections, arrays, and buffer views should use JetBrains immutabilit
 4. Implement gzip, zlib, and raw deflate codec modules to validate the channel-first compression API.
 5. Implement `ZipArkivoReader` with central directory indexing.
 6. Implement `ZipArkivoWriter`.
-7. Implement mutable `ZipArkivo` editing support with explicit commit semantics.
+7. Implement mutable `ZipArkivoEditor` editing support with explicit commit semantics.
 8. Implement `ZipArkivoFileSystem` inside `arkivo-archives-zip`.
 9. Add xz and zstd codec modules.
 10. Add 7z read support and a read-only 7z filesystem.
