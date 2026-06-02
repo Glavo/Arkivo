@@ -10,19 +10,20 @@ import org.jetbrains.annotations.Nullable;
 import java.nio.file.attribute.FileTime;
 
 /// Describes metadata requested when writing one ZIP item.
+///
+/// @param zipName the ZIP item name
+/// @param type the ZIP item type
+/// @param uncompressedSize the expected uncompressed size
+/// @param modifiedTime the requested last modified time
+/// @param method the requested ZIP compression method
+/// @param metadata additional ZIP metadata
 @NotNullByDefault
 public record ZipInfoSpec(
-        /// The ZIP item name.
         ZipName zipName,
-        /// The ZIP item type.
         ArkivoItemType type,
-        /// The expected uncompressed size.
         @Nullable Long uncompressedSize,
-        /// The requested last modified time.
         @Nullable FileTime modifiedTime,
-        /// The requested ZIP compression method.
         ZipMethod method,
-        /// Additional ZIP metadata.
         ArkivoMetadata metadata
 ) implements ArkivoInfoSpec {
     /// Creates a builder for the given ZIP item name.

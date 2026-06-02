@@ -4,9 +4,10 @@ import org.glavo.arkivo.ArkivoName;
 import org.jetbrains.annotations.NotNullByDefault;
 
 /// Represents a normalized item name inside a ZIP archive.
+///
+/// @param asArkivoName the generic Arkivo name backing this ZIP name
 @NotNullByDefault
 public record ZipName(
-        /// The generic Arkivo name backing this ZIP name.
         ArkivoName asArkivoName
 ) {
     /// Creates a ZIP name from archive path text.

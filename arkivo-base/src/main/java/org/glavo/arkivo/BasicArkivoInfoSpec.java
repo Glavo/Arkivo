@@ -6,17 +6,18 @@ import org.jetbrains.annotations.Nullable;
 import java.nio.file.attribute.FileTime;
 
 /// Provides a general-purpose archive item metadata specification.
+///
+/// @param name the item name inside the archive
+/// @param type the item type
+/// @param uncompressedSize the expected uncompressed size
+/// @param modifiedTime the requested last modified time
+/// @param metadata additional metadata requested for the item
 @NotNullByDefault
 public record BasicArkivoInfoSpec(
-        /// The item name inside the archive.
         ArkivoName name,
-        /// The item type.
         ArkivoItemType type,
-        /// The expected uncompressed size.
         @Nullable Long uncompressedSize,
-        /// The requested last modified time.
         @Nullable FileTime modifiedTime,
-        /// Additional metadata requested for the item.
         ArkivoMetadata metadata
 ) implements ArkivoInfoSpec {
     /// Creates a builder for an item with the given name.

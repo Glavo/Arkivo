@@ -3,11 +3,12 @@ package org.glavo.arkivo.zip;
 import org.jetbrains.annotations.NotNullByDefault;
 
 /// Identifies a ZIP compression method.
+///
+/// @param id the numeric ZIP compression method identifier
+/// @param name the stable display name for the method
 @NotNullByDefault
 public record ZipMethod(
-        /// The numeric ZIP compression method identifier.
         int id,
-        /// The stable display name for the method.
         String name
 ) {
     /// The stored method identifier.
