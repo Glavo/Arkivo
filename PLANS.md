@@ -57,6 +57,8 @@ The preferred naming pattern is:
 FormatArkivo       mutable archive handle for editing an existing archive
 FormatArkivoReader read-only random-access reader
 FormatArkivoWriter writer for creating a new archive
+FormatArkivoStreamingReader sequential-only reader when a format needs a distinct streaming API
+FormatArkivoStreamingWriter sequential-only writer when a format needs a distinct streaming API
 FormatArkivoFileSystem
 ```
 
@@ -66,6 +68,8 @@ For ZIP, the primary types should be:
 ZipArkivo
 ZipArkivoReader
 ZipArkivoWriter
+ZipArkivoStreamingReader
+ZipArkivoStreamingWriter
 ZipArkivoFileSystem
 ```
 
@@ -76,6 +80,8 @@ ZipArkivoFileSystem
 `ZipArkivoWriter` should create a new archive.
 
 Sequential streaming APIs should still use `FormatArkivoReader` and `FormatArkivoWriter`. The API contract should document whether a reader or writer requires `SeekableByteChannel` or can operate on sequential channels.
+
+`FormatArkivoStreamingReader` and `FormatArkivoStreamingWriter` should be introduced only when a format needs separate sequential-only APIs in addition to its normal reader and writer. For ZIP, these names are reserved for stream-oriented processing that cannot rely on the central directory index.
 
 Factory names should make these roles explicit:
 
@@ -166,6 +172,8 @@ arkivo-archives-zip
   ZipArkivo
   ZipArkivoReader
   ZipArkivoWriter
+  ZipArkivoStreamingReader
+  ZipArkivoStreamingWriter
   ZipArkivoFileSystem
   ZipArkivoFileSystemProvider
 
