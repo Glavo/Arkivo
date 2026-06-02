@@ -8,5 +8,5 @@ module org.glavo.arkivo.codecs.gzip {
 
     exports org.glavo.arkivo.gzip;
 
-    provides org.glavo.arkivo.compress.CompressionCodec with org.glavo.arkivo.gzip.Gzip;
+    provides org.glavo.arkivo.compress.CompressionCodec with org.glavo.arkivo.gzip.GzipCodec;
 }

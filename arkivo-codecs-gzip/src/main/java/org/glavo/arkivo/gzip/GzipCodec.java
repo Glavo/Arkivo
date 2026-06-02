@@ -15,12 +15,12 @@ import java.util.zip.GZIPOutputStream;
 
 /// Provides gzip compression and decompression channels.
 @NotNullByDefault
-public final class Gzip implements CompressionCodec {
+public final class GzipCodec implements CompressionCodec {
     /// The stable gzip codec name.
     public static final String NAME = "gzip";
 
     /// Creates a gzip codec.
-    public Gzip() {
+    public GzipCodec() {
     }
 
     /// Returns the stable gzip codec name.
