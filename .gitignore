@@ -9,6 +9,7 @@ build/
 .codex
 /teavm-local.properties
 gradle.properties
+*.jar
 
 ### IntelliJ IDEA ###
 .idea/
