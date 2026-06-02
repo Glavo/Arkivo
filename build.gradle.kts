@@ -13,11 +13,6 @@ allprojects {
 subprojects {
     apply(plugin = "java-library")
 
-    extensions.configure<JavaPluginExtension> {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
-
     dependencies {
         "compileOnly"("org.jetbrains:annotations:26.1.0")
         "testCompileOnly"("org.jetbrains:annotations:26.1.0")
@@ -26,7 +21,12 @@ subprojects {
         "testRuntimeOnly"("org.junit.platform:junit-platform-launcher")
     }
 
-    tasks.withType<JavaCompile>().configureEach {
+    extensions.configure<JavaPluginExtension> {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    tasks.withType<JavaCompile> {
         options.release = 17
     }
 
