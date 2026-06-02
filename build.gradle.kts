@@ -14,9 +14,8 @@ subprojects {
     apply(plugin = "java-library")
 
     extensions.configure<JavaPluginExtension> {
-        toolchain {
-            languageVersion = JavaLanguageVersion.of(25)
-        }
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     dependencies {
@@ -28,7 +27,7 @@ subprojects {
     }
 
     tasks.withType<JavaCompile>().configureEach {
-        options.release = 25
+        options.release = 17
     }
 
     tasks.withType<Test>().configureEach {
