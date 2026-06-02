@@ -7,7 +7,7 @@ import java.nio.channels.ReadableByteChannel;
 
 /// Creates channels that decode compressed bytes into uncompressed bytes.
 @NotNullByDefault
-public interface Decompressor {
+public interface CompressionDecoder {
     /// Opens a decoder that reads compressed bytes from the source channel.
     ReadableByteChannel openDecoder(ReadableByteChannel source) throws IOException;
 }

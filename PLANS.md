@@ -109,8 +109,8 @@ ArkivoWriter
 ArkivoFileSystem
 ArkivoFileSystemProviderSupport
 CompressionFormat
-Compressor
-Decompressor
+CompressionEncoder
+CompressionDecoder
 ```
 
 The base module should define the contracts and support code as a format-independent foundation.
