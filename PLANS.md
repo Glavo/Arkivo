@@ -45,6 +45,50 @@ arkivo-all
 
 There should not be a standalone `arkivo-fs` API module. The core `FileSystem` abstractions and reusable support classes belong in `arkivo-base`, while each concrete archive `FileSystem` implementation belongs in the corresponding format module.
 
+## Naming Model
+
+The public archive API should use `Arkivo` as the project-specific replacement for the generic `Archive` noun.
+
+This keeps the API distinct from Apache Commons Compress, the JDK ZIP API, and other archive libraries while remaining short and readable.
+
+The preferred naming pattern is:
+
+```text
+FormatArkivo       mutable archive handle for editing an existing archive
+FormatArkivoReader read-only random-access reader
+FormatArkivoWriter writer for creating a new archive
+FormatArkivoFlow   streaming reader or writer for formats that support sequential traversal
+FormatArkivoFileSystem
+```
+
+For ZIP, the primary types should be:
+
+```java
+ZipArkivo
+ZipArkivoReader
+ZipArkivoWriter
+ZipArkivoFlow
+ZipArkivoFileSystem
+```
+
+`ZipArkivo` should be used to modify an existing archive.
+
+`ZipArkivoReader` should be read-only.
+
+`ZipArkivoWriter` should create a new archive.
+
+Factory names should make these roles explicit:
+
+```java
+ZipArkivo.edit(path)
+ZipArkivoReader.open(path)
+ZipArkivoWriter.create(path)
+```
+
+The project should avoid primary API names such as `ArchiveInputStream`, `ArchiveOutputStream`, `ArchiveEntry`, `ArchiveReader`, and `ArchiveWriter` because they are close to existing libraries and may encourage stream-first usage.
+
+`InputStream` and `OutputStream` names may be used only for convenience adapters when the classes actually extend `java.io.InputStream` or `java.io.OutputStream`. They should not be the main API.
+
 ## Core Abstractions
 
 `arkivo-base` should define the shared contracts used by all format modules.
@@ -52,12 +96,13 @@ There should not be a standalone `arkivo-fs` API module. The core `FileSystem` a
 Potential core types include:
 
 ```java
-ArchiveFormat
-ArchiveEntry
-ArchiveReader
-ArchiveWriter
-ArchiveFileSystem
-ArchiveFileSystemProviderSupport
+Arkivo
+ArkivoFormat
+ArkivoReader
+ArkivoWriter
+ArkivoFlow
+ArkivoFileSystem
+ArkivoFileSystemProviderSupport
 CompressionFormat
 Compressor
 Decompressor
@@ -100,16 +145,15 @@ Random-access archive APIs should be used for formats that support central direc
 Potential API families:
 
 ```java
-ArchiveInput
-ArchiveOutput
-ArchiveReader
-ArchiveWriter
-ArchiveEditor
+Arkivo
+ArkivoReader
+ArkivoWriter
+ArkivoFlow
 ```
 
-`ArchiveReader` and `ArchiveWriter` should prefer `SeekableByteChannel` for random-access formats.
+`ArkivoReader` and `ArkivoWriter` should prefer `SeekableByteChannel` for random-access formats.
 
-`ArchiveEditor` should be introduced carefully. Early implementations may use copy-on-write semantics instead of promising true in-place modification.
+`Arkivo` should represent a mutable handle for editing an existing archive. Early implementations may use copy-on-write semantics instead of promising true in-place modification.
 
 ## FileSystem Integration
 
@@ -119,22 +163,25 @@ For example:
 
 ```text
 arkivo-archives-zip
-  ZipArchiveReader
-  ZipArchiveWriter
-  ZipArchiveFileSystem
-  ZipArchiveFileSystemProvider
+  ZipArkivo
+  ZipArkivoReader
+  ZipArkivoWriter
+  ZipArkivoFlow
+  ZipArkivoFileSystem
+  ZipArkivoFileSystemProvider
 
 arkivo-archives-tar
-  TarArchiveInput
-  TarArchiveOutput
-  TarArchiveFileSystem
+  TarArkivoReader
+  TarArkivoWriter
+  TarArkivoFlow
+  TarArkivoFileSystem
 ```
 
 The public API may expose convenience factories such as:
 
 ```java
-ZipArchiveFileSystem.open(path)
-SevenZipArchiveFileSystem.open(path)
+ZipArkivoFileSystem.open(path)
+SevenZipArkivoFileSystem.open(path)
 ```
 
 Formats may also register JDK `FileSystemProvider` implementations when the integration is useful:
@@ -168,7 +215,7 @@ Public APIs should remain clear and immutable, but internal data structures may 
 Possible internal implementation types:
 
 ```java
-ZipEntryRecord
+ZipArkivoEntryRecord
 ZipCentralDirectoryRecord
 TarHeaderBlock
 SevenZipFolderRecord
@@ -202,12 +249,13 @@ Immutable collections, arrays, and buffer views should use JetBrains immutabilit
 2. Implement `arkivo-base` with NIO-first abstractions, common metadata types, exceptions, service registration, and low-level buffer utilities.
 3. Implement tar streaming reader and writer to validate the archive entry model and low-allocation header parsing.
 4. Implement gzip, zlib, and raw deflate codec modules to validate the channel-first compression API.
-5. Implement zip random-access reader with central directory indexing.
-6. Implement zip writer.
-7. Implement `ZipArchiveFileSystem` inside `arkivo-archives-zip`.
-8. Add xz and zstd codec modules.
-9. Add 7z read support and a read-only 7z filesystem.
-10. Add rar read support and a read-only rar filesystem.
+5. Implement `ZipArkivoReader` with central directory indexing.
+6. Implement `ZipArkivoWriter`.
+7. Implement mutable `ZipArkivo` editing support with explicit commit semantics.
+8. Implement `ZipArkivoFileSystem` inside `arkivo-archives-zip`.
+9. Add xz and zstd codec modules.
+10. Add 7z read support and a read-only 7z filesystem.
+11. Add rar read support and a read-only rar filesystem.
 
 ## Compatibility Notes
 
