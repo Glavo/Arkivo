@@ -159,6 +159,32 @@ ArkivoWriter
 
 `ArkivoEditor` should represent a mutable handle for editing an existing archive. Early implementations may use copy-on-write semantics instead of promising true in-place modification.
 
+## Open Options and Storage Layout
+
+Archive readers, writers, editors, and file system factories should support format-specific open options in addition to simple `Path` and channel overloads.
+
+Open options should carry operation-level settings that are not entry metadata, including passwords, encryption defaults, character set policies, timestamp policies, overwrite behavior, and format-specific compatibility choices.
+
+Split or multi-volume archives should be modeled as an archive storage layout rather than as item metadata or compression codec behavior.
+
+Single-file archives may continue to use `Path`, `ReadableByteChannel`, `WritableByteChannel`, and `SeekableByteChannel` overloads. Split archives need dedicated source and sink abstractions that can resolve multiple physical volumes into one logical archive view.
+
+Read support should be able to locate and open a sequence of volumes, such as numbered 7z, zip, or rar parts. Write support should be able to create successive volumes according to an explicit maximum volume size and naming policy.
+
+Random-access formats should expose split archives through a logical seekable view so parser code can work with archive offsets without repeatedly handling physical volume boundaries.
+
+## Passwords and Encryption
+
+Passwords and other credentials should be treated as operation inputs, not archive metadata.
+
+Archive open options should provide password or password-provider configuration for encrypted archives. Password providers should allow future support for formats that need more than one password attempt or entry-specific password lookup.
+
+Encryption settings for newly written archives should be explicit write options. When a format supports entry-level encryption, such as ZIP, the entry writing model should allow per-item encryption choices in addition to archive-level defaults.
+
+Formats with archive-level encryption features, such as 7z header encryption, should expose those features through format-specific write options.
+
+The public API should distinguish between persistent metadata, encryption method selection, and sensitive password material. Passwords should not be stored in `ArkivoMetadata`.
+
 ## FileSystem Integration
 
 `FileSystem` support should be implemented inside each archive format module.
@@ -253,13 +279,14 @@ Immutable collections, arrays, and buffer views should use JetBrains immutabilit
 2. Implement `arkivo-base` with NIO-first abstractions, common metadata types, exceptions, service registration, and low-level buffer utilities.
 3. Implement tar streaming reader and writer to validate the archive entry model and low-allocation header parsing.
 4. Implement gzip, zlib, and raw deflate codec modules to validate the channel-first compression API.
-5. Implement `ZipArkivoReader` with central directory indexing.
-6. Implement `ZipArkivoWriter`.
-7. Implement mutable `ZipArkivoEditor` editing support with explicit commit semantics.
-8. Implement `ZipArkivoFileSystem` inside `arkivo-archives-zip`.
-9. Add xz and zstd codec modules.
-10. Add 7z read support and a read-only 7z filesystem.
-11. Add rar read support and a read-only rar filesystem.
+5. Define archive open options, password provider contracts, and split archive source and sink abstractions.
+6. Implement `ZipArkivoReader` with central directory indexing.
+7. Implement `ZipArkivoWriter`.
+8. Implement mutable `ZipArkivoEditor` editing support with explicit commit semantics.
+9. Implement `ZipArkivoFileSystem` inside `arkivo-archives-zip`.
+10. Add xz and zstd codec modules.
+11. Add 7z read support and a read-only 7z filesystem.
+12. Add rar read support and a read-only rar filesystem.
 
 ## Compatibility Notes
 
@@ -267,4 +294,6 @@ RAR support should initially be read-only.
 
 Some formats may not support efficient random write operations. These formats should expose streaming or copy-on-write APIs instead of pretending to support in-place mutation.
 
-Format-specific capabilities should be represented explicitly so callers can discover whether a format supports streaming read, streaming write, random read, random write, editing, or filesystem views.
+Format-specific capabilities should be represented explicitly so callers can discover whether a format supports streaming read, streaming write, random read, random write, editing, filesystem views, encrypted read, encrypted write, split read, or split write.
+
+Capability reporting should leave room for format-specific details such as supported encryption methods, header encryption support, split volume naming schemes, and write-time volume size constraints.
