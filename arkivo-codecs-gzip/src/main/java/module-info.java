@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Glavo
+// SPDX-License-Identifier: MPL-2.0
+
 /// Provides gzip compression support for Arkivo.
 module org.glavo.arkivo.codecs.gzip {
     requires org.glavo.arkivo.base;
