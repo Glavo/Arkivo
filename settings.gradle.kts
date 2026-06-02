@@ -1,1 +1,1 @@
-rootProject.name = "Arkivo"
+rootProject.name = "arkivo"
