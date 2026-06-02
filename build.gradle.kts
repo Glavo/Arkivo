@@ -19,8 +19,8 @@ subprojects {
     }
 
     dependencies {
-        "compileOnly"(files(rootProject.layout.projectDirectory.file("gradle/libs/annotations-26.1.0.jar")))
-        "testCompileOnly"(files(rootProject.layout.projectDirectory.file("gradle/libs/annotations-26.1.0.jar")))
+        "compileOnly"("org.jetbrains:annotations:26.1.0")
+        "testCompileOnly"("org.jetbrains:annotations:26.1.0")
         "testImplementation"(platform("org.junit:junit-bom:6.0.0"))
         "testImplementation"("org.junit.jupiter:junit-jupiter")
         "testRuntimeOnly"("org.junit.platform:junit-platform-launcher")
