@@ -83,13 +83,17 @@ Sequential streaming APIs should still use `FormatArkivoReader` and `FormatArkiv
 
 `FormatArkivoStreamingReader` and `FormatArkivoStreamingWriter` should be introduced only when a format needs separate sequential-only APIs in addition to its normal reader and writer. For ZIP, these names are reserved for stream-oriented processing that cannot rely on the central directory index.
 
-Factory names should make these roles explicit:
+Primary factory methods should use `open(...)`. The target class name defines the operation role:
 
 ```java
-ZipArkivo.edit(path)
+ZipArkivo.open(path)
 ZipArkivoReader.open(path)
-ZipArkivoWriter.create(path)
+ZipArkivoWriter.open(path)
+ZipArkivoStreamingReader.open(channel)
+ZipArkivoStreamingWriter.open(channel)
 ```
+
+`ZipArkivoWriter.open(path)` should use create-new semantics by default. Replacement or truncation should require explicit open options, such as `StandardOpenOption.CREATE` and `StandardOpenOption.TRUNCATE_EXISTING`, or Arkivo-specific open options.
 
 ## Core Abstractions
 
