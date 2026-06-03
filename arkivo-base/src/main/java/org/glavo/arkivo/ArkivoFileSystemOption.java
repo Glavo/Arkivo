@@ -21,14 +21,14 @@ public final class ArkivoFileSystemOption<T> {
     /// The typed value class accepted by this option.
     private final Class<T> type;
 
-    /// The parser used when the environment map contains a string value.
-    private final @Nullable Function<String, ? extends T> stringParser;
+    /// The converter used when the environment map contains a value that is not already accepted directly.
+    private final @Nullable Function<Object, T> converter;
 
     /// Creates a typed option that accepts only values of the given type.
-    private ArkivoFileSystemOption(String key, Class<T> type, @Nullable Function<String, ? extends T> stringParser) {
+    private ArkivoFileSystemOption(String key, Class<T> type, @Nullable Function<Object, T> converter) {
         this.key = Objects.requireNonNull(key, "key");
         this.type = Objects.requireNonNull(type, "type");
-        this.stringParser = stringParser;
+        this.converter = converter;
     }
 
     /// Returns a typed option that accepts only values of the given type.
@@ -36,13 +36,13 @@ public final class ArkivoFileSystemOption<T> {
         return new ArkivoFileSystemOption<>(key, type, null);
     }
 
-    /// Returns a typed option that accepts values of the given type and string values parsed by the given parser.
+    /// Returns a typed option that accepts values of the given type and values converted by the given converter.
     public static <T> ArkivoFileSystemOption<T> of(
             String key,
             Class<T> type,
-            Function<String, ? extends T> stringParser
+            Function<Object, T> converter
     ) {
-        return new ArkivoFileSystemOption<>(key, type, Objects.requireNonNull(stringParser, "stringParser"));
+        return new ArkivoFileSystemOption<>(key, type, Objects.requireNonNull(converter, "converter"));
     }
 
     /// Returns the environment map key used by this option.
@@ -83,18 +83,11 @@ public final class ArkivoFileSystemOption<T> {
         environment.put(key, Objects.requireNonNull(value, "value"));
     }
 
-    /// Puts a string option value into an environment map after validating that this option accepts string values.
+    /// Puts a string option value into an environment map after validating that this option can convert it.
     public void putString(Map<String, Object> environment, String value) {
         Objects.requireNonNull(environment, "environment");
         Objects.requireNonNull(value, "value");
-        if (type == String.class && stringParser == null) {
-            environment.put(key, value);
-            return;
-        }
-        if (stringParser == null) {
-            throw new IllegalArgumentException("Option does not accept string values: " + key);
-        }
-        Objects.requireNonNull(stringParser.apply(value), "stringParser result");
+        convert(value);
         environment.put(key, value);
     }
 
@@ -104,14 +97,14 @@ public final class ArkivoFileSystemOption<T> {
         if (type.isInstance(value)) {
             return type.cast(value);
         }
-        if (value instanceof String stringValue && stringParser != null) {
-            return Objects.requireNonNull(stringParser.apply(stringValue), "stringParser result");
-        }
         if (value instanceof Number numberValue) {
             T convertedValue = convertNumber(numberValue);
             if (convertedValue != null) {
                 return convertedValue;
             }
+        }
+        if (converter != null) {
+            return Objects.requireNonNull(converter.apply(value), "converter result");
         }
         throw new IllegalArgumentException(expectedValueMessage());
     }
@@ -150,8 +143,8 @@ public final class ArkivoFileSystemOption<T> {
 
     /// Returns a message that describes the accepted value kinds for a rejected value.
     private String expectedValueMessage() {
-        if (stringParser != null || type == String.class) {
-            return "Expected " + type.getSimpleName() + " or String for key: " + key;
+        if (converter != null) {
+            return "Expected " + type.getSimpleName() + " or convertible value for key: " + key;
         }
         return "Expected " + type.getSimpleName() + " for key: " + key;
     }

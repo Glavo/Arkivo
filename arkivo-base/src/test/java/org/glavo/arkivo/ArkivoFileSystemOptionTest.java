@@ -29,7 +29,7 @@ public final class ArkivoFileSystemOptionTest {
     /// Verifies that string values can be written and parsed.
     @Test
     public void stringValue() {
-        ArkivoFileSystemOption<Long> option = ArkivoFileSystemOption.of("size", Long.class, Long::parseLong);
+        ArkivoFileSystemOption<Long> option = longOption();
         Map<String, Object> environment = new HashMap<>();
 
         option.putString(environment, "4096");
@@ -40,7 +40,7 @@ public final class ArkivoFileSystemOptionTest {
     /// Verifies that compatible integral values are converted to the option type.
     @Test
     public void integralValueConversion() {
-        ArkivoFileSystemOption<Long> option = ArkivoFileSystemOption.of("size", Long.class, Long::parseLong);
+        ArkivoFileSystemOption<Long> option = longOption();
 
         assertEquals(1L, option.read(Map.of("size", (byte) 1)));
         assertEquals(2L, option.read(Map.of("size", (short) 2)));
@@ -50,7 +50,7 @@ public final class ArkivoFileSystemOptionTest {
     /// Verifies that floating-point values are not converted to integral option types.
     @Test
     public void rejectFloatingPointToIntegralConversion() {
-        ArkivoFileSystemOption<Long> option = ArkivoFileSystemOption.of("size", Long.class, Long::parseLong);
+        ArkivoFileSystemOption<Long> option = longOption();
 
         assertThrows(IllegalArgumentException.class, () -> option.read(Map.of("size", 1.5)));
     }
@@ -67,7 +67,7 @@ public final class ArkivoFileSystemOptionTest {
     /// Verifies that invalid string values are rejected before being written.
     @Test
     public void invalidStringValue() {
-        ArkivoFileSystemOption<Long> option = ArkivoFileSystemOption.of("size", Long.class, Long::parseLong);
+        ArkivoFileSystemOption<Long> option = longOption();
         Map<String, Object> environment = new HashMap<>();
 
         assertThrows(NumberFormatException.class, () -> option.putString(environment, "large"));
@@ -80,5 +80,15 @@ public final class ArkivoFileSystemOptionTest {
         Map<String, Object> environment = Map.of("enabled", 1);
 
         assertThrows(IllegalArgumentException.class, () -> option.read(environment));
+    }
+
+    /// Returns a Long option that parses string values.
+    private static ArkivoFileSystemOption<Long> longOption() {
+        return ArkivoFileSystemOption.of("size", Long.class, value -> {
+            if (value instanceof String stringValue) {
+                return Long.parseLong(stringValue);
+            }
+            throw new IllegalArgumentException("Expected String for key: size");
+        });
     }
 }

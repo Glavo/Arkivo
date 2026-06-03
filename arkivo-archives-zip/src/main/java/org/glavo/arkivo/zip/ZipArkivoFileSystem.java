@@ -34,19 +34,39 @@ public final class ZipArkivoFileSystem extends ArkivoFileSystem {
 
     /// The environment option for a fixed `char[]` password value.
     public static final ArkivoFileSystemOption<char[]> PASSWORD =
-            ArkivoFileSystemOption.of("password", char[].class, String::toCharArray);
+            ArkivoFileSystemOption.of("password", char[].class, value -> {
+                if (value instanceof String stringValue) {
+                    return stringValue.toCharArray();
+                }
+                throw new IllegalArgumentException("Expected String for key: password");
+            });
 
     /// The environment option for a `ZipEncryption` value used as the default encryption method for new entries.
     public static final ArkivoFileSystemOption<ZipEncryption> DEFAULT_ENCRYPTION =
-            ArkivoFileSystemOption.of("defaultEncryption", ZipEncryption.class, ZipEncryption::of);
+            ArkivoFileSystemOption.of("defaultEncryption", ZipEncryption.class, value -> {
+                if (value instanceof String stringValue) {
+                    return ZipEncryption.of(stringValue);
+                }
+                throw new IllegalArgumentException("Expected String for key: defaultEncryption");
+            });
 
     /// The environment option for a `Long` value that sets the maximum size of each output volume.
     public static final ArkivoFileSystemOption<Long> SPLIT_SIZE =
-            ArkivoFileSystemOption.of("splitSize", Long.class, Long::parseLong);
+            ArkivoFileSystemOption.of("splitSize", Long.class, value -> {
+                if (value instanceof String stringValue) {
+                    return Long.parseLong(stringValue);
+                }
+                throw new IllegalArgumentException("Expected String for key: splitSize");
+            });
 
     /// The environment option for a `ZipEntryNameEncoding` value that controls entry name decoding.
     public static final ArkivoFileSystemOption<ZipEntryNameEncoding> ENTRY_NAME_ENCODING =
-            ArkivoFileSystemOption.of("entryNameEncoding", ZipEntryNameEncoding.class, ZipEntryNameEncoding::parse);
+            ArkivoFileSystemOption.of("entryNameEncoding", ZipEntryNameEncoding.class, value -> {
+                if (value instanceof String stringValue) {
+                    return ZipEntryNameEncoding.parse(stringValue);
+                }
+                throw new IllegalArgumentException("Expected String for key: entryNameEncoding");
+            });
 
     /// The provider that created this ZIP file system.
     private final ZipArkivoFileSystemProvider provider;
