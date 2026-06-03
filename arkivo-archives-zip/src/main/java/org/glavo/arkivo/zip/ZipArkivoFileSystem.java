@@ -34,39 +34,27 @@ public final class ZipArkivoFileSystem extends ArkivoFileSystem {
 
     /// The environment option for a fixed `char[]` password value.
     public static final ArkivoFileSystemOption<char[]> PASSWORD =
-            ArkivoFileSystemOption.of("password", char[].class, value -> {
-                if (value instanceof String stringValue) {
-                    return stringValue.toCharArray();
-                }
-                throw new IllegalArgumentException("Expected String for key: password");
-            });
+            ArkivoFileSystemOption.of("password", char[].class, ZipArkivoFileSystem::passwordOptionValue);
 
     /// The environment option for a `ZipEncryption` value used as the default encryption method for new entries.
     public static final ArkivoFileSystemOption<ZipEncryption> DEFAULT_ENCRYPTION =
-            ArkivoFileSystemOption.of("defaultEncryption", ZipEncryption.class, value -> {
-                if (value instanceof String stringValue) {
-                    return ZipEncryption.of(stringValue);
-                }
-                throw new IllegalArgumentException("Expected String for key: defaultEncryption");
-            });
+            ArkivoFileSystemOption.of(
+                    "defaultEncryption",
+                    ZipEncryption.class,
+                    ZipArkivoFileSystem::defaultEncryptionOptionValue
+            );
 
     /// The environment option for a `Long` value that sets the maximum size of each output volume.
     public static final ArkivoFileSystemOption<Long> SPLIT_SIZE =
-            ArkivoFileSystemOption.of("splitSize", Long.class, value -> {
-                if (value instanceof String stringValue) {
-                    return Long.parseLong(stringValue);
-                }
-                throw new IllegalArgumentException("Expected String for key: splitSize");
-            });
+            ArkivoFileSystemOption.of("splitSize", Long.class, ZipArkivoFileSystem::splitSizeOptionValue);
 
     /// The environment option for a `ZipEntryNameEncoding` value that controls entry name decoding.
     public static final ArkivoFileSystemOption<ZipEntryNameEncoding> ENTRY_NAME_ENCODING =
-            ArkivoFileSystemOption.of("entryNameEncoding", ZipEntryNameEncoding.class, value -> {
-                if (value instanceof String stringValue) {
-                    return ZipEntryNameEncoding.parse(stringValue);
-                }
-                throw new IllegalArgumentException("Expected String for key: entryNameEncoding");
-            });
+            ArkivoFileSystemOption.of(
+                    "entryNameEncoding",
+                    ZipEntryNameEncoding.class,
+                    ZipArkivoFileSystem::entryNameEncodingOptionValue
+            );
 
     /// The provider that created this ZIP file system.
     private final ZipArkivoFileSystemProvider provider;
@@ -236,5 +224,52 @@ public final class ZipArkivoFileSystem extends ArkivoFileSystem {
         if (!open) {
             throw new ClosedFileSystemException();
         }
+    }
+
+    /// Converts a raw password option value.
+    private static char[] passwordOptionValue(Object value) {
+        if (value instanceof char[] password) {
+            return password;
+        }
+        if (value instanceof String stringValue) {
+            return stringValue.toCharArray();
+        }
+        throw new IllegalArgumentException("Expected char[] or String for key: password");
+    }
+
+    /// Converts a raw default encryption option value.
+    private static ZipEncryption defaultEncryptionOptionValue(Object value) {
+        if (value instanceof ZipEncryption encryption) {
+            return encryption;
+        }
+        if (value instanceof String stringValue) {
+            return ZipEncryption.of(stringValue);
+        }
+        throw new IllegalArgumentException("Expected ZipEncryption or String for key: defaultEncryption");
+    }
+
+    /// Converts a raw split size option value.
+    private static Long splitSizeOptionValue(Object value) {
+        if (value instanceof Long longValue) {
+            return longValue;
+        }
+        if (value instanceof Byte || value instanceof Short || value instanceof Integer) {
+            return ((Number) value).longValue();
+        }
+        if (value instanceof String stringValue) {
+            return Long.parseLong(stringValue);
+        }
+        throw new IllegalArgumentException("Expected Long, compatible integral number, or String for key: splitSize");
+    }
+
+    /// Converts a raw entry name encoding option value.
+    private static ZipEntryNameEncoding entryNameEncodingOptionValue(Object value) {
+        if (value instanceof ZipEntryNameEncoding encoding) {
+            return encoding;
+        }
+        if (value instanceof String stringValue) {
+            return ZipEntryNameEncoding.parse(stringValue);
+        }
+        throw new IllegalArgumentException("Expected ZipEntryNameEncoding or String for key: entryNameEncoding");
     }
 }

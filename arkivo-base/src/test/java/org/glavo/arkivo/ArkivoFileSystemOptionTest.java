@@ -85,10 +85,16 @@ public final class ArkivoFileSystemOptionTest {
     /// Returns a Long option that parses string values.
     private static ArkivoFileSystemOption<Long> longOption() {
         return ArkivoFileSystemOption.of("size", Long.class, value -> {
+            if (value instanceof Long longValue) {
+                return longValue;
+            }
+            if (value instanceof Byte || value instanceof Short || value instanceof Integer) {
+                return ((Number) value).longValue();
+            }
             if (value instanceof String stringValue) {
                 return Long.parseLong(stringValue);
             }
-            throw new IllegalArgumentException("Expected String for key: size");
+            throw new IllegalArgumentException("Expected Long, compatible integral number, or String for key: size");
         });
     }
 }

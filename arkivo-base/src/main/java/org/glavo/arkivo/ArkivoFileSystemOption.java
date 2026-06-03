@@ -21,19 +21,24 @@ public final class ArkivoFileSystemOption<T> {
     /// The typed value class accepted by this option.
     private final Class<T> type;
 
-    /// The converter used when the environment map contains a value that is not already accepted directly.
-    private final @Nullable Function<Object, T> converter;
+    /// The converter used to validate and convert raw environment values.
+    private final Function<Object, T> converter;
 
     /// Creates a typed option that accepts only values of the given type.
-    private ArkivoFileSystemOption(String key, Class<T> type, @Nullable Function<Object, T> converter) {
+    private ArkivoFileSystemOption(String key, Class<T> type, Function<Object, T> converter) {
         this.key = Objects.requireNonNull(key, "key");
         this.type = Objects.requireNonNull(type, "type");
-        this.converter = converter;
+        this.converter = Objects.requireNonNull(converter, "converter");
     }
 
     /// Returns a typed option that accepts only values of the given type.
     public static <T> ArkivoFileSystemOption<T> of(String key, Class<T> type) {
-        return new ArkivoFileSystemOption<>(key, type, null);
+        return new ArkivoFileSystemOption<>(key, type, value -> {
+            if (type.isInstance(value)) {
+                return type.cast(value);
+            }
+            throw new IllegalArgumentException("Expected " + type.getSimpleName() + " for key: " + key);
+        });
     }
 
     /// Returns a typed option that accepts values of the given type and values converted by the given converter.
@@ -42,7 +47,7 @@ public final class ArkivoFileSystemOption<T> {
             Class<T> type,
             Function<Object, T> converter
     ) {
-        return new ArkivoFileSystemOption<>(key, type, Objects.requireNonNull(converter, "converter"));
+        return new ArkivoFileSystemOption<>(key, type, converter);
     }
 
     /// Returns the environment map key used by this option.
@@ -93,60 +98,7 @@ public final class ArkivoFileSystemOption<T> {
 
     /// Converts a raw environment value into this option's typed value.
     public T convert(Object value) {
-        Objects.requireNonNull(value, "value");
-        if (type.isInstance(value)) {
-            return type.cast(value);
-        }
-        if (value instanceof Number numberValue) {
-            T convertedValue = convertNumber(numberValue);
-            if (convertedValue != null) {
-                return convertedValue;
-            }
-        }
-        if (converter != null) {
-            return Objects.requireNonNull(converter.apply(value), "converter result");
-        }
-        throw new IllegalArgumentException(expectedValueMessage());
-    }
-
-    /// Converts a numeric environment value into this option's typed numeric value.
-    private @Nullable T convertNumber(Number value) {
-        if (type == Byte.class && isIntegralNumber(value)) {
-            long longValue = value.longValue();
-            if (longValue >= Byte.MIN_VALUE && longValue <= Byte.MAX_VALUE) {
-                return type.cast((byte) longValue);
-            }
-        } else if (type == Short.class && isIntegralNumber(value)) {
-            long longValue = value.longValue();
-            if (longValue >= Short.MIN_VALUE && longValue <= Short.MAX_VALUE) {
-                return type.cast((short) longValue);
-            }
-        } else if (type == Integer.class && isIntegralNumber(value)) {
-            long longValue = value.longValue();
-            if (longValue >= Integer.MIN_VALUE && longValue <= Integer.MAX_VALUE) {
-                return type.cast((int) longValue);
-            }
-        } else if (type == Long.class && isIntegralNumber(value)) {
-            return type.cast(value.longValue());
-        } else if (type == Float.class) {
-            return type.cast(value.floatValue());
-        } else if (type == Double.class) {
-            return type.cast(value.doubleValue());
-        }
-        return null;
-    }
-
-    /// Returns whether a number is an integral wrapper value.
-    private static boolean isIntegralNumber(Number value) {
-        return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long;
-    }
-
-    /// Returns a message that describes the accepted value kinds for a rejected value.
-    private String expectedValueMessage() {
-        if (converter != null) {
-            return "Expected " + type.getSimpleName() + " or convertible value for key: " + key;
-        }
-        return "Expected " + type.getSimpleName() + " for key: " + key;
+        return Objects.requireNonNull(converter.apply(Objects.requireNonNull(value, "value")), "converter result");
     }
 
     /// Returns the environment map key used by this option.
