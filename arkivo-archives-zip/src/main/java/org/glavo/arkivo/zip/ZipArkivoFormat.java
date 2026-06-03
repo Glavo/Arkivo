@@ -10,6 +10,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.io.IOException;
 import java.nio.file.FileSystem;
 import java.nio.file.Path;
+import java.util.Map;
 
 /// Describes the ZIP archive format support provided by Arkivo.
 @NotNullByDefault
@@ -40,9 +41,9 @@ public final class ZipArkivoFormat implements ArkivoFormat {
         return ZipArkivoFileSystem.open(path);
     }
 
-    /// Opens a ZIP archive file system with explicit file system options.
-    public FileSystem open(Path path, ZipArkivoFileSystemOptions options) throws IOException {
-        return ZipArkivoFileSystem.open(path, options);
+    /// Opens a ZIP archive file system with environment options.
+    public FileSystem open(Path path, Map<String, ?> environment) throws IOException {
+        return ZipArkivoFileSystem.open(path, environment);
     }
 
     /// Opens a split ZIP archive file system.
@@ -50,8 +51,8 @@ public final class ZipArkivoFormat implements ArkivoFormat {
         return ZipArkivoFileSystem.open(volumes);
     }
 
-    /// Opens a split ZIP archive file system with explicit file system options.
-    public FileSystem open(ArkivoVolumeSource volumes, ZipArkivoFileSystemOptions options) throws IOException {
-        return ZipArkivoFileSystem.open(volumes, options);
+    /// Opens a split ZIP archive file system with environment options.
+    public FileSystem open(ArkivoVolumeSource volumes, Map<String, ?> environment) throws IOException {
+        return ZipArkivoFileSystem.open(volumes, environment);
     }
 }

@@ -55,7 +55,6 @@ The preferred naming pattern is:
 
 ```text
 FormatArkivoFileSystem
-FormatArkivoFileSystemOptions
 FormatArkivoEntryAttributes
 FormatArkivoEntryAttributeView
 ```
@@ -65,7 +64,6 @@ For ZIP, the primary types should be:
 ```java
 ZipArkivoFormat
 ZipArkivoFileSystem
-ZipArkivoFileSystemOptions
 ZipArkivoEntryAttributes
 ZipArkivoEntryAttributeView
 ```
@@ -78,8 +76,10 @@ Primary factory methods should use `open(...)`. The target class name defines th
 
 ```java
 ZipArkivoFileSystem.open(path)
-ZipArkivoFileSystem.open(path, options)
+ZipArkivoFileSystem.open(path, environment)
 ```
+
+File system configuration keys should live on the concrete file system utility class, such as `ZipArkivoFileSystem.CREATE` and `ZipArkivoFileSystem.STREAMING_WRITE`, instead of a public options object.
 
 Low-level reader, writer, editor, and streaming APIs may be introduced later only when a concrete use case cannot be served well through `FileSystem` and file attribute views.
 
@@ -155,13 +155,13 @@ Streaming creation mode should reject operations that do not fit append-only ZIP
 
 Archive file system factories should support format-specific open options in addition to simple `Path` and channel overloads.
 
-Open options should carry operation-level settings that are not entry metadata, including passwords, encryption defaults, character set policies, timestamp policies, overwrite behavior, and format-specific compatibility choices.
+Open environment maps should carry operation-level settings that are not entry metadata, including passwords, encryption defaults, character set policies, timestamp policies, overwrite behavior, and format-specific compatibility choices.
 
 Split or multi-volume archives should be modeled as an archive storage layout rather than as item metadata or compression codec behavior.
 
 Single-file archives may continue to use `Path`, `ReadableByteChannel`, `WritableByteChannel`, and `SeekableByteChannel` overloads. Split archives need storage abstractions that can resolve multiple physical volumes into one logical archive view.
 
-Read support should be able to locate and open a sequence of volumes, such as numbered 7z, zip, or rar parts. Write support should be able to create successive volumes according to explicit file system options such as maximum volume size and naming policy.
+Read support should be able to locate and open a sequence of volumes, such as numbered 7z, zip, or rar parts. Write support should be able to create successive volumes according to explicit file system environment keys such as maximum volume size and naming policy.
 
 Random-access formats should expose split archives through a logical seekable view so parser code can work with archive offsets without repeatedly handling physical volume boundaries.
 
@@ -169,11 +169,11 @@ Random-access formats should expose split archives through a logical seekable vi
 
 Passwords and other credentials should be treated as operation inputs, not archive metadata.
 
-Archive open options should provide password or password-provider configuration for encrypted archives. Password providers should allow future support for formats that need more than one password attempt or entry-specific password lookup.
+Archive open environments should provide password or password-provider configuration for encrypted archives. Password providers should allow future support for formats that need more than one password attempt or entry-specific password lookup.
 
-Encryption settings for newly written archives should be explicit write options. When a format supports entry-level encryption, such as ZIP, the entry writing model should allow per-item encryption choices in addition to archive-level defaults.
+Encryption settings for newly written archives should be explicit write environment values. When a format supports entry-level encryption, such as ZIP, the entry writing model should allow per-item encryption choices in addition to archive-level defaults.
 
-Formats with archive-level encryption features, such as 7z header encryption, should expose those features through format-specific write options.
+Formats with archive-level encryption features, such as 7z header encryption, should expose those features through format-specific write environment keys.
 
 The public API should distinguish between persistent file attributes, encryption method selection, and sensitive password material. Passwords should remain operation inputs and must not be exposed as archive entry attributes.
 
@@ -187,7 +187,6 @@ For example:
 arkivo-archives-zip
   ZipArkivoFormat
   ZipArkivoFileSystem
-  ZipArkivoFileSystemOptions
   ZipArkivoEntryAttributes
   ZipArkivoEntryAttributeView
   ZipArkivoFileSystemProvider
@@ -286,7 +285,7 @@ Each archive format should define only the attribute interfaces it needs, such a
 1. Convert the repository to a Gradle multi-module project.
 2. Implement `arkivo-base` with format discovery, `FileSystem` support contracts, password and volume-source contracts, compression codec contracts, and low-level buffer utilities.
 3. Implement gzip, zlib, and raw deflate codec modules to validate the channel-first compression API.
-4. Define archive file system options, password provider contracts, and split archive source abstractions.
+4. Define archive file system environment keys, password provider contracts, and split archive source abstractions.
 5. Implement `ZipArkivoFileSystem` inside `arkivo-archives-zip`.
 6. Implement ZIP-specific entry attribute views.
 7. Implement ZIP file system mutation support with explicit writeback semantics.
@@ -304,4 +303,4 @@ Some formats may not support efficient random write operations. These formats sh
 
 Format-specific features should be represented through concrete format APIs rather than shared capability interfaces or boolean capability objects.
 
-Feature details such as supported encryption methods, header encryption support, split volume naming schemes, and write-time volume size constraints should remain in format-specific options and attribute views.
+Feature details such as supported encryption methods, header encryption support, split volume naming schemes, and write-time volume size constraints should remain in format-specific environment keys and attribute views.

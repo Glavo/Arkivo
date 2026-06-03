@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.zip;
 
+import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemConfig;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -53,13 +54,14 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     @Override
     public FileSystem newFileSystem(URI uri, Map<String, ?> environment) throws IOException {
         requireSupportedScheme(uri);
+        ZipArkivoFileSystemConfig.fromEnvironment(environment);
         throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
     }
 
     /// Opens a ZIP archive file system from an archive path.
     @Override
     public FileSystem newFileSystem(Path path, Map<String, ?> environment) throws IOException {
-        ZipArkivoFileSystemOptions.fromEnvironment(environment);
+        ZipArkivoFileSystemConfig.fromEnvironment(environment);
         throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
     }
 
