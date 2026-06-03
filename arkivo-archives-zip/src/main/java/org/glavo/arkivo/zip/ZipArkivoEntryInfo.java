@@ -14,7 +14,8 @@ import java.nio.file.attribute.FileTime;
 
 /// Exposes immutable metadata for one ZIP entry.
 ///
-/// @param zipName the ZIP entry name
+/// @param rawPath the raw encoded ZIP entry path bytes
+/// @param path the decoded ZIP entry path text
 /// @param type the ZIP entry type
 /// @param uncompressedSize the uncompressed size stored in the ZIP metadata
 /// @param compressedSize the compressed size stored in the ZIP metadata
@@ -25,7 +26,8 @@ import java.nio.file.attribute.FileTime;
 /// @param metadata additional ZIP metadata
 @NotNullByDefault
 public record ZipArkivoEntryInfo(
-        ZipName zipName,
+        byte @Unmodifiable [] rawPath,
+        String path,
         ArkivoItemType type,
         @Nullable Long uncompressedSize,
         @Nullable Long compressedSize,
@@ -35,15 +37,14 @@ public record ZipArkivoEntryInfo(
         ZipEncryption encryption,
         ArkivoMetadata metadata
 ) implements ArkivoEntryInfo {
+    /// Creates ZIP entry metadata.
+    public ZipArkivoEntryInfo {
+        rawPath = rawPath.clone();
+    }
+
     /// Returns the raw encoded ZIP entry path bytes.
     @Override
     public byte @Unmodifiable [] rawPath() {
-        return zipName.rawPath();
-    }
-
-    /// Returns the decoded ZIP entry path text.
-    @Override
-    public String path() {
-        return zipName.path();
+        return rawPath.clone();
     }
 }

@@ -10,11 +10,13 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.FileTime;
 
 /// Describes metadata and policies requested when writing one ZIP entry.
 ///
-/// @param zipName the ZIP entry name
+/// @param rawPath the raw encoded ZIP entry path bytes
+/// @param path the decoded ZIP entry path text
 /// @param type the ZIP entry type
 /// @param uncompressedSize the expected uncompressed size
 /// @param modifiedTime the requested last modified time
@@ -23,7 +25,8 @@ import java.nio.file.attribute.FileTime;
 /// @param metadata additional ZIP metadata
 @NotNullByDefault
 public record ZipArkivoEntryOptions(
-        ZipName zipName,
+        byte @Unmodifiable [] rawPath,
+        String path,
         ArkivoItemType type,
         @Nullable Long uncompressedSize,
         @Nullable FileTime modifiedTime,
@@ -31,38 +34,35 @@ public record ZipArkivoEntryOptions(
         @Nullable ZipEncryption encryption,
         ArkivoMetadata metadata
 ) implements ArkivoEntryOptions {
-    /// Creates a builder for the given ZIP entry name.
-    public static Builder builder(ZipName name) {
-        return new Builder(name);
+    /// Creates ZIP entry options.
+    public ZipArkivoEntryOptions {
+        rawPath = rawPath.clone();
     }
 
     /// Creates a builder for the given decoded ZIP entry path.
     public static Builder builder(String path) {
-        return new Builder(ZipName.of(path));
+        return new Builder(path.getBytes(StandardCharsets.UTF_8), path);
     }
 
     /// Creates a builder for the given raw encoded ZIP entry path and decoded ZIP entry path.
     public static Builder builder(byte @Unmodifiable [] rawPath, String path) {
-        return new Builder(ZipName.of(rawPath, path));
+        return new Builder(rawPath, path);
     }
 
     /// Returns the raw encoded ZIP entry path bytes.
     @Override
     public byte @Unmodifiable [] rawPath() {
-        return zipName.rawPath();
-    }
-
-    /// Returns the decoded ZIP entry path text.
-    @Override
-    public String path() {
-        return zipName.path();
+        return rawPath.clone();
     }
 
     /// Builds `ZipArkivoEntryOptions` instances.
     @NotNullByDefault
     public static final class Builder {
-        /// The ZIP entry name.
-        private final ZipName name;
+        /// The raw encoded ZIP entry path bytes.
+        private final byte @Unmodifiable [] rawPath;
+
+        /// The decoded ZIP entry path text.
+        private final String path;
 
         /// The requested ZIP entry type.
         private ArkivoItemType type = ArkivoItemType.REGULAR_FILE;
@@ -82,9 +82,10 @@ public record ZipArkivoEntryOptions(
         /// Additional ZIP metadata.
         private ArkivoMetadata metadata = ArkivoMetadata.empty();
 
-        /// Creates a builder for the given ZIP entry name.
-        public Builder(ZipName name) {
-            this.name = name;
+        /// Creates a builder for the given raw encoded ZIP entry path and decoded ZIP entry path.
+        public Builder(byte @Unmodifiable [] rawPath, String path) {
+            this.rawPath = rawPath.clone();
+            this.path = path;
         }
 
         /// Sets the ZIP entry type.
@@ -125,7 +126,7 @@ public record ZipArkivoEntryOptions(
 
         /// Builds the ZIP entry options.
         public ZipArkivoEntryOptions build() {
-            return new ZipArkivoEntryOptions(name, type, uncompressedSize, modifiedTime, method, encryption, metadata);
+            return new ZipArkivoEntryOptions(rawPath, path, type, uncompressedSize, modifiedTime, method, encryption, metadata);
         }
     }
 }
