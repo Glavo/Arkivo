@@ -4,6 +4,7 @@
 package org.glavo.arkivo;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -15,11 +16,17 @@ public interface ArkivoEditor<I extends ArkivoInfo, S extends ArkivoInfoSpec> ex
     /// Adds a new archive item from the given channel.
     void add(ReadableByteChannel source, S spec) throws IOException;
 
-    /// Replaces an existing archive item with data read from the given channel.
-    void replace(ArkivoName name, ReadableByteChannel source, S spec) throws IOException;
+    /// Replaces an existing archive item with the given decoded path.
+    void replace(String path, ReadableByteChannel source, S spec) throws IOException;
 
-    /// Removes archive items with the given name.
-    void remove(ArkivoName name) throws IOException;
+    /// Replaces an existing archive item with the given raw encoded path.
+    void replace(byte @Unmodifiable [] rawPath, ReadableByteChannel source, S spec) throws IOException;
+
+    /// Removes archive items with the given decoded path.
+    void remove(String path) throws IOException;
+
+    /// Removes archive items with the given raw encoded path.
+    void remove(byte @Unmodifiable [] rawPath) throws IOException;
 
     /// Returns a read-only view of the current archive state.
     ArkivoReader<I> reader() throws IOException;

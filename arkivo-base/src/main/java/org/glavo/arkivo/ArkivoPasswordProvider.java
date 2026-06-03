@@ -5,6 +5,7 @@ package org.glavo.arkivo;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 
@@ -13,15 +14,15 @@ import java.io.IOException;
 public interface ArkivoPasswordProvider {
     /// Returns a provider that never supplies a password.
     static ArkivoPasswordProvider none() {
-        return name -> null;
+        return (rawPath, path) -> null;
     }
 
     /// Returns a provider that supplies a defensive copy of the given password.
     static ArkivoPasswordProvider fixed(char[] password) {
         char[] storedPassword = password.clone();
-        return name -> storedPassword.clone();
+        return (rawPath, path) -> storedPassword.clone();
     }
 
-    /// Returns a password for the archive item, or for the archive as a whole when the name is `null`.
-    char @Nullable [] passwordFor(@Nullable ArkivoName name) throws IOException;
+    /// Returns a password for the archive item, or for the archive as a whole when both path values are `null`.
+    char @Nullable [] passwordFor(byte @Nullable @Unmodifiable [] rawPath, @Nullable String path) throws IOException;
 }

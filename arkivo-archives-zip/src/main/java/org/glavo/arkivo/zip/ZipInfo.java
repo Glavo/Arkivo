@@ -6,9 +6,9 @@ package org.glavo.arkivo.zip;
 import org.glavo.arkivo.ArkivoInfo;
 import org.glavo.arkivo.ArkivoItemType;
 import org.glavo.arkivo.ArkivoMetadata;
-import org.glavo.arkivo.ArkivoName;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.attribute.FileTime;
 
@@ -35,9 +35,15 @@ public record ZipInfo(
         ZipEncryption encryption,
         ArkivoMetadata metadata
 ) implements ArkivoInfo {
-    /// Returns the item name as a generic Arkivo name.
+    /// Returns the raw encoded ZIP item path bytes.
     @Override
-    public ArkivoName name() {
-        return zipName.asArkivoName();
+    public byte @Unmodifiable [] rawPath() {
+        return zipName.rawPath();
+    }
+
+    /// Returns the decoded ZIP item path text.
+    @Override
+    public String path() {
+        return zipName.path();
     }
 }

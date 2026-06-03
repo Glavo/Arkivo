@@ -3,11 +3,11 @@
 
 package org.glavo.arkivo.zip;
 
-import org.glavo.arkivo.ArkivoName;
 import org.glavo.arkivo.ArkivoVolumeSink;
 import org.glavo.arkivo.ArkivoWriter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -94,9 +94,15 @@ public final class ZipArkivoWriter implements ArkivoWriter<ZipInfoSpec> {
         throw new UnsupportedOperationException("ZIP archive writing is not implemented yet");
     }
 
-    /// Adds a file system path under the given ZIP item name.
+    /// Adds a file system path under the given decoded ZIP path.
     @Override
-    public void add(Path source, ArkivoName name) throws IOException {
+    public void add(Path source, String path) throws IOException {
+        throw new UnsupportedOperationException("ZIP archive writing is not implemented yet");
+    }
+
+    /// Adds a file system path under the given raw encoded ZIP path.
+    @Override
+    public void add(Path source, byte @Unmodifiable [] rawPath) throws IOException {
         throw new UnsupportedOperationException("ZIP archive writing is not implemented yet");
     }
 

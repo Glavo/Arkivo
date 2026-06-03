@@ -5,14 +5,18 @@ package org.glavo.arkivo;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.attribute.FileTime;
 
 /// Describes metadata requested when writing an archive item.
 @NotNullByDefault
 public interface ArkivoInfoSpec {
-    /// Returns the item name inside the archive.
-    ArkivoName name();
+    /// Returns the raw encoded item path bytes to write.
+    byte @Unmodifiable [] rawPath();
+
+    /// Returns the decoded item path text.
+    String path();
 
     /// Returns the item type.
     ArkivoItemType type();

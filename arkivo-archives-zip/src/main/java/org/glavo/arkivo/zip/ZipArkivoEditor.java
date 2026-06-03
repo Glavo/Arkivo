@@ -4,12 +4,12 @@
 package org.glavo.arkivo.zip;
 
 import org.glavo.arkivo.ArkivoEditor;
-import org.glavo.arkivo.ArkivoName;
 import org.glavo.arkivo.ArkivoReader;
 import org.glavo.arkivo.ArkivoVolumeSink;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -93,15 +93,27 @@ public final class ZipArkivoEditor implements ArkivoEditor<ZipInfo, ZipInfoSpec>
         throw notImplemented();
     }
 
-    /// Replaces an existing ZIP item with data read from the given channel.
+    /// Replaces an existing ZIP item with the given decoded path.
     @Override
-    public void replace(ArkivoName name, ReadableByteChannel source, ZipInfoSpec spec) throws IOException {
+    public void replace(String path, ReadableByteChannel source, ZipInfoSpec spec) throws IOException {
         throw notImplemented();
     }
 
-    /// Removes ZIP items with the given name.
+    /// Replaces an existing ZIP item with the given raw encoded path.
     @Override
-    public void remove(ArkivoName name) throws IOException {
+    public void replace(byte @Unmodifiable [] rawPath, ReadableByteChannel source, ZipInfoSpec spec) throws IOException {
+        throw notImplemented();
+    }
+
+    /// Removes ZIP items with the given decoded path.
+    @Override
+    public void remove(String path) throws IOException {
+        throw notImplemented();
+    }
+
+    /// Removes ZIP items with the given raw encoded path.
+    @Override
+    public void remove(byte @Unmodifiable [] rawPath) throws IOException {
         throw notImplemented();
     }
 

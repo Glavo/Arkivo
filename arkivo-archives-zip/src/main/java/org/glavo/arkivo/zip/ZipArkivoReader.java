@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.zip;
 
-import org.glavo.arkivo.ArkivoName;
 import org.glavo.arkivo.ArkivoReader;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -84,15 +83,27 @@ public final class ZipArkivoReader implements ArkivoReader<ZipInfo> {
         throw notImplemented();
     }
 
-    /// Returns the first ZIP item with the given name.
+    /// Returns the first ZIP item with the given decoded path.
     @Override
-    public @Nullable ZipInfo first(ArkivoName name) throws IOException {
+    public @Nullable ZipInfo first(String path) throws IOException {
         throw notImplemented();
     }
 
-    /// Returns all ZIP items with the given name.
+    /// Returns the first ZIP item with the given raw encoded path.
     @Override
-    public @Unmodifiable List<ZipInfo> all(ArkivoName name) throws IOException {
+    public @Nullable ZipInfo first(byte @Unmodifiable [] rawPath) throws IOException {
+        throw notImplemented();
+    }
+
+    /// Returns all ZIP items with the given decoded path.
+    @Override
+    public @Unmodifiable List<ZipInfo> all(String path) throws IOException {
+        throw notImplemented();
+    }
+
+    /// Returns all ZIP items with the given raw encoded path.
+    @Override
+    public @Unmodifiable List<ZipInfo> all(byte @Unmodifiable [] rawPath) throws IOException {
         throw notImplemented();
     }
 

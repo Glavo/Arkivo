@@ -255,7 +255,8 @@ SevenZipFolderRecord
 
 The shared entry model should support common archive metadata:
 
-- Entry path
+- Raw encoded entry path bytes
+- Decoded entry path text
 - Regular file, directory, symbolic link, and special file types
 - Uncompressed size
 - Compressed size

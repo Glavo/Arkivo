@@ -18,11 +18,17 @@ public interface ArkivoReader<I extends ArkivoInfo> extends Closeable {
     /// Returns all known archive items.
     @Unmodifiable List<I> infos() throws IOException;
 
-    /// Returns the first item with the given name.
-    @Nullable I first(ArkivoName name) throws IOException;
+    /// Returns the first item with the given decoded path.
+    @Nullable I first(String path) throws IOException;
 
-    /// Returns all items with the given name.
-    @Unmodifiable List<I> all(ArkivoName name) throws IOException;
+    /// Returns the first item with the given raw encoded path.
+    @Nullable I first(byte @Unmodifiable [] rawPath) throws IOException;
+
+    /// Returns all items with the given decoded path.
+    @Unmodifiable List<I> all(String path) throws IOException;
+
+    /// Returns all items with the given raw encoded path.
+    @Unmodifiable List<I> all(byte @Unmodifiable [] rawPath) throws IOException;
 
     /// Opens a channel for reading the item contents.
     ReadableByteChannel openChannel(I info) throws IOException;
