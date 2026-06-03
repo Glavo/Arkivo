@@ -212,6 +212,8 @@ The provider implementation and registration should live in the concrete format 
 
 A format module should not register an unfinished `FileSystemProvider` service, because an installed provider participates in global JDK provider discovery.
 
+Provider URI schemes should use `arkivo+format`, such as `arkivo+zip`, to keep Arkivo providers distinct while making the concrete archive format visible in the scheme.
+
 ## Thread Safety
 
 Archive file system instances should be safe to use concurrently from multiple threads.

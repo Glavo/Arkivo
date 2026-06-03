@@ -30,7 +30,7 @@ import java.util.Set;
 @NotNullByDefault
 public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     /// The URI scheme handled by the ZIP Arkivo file system provider.
-    public static final String SCHEME = "arkivo-zip";
+    public static final String SCHEME = "arkivo+zip";
 
     /// The shared provider instance used by Arkivo convenience factories.
     private static final ZipArkivoFileSystemProvider INSTANCE = new ZipArkivoFileSystemProvider();
