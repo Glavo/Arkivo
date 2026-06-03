@@ -7,4 +7,6 @@ module org.glavo.arkivo.archives.zip {
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.zip;
+
+    provides org.glavo.arkivo.ArkivoFormat with org.glavo.arkivo.zip.ZipArkivoFormat;
 }

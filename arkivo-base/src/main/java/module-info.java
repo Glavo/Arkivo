@@ -7,4 +7,6 @@ module org.glavo.arkivo.base {
 
     exports org.glavo.arkivo;
     exports org.glavo.arkivo.compress;
+
+    uses org.glavo.arkivo.ArkivoFormat;
 }

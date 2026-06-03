@@ -69,6 +69,7 @@ ZipArkivoEntry
 ZipArkivoEntryInfo
 ZipArkivoEntryOptions
 ZipArkivoEditor
+ZipArkivoFormat
 ZipArkivoReader
 ZipArkivoWriter
 ZipArkivoStreamingReader
@@ -110,6 +111,7 @@ ArkivoEntryInfo
 ArkivoEntryOptions
 ArkivoEditor
 ArkivoFormat
+ArkivoFormats
 ArkivoReader
 ArkivoWriter
 ArkivoFileSystem
@@ -212,6 +214,7 @@ arkivo-archives-zip
   ZipArkivoEntryInfo
   ZipArkivoEntryOptions
   ZipArkivoEditor
+  ZipArkivoFormat
   ZipArkivoReader
   ZipArkivoWriter
   ZipArkivoStreamingReader
