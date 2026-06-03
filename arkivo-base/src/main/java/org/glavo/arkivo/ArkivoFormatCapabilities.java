@@ -13,6 +13,10 @@ import org.jetbrains.annotations.NotNullByDefault;
 /// @param randomWrite whether the format supports random-access writing
 /// @param editing whether the format supports editing an existing archive
 /// @param fileSystem whether the format supports a NIO file system view
+/// @param encryptedRead whether the format supports reading encrypted archives or items
+/// @param encryptedWrite whether the format supports writing encrypted archives or items
+/// @param splitRead whether the format supports reading split or multi-volume archives
+/// @param splitWrite whether the format supports writing split or multi-volume archives
 @NotNullByDefault
 public record ArkivoFormatCapabilities(
         boolean streamingRead,
@@ -20,6 +24,10 @@ public record ArkivoFormatCapabilities(
         boolean randomRead,
         boolean randomWrite,
         boolean editing,
-        boolean fileSystem
+        boolean fileSystem,
+        boolean encryptedRead,
+        boolean encryptedWrite,
+        boolean splitRead,
+        boolean splitWrite
 ) {
 }

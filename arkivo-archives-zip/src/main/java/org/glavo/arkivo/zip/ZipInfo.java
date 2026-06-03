@@ -21,6 +21,7 @@ import java.nio.file.attribute.FileTime;
 /// @param modifiedTime the last modified time stored in the ZIP metadata
 /// @param crc32 the CRC-32 value stored in the ZIP metadata
 /// @param method the ZIP compression method
+/// @param encryption the ZIP encryption method
 /// @param metadata additional ZIP metadata
 @NotNullByDefault
 public record ZipInfo(
@@ -31,6 +32,7 @@ public record ZipInfo(
         @Nullable FileTime modifiedTime,
         @Nullable Long crc32,
         ZipMethod method,
+        ZipEncryption encryption,
         ArkivoMetadata metadata
 ) implements ArkivoInfo {
     /// Returns the item name as a generic Arkivo name.

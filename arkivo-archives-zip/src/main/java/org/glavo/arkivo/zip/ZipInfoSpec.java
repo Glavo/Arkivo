@@ -19,6 +19,7 @@ import java.nio.file.attribute.FileTime;
 /// @param uncompressedSize the expected uncompressed size
 /// @param modifiedTime the requested last modified time
 /// @param method the requested ZIP compression method
+/// @param encryption the requested ZIP encryption method, or `null` to use the writer default
 /// @param metadata additional ZIP metadata
 @NotNullByDefault
 public record ZipInfoSpec(
@@ -27,6 +28,7 @@ public record ZipInfoSpec(
         @Nullable Long uncompressedSize,
         @Nullable FileTime modifiedTime,
         ZipMethod method,
+        @Nullable ZipEncryption encryption,
         ArkivoMetadata metadata
 ) implements ArkivoInfoSpec {
     /// Creates a builder for the given ZIP item name.
@@ -57,6 +59,9 @@ public record ZipInfoSpec(
 
         /// The requested ZIP compression method.
         private ZipMethod method = ZipMethod.deflated();
+
+        /// The requested ZIP encryption method.
+        private @Nullable ZipEncryption encryption;
 
         /// Additional ZIP metadata.
         private ArkivoMetadata metadata = ArkivoMetadata.empty();
@@ -90,6 +95,12 @@ public record ZipInfoSpec(
             return this;
         }
 
+        /// Sets the requested ZIP encryption method.
+        public Builder encryption(@Nullable ZipEncryption encryption) {
+            this.encryption = encryption;
+            return this;
+        }
+
         /// Sets additional ZIP metadata.
         public Builder metadata(ArkivoMetadata metadata) {
             this.metadata = metadata;
@@ -98,7 +109,7 @@ public record ZipInfoSpec(
 
         /// Builds the ZIP metadata specification.
         public ZipInfoSpec build() {
-            return new ZipInfoSpec(name, type, uncompressedSize, modifiedTime, method, metadata);
+            return new ZipInfoSpec(name, type, uncompressedSize, modifiedTime, method, encryption, metadata);
         }
     }
 }

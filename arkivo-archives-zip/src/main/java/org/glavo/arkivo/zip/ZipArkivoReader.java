@@ -5,10 +5,12 @@ package org.glavo.arkivo.zip;
 
 import org.glavo.arkivo.ArkivoName;
 import org.glavo.arkivo.ArkivoReader;
+import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
@@ -21,25 +23,59 @@ import java.util.List;
 @NotNullByDefault
 public final class ZipArkivoReader implements ArkivoReader<ZipInfo> {
     /// The archive channel.
-    private final SeekableByteChannel channel;
+    private final @Nullable SeekableByteChannel channel;
 
-    /// Whether closing this reader should close the archive channel.
-    private final boolean closeChannel;
+    /// The split archive volume source.
+    private final @Nullable ArkivoVolumeSource volumes;
+
+    /// The ZIP read options.
+    private final ZipReadOptions options;
+
+    /// The resource owned by this reader.
+    private final @Nullable Closeable ownedResource;
 
     /// Creates a ZIP reader over the given channel.
-    private ZipArkivoReader(SeekableByteChannel channel, boolean closeChannel) {
+    private ZipArkivoReader(
+            @Nullable SeekableByteChannel channel,
+            @Nullable ArkivoVolumeSource volumes,
+            ZipReadOptions options,
+            @Nullable Closeable ownedResource
+    ) {
         this.channel = channel;
-        this.closeChannel = closeChannel;
+        this.volumes = volumes;
+        this.options = options;
+        this.ownedResource = ownedResource;
     }
 
     /// Opens a ZIP archive for read-only random access.
     public static ZipArkivoReader open(Path path) throws IOException {
-        return new ZipArkivoReader(Files.newByteChannel(path, StandardOpenOption.READ), true);
+        return open(path, ZipReadOptions.defaults());
+    }
+
+    /// Opens a ZIP archive for read-only random access with explicit read options.
+    public static ZipArkivoReader open(Path path, ZipReadOptions options) throws IOException {
+        SeekableByteChannel channel = Files.newByteChannel(path, StandardOpenOption.READ);
+        return new ZipArkivoReader(channel, null, options, channel);
     }
 
     /// Opens a ZIP archive channel for read-only random access.
     public static ZipArkivoReader open(SeekableByteChannel channel) {
-        return new ZipArkivoReader(channel, false);
+        return open(channel, ZipReadOptions.defaults());
+    }
+
+    /// Opens a ZIP archive channel for read-only random access with explicit read options.
+    public static ZipArkivoReader open(SeekableByteChannel channel, ZipReadOptions options) {
+        return new ZipArkivoReader(channel, null, options, null);
+    }
+
+    /// Opens split ZIP archive volumes for read-only random access.
+    public static ZipArkivoReader open(ArkivoVolumeSource volumes) {
+        return open(volumes, ZipReadOptions.defaults());
+    }
+
+    /// Opens split ZIP archive volumes for read-only random access with explicit read options.
+    public static ZipArkivoReader open(ArkivoVolumeSource volumes, ZipReadOptions options) {
+        return new ZipArkivoReader(null, volumes, options, null);
     }
 
     /// Returns all known ZIP items.
@@ -69,8 +105,8 @@ public final class ZipArkivoReader implements ArkivoReader<ZipInfo> {
     /// Closes the reader and its owned channel.
     @Override
     public void close() throws IOException {
-        if (closeChannel) {
-            channel.close();
+        if (ownedResource != null) {
+            ownedResource.close();
         }
     }
 

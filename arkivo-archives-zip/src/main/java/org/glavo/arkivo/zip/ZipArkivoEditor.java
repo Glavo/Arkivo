@@ -6,8 +6,12 @@ package org.glavo.arkivo.zip;
 import org.glavo.arkivo.ArkivoEditor;
 import org.glavo.arkivo.ArkivoName;
 import org.glavo.arkivo.ArkivoReader;
+import org.glavo.arkivo.ArkivoVolumeSink;
+import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
@@ -19,25 +23,68 @@ import java.nio.file.StandardOpenOption;
 @NotNullByDefault
 public final class ZipArkivoEditor implements ArkivoEditor<ZipInfo, ZipInfoSpec> {
     /// The archive channel.
-    private final SeekableByteChannel channel;
+    private final @Nullable SeekableByteChannel channel;
 
-    /// Whether closing this editor should close the archive channel.
-    private final boolean closeChannel;
+    /// The split archive input volumes.
+    private final @Nullable ArkivoVolumeSource sourceVolumes;
+
+    /// The split archive output volumes.
+    private final @Nullable ArkivoVolumeSink targetVolumes;
+
+    /// The ZIP edit options.
+    private final ZipEditOptions options;
+
+    /// The resource owned by this editor.
+    private final @Nullable Closeable ownedResource;
 
     /// Creates a ZIP editor over the given channel.
-    private ZipArkivoEditor(SeekableByteChannel channel, boolean closeChannel) {
+    private ZipArkivoEditor(
+            @Nullable SeekableByteChannel channel,
+            @Nullable ArkivoVolumeSource sourceVolumes,
+            @Nullable ArkivoVolumeSink targetVolumes,
+            ZipEditOptions options,
+            @Nullable Closeable ownedResource
+    ) {
         this.channel = channel;
-        this.closeChannel = closeChannel;
+        this.sourceVolumes = sourceVolumes;
+        this.targetVolumes = targetVolumes;
+        this.options = options;
+        this.ownedResource = ownedResource;
     }
 
     /// Opens an existing ZIP archive for editing.
     public static ZipArkivoEditor open(Path path) throws IOException {
-        return new ZipArkivoEditor(Files.newByteChannel(path, StandardOpenOption.READ, StandardOpenOption.WRITE), true);
+        return open(path, ZipEditOptions.defaults());
+    }
+
+    /// Opens an existing ZIP archive for editing with explicit edit options.
+    public static ZipArkivoEditor open(Path path, ZipEditOptions options) throws IOException {
+        SeekableByteChannel channel = Files.newByteChannel(path, StandardOpenOption.READ, StandardOpenOption.WRITE);
+        return new ZipArkivoEditor(channel, null, null, options, channel);
     }
 
     /// Opens an existing ZIP archive channel for editing.
     public static ZipArkivoEditor open(SeekableByteChannel channel) {
-        return new ZipArkivoEditor(channel, false);
+        return open(channel, ZipEditOptions.defaults());
+    }
+
+    /// Opens an existing ZIP archive channel for editing with explicit edit options.
+    public static ZipArkivoEditor open(SeekableByteChannel channel, ZipEditOptions options) {
+        return new ZipArkivoEditor(channel, null, null, options, null);
+    }
+
+    /// Opens split ZIP archive volumes for copy-on-write editing.
+    public static ZipArkivoEditor open(ArkivoVolumeSource sourceVolumes, ArkivoVolumeSink targetVolumes) {
+        return open(sourceVolumes, targetVolumes, ZipEditOptions.defaults());
+    }
+
+    /// Opens split ZIP archive volumes for copy-on-write editing with explicit edit options.
+    public static ZipArkivoEditor open(
+            ArkivoVolumeSource sourceVolumes,
+            ArkivoVolumeSink targetVolumes,
+            ZipEditOptions options
+    ) {
+        return new ZipArkivoEditor(null, sourceVolumes, targetVolumes, options, null);
     }
 
     /// Adds a new ZIP item from the given channel.
@@ -73,8 +120,8 @@ public final class ZipArkivoEditor implements ArkivoEditor<ZipInfo, ZipInfoSpec>
     /// Closes the editor and its owned channel.
     @Override
     public void close() throws IOException {
-        if (closeChannel) {
-            channel.close();
+        if (ownedResource != null) {
+            ownedResource.close();
         }
     }
 

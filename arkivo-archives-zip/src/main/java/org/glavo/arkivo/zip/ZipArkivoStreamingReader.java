@@ -16,18 +16,27 @@ public final class ZipArkivoStreamingReader implements Closeable {
     /// The source channel.
     private final ReadableByteChannel source;
 
+    /// The ZIP read options.
+    private final ZipReadOptions options;
+
     /// Whether closing this reader should close the source channel.
     private final boolean closeChannel;
 
     /// Creates a streaming ZIP reader over the given source channel.
-    private ZipArkivoStreamingReader(ReadableByteChannel source, boolean closeChannel) {
+    private ZipArkivoStreamingReader(ReadableByteChannel source, ZipReadOptions options, boolean closeChannel) {
         this.source = source;
+        this.options = options;
         this.closeChannel = closeChannel;
     }
 
     /// Opens a streaming ZIP reader over the given source channel.
     public static ZipArkivoStreamingReader open(ReadableByteChannel source) {
-        return new ZipArkivoStreamingReader(source, false);
+        return open(source, ZipReadOptions.defaults());
+    }
+
+    /// Opens a streaming ZIP reader over the given source channel with explicit read options.
+    public static ZipArkivoStreamingReader open(ReadableByteChannel source, ZipReadOptions options) {
+        return new ZipArkivoStreamingReader(source, options, false);
     }
 
     /// Returns the next ZIP item in source order.
