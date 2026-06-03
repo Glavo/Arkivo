@@ -7,10 +7,17 @@ import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemOptionsImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
+
+import java.util.Map;
+import java.util.Objects;
 
 /// Configures opening a ZIP archive as a file system.
 @NotNullByDefault
 public sealed interface ZipArkivoFileSystemOptions permits ZipArkivoFileSystemOptionsImpl {
+    /// The environment key used to pass ZIP file system options to a JDK file system provider.
+    String ENVIRONMENT_KEY = "arkivo.zip.options";
+
     /// The default ZIP file system options.
     ZipArkivoFileSystemOptions DEFAULTS = new ZipArkivoFileSystemOptionsImpl(
             null,
@@ -27,6 +34,23 @@ public sealed interface ZipArkivoFileSystemOptions permits ZipArkivoFileSystemOp
     /// Creates a builder for ZIP file system options.
     static Builder builder() {
         return new Builder();
+    }
+
+    /// Returns a provider environment map containing the given ZIP file system options.
+    static @Unmodifiable Map<String, ZipArkivoFileSystemOptions> environment(ZipArkivoFileSystemOptions options) {
+        return Map.of(ENVIRONMENT_KEY, Objects.requireNonNull(options, "options"));
+    }
+
+    /// Reads ZIP file system options from a provider environment map.
+    static ZipArkivoFileSystemOptions fromEnvironment(Map<String, ?> environment) {
+        Object value = environment.get(ENVIRONMENT_KEY);
+        if (value == null) {
+            return defaults();
+        }
+        if (value instanceof ZipArkivoFileSystemOptions options) {
+            return options;
+        }
+        throw new IllegalArgumentException("Expected ZipArkivoFileSystemOptions for environment key: " + ENVIRONMENT_KEY);
     }
 
     /// Returns the provider used to decrypt encrypted ZIP entries.
@@ -80,12 +104,15 @@ public sealed interface ZipArkivoFileSystemOptions permits ZipArkivoFileSystemOp
 
         /// Sets the encryption method used for new entries that do not override encryption.
         public Builder defaultEncryption(ZipEncryption defaultEncryption) {
-            this.defaultEncryption = defaultEncryption;
+            this.defaultEncryption = Objects.requireNonNull(defaultEncryption, "defaultEncryption");
             return this;
         }
 
         /// Sets the maximum size of each output volume.
         public Builder splitSize(@Nullable Long splitSize) {
+            if (splitSize != null && splitSize <= 0) {
+                throw new IllegalArgumentException("splitSize must be positive");
+            }
             this.splitSize = splitSize;
             return this;
         }

@@ -5,7 +5,12 @@ package org.glavo.arkivo.zip;
 
 import org.glavo.arkivo.ArkivoFormat;
 import org.glavo.arkivo.ArkivoFormatCapabilities;
+import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
+
+import java.io.IOException;
+import java.nio.file.FileSystem;
+import java.nio.file.Path;
 
 /// Describes the ZIP archive format support provided by Arkivo.
 @NotNullByDefault
@@ -17,18 +22,17 @@ public final class ZipArkivoFormat implements ArkivoFormat {
     private static final ZipArkivoFormat INSTANCE = new ZipArkivoFormat();
 
     /// The ZIP capability set.
-    private static final ArkivoFormatCapabilities CAPABILITIES = ArkivoFormatCapabilities.of(
-            true,
-            true,
-            true,
-            false,
-            true,
-            true,
-            true,
-            true,
-            true,
-            true
-    );
+    private static final ArkivoFormatCapabilities CAPABILITIES = ArkivoFormatCapabilities.builder()
+            .streamingRead(true)
+            .streamingWrite(true)
+            .randomRead(true)
+            .editing(true)
+            .fileSystem(true)
+            .encryptedRead(true)
+            .encryptedWrite(true)
+            .splitRead(true)
+            .splitWrite(true)
+            .build();
 
     /// Creates a ZIP format descriptor.
     public ZipArkivoFormat() {
@@ -49,5 +53,25 @@ public final class ZipArkivoFormat implements ArkivoFormat {
     @Override
     public ArkivoFormatCapabilities capabilities() {
         return CAPABILITIES;
+    }
+
+    /// Opens a ZIP archive file system.
+    public FileSystem open(Path path) throws IOException {
+        return ZipArkivoFileSystem.open(path);
+    }
+
+    /// Opens a ZIP archive file system with explicit file system options.
+    public FileSystem open(Path path, ZipArkivoFileSystemOptions options) throws IOException {
+        return ZipArkivoFileSystem.open(path, options);
+    }
+
+    /// Opens a split ZIP archive file system.
+    public FileSystem open(ArkivoVolumeSource volumes) throws IOException {
+        return ZipArkivoFileSystem.open(volumes);
+    }
+
+    /// Opens a split ZIP archive file system with explicit file system options.
+    public FileSystem open(ArkivoVolumeSource volumes, ZipArkivoFileSystemOptions options) throws IOException {
+        return ZipArkivoFileSystem.open(volumes, options);
     }
 }

@@ -97,6 +97,7 @@ ArkivoFileSystemProviderSupport
 ArkivoPasswordProvider
 ArkivoVolumeSource
 CompressionCodec
+CompressionCodecs
 ```
 
 The base module should define the contracts and support code as a format-independent foundation.
@@ -202,7 +203,9 @@ Formats may also register JDK `FileSystemProvider` implementations when the inte
 FileSystems.newFileSystem(archivePath)
 ```
 
-The provider registration should live in the concrete format module, not in a shared filesystem module.
+The provider implementation and registration should live in the concrete format module, not in a shared filesystem module.
+
+A format module should not register an unfinished `FileSystemProvider` service, because an installed provider participates in global JDK provider discovery.
 
 ## Performance Requirements
 

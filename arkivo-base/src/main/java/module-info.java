@@ -9,4 +9,5 @@ module org.glavo.arkivo.base {
     exports org.glavo.arkivo.compress;
 
     uses org.glavo.arkivo.ArkivoFormat;
+    uses org.glavo.arkivo.compress.CompressionCodec;
 }
