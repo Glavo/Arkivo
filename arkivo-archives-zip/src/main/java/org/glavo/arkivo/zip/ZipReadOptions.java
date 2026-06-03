@@ -4,6 +4,7 @@
 package org.glavo.arkivo.zip;
 
 import org.glavo.arkivo.ArkivoPasswordProvider;
+import org.glavo.arkivo.zip.internal.ZipReadOptionsImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -52,23 +53,5 @@ public sealed interface ZipReadOptions permits ZipReadOptionsImpl {
         public ZipReadOptions build() {
             return new ZipReadOptionsImpl(passwordProvider);
         }
-    }
-}
-
-/// Stores ZIP read options.
-@NotNullByDefault
-final class ZipReadOptionsImpl implements ZipReadOptions {
-    /// The provider used to decrypt encrypted ZIP entries.
-    private final @Nullable ArkivoPasswordProvider passwordProvider;
-
-    /// Creates ZIP read options.
-    ZipReadOptionsImpl(@Nullable ArkivoPasswordProvider passwordProvider) {
-        this.passwordProvider = passwordProvider;
-    }
-
-    /// Returns the provider used to decrypt encrypted ZIP entries.
-    @Override
-    public @Nullable ArkivoPasswordProvider passwordProvider() {
-        return passwordProvider;
     }
 }
