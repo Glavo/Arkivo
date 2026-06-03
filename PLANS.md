@@ -160,6 +160,10 @@ Archive file system factories should support format-specific open options in add
 
 Open environment maps should carry operation-level settings that are not entry metadata, including passwords, encryption defaults, character set policies, timestamp policies, overwrite behavior, and format-specific compatibility choices.
 
+ZIP entry name decoding should prefer authoritative Unicode metadata before falling back to an environment policy.
+Readers should first honor validated Info-ZIP Unicode path and comment extra fields, then the UTF-8 general purpose bit flag, then the configured `ZipEntryNameEncoding` policy.
+The policy should support standard CP437 fallback, an explicit fallback charset, and deterministic automatic detection from a caller-provided or default candidate list.
+
 Split or multi-volume archives should be modeled as an archive storage layout rather than as item metadata or compression codec behavior.
 
 Single-file archives may continue to use `Path`, `ReadableByteChannel`, `WritableByteChannel`, and `SeekableByteChannel` overloads. Split archives need storage abstractions that can resolve multiple physical volumes into one logical archive view.

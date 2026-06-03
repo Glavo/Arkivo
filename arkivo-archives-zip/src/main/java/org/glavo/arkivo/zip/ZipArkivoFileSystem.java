@@ -67,6 +67,13 @@ public final class ZipArkivoFileSystem {
     public static final ArkivoFileSystemOption<Number> SPLIT_SIZE_OPTION =
             ArkivoFileSystemOption.of(SPLIT_SIZE, Number.class, Long::parseLong);
 
+    /// The environment key for a `ZipEntryNameEncoding` value that controls entry name decoding.
+    public static final String ENTRY_NAME_ENCODING = "entryNameEncoding";
+
+    /// The typed environment option for a `ZipEntryNameEncoding` value that controls entry name decoding.
+    public static final ArkivoFileSystemOption<ZipEntryNameEncoding> ENTRY_NAME_ENCODING_OPTION =
+            ArkivoFileSystemOption.of(ENTRY_NAME_ENCODING, ZipEntryNameEncoding.class, ZipEntryNameEncoding::parse);
+
     /// Creates no instances.
     private ZipArkivoFileSystem() {
     }

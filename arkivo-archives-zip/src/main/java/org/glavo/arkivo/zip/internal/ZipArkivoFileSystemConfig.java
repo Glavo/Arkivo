@@ -5,6 +5,7 @@ package org.glavo.arkivo.zip.internal;
 
 import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
+import org.glavo.arkivo.zip.ZipEntryNameEncoding;
 import org.glavo.arkivo.zip.ZipEncryption;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -22,7 +23,8 @@ public final class ZipArkivoFileSystemConfig {
             false,
             false,
             ZipEncryption.none(),
-            null
+            null,
+            ZipEntryNameEncoding.standard()
     );
 
     /// The provider used to decrypt encrypted ZIP entries.
@@ -43,6 +45,9 @@ public final class ZipArkivoFileSystemConfig {
     /// The maximum size of each output volume.
     private final @Nullable Long splitSize;
 
+    /// The policy used to decode ZIP entry names when no authoritative Unicode name is available.
+    private final ZipEntryNameEncoding entryNameEncoding;
+
     /// Creates parsed ZIP file system configuration.
     public ZipArkivoFileSystemConfig(
             @Nullable ArkivoPasswordProvider passwordProvider,
@@ -50,7 +55,8 @@ public final class ZipArkivoFileSystemConfig {
             boolean create,
             boolean streamingWrite,
             ZipEncryption defaultEncryption,
-            @Nullable Long splitSize
+            @Nullable Long splitSize,
+            ZipEntryNameEncoding entryNameEncoding
     ) {
         if (splitSize != null && splitSize <= 0) {
             throw new IllegalArgumentException("splitSize must be positive");
@@ -70,6 +76,7 @@ public final class ZipArkivoFileSystemConfig {
         this.streamingWrite = streamingWrite;
         this.defaultEncryption = Objects.requireNonNull(defaultEncryption, "defaultEncryption");
         this.splitSize = splitSize;
+        this.entryNameEncoding = Objects.requireNonNull(entryNameEncoding, "entryNameEncoding");
     }
 
     /// Parses ZIP file system configuration from an environment map.
@@ -86,6 +93,11 @@ public final class ZipArkivoFileSystemConfig {
         ZipEncryption defaultEncryption =
                 ZipArkivoFileSystem.DEFAULT_ENCRYPTION_OPTION.readOrDefault(environment, ZipEncryption.none());
         Long splitSize = splitSize(environment);
+        ZipEntryNameEncoding entryNameEncoding =
+                ZipArkivoFileSystem.ENTRY_NAME_ENCODING_OPTION.readOrDefault(
+                        environment,
+                        ZipEntryNameEncoding.standard()
+                );
 
         return new ZipArkivoFileSystemConfig(
                 passwordProvider,
@@ -93,7 +105,8 @@ public final class ZipArkivoFileSystemConfig {
                 create,
                 streamingWrite,
                 defaultEncryption,
-                splitSize
+                splitSize,
+                entryNameEncoding
         );
     }
 
@@ -125,6 +138,11 @@ public final class ZipArkivoFileSystemConfig {
     /// Returns the maximum size of each output volume.
     public @Nullable Long splitSize() {
         return splitSize;
+    }
+
+    /// Returns the policy used to decode ZIP entry names when no authoritative Unicode name is available.
+    public ZipEntryNameEncoding entryNameEncoding() {
+        return entryNameEncoding;
     }
 
     /// Parses the password provider from an environment map.
