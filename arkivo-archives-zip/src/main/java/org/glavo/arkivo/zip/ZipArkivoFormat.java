@@ -3,12 +3,12 @@
 
 package org.glavo.arkivo.zip;
 
+import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFormat;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
-import java.nio.file.FileSystem;
 import java.nio.file.Path;
 import java.util.Map;
 
@@ -37,22 +37,22 @@ public final class ZipArkivoFormat implements ArkivoFormat {
     }
 
     /// Opens a ZIP archive file system.
-    public FileSystem open(Path path) throws IOException {
+    public ArkivoFileSystem open(Path path) throws IOException {
         return ZipArkivoFileSystem.open(path);
     }
 
     /// Opens a ZIP archive file system with environment options.
-    public FileSystem open(Path path, Map<String, ?> environment) throws IOException {
+    public ArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         return ZipArkivoFileSystem.open(path, environment);
     }
 
     /// Opens a split ZIP archive file system.
-    public FileSystem open(ArkivoVolumeSource volumes) throws IOException {
+    public ArkivoFileSystem open(ArkivoVolumeSource volumes) throws IOException {
         return ZipArkivoFileSystem.open(volumes);
     }
 
     /// Opens a split ZIP archive file system with environment options.
-    public FileSystem open(ArkivoVolumeSource volumes, Map<String, ?> environment) throws IOException {
+    public ArkivoFileSystem open(ArkivoVolumeSource volumes, Map<String, ?> environment) throws IOException {
         return ZipArkivoFileSystem.open(volumes, environment);
     }
 }

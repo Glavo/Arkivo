@@ -79,8 +79,10 @@ ZipArkivoFileSystem.open(path)
 ZipArkivoFileSystem.open(path, environment)
 ```
 
-File system configuration options should live on the concrete file system utility class as typed
-`ArkivoFileSystemOption` constants, such as `ZipArkivoFileSystem.CREATE` and `ZipArkivoFileSystem.STREAMING_WRITE`.
+Common file system configuration options should live on `ArkivoFileSystem` as typed `ArkivoFileSystemOption`
+constants, such as `ArkivoFileSystem.OPEN_MODE`.
+Format-specific file system configuration options should live on the concrete file system utility class as typed
+`ArkivoFileSystemOption` constants.
 Standalone string key constants should not be exposed by concrete file system utility classes; callers can use
 `ArkivoFileSystemOption.key()` when they need the stable map key.
 
@@ -98,6 +100,9 @@ ArkivoFormats
 ArkivoPasswordProvider
 ArkivoVolumeSource
 ArkivoFileSystemOption
+ArkivoFileSystem
+ArkivoFileSystemOpenMode
+ArkivoFileSystemEntryStream
 CompressionCodec
 CompressionCodecs
 ```
@@ -209,6 +214,12 @@ The public API may expose convenience factories such as:
 ZipArkivoFileSystem.open(path)
 SevenZipArkivoFileSystem.open(path)
 ```
+
+Concrete archive file systems should extend `ArkivoFileSystem`.
+The common `ArkivoFileSystem.OPEN_MODE` environment option should select random read, random write, random read-write,
+stream read, or stream write behavior.
+`ArkivoFileSystem.openEntryStream()` should provide forward-only entry traversal for implementations that support
+streaming reads.
 
 Formats may also register JDK `FileSystemProvider` implementations when the integration is useful:
 

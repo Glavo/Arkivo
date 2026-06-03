@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.zip.internal;
 
+import org.glavo.arkivo.ArkivoFileSystem;
+import org.glavo.arkivo.ArkivoFileSystemOpenMode;
 import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipEntryNameEncoding;
@@ -19,25 +21,14 @@ public final class ZipArkivoFileSystemConfig {
     /// The default parsed ZIP file system configuration.
     public static final ZipArkivoFileSystemConfig DEFAULTS = new ZipArkivoFileSystemConfig(
             null,
-            false,
-            false,
-            false,
             ZipEncryption.none(),
             null,
-            ZipEntryNameEncoding.standard()
+            ZipEntryNameEncoding.standard(),
+            ArkivoFileSystemOpenMode.RANDOM_READ
     );
 
     /// The provider used to decrypt encrypted ZIP entries.
     private final @Nullable ArkivoPasswordProvider passwordProvider;
-
-    /// Whether the file system should reject mutating operations.
-    private final boolean readOnly;
-
-    /// Whether the file system should create a new ZIP archive.
-    private final boolean create;
-
-    /// Whether the file system should use append-only streaming write semantics.
-    private final boolean streamingWrite;
 
     /// The encryption method used for new entries that do not override encryption.
     private final ZipEncryption defaultEncryption;
@@ -48,35 +39,25 @@ public final class ZipArkivoFileSystemConfig {
     /// The policy used to decode ZIP entry names when no authoritative Unicode name is available.
     private final ZipEntryNameEncoding entryNameEncoding;
 
+    /// The mode used to open ZIP archive storage.
+    private final ArkivoFileSystemOpenMode openMode;
+
     /// Creates parsed ZIP file system configuration.
     public ZipArkivoFileSystemConfig(
             @Nullable ArkivoPasswordProvider passwordProvider,
-            boolean readOnly,
-            boolean create,
-            boolean streamingWrite,
             ZipEncryption defaultEncryption,
             @Nullable Long splitSize,
-            ZipEntryNameEncoding entryNameEncoding
+            ZipEntryNameEncoding entryNameEncoding,
+            ArkivoFileSystemOpenMode openMode
     ) {
         if (splitSize != null && splitSize <= 0) {
             throw new IllegalArgumentException("splitSize must be positive");
         }
-        if (readOnly && create) {
-            throw new IllegalArgumentException("readOnly and create cannot both be true");
-        }
-        if (readOnly && streamingWrite) {
-            throw new IllegalArgumentException("readOnly and streamingWrite cannot both be true");
-        }
-        if (streamingWrite && !create) {
-            throw new IllegalArgumentException("streamingWrite requires create");
-        }
         this.passwordProvider = passwordProvider;
-        this.readOnly = readOnly;
-        this.create = create;
-        this.streamingWrite = streamingWrite;
         this.defaultEncryption = Objects.requireNonNull(defaultEncryption, "defaultEncryption");
         this.splitSize = splitSize;
         this.entryNameEncoding = Objects.requireNonNull(entryNameEncoding, "entryNameEncoding");
+        this.openMode = Objects.requireNonNull(openMode, "openMode");
     }
 
     /// Parses ZIP file system configuration from an environment map.
@@ -87,9 +68,6 @@ public final class ZipArkivoFileSystemConfig {
         }
 
         ArkivoPasswordProvider passwordProvider = passwordProvider(environment);
-        boolean readOnly = ZipArkivoFileSystem.READ_ONLY.readOrDefault(environment, false);
-        boolean create = ZipArkivoFileSystem.CREATE.readOrDefault(environment, false);
-        boolean streamingWrite = ZipArkivoFileSystem.STREAMING_WRITE.readOrDefault(environment, false);
         ZipEncryption defaultEncryption =
                 ZipArkivoFileSystem.DEFAULT_ENCRYPTION.readOrDefault(environment, ZipEncryption.none());
         Long splitSize = splitSize(environment);
@@ -98,36 +76,21 @@ public final class ZipArkivoFileSystemConfig {
                         environment,
                         ZipEntryNameEncoding.standard()
                 );
+        ArkivoFileSystemOpenMode openMode =
+                ArkivoFileSystem.OPEN_MODE.readOrDefault(environment, ArkivoFileSystemOpenMode.RANDOM_READ);
 
         return new ZipArkivoFileSystemConfig(
                 passwordProvider,
-                readOnly,
-                create,
-                streamingWrite,
                 defaultEncryption,
                 splitSize,
-                entryNameEncoding
+                entryNameEncoding,
+                openMode
         );
     }
 
     /// Returns the provider used to decrypt encrypted ZIP entries.
     public @Nullable ArkivoPasswordProvider passwordProvider() {
         return passwordProvider;
-    }
-
-    /// Returns whether the file system should reject mutating operations.
-    public boolean readOnly() {
-        return readOnly;
-    }
-
-    /// Returns whether the file system should create a new ZIP archive.
-    public boolean create() {
-        return create;
-    }
-
-    /// Returns whether the file system should use append-only streaming write semantics.
-    public boolean streamingWrite() {
-        return streamingWrite;
     }
 
     /// Returns the encryption method used for new entries that do not override encryption.
@@ -143,6 +106,11 @@ public final class ZipArkivoFileSystemConfig {
     /// Returns the policy used to decode ZIP entry names when no authoritative Unicode name is available.
     public ZipEntryNameEncoding entryNameEncoding() {
         return entryNameEncoding;
+    }
+
+    /// Returns the mode used to open ZIP archive storage.
+    public ArkivoFileSystemOpenMode openMode() {
+        return openMode;
     }
 
     /// Parses the password provider from an environment map.
