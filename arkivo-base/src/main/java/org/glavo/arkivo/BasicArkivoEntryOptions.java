@@ -11,46 +11,21 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.FileTime;
 
 /// Provides general-purpose archive entry options.
-///
-/// @param rawPath the raw encoded entry path bytes
-/// @param path the decoded entry path text
-/// @param type the requested entry type
-/// @param uncompressedSize the expected uncompressed size
-/// @param modifiedTime the requested last modified time
-/// @param metadata additional metadata requested for the entry
 @NotNullByDefault
-public record BasicArkivoEntryOptions(
-        byte @Unmodifiable [] rawPath,
-        String path,
-        ArkivoItemType type,
-        @Nullable Long uncompressedSize,
-        @Nullable FileTime modifiedTime,
-        ArkivoMetadata metadata
-) implements ArkivoEntryOptions {
-    /// Creates basic archive entry options.
-    public BasicArkivoEntryOptions {
-        rawPath = rawPath.clone();
-    }
-
+public sealed interface BasicArkivoEntryOptions extends ArkivoEntryOptions permits BasicArkivoEntryOptionsImpl {
     /// Creates a builder for an entry with the given decoded path.
-    public static Builder builder(String path) {
+    static Builder builder(String path) {
         return new Builder(path.getBytes(StandardCharsets.UTF_8), path);
     }
 
     /// Creates a builder for an entry with the given raw encoded path and decoded path.
-    public static Builder builder(byte @Unmodifiable [] rawPath, String path) {
+    static Builder builder(byte @Unmodifiable [] rawPath, String path) {
         return new Builder(rawPath, path);
-    }
-
-    /// Returns the raw encoded entry path bytes.
-    @Override
-    public byte @Unmodifiable [] rawPath() {
-        return rawPath.clone();
     }
 
     /// Builds `BasicArkivoEntryOptions` instances.
     @NotNullByDefault
-    public static final class Builder {
+    final class Builder {
         /// The raw encoded entry path bytes.
         private final byte @Unmodifiable [] rawPath;
 
@@ -101,7 +76,82 @@ public record BasicArkivoEntryOptions(
 
         /// Builds the entry options.
         public BasicArkivoEntryOptions build() {
-            return new BasicArkivoEntryOptions(rawPath, path, type, uncompressedSize, modifiedTime, metadata);
+            return new BasicArkivoEntryOptionsImpl(rawPath, path, type, uncompressedSize, modifiedTime, metadata);
         }
+    }
+}
+
+/// Stores general-purpose archive entry options.
+@NotNullByDefault
+final class BasicArkivoEntryOptionsImpl implements BasicArkivoEntryOptions {
+    /// The raw encoded entry path bytes.
+    private final byte @Unmodifiable [] rawPath;
+
+    /// The decoded entry path text.
+    private final String path;
+
+    /// The requested entry type.
+    private final ArkivoItemType type;
+
+    /// The expected uncompressed size.
+    private final @Nullable Long uncompressedSize;
+
+    /// The requested last modified time.
+    private final @Nullable FileTime modifiedTime;
+
+    /// Additional metadata requested for the entry.
+    private final ArkivoMetadata metadata;
+
+    /// Creates general-purpose archive entry options.
+    BasicArkivoEntryOptionsImpl(
+            byte @Unmodifiable [] rawPath,
+            String path,
+            ArkivoItemType type,
+            @Nullable Long uncompressedSize,
+            @Nullable FileTime modifiedTime,
+            ArkivoMetadata metadata
+    ) {
+        this.rawPath = rawPath.clone();
+        this.path = path;
+        this.type = type;
+        this.uncompressedSize = uncompressedSize;
+        this.modifiedTime = modifiedTime;
+        this.metadata = metadata;
+    }
+
+    /// Returns the raw encoded entry path bytes.
+    @Override
+    public byte @Unmodifiable [] rawPath() {
+        return rawPath.clone();
+    }
+
+    /// Returns the decoded entry path text.
+    @Override
+    public String path() {
+        return path;
+    }
+
+    /// Returns the requested entry type.
+    @Override
+    public ArkivoItemType type() {
+        return type;
+    }
+
+    /// Returns the expected uncompressed size.
+    @Override
+    public @Nullable Long uncompressedSize() {
+        return uncompressedSize;
+    }
+
+    /// Returns the requested last modified time.
+    @Override
+    public @Nullable FileTime modifiedTime() {
+        return modifiedTime;
+    }
+
+    /// Returns additional metadata requested for the entry.
+    @Override
+    public ArkivoMetadata metadata() {
+        return metadata;
     }
 }

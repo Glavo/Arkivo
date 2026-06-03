@@ -4,16 +4,13 @@
 package org.glavo.arkivo.zip;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
+
+import java.util.Objects;
 
 /// Identifies a ZIP compression method.
-///
-/// @param id the numeric ZIP compression method identifier
-/// @param name the stable display name for the method
 @NotNullByDefault
-public record ZipMethod(
-        int id,
-        String name
-) {
+public final class ZipMethod {
     /// The stored method identifier.
     public static final int STORED_ID = 0;
 
@@ -25,6 +22,18 @@ public record ZipMethod(
 
     /// The deflated ZIP method.
     private static final ZipMethod DEFLATED = new ZipMethod(DEFLATED_ID, "deflated");
+
+    /// The numeric ZIP compression method identifier.
+    private final int id;
+
+    /// The stable display name for the method.
+    private final String name;
+
+    /// Creates a ZIP compression method.
+    private ZipMethod(int id, String name) {
+        this.id = id;
+        this.name = name;
+    }
 
     /// Returns the stored ZIP method.
     public static ZipMethod stored() {
@@ -43,5 +52,33 @@ public record ZipMethod(
             case DEFLATED_ID -> DEFLATED;
             default -> new ZipMethod(id, "method-" + id);
         };
+    }
+
+    /// Returns the numeric ZIP compression method identifier.
+    public int id() {
+        return id;
+    }
+
+    /// Returns the stable display name for the method.
+    public String name() {
+        return name;
+    }
+
+    /// Compares this method with another object.
+    @Override
+    public boolean equals(@Nullable Object object) {
+        return object instanceof ZipMethod that && id == that.id && name.equals(that.name);
+    }
+
+    /// Returns the hash code for this method.
+    @Override
+    public int hashCode() {
+        return Objects.hash(id, name);
+    }
+
+    /// Returns the stable display name for this method.
+    @Override
+    public String toString() {
+        return name;
     }
 }

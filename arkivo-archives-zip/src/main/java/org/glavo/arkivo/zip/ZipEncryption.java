@@ -4,14 +4,13 @@
 package org.glavo.arkivo.zip;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
+
+import java.util.Objects;
 
 /// Identifies a ZIP encryption method.
-///
-/// @param name the stable display name for the encryption method
 @NotNullByDefault
-public record ZipEncryption(
-        String name
-) {
+public final class ZipEncryption {
     /// The unencrypted ZIP method.
     private static final ZipEncryption NONE = new ZipEncryption("none");
 
@@ -26,6 +25,14 @@ public record ZipEncryption(
 
     /// The WinZip AES-256 encryption method.
     private static final ZipEncryption WINZIP_AES_256 = new ZipEncryption("winzip-aes-256");
+
+    /// The stable display name for the encryption method.
+    private final String name;
+
+    /// Creates a ZIP encryption method.
+    private ZipEncryption(String name) {
+        this.name = name;
+    }
 
     /// Returns the unencrypted ZIP method.
     public static ZipEncryption none() {
@@ -50,5 +57,40 @@ public record ZipEncryption(
     /// Returns the WinZip AES-256 encryption method.
     public static ZipEncryption winZipAes256() {
         return WINZIP_AES_256;
+    }
+
+    /// Returns a ZIP encryption method with the given stable display name.
+    public static ZipEncryption of(String name) {
+        return switch (name) {
+            case "none" -> NONE;
+            case "traditional" -> TRADITIONAL;
+            case "winzip-aes-128" -> WINZIP_AES_128;
+            case "winzip-aes-192" -> WINZIP_AES_192;
+            case "winzip-aes-256" -> WINZIP_AES_256;
+            default -> new ZipEncryption(name);
+        };
+    }
+
+    /// Returns the stable display name for the encryption method.
+    public String name() {
+        return name;
+    }
+
+    /// Compares this encryption method with another object.
+    @Override
+    public boolean equals(@Nullable Object object) {
+        return object instanceof ZipEncryption that && name.equals(that.name);
+    }
+
+    /// Returns the hash code for this encryption method.
+    @Override
+    public int hashCode() {
+        return Objects.hash(name);
+    }
+
+    /// Returns the stable display name for this encryption method.
+    @Override
+    public String toString() {
+        return name;
     }
 }

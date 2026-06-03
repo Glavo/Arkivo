@@ -17,7 +17,7 @@ public final class ZipArkivoFormat implements ArkivoFormat {
     private static final ZipArkivoFormat INSTANCE = new ZipArkivoFormat();
 
     /// The ZIP capability set.
-    private static final ArkivoFormatCapabilities CAPABILITIES = new ArkivoFormatCapabilities(
+    private static final ArkivoFormatCapabilities CAPABILITIES = ArkivoFormatCapabilities.of(
             true,
             true,
             true,

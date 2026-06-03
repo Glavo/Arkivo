@@ -8,30 +8,33 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 /// Configures reading an existing ZIP archive.
-///
-/// @param passwordProvider the provider used to decrypt encrypted ZIP items
 @NotNullByDefault
-public record ZipReadOptions(
-        @Nullable ArkivoPasswordProvider passwordProvider
-) {
+public sealed interface ZipReadOptions permits ZipReadOptionsImpl {
     /// The default ZIP read options.
-    private static final ZipReadOptions DEFAULTS = new ZipReadOptions(null);
+    ZipReadOptions DEFAULTS = new ZipReadOptionsImpl(null);
 
     /// Returns the default ZIP read options.
-    public static ZipReadOptions defaults() {
+    static ZipReadOptions defaults() {
         return DEFAULTS;
     }
 
     /// Creates a builder for ZIP read options.
-    public static Builder builder() {
+    static Builder builder() {
         return new Builder();
     }
 
+    /// Returns the provider used to decrypt encrypted ZIP entries.
+    @Nullable ArkivoPasswordProvider passwordProvider();
+
     /// Builds `ZipReadOptions` instances.
     @NotNullByDefault
-    public static final class Builder {
-        /// The provider used to decrypt encrypted ZIP items.
+    final class Builder {
+        /// The provider used to decrypt encrypted ZIP entries.
         private @Nullable ArkivoPasswordProvider passwordProvider;
+
+        /// Creates a ZIP read options builder.
+        public Builder() {
+        }
 
         /// Sets the password provider.
         public Builder passwordProvider(@Nullable ArkivoPasswordProvider passwordProvider) {
@@ -47,7 +50,25 @@ public record ZipReadOptions(
 
         /// Builds the ZIP read options.
         public ZipReadOptions build() {
-            return new ZipReadOptions(passwordProvider);
+            return new ZipReadOptionsImpl(passwordProvider);
         }
+    }
+}
+
+/// Stores ZIP read options.
+@NotNullByDefault
+final class ZipReadOptionsImpl implements ZipReadOptions {
+    /// The provider used to decrypt encrypted ZIP entries.
+    private final @Nullable ArkivoPasswordProvider passwordProvider;
+
+    /// Creates ZIP read options.
+    ZipReadOptionsImpl(@Nullable ArkivoPasswordProvider passwordProvider) {
+        this.passwordProvider = passwordProvider;
+    }
+
+    /// Returns the provider used to decrypt encrypted ZIP entries.
+    @Override
+    public @Nullable ArkivoPasswordProvider passwordProvider() {
+        return passwordProvider;
     }
 }

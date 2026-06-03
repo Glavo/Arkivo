@@ -8,40 +8,45 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 /// Configures editing an existing ZIP archive.
-///
-/// @param passwordProvider the provider used to decrypt existing encrypted items
-/// @param defaultEncryption the encryption method used for newly written items that do not override encryption
-/// @param splitSize the maximum size of each output volume, or `null` for single-file output
 @NotNullByDefault
-public record ZipEditOptions(
-        @Nullable ArkivoPasswordProvider passwordProvider,
-        ZipEncryption defaultEncryption,
-        @Nullable Long splitSize
-) {
+public sealed interface ZipEditOptions permits ZipEditOptionsImpl {
     /// The default ZIP edit options.
-    private static final ZipEditOptions DEFAULTS = new ZipEditOptions(null, ZipEncryption.none(), null);
+    ZipEditOptions DEFAULTS = new ZipEditOptionsImpl(null, ZipEncryption.none(), null);
 
     /// Returns the default ZIP edit options.
-    public static ZipEditOptions defaults() {
+    static ZipEditOptions defaults() {
         return DEFAULTS;
     }
 
     /// Creates a builder for ZIP edit options.
-    public static Builder builder() {
+    static Builder builder() {
         return new Builder();
     }
 
+    /// Returns the provider used to decrypt existing encrypted entries.
+    @Nullable ArkivoPasswordProvider passwordProvider();
+
+    /// Returns the encryption method used for newly written entries that do not override encryption.
+    ZipEncryption defaultEncryption();
+
+    /// Returns the maximum size of each output volume, or `null` for single-file output.
+    @Nullable Long splitSize();
+
     /// Builds `ZipEditOptions` instances.
     @NotNullByDefault
-    public static final class Builder {
-        /// The provider used to decrypt existing encrypted items.
+    final class Builder {
+        /// The provider used to decrypt existing encrypted entries.
         private @Nullable ArkivoPasswordProvider passwordProvider;
 
-        /// The encryption method used for newly written items that do not override encryption.
+        /// The encryption method used for newly written entries that do not override encryption.
         private ZipEncryption defaultEncryption = ZipEncryption.none();
 
         /// The maximum size of each output volume.
         private @Nullable Long splitSize;
+
+        /// Creates a ZIP edit options builder.
+        public Builder() {
+        }
 
         /// Sets the password provider.
         public Builder passwordProvider(@Nullable ArkivoPasswordProvider passwordProvider) {
@@ -55,7 +60,7 @@ public record ZipEditOptions(
             return this;
         }
 
-        /// Sets the encryption method used for newly written items that do not override encryption.
+        /// Sets the encryption method used for newly written entries that do not override encryption.
         public Builder defaultEncryption(ZipEncryption defaultEncryption) {
             this.defaultEncryption = defaultEncryption;
             return this;
@@ -69,7 +74,49 @@ public record ZipEditOptions(
 
         /// Builds the ZIP edit options.
         public ZipEditOptions build() {
-            return new ZipEditOptions(passwordProvider, defaultEncryption, splitSize);
+            return new ZipEditOptionsImpl(passwordProvider, defaultEncryption, splitSize);
         }
+    }
+}
+
+/// Stores ZIP edit options.
+@NotNullByDefault
+final class ZipEditOptionsImpl implements ZipEditOptions {
+    /// The provider used to decrypt existing encrypted entries.
+    private final @Nullable ArkivoPasswordProvider passwordProvider;
+
+    /// The encryption method used for newly written entries that do not override encryption.
+    private final ZipEncryption defaultEncryption;
+
+    /// The maximum size of each output volume.
+    private final @Nullable Long splitSize;
+
+    /// Creates ZIP edit options.
+    ZipEditOptionsImpl(
+            @Nullable ArkivoPasswordProvider passwordProvider,
+            ZipEncryption defaultEncryption,
+            @Nullable Long splitSize
+    ) {
+        this.passwordProvider = passwordProvider;
+        this.defaultEncryption = defaultEncryption;
+        this.splitSize = splitSize;
+    }
+
+    /// Returns the provider used to decrypt existing encrypted entries.
+    @Override
+    public @Nullable ArkivoPasswordProvider passwordProvider() {
+        return passwordProvider;
+    }
+
+    /// Returns the encryption method used for newly written entries that do not override encryption.
+    @Override
+    public ZipEncryption defaultEncryption() {
+        return defaultEncryption;
+    }
+
+    /// Returns the maximum size of each output volume.
+    @Override
+    public @Nullable Long splitSize() {
+        return splitSize;
     }
 }

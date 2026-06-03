@@ -6,28 +6,181 @@ package org.glavo.arkivo;
 import org.jetbrains.annotations.NotNullByDefault;
 
 /// Describes which operations an archive format supports.
-///
-/// @param streamingRead whether the format supports sequential reading
-/// @param streamingWrite whether the format supports sequential writing
-/// @param randomRead whether the format supports random-access reading
-/// @param randomWrite whether the format supports random-access writing
-/// @param editing whether the format supports editing an existing archive
-/// @param fileSystem whether the format supports a NIO file system view
-/// @param encryptedRead whether the format supports reading encrypted archives or items
-/// @param encryptedWrite whether the format supports writing encrypted archives or items
-/// @param splitRead whether the format supports reading split or multi-volume archives
-/// @param splitWrite whether the format supports writing split or multi-volume archives
 @NotNullByDefault
-public record ArkivoFormatCapabilities(
-        boolean streamingRead,
-        boolean streamingWrite,
-        boolean randomRead,
-        boolean randomWrite,
-        boolean editing,
-        boolean fileSystem,
-        boolean encryptedRead,
-        boolean encryptedWrite,
-        boolean splitRead,
-        boolean splitWrite
-) {
+public sealed interface ArkivoFormatCapabilities permits ArkivoFormatCapabilitiesImpl {
+    /// Creates a capability set.
+    static ArkivoFormatCapabilities of(
+            boolean streamingRead,
+            boolean streamingWrite,
+            boolean randomRead,
+            boolean randomWrite,
+            boolean editing,
+            boolean fileSystem,
+            boolean encryptedRead,
+            boolean encryptedWrite,
+            boolean splitRead,
+            boolean splitWrite
+    ) {
+        return new ArkivoFormatCapabilitiesImpl(
+                streamingRead,
+                streamingWrite,
+                randomRead,
+                randomWrite,
+                editing,
+                fileSystem,
+                encryptedRead,
+                encryptedWrite,
+                splitRead,
+                splitWrite
+        );
+    }
+
+    /// Returns whether the format supports sequential reading.
+    boolean streamingRead();
+
+    /// Returns whether the format supports sequential writing.
+    boolean streamingWrite();
+
+    /// Returns whether the format supports random-access reading.
+    boolean randomRead();
+
+    /// Returns whether the format supports random-access writing.
+    boolean randomWrite();
+
+    /// Returns whether the format supports editing an existing archive.
+    boolean editing();
+
+    /// Returns whether the format supports a NIO file system view.
+    boolean fileSystem();
+
+    /// Returns whether the format supports reading encrypted archives or entries.
+    boolean encryptedRead();
+
+    /// Returns whether the format supports writing encrypted archives or entries.
+    boolean encryptedWrite();
+
+    /// Returns whether the format supports reading split or multi-volume archives.
+    boolean splitRead();
+
+    /// Returns whether the format supports writing split or multi-volume archives.
+    boolean splitWrite();
+}
+
+/// Stores archive format capability flags.
+@NotNullByDefault
+final class ArkivoFormatCapabilitiesImpl implements ArkivoFormatCapabilities {
+    /// Whether the format supports sequential reading.
+    private final boolean streamingRead;
+
+    /// Whether the format supports sequential writing.
+    private final boolean streamingWrite;
+
+    /// Whether the format supports random-access reading.
+    private final boolean randomRead;
+
+    /// Whether the format supports random-access writing.
+    private final boolean randomWrite;
+
+    /// Whether the format supports editing an existing archive.
+    private final boolean editing;
+
+    /// Whether the format supports a NIO file system view.
+    private final boolean fileSystem;
+
+    /// Whether the format supports reading encrypted archives or entries.
+    private final boolean encryptedRead;
+
+    /// Whether the format supports writing encrypted archives or entries.
+    private final boolean encryptedWrite;
+
+    /// Whether the format supports reading split or multi-volume archives.
+    private final boolean splitRead;
+
+    /// Whether the format supports writing split or multi-volume archives.
+    private final boolean splitWrite;
+
+    /// Creates a capability set implementation.
+    ArkivoFormatCapabilitiesImpl(
+            boolean streamingRead,
+            boolean streamingWrite,
+            boolean randomRead,
+            boolean randomWrite,
+            boolean editing,
+            boolean fileSystem,
+            boolean encryptedRead,
+            boolean encryptedWrite,
+            boolean splitRead,
+            boolean splitWrite
+    ) {
+        this.streamingRead = streamingRead;
+        this.streamingWrite = streamingWrite;
+        this.randomRead = randomRead;
+        this.randomWrite = randomWrite;
+        this.editing = editing;
+        this.fileSystem = fileSystem;
+        this.encryptedRead = encryptedRead;
+        this.encryptedWrite = encryptedWrite;
+        this.splitRead = splitRead;
+        this.splitWrite = splitWrite;
+    }
+
+    /// Returns whether the format supports sequential reading.
+    @Override
+    public boolean streamingRead() {
+        return streamingRead;
+    }
+
+    /// Returns whether the format supports sequential writing.
+    @Override
+    public boolean streamingWrite() {
+        return streamingWrite;
+    }
+
+    /// Returns whether the format supports random-access reading.
+    @Override
+    public boolean randomRead() {
+        return randomRead;
+    }
+
+    /// Returns whether the format supports random-access writing.
+    @Override
+    public boolean randomWrite() {
+        return randomWrite;
+    }
+
+    /// Returns whether the format supports editing an existing archive.
+    @Override
+    public boolean editing() {
+        return editing;
+    }
+
+    /// Returns whether the format supports a NIO file system view.
+    @Override
+    public boolean fileSystem() {
+        return fileSystem;
+    }
+
+    /// Returns whether the format supports reading encrypted archives or entries.
+    @Override
+    public boolean encryptedRead() {
+        return encryptedRead;
+    }
+
+    /// Returns whether the format supports writing encrypted archives or entries.
+    @Override
+    public boolean encryptedWrite() {
+        return encryptedWrite;
+    }
+
+    /// Returns whether the format supports reading split or multi-volume archives.
+    @Override
+    public boolean splitRead() {
+        return splitRead;
+    }
+
+    /// Returns whether the format supports writing split or multi-volume archives.
+    @Override
+    public boolean splitWrite() {
+        return splitWrite;
+    }
 }
