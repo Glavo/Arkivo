@@ -20,6 +20,12 @@ public final class ZipArkivoFileSystemOptionsImpl implements ZipArkivoFileSystem
     /// Whether the file system should reject mutating operations.
     private final boolean readOnly;
 
+    /// Whether the file system should create a new ZIP archive.
+    private final boolean create;
+
+    /// Whether the file system should use append-only streaming write semantics.
+    private final boolean streamingWrite;
+
     /// The encryption method used for new entries that do not override encryption.
     private final ZipEncryption defaultEncryption;
 
@@ -30,14 +36,27 @@ public final class ZipArkivoFileSystemOptionsImpl implements ZipArkivoFileSystem
     public ZipArkivoFileSystemOptionsImpl(
             @Nullable ArkivoPasswordProvider passwordProvider,
             boolean readOnly,
+            boolean create,
+            boolean streamingWrite,
             ZipEncryption defaultEncryption,
             @Nullable Long splitSize
     ) {
         if (splitSize != null && splitSize <= 0) {
             throw new IllegalArgumentException("splitSize must be positive");
         }
+        if (readOnly && create) {
+            throw new IllegalArgumentException("readOnly and create cannot both be true");
+        }
+        if (readOnly && streamingWrite) {
+            throw new IllegalArgumentException("readOnly and streamingWrite cannot both be true");
+        }
+        if (streamingWrite && !create) {
+            throw new IllegalArgumentException("streamingWrite requires create");
+        }
         this.passwordProvider = passwordProvider;
         this.readOnly = readOnly;
+        this.create = create;
+        this.streamingWrite = streamingWrite;
         this.defaultEncryption = Objects.requireNonNull(defaultEncryption, "defaultEncryption");
         this.splitSize = splitSize;
     }
@@ -52,6 +71,18 @@ public final class ZipArkivoFileSystemOptionsImpl implements ZipArkivoFileSystem
     @Override
     public boolean readOnly() {
         return readOnly;
+    }
+
+    /// Returns whether the file system should create a new ZIP archive.
+    @Override
+    public boolean create() {
+        return create;
+    }
+
+    /// Returns whether the file system should use append-only streaming write semantics.
+    @Override
+    public boolean streamingWrite() {
+        return streamingWrite;
     }
 
     /// Returns the encryption method used for new entries that do not override encryption.

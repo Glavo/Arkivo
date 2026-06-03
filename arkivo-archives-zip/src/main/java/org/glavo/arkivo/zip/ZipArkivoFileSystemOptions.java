@@ -22,6 +22,8 @@ public sealed interface ZipArkivoFileSystemOptions permits ZipArkivoFileSystemOp
     ZipArkivoFileSystemOptions DEFAULTS = new ZipArkivoFileSystemOptionsImpl(
             null,
             false,
+            false,
+            false,
             ZipEncryption.none(),
             null
     );
@@ -59,6 +61,12 @@ public sealed interface ZipArkivoFileSystemOptions permits ZipArkivoFileSystemOp
     /// Returns whether the file system should reject mutating operations.
     boolean readOnly();
 
+    /// Returns whether the file system should create a new ZIP archive.
+    boolean create();
+
+    /// Returns whether the file system should use append-only streaming write semantics.
+    boolean streamingWrite();
+
     /// Returns the encryption method used for new entries that do not override encryption.
     ZipEncryption defaultEncryption();
 
@@ -73,6 +81,12 @@ public sealed interface ZipArkivoFileSystemOptions permits ZipArkivoFileSystemOp
 
         /// Whether the file system should reject mutating operations.
         private boolean readOnly;
+
+        /// Whether the file system should create a new ZIP archive.
+        private boolean create;
+
+        /// Whether the file system should use append-only streaming write semantics.
+        private boolean streamingWrite;
 
         /// The encryption method used for new entries that do not override encryption.
         private ZipEncryption defaultEncryption = ZipEncryption.none();
@@ -102,6 +116,18 @@ public sealed interface ZipArkivoFileSystemOptions permits ZipArkivoFileSystemOp
             return this;
         }
 
+        /// Sets whether the file system should create a new ZIP archive.
+        public Builder create(boolean create) {
+            this.create = create;
+            return this;
+        }
+
+        /// Sets whether the file system should use append-only streaming write semantics.
+        public Builder streamingWrite(boolean streamingWrite) {
+            this.streamingWrite = streamingWrite;
+            return this;
+        }
+
         /// Sets the encryption method used for new entries that do not override encryption.
         public Builder defaultEncryption(ZipEncryption defaultEncryption) {
             this.defaultEncryption = Objects.requireNonNull(defaultEncryption, "defaultEncryption");
@@ -119,7 +145,14 @@ public sealed interface ZipArkivoFileSystemOptions permits ZipArkivoFileSystemOp
 
         /// Builds the ZIP file system options.
         public ZipArkivoFileSystemOptions build() {
-            return new ZipArkivoFileSystemOptionsImpl(passwordProvider, readOnly, defaultEncryption, splitSize);
+            return new ZipArkivoFileSystemOptionsImpl(
+                    passwordProvider,
+                    readOnly,
+                    create,
+                    streamingWrite,
+                    defaultEncryption,
+                    splitSize
+            );
         }
     }
 }

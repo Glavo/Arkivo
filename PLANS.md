@@ -141,7 +141,15 @@ ZipArkivoEntryAttributes
 ZipArkivoEntryAttributeView
 ```
 
+ZIP-specific attributes should expose both typed common ZIP properties and raw low-level fields. Typed fields should include compression method, encryption method, sizes, CRC values, and comments. Raw fields should include encoded paths, raw comments, extra data, general purpose bit flags, version fields, and internal and external file attributes.
+
 Streaming archive APIs may be added later for formats that cannot naturally expose an efficient `FileSystem`, such as tar.
+
+ZIP file system support should distinguish normal editable file system mode from append-only streaming creation mode.
+
+In normal editable mode, the implementation may use copy-on-write or temporary storage to mutate existing archives. In streaming creation mode, the file system should create a new archive, write entries sequentially, avoid keeping full entry contents in memory, write data descriptors when sizes are not known up front, and write the central directory when the file system is closed.
+
+Streaming creation mode should reject operations that do not fit append-only ZIP output, such as reading archive entries, deleting entries, moving entries, or overwriting an entry that has already been written.
 
 ## Open Options and Storage Layout
 
@@ -204,6 +212,18 @@ FileSystems.newFileSystem(archivePath)
 The provider implementation and registration should live in the concrete format module, not in a shared filesystem module.
 
 A format module should not register an unfinished `FileSystemProvider` service, because an installed provider participates in global JDK provider discovery.
+
+## Thread Safety
+
+Archive file system instances should be safe to use concurrently from multiple threads.
+
+Immutable `Path` objects and immutable attribute snapshots may be shared freely between threads. Open channels, input streams, and output streams are not required to be thread-safe.
+
+Read-only file systems should allow concurrent entry reads. Editable file systems should allow concurrent reads where possible, but mutating operations should be serialized or rejected when they conflict with another active operation.
+
+Reads should observe the entry state captured when the channel or attribute snapshot is opened. Entries that are currently being written should not be readable unless a concrete format implementation explicitly documents stronger behavior.
+
+Closing a file system should synchronize with active operations and prevent new operations from starting.
 
 ## Performance Requirements
 

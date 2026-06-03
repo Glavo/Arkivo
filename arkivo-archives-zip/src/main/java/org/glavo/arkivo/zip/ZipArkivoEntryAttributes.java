@@ -24,9 +24,36 @@ public interface ZipArkivoEntryAttributes extends BasicFileAttributes {
     /// Returns the CRC-32 value stored in the ZIP metadata.
     @Nullable Long crc32();
 
+    /// Returns the general purpose bit flags stored for the ZIP entry.
+    int generalPurposeFlags();
+
+    /// Returns the ZIP version made by field.
+    int versionMadeBy();
+
+    /// Returns the ZIP version needed to extract field.
+    int versionNeededToExtract();
+
+    /// Returns the ZIP internal file attributes.
+    int internalAttributes();
+
+    /// Returns the ZIP external file attributes.
+    long externalAttributes();
+
     /// Returns the ZIP compression method.
     ZipMethod method();
 
     /// Returns the ZIP encryption method.
     ZipEncryption encryption();
+
+    /// Returns the raw local file header extra data bytes.
+    byte @Unmodifiable [] localExtraData();
+
+    /// Returns the raw central directory extra data bytes.
+    byte @Unmodifiable [] centralDirectoryExtraData();
+
+    /// Returns the raw ZIP entry comment bytes, or `null` when no comment is present.
+    byte @Nullable @Unmodifiable [] rawComment();
+
+    /// Returns the decoded ZIP entry comment, or `null` when no comment is present.
+    @Nullable String comment();
 }
