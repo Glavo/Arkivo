@@ -3,8 +3,7 @@
 
 package org.glavo.arkivo.zip;
 
-import org.glavo.arkivo.ArkivoFormat;
-import org.glavo.arkivo.ArkivoFormatCapabilities;
+import org.glavo.arkivo.ArkivoVolumeFileSystemFormat;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -14,25 +13,12 @@ import java.nio.file.Path;
 
 /// Describes the ZIP archive format support provided by Arkivo.
 @NotNullByDefault
-public final class ZipArkivoFormat implements ArkivoFormat {
+public final class ZipArkivoFormat implements ArkivoVolumeFileSystemFormat {
     /// The stable ZIP format name.
     public static final String NAME = "zip";
 
     /// The shared ZIP format instance.
     private static final ZipArkivoFormat INSTANCE = new ZipArkivoFormat();
-
-    /// The ZIP capability set.
-    private static final ArkivoFormatCapabilities CAPABILITIES = ArkivoFormatCapabilities.builder()
-            .streamingRead(true)
-            .streamingWrite(true)
-            .randomRead(true)
-            .editing(true)
-            .fileSystem(true)
-            .encryptedRead(true)
-            .encryptedWrite(true)
-            .splitRead(true)
-            .splitWrite(true)
-            .build();
 
     /// Creates a ZIP format descriptor.
     public ZipArkivoFormat() {
@@ -49,13 +35,8 @@ public final class ZipArkivoFormat implements ArkivoFormat {
         return NAME;
     }
 
-    /// Returns the ZIP capability set.
-    @Override
-    public ArkivoFormatCapabilities capabilities() {
-        return CAPABILITIES;
-    }
-
     /// Opens a ZIP archive file system.
+    @Override
     public FileSystem open(Path path) throws IOException {
         return ZipArkivoFileSystem.open(path);
     }
@@ -66,6 +47,7 @@ public final class ZipArkivoFormat implements ArkivoFormat {
     }
 
     /// Opens a split ZIP archive file system.
+    @Override
     public FileSystem open(ArkivoVolumeSource volumes) throws IOException {
         return ZipArkivoFileSystem.open(volumes);
     }

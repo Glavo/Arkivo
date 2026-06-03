@@ -10,7 +10,4 @@ import org.jetbrains.annotations.NotNullByDefault;
 public interface ArkivoFormat {
     /// Returns the stable format name.
     String name();
-
-    /// Returns the capability set exposed by this format.
-    ArkivoFormatCapabilities capabilities();
 }
