@@ -31,7 +31,7 @@ arkivo-archives-rar
 arkivo-all
 ```
 
-`arkivo-base` should contain the shared abstractions, common exceptions, metadata types, registry support, and low-level NIO utilities.
+`arkivo-base` should contain shared format discovery, capability descriptions, reusable `FileSystem` support, password and volume-source contracts, compression codec contracts, and low-level NIO utilities.
 
 `arkivo-codecs` should be an aggregate module for compression codec APIs and common codec utilities.
 
@@ -92,8 +92,10 @@ Potential core types include:
 ```java
 ArkivoFormat
 ArkivoFormats
-ArkivoFileSystem
+ArkivoFormatCapabilities
 ArkivoFileSystemProviderSupport
+ArkivoPasswordProvider
+ArkivoVolumeSource
 CompressionCodec
 ```
 
@@ -144,15 +146,15 @@ Streaming archive APIs may be added later for formats that cannot naturally expo
 
 ## Open Options and Storage Layout
 
-Archive readers, writers, editors, and file system factories should support format-specific open options in addition to simple `Path` and channel overloads.
+Archive file system factories should support format-specific open options in addition to simple `Path` and channel overloads.
 
 Open options should carry operation-level settings that are not entry metadata, including passwords, encryption defaults, character set policies, timestamp policies, overwrite behavior, and format-specific compatibility choices.
 
 Split or multi-volume archives should be modeled as an archive storage layout rather than as item metadata or compression codec behavior.
 
-Single-file archives may continue to use `Path`, `ReadableByteChannel`, `WritableByteChannel`, and `SeekableByteChannel` overloads. Split archives need dedicated source and sink abstractions that can resolve multiple physical volumes into one logical archive view.
+Single-file archives may continue to use `Path`, `ReadableByteChannel`, `WritableByteChannel`, and `SeekableByteChannel` overloads. Split archives need storage abstractions that can resolve multiple physical volumes into one logical archive view.
 
-Read support should be able to locate and open a sequence of volumes, such as numbered 7z, zip, or rar parts. Write support should be able to create successive volumes according to an explicit maximum volume size and naming policy.
+Read support should be able to locate and open a sequence of volumes, such as numbered 7z, zip, or rar parts. Write support should be able to create successive volumes according to explicit file system options such as maximum volume size and naming policy.
 
 Random-access formats should expose split archives through a logical seekable view so parser code can work with archive offsets without repeatedly handling physical volume boundaries.
 
@@ -166,7 +168,7 @@ Encryption settings for newly written archives should be explicit write options.
 
 Formats with archive-level encryption features, such as 7z header encryption, should expose those features through format-specific write options.
 
-The public API should distinguish between persistent metadata, encryption method selection, and sensitive password material. Passwords should not be stored in `ArkivoMetadata`.
+The public API should distinguish between persistent file attributes, encryption method selection, and sensitive password material. Passwords should remain operation inputs and must not be exposed as archive entry attributes.
 
 ## FileSystem Integration
 
@@ -231,13 +233,15 @@ TarHeaderBlock
 SevenZipFolderRecord
 ```
 
-## Entry Metadata
+## File Attributes
 
-The shared entry model should support common archive metadata:
+Archive metadata should be exposed through standard NIO file attributes and format-specific attribute views instead of a shared entry object model.
+
+Common metadata should map to standard NIO concepts where possible:
 
 - Raw encoded entry path bytes
 - Decoded entry path text
-- Regular file, directory, symbolic link, and special file types
+- Regular file, directory, and symbolic link classification
 - Uncompressed size
 - Compressed size
 - Last modified time
@@ -254,18 +258,20 @@ Optional or absent metadata should use `@Nullable`, not `Optional`.
 
 Immutable collections, arrays, and buffer views should use JetBrains immutability annotations where applicable.
 
+Each archive format should define only the attribute interfaces it needs, such as `ZipArkivoEntryAttributes` and `ZipArkivoEntryAttributeView`.
+
 ## Implementation Order
 
 1. Convert the repository to a Gradle multi-module project.
-2. Implement `arkivo-base` with NIO-first abstractions, common metadata types, exceptions, service registration, and low-level buffer utilities.
-3. Implement tar streaming reader and writer to validate the archive entry model and low-allocation header parsing.
-4. Implement gzip, zlib, and raw deflate codec modules to validate the channel-first compression API.
-5. Define archive file system options, password provider contracts, and split archive source and sink abstractions.
-6. Implement `ZipArkivoFileSystem` inside `arkivo-archives-zip`.
-7. Implement ZIP-specific entry attribute views.
-8. Implement ZIP file system mutation support with explicit writeback semantics.
-9. Add lower-level reader, writer, or streaming APIs only if FileSystem APIs are not sufficient for a concrete format.
-10. Add xz and zstd codec modules.
+2. Implement `arkivo-base` with format discovery, capability descriptions, `FileSystem` support contracts, password and volume-source contracts, compression codec contracts, and low-level buffer utilities.
+3. Implement gzip, zlib, and raw deflate codec modules to validate the channel-first compression API.
+4. Define archive file system options, password provider contracts, and split archive source abstractions.
+5. Implement `ZipArkivoFileSystem` inside `arkivo-archives-zip`.
+6. Implement ZIP-specific entry attribute views.
+7. Implement ZIP file system mutation support with explicit writeback semantics.
+8. Add lower-level reader, writer, or streaming APIs only if FileSystem APIs are not sufficient for a concrete format.
+9. Add xz and zstd codec modules.
+10. Add tar support after deciding whether the public surface should be a filesystem, streaming API, or both.
 11. Add 7z read support and a read-only 7z filesystem.
 12. Add rar read support and a read-only rar filesystem.
 

@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.zip;
 
-import org.glavo.arkivo.ArkivoMetadata;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -30,7 +29,4 @@ public interface ZipArkivoEntryAttributes extends BasicFileAttributes {
 
     /// Returns the ZIP encryption method.
     ZipEncryption encryption();
-
-    /// Returns additional ZIP metadata.
-    ArkivoMetadata metadata();
 }
