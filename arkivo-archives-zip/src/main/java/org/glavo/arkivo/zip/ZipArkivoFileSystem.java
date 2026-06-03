@@ -19,21 +19,21 @@ public final class ZipArkivoFileSystem {
 
     /// Opens a ZIP archive file system.
     public static FileSystem open(Path path) throws IOException {
-        return open(path, ZipReadOptions.defaults());
+        return open(path, ZipArkivoFileSystemOptions.defaults());
     }
 
-    /// Opens a ZIP archive file system with explicit read options.
-    public static FileSystem open(Path path, ZipReadOptions options) throws IOException {
+    /// Opens a ZIP archive file system with explicit file system options.
+    public static FileSystem open(Path path, ZipArkivoFileSystemOptions options) throws IOException {
         throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
     }
 
     /// Opens a split ZIP archive file system.
     public static FileSystem open(ArkivoVolumeSource volumes) throws IOException {
-        return open(volumes, ZipReadOptions.defaults());
+        return open(volumes, ZipArkivoFileSystemOptions.defaults());
     }
 
-    /// Opens a split ZIP archive file system with explicit read options.
-    public static FileSystem open(ArkivoVolumeSource volumes, ZipReadOptions options) throws IOException {
+    /// Opens a split ZIP archive file system with explicit file system options.
+    public static FileSystem open(ArkivoVolumeSource volumes, ZipArkivoFileSystemOptions options) throws IOException {
         throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
     }
 }

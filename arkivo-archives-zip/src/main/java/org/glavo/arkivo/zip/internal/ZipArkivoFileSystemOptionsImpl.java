@@ -4,41 +4,52 @@
 package org.glavo.arkivo.zip.internal;
 
 import org.glavo.arkivo.ArkivoPasswordProvider;
-import org.glavo.arkivo.zip.ZipEditOptions;
+import org.glavo.arkivo.zip.ZipArkivoFileSystemOptions;
 import org.glavo.arkivo.zip.ZipEncryption;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
-/// Stores ZIP edit options.
+/// Stores ZIP file system options.
 @NotNullByDefault
-public final class ZipEditOptionsImpl implements ZipEditOptions {
-    /// The provider used to decrypt existing encrypted entries.
+public final class ZipArkivoFileSystemOptionsImpl implements ZipArkivoFileSystemOptions {
+    /// The provider used to decrypt encrypted ZIP entries.
     private final @Nullable ArkivoPasswordProvider passwordProvider;
 
-    /// The encryption method used for newly written entries that do not override encryption.
+    /// Whether the file system should reject mutating operations.
+    private final boolean readOnly;
+
+    /// The encryption method used for new entries that do not override encryption.
     private final ZipEncryption defaultEncryption;
 
     /// The maximum size of each output volume.
     private final @Nullable Long splitSize;
 
-    /// Creates ZIP edit options.
-    public ZipEditOptionsImpl(
+    /// Creates ZIP file system options.
+    public ZipArkivoFileSystemOptionsImpl(
             @Nullable ArkivoPasswordProvider passwordProvider,
+            boolean readOnly,
             ZipEncryption defaultEncryption,
             @Nullable Long splitSize
     ) {
         this.passwordProvider = passwordProvider;
+        this.readOnly = readOnly;
         this.defaultEncryption = defaultEncryption;
         this.splitSize = splitSize;
     }
 
-    /// Returns the provider used to decrypt existing encrypted entries.
+    /// Returns the provider used to decrypt encrypted ZIP entries.
     @Override
     public @Nullable ArkivoPasswordProvider passwordProvider() {
         return passwordProvider;
     }
 
-    /// Returns the encryption method used for newly written entries that do not override encryption.
+    /// Returns whether the file system should reject mutating operations.
+    @Override
+    public boolean readOnly() {
+        return readOnly;
+    }
+
+    /// Returns the encryption method used for new entries that do not override encryption.
     @Override
     public ZipEncryption defaultEncryption() {
         return defaultEncryption;

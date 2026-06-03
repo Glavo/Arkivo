@@ -3,14 +3,22 @@
 
 package org.glavo.arkivo.zip;
 
-import org.glavo.arkivo.ArkivoEntryInfo;
-import org.glavo.arkivo.zip.internal.ZipArkivoEntryInfoImpl;
+import org.glavo.arkivo.ArkivoMetadata;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
-/// Exposes immutable metadata for one ZIP entry.
+import java.nio.file.attribute.BasicFileAttributes;
+
+/// Exposes ZIP-specific file attributes for an archive entry path.
 @NotNullByDefault
-public sealed interface ZipArkivoEntryInfo extends ArkivoEntryInfo permits ZipArkivoEntryInfoImpl {
+public interface ZipArkivoEntryAttributes extends BasicFileAttributes {
+    /// Returns the raw encoded ZIP entry path bytes.
+    byte @Unmodifiable [] rawPath();
+
+    /// Returns the decoded ZIP entry path text.
+    String path();
+
     /// Returns the compressed size stored in the ZIP metadata.
     @Nullable Long compressedSize();
 
@@ -22,4 +30,7 @@ public sealed interface ZipArkivoEntryInfo extends ArkivoEntryInfo permits ZipAr
 
     /// Returns the ZIP encryption method.
     ZipEncryption encryption();
+
+    /// Returns additional ZIP metadata.
+    ArkivoMetadata metadata();
 }

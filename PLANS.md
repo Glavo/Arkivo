@@ -54,50 +54,34 @@ This keeps the API distinct from Apache Commons Compress, the JDK ZIP API, and o
 The preferred naming pattern is:
 
 ```text
-FormatArkivoEditor mutable archive handle for editing an existing archive
-FormatArkivoReader read-only random-access reader
-FormatArkivoWriter writer for creating a new archive
-FormatArkivoStreamingReader sequential-only reader when a format needs a distinct streaming API
-FormatArkivoStreamingWriter sequential-only writer when a format needs a distinct streaming API
 FormatArkivoFileSystem
+FormatArkivoFileSystemOptions
+FormatArkivoEntryAttributes
+FormatArkivoEntryAttributeView
 ```
 
 For ZIP, the primary types should be:
 
 ```java
-ZipArkivoEntry
-ZipArkivoEntryInfo
-ZipArkivoEntryOptions
-ZipArkivoEditor
 ZipArkivoFormat
-ZipArkivoReader
-ZipArkivoWriter
-ZipArkivoStreamingReader
-ZipArkivoStreamingWriter
 ZipArkivoFileSystem
+ZipArkivoFileSystemOptions
+ZipArkivoEntryAttributes
+ZipArkivoEntryAttributeView
 ```
 
-`ZipArkivoEditor` should be used to modify an existing archive.
+`ZipArkivoFileSystem` should be the primary public API for ZIP archive access.
 
-`ZipArkivoReader` should be read-only.
-
-`ZipArkivoWriter` should create a new archive.
-
-Sequential streaming APIs should still use `FormatArkivoReader` and `FormatArkivoWriter`. The API contract should document whether a reader or writer requires `SeekableByteChannel` or can operate on sequential channels.
-
-`FormatArkivoStreamingReader` and `FormatArkivoStreamingWriter` should be introduced only when a format needs separate sequential-only APIs in addition to its normal reader and writer. For ZIP, these names are reserved for stream-oriented processing that cannot rely on the central directory index.
+ZIP entry metadata should be exposed through NIO file attribute APIs, including `ZipArkivoEntryAttributes` and `ZipArkivoEntryAttributeView`.
 
 Primary factory methods should use `open(...)`. The target class name defines the operation role:
 
 ```java
-ZipArkivoEditor.open(path)
-ZipArkivoReader.open(path)
-ZipArkivoWriter.open(path)
-ZipArkivoStreamingReader.open(channel)
-ZipArkivoStreamingWriter.open(channel)
+ZipArkivoFileSystem.open(path)
+ZipArkivoFileSystem.open(path, options)
 ```
 
-`ZipArkivoWriter.open(path)` should use create-new semantics by default. Replacement or truncation should require explicit open options, such as `StandardOpenOption.CREATE` and `StandardOpenOption.TRUNCATE_EXISTING`, or Arkivo-specific open options.
+Low-level reader, writer, editor, and streaming APIs may be introduced later only when a concrete use case cannot be served well through `FileSystem` and file attribute views.
 
 ## Core Abstractions
 
@@ -106,14 +90,8 @@ ZipArkivoStreamingWriter.open(channel)
 Potential core types include:
 
 ```java
-ArkivoEntry
-ArkivoEntryInfo
-ArkivoEntryOptions
-ArkivoEditor
 ArkivoFormat
 ArkivoFormats
-ArkivoReader
-ArkivoWriter
 ArkivoFileSystem
 ArkivoFileSystemProviderSupport
 CompressionCodec
@@ -147,34 +125,22 @@ Initial compression formats:
 
 ## Archive API
 
-Archive formats operate on multiple entries and should expose both streaming and random-access APIs where the format supports them.
+Archive formats operate on multiple entries and should expose `FileSystem` APIs first where the format can support a stable directory-like view.
 
-Streaming archive APIs should be used for formats that can naturally read or write entries sequentially, such as tar.
+Random-access archive formats such as zip and 7z should prioritize NIO `FileSystem` support.
 
-Random-access archive APIs should be used for formats that support central directories, indexes, or seekable structures, such as zip and 7z.
+Reading entry contents should use standard NIO operations such as `Files.newByteChannel`, `Files.copy`, and `Files.readAllBytes`.
 
-Sequential and random-access behavior should be described by each reader or writer contract.
+Writing and editing archive contents should use standard NIO operations such as `Files.write`, `Files.copy`, `Files.createDirectories`, `Files.delete`, and `Files.move`.
 
-Potential API families:
+Entry metadata should use standard NIO file attributes and format-specific attribute views:
 
 ```java
-ArkivoEntry
-ArkivoEntryInfo
-ArkivoEntryOptions
-ArkivoEditor
-ArkivoReader
-ArkivoWriter
+ZipArkivoEntryAttributes
+ZipArkivoEntryAttributeView
 ```
 
-`ArkivoEntry` should represent a handle bound to the reader that created it and should provide content-opening operations.
-
-`ArkivoEntryInfo` should represent immutable metadata only and should remain usable after the reader is closed.
-
-`ArkivoEntryOptions` should represent write-time metadata and policy requests.
-
-`ArkivoReader` and `ArkivoWriter` should prefer `SeekableByteChannel` for random-access formats.
-
-`ArkivoEditor` should represent a mutable handle for editing an existing archive. Early implementations may use copy-on-write semantics instead of promising true in-place modification.
+Streaming archive APIs may be added later for formats that cannot naturally expose an efficient `FileSystem`, such as tar.
 
 ## Open Options and Storage Layout
 
@@ -210,21 +176,14 @@ For example:
 
 ```text
 arkivo-archives-zip
-  ZipArkivoEntry
-  ZipArkivoEntryInfo
-  ZipArkivoEntryOptions
-  ZipArkivoEditor
   ZipArkivoFormat
-  ZipArkivoReader
-  ZipArkivoWriter
-  ZipArkivoStreamingReader
-  ZipArkivoStreamingWriter
   ZipArkivoFileSystem
+  ZipArkivoFileSystemOptions
+  ZipArkivoEntryAttributes
+  ZipArkivoEntryAttributeView
   ZipArkivoFileSystemProvider
 
 arkivo-archives-tar
-  TarArkivoReader
-  TarArkivoWriter
   TarArkivoFileSystem
 ```
 
@@ -301,11 +260,11 @@ Immutable collections, arrays, and buffer views should use JetBrains immutabilit
 2. Implement `arkivo-base` with NIO-first abstractions, common metadata types, exceptions, service registration, and low-level buffer utilities.
 3. Implement tar streaming reader and writer to validate the archive entry model and low-allocation header parsing.
 4. Implement gzip, zlib, and raw deflate codec modules to validate the channel-first compression API.
-5. Define archive open options, password provider contracts, and split archive source and sink abstractions.
-6. Implement `ZipArkivoReader` with central directory indexing.
-7. Implement `ZipArkivoWriter`.
-8. Implement mutable `ZipArkivoEditor` editing support with explicit commit semantics.
-9. Implement `ZipArkivoFileSystem` inside `arkivo-archives-zip`.
+5. Define archive file system options, password provider contracts, and split archive source and sink abstractions.
+6. Implement `ZipArkivoFileSystem` inside `arkivo-archives-zip`.
+7. Implement ZIP-specific entry attribute views.
+8. Implement ZIP file system mutation support with explicit writeback semantics.
+9. Add lower-level reader, writer, or streaming APIs only if FileSystem APIs are not sufficient for a concrete format.
 10. Add xz and zstd codec modules.
 11. Add 7z read support and a read-only 7z filesystem.
 12. Add rar read support and a read-only rar filesystem.
