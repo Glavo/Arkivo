@@ -92,7 +92,6 @@ Potential core types include:
 ```java
 ArkivoFormat
 ArkivoFormats
-ArkivoFileSystemProviderSupport
 ArkivoPasswordProvider
 ArkivoVolumeSource
 CompressionCodec

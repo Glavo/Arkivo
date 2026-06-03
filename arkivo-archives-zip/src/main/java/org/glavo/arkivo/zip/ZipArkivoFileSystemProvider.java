@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.zip;
 
-import org.glavo.arkivo.ArkivoFileSystemProviderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -22,12 +21,13 @@ import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileAttributeView;
+import java.nio.file.spi.FileSystemProvider;
 import java.util.Map;
 import java.util.Set;
 
 /// Provides JDK file system provider entry points for ZIP archives.
 @NotNullByDefault
-public final class ZipArkivoFileSystemProvider extends ArkivoFileSystemProviderSupport {
+public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     /// The URI scheme handled by the ZIP Arkivo file system provider.
     public static final String SCHEME = "arkivo-zip";
 
