@@ -107,7 +107,45 @@ public final class ArkivoFileSystemOption<T> {
         if (value instanceof String stringValue && stringParser != null) {
             return Objects.requireNonNull(stringParser.apply(stringValue), "stringParser result");
         }
+        if (value instanceof Number numberValue) {
+            T convertedValue = convertNumber(numberValue);
+            if (convertedValue != null) {
+                return convertedValue;
+            }
+        }
         throw new IllegalArgumentException(expectedValueMessage());
+    }
+
+    /// Converts a numeric environment value into this option's typed numeric value.
+    private @Nullable T convertNumber(Number value) {
+        if (type == Byte.class && isIntegralNumber(value)) {
+            long longValue = value.longValue();
+            if (longValue >= Byte.MIN_VALUE && longValue <= Byte.MAX_VALUE) {
+                return type.cast((byte) longValue);
+            }
+        } else if (type == Short.class && isIntegralNumber(value)) {
+            long longValue = value.longValue();
+            if (longValue >= Short.MIN_VALUE && longValue <= Short.MAX_VALUE) {
+                return type.cast((short) longValue);
+            }
+        } else if (type == Integer.class && isIntegralNumber(value)) {
+            long longValue = value.longValue();
+            if (longValue >= Integer.MIN_VALUE && longValue <= Integer.MAX_VALUE) {
+                return type.cast((int) longValue);
+            }
+        } else if (type == Long.class && isIntegralNumber(value)) {
+            return type.cast(value.longValue());
+        } else if (type == Float.class) {
+            return type.cast(value.floatValue());
+        } else if (type == Double.class) {
+            return type.cast(value.doubleValue());
+        }
+        return null;
+    }
+
+    /// Returns whether a number is an integral wrapper value.
+    private static boolean isIntegralNumber(Number value) {
+        return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long;
     }
 
     /// Returns a message that describes the accepted value kinds for a rejected value.

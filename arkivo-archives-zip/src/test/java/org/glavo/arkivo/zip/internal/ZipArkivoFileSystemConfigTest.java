@@ -51,4 +51,14 @@ public final class ZipArkivoFileSystemConfigTest {
 
         assertThrows(IllegalArgumentException.class, () -> ZipArkivoFileSystemConfig.fromEnvironment(environment));
     }
+
+    /// Verifies that split size accepts compatible integral environment values.
+    @Test
+    public void integralSplitSize() {
+        Map<String, Object> environment = Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), 1024);
+
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+
+        assertEquals(1024L, config.splitSize());
+    }
 }

@@ -132,10 +132,6 @@ public final class ZipArkivoFileSystemConfig {
 
     /// Parses the split size from an environment map.
     private static @Nullable Long splitSize(Map<String, ?> environment) {
-        Number value = ZipArkivoFileSystem.SPLIT_SIZE.read(environment);
-        if (value == null) {
-            return null;
-        }
-        return value.longValue();
+        return ZipArkivoFileSystem.SPLIT_SIZE.read(environment);
     }
 }

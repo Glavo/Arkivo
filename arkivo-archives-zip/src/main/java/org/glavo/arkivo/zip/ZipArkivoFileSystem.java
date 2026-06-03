@@ -40,9 +40,9 @@ public final class ZipArkivoFileSystem extends ArkivoFileSystem {
     public static final ArkivoFileSystemOption<ZipEncryption> DEFAULT_ENCRYPTION =
             ArkivoFileSystemOption.of("defaultEncryption", ZipEncryption.class, ZipEncryption::of);
 
-    /// The environment option for a `Number` value that sets the maximum size of each output volume.
-    public static final ArkivoFileSystemOption<Number> SPLIT_SIZE =
-            ArkivoFileSystemOption.of("splitSize", Number.class, Long::parseLong);
+    /// The environment option for a `Long` value that sets the maximum size of each output volume.
+    public static final ArkivoFileSystemOption<Long> SPLIT_SIZE =
+            ArkivoFileSystemOption.of("splitSize", Long.class, Long::parseLong);
 
     /// The environment option for a `ZipEntryNameEncoding` value that controls entry name decoding.
     public static final ArkivoFileSystemOption<ZipEntryNameEncoding> ENTRY_NAME_ENCODING =
