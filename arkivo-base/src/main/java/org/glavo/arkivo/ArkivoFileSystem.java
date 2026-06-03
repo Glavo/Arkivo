@@ -12,21 +12,21 @@ import java.util.Objects;
 /// Provides shared behavior for archive-backed file systems.
 @NotNullByDefault
 public abstract class ArkivoFileSystem extends FileSystem {
-    /// The common environment option that controls which archive storage access capabilities are enabled.
-    public static final ArkivoFileSystemOption<ArkivoFileSystemOpenModes> OPEN_MODES =
-            ArkivoFileSystemOption.of("openModes", ArkivoFileSystemOpenModes.class, ArkivoFileSystemOpenModes::parse);
+    /// The common environment option that controls which archive storage access values are enabled.
+    public static final ArkivoFileSystemOption<ArkivoStorageAccessSet> STORAGE_ACCESS =
+            ArkivoFileSystemOption.of("storageAccess", ArkivoStorageAccessSet.class, ArkivoStorageAccessSet::parse);
 
-    /// The access capabilities enabled for this file system.
-    private final ArkivoFileSystemOpenModes openModes;
+    /// The storage access values enabled for this file system.
+    private final ArkivoStorageAccessSet storageAccess;
 
     /// Creates an archive-backed file system.
-    protected ArkivoFileSystem(ArkivoFileSystemOpenModes openModes) {
-        this.openModes = Objects.requireNonNull(openModes, "openModes");
+    protected ArkivoFileSystem(ArkivoStorageAccessSet storageAccess) {
+        this.storageAccess = Objects.requireNonNull(storageAccess, "storageAccess");
     }
 
-    /// Returns the access capabilities enabled for this file system.
-    public final ArkivoFileSystemOpenModes openModes() {
-        return openModes;
+    /// Returns the storage access values enabled for this file system.
+    public final ArkivoStorageAccessSet storageAccess() {
+        return storageAccess;
     }
 
     /// Opens a forward-only stream over archive entry paths in storage order.

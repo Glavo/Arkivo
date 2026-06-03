@@ -73,7 +73,7 @@ public final class ZipArkivoFileSystem extends ArkivoFileSystem {
             @Nullable ArkivoVolumeSource volumes,
             ZipArkivoFileSystemConfig config
     ) {
-        super(config.openModes());
+        super(config.storageAccess());
         if (archivePath == null && volumes == null) {
             throw new IllegalArgumentException("archivePath or volumes must be set");
         }
@@ -159,7 +159,7 @@ public final class ZipArkivoFileSystem extends ArkivoFileSystem {
     /// Returns whether this ZIP file system rejects write operations.
     @Override
     public boolean isReadOnly() {
-        return !config.openModes().writable();
+        return !config.storageAccess().writable();
     }
 
     /// Returns the ZIP entry path separator.

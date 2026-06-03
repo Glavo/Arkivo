@@ -4,8 +4,8 @@
 package org.glavo.arkivo.zip;
 
 import org.glavo.arkivo.ArkivoFileSystem;
-import org.glavo.arkivo.ArkivoFileSystemOpenMode;
-import org.glavo.arkivo.ArkivoFileSystemOpenModes;
+import org.glavo.arkivo.ArkivoStorageAccess;
+import org.glavo.arkivo.ArkivoStorageAccessSet;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -26,16 +26,16 @@ public final class ZipArkivoFileSystemTest {
     @Test
     public void openPath() throws IOException {
         Path archivePath = Path.of("sample.zip");
-        Map<String, Object> environment = Map.of(ArkivoFileSystem.OPEN_MODES.key(), "random-read,stream-read");
+        Map<String, Object> environment = Map.of(ArkivoFileSystem.STORAGE_ACCESS.key(), "random-read,stream-read");
 
         try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, environment)) {
             assertEquals(archivePath, fileSystem.archivePath());
             assertEquals(null, fileSystem.volumes());
             assertEquals(ZipArkivoFileSystemProvider.instance(), fileSystem.provider());
-            assertEquals(ArkivoFileSystemOpenModes.of(
-                    ArkivoFileSystemOpenMode.RANDOM_READ,
-                    ArkivoFileSystemOpenMode.STREAM_READ
-            ), fileSystem.openModes());
+            assertEquals(ArkivoStorageAccessSet.of(
+                    ArkivoStorageAccess.RANDOM_READ,
+                    ArkivoStorageAccess.STREAM_READ
+            ), fileSystem.storageAccess());
             assertEquals(true, fileSystem.isOpen());
             assertEquals(true, fileSystem.isReadOnly());
             assertEquals("/", fileSystem.getSeparator());
@@ -43,12 +43,12 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
-    /// Verifies that a write-capable open mode makes the file system writable.
+    /// Verifies that write-capable storage access makes the file system writable.
     @Test
-    public void writableOpenMode() throws IOException {
+    public void writableStorageAccess() throws IOException {
         try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                 Path.of("sample.zip"),
-                Map.of(ArkivoFileSystem.OPEN_MODES.key(), "stream-write")
+                Map.of(ArkivoFileSystem.STORAGE_ACCESS.key(), "stream-write")
         )) {
             assertEquals(false, fileSystem.isReadOnly());
         }

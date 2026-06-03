@@ -4,8 +4,8 @@
 package org.glavo.arkivo.zip.internal;
 
 import org.glavo.arkivo.ArkivoFileSystem;
-import org.glavo.arkivo.ArkivoFileSystemOpenModes;
 import org.glavo.arkivo.ArkivoPasswordProvider;
+import org.glavo.arkivo.ArkivoStorageAccessSet;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipEntryNameEncoding;
 import org.glavo.arkivo.zip.ZipEncryption;
@@ -24,7 +24,7 @@ public final class ZipArkivoFileSystemConfig {
             ZipEncryption.none(),
             null,
             ZipEntryNameEncoding.standard(),
-            ArkivoFileSystemOpenModes.RANDOM_READ
+            ArkivoStorageAccessSet.RANDOM_READ
     );
 
     /// The provider used to decrypt encrypted ZIP entries.
@@ -39,8 +39,8 @@ public final class ZipArkivoFileSystemConfig {
     /// The policy used to decode ZIP entry names when no authoritative Unicode name is available.
     private final ZipEntryNameEncoding entryNameEncoding;
 
-    /// The access capabilities enabled for ZIP archive storage.
-    private final ArkivoFileSystemOpenModes openModes;
+    /// The storage access values enabled for ZIP archive storage.
+    private final ArkivoStorageAccessSet storageAccess;
 
     /// Creates parsed ZIP file system configuration.
     public ZipArkivoFileSystemConfig(
@@ -48,7 +48,7 @@ public final class ZipArkivoFileSystemConfig {
             ZipEncryption defaultEncryption,
             @Nullable Long splitSize,
             ZipEntryNameEncoding entryNameEncoding,
-            ArkivoFileSystemOpenModes openModes
+            ArkivoStorageAccessSet storageAccess
     ) {
         if (splitSize != null && splitSize <= 0) {
             throw new IllegalArgumentException("splitSize must be positive");
@@ -57,7 +57,7 @@ public final class ZipArkivoFileSystemConfig {
         this.defaultEncryption = Objects.requireNonNull(defaultEncryption, "defaultEncryption");
         this.splitSize = splitSize;
         this.entryNameEncoding = Objects.requireNonNull(entryNameEncoding, "entryNameEncoding");
-        this.openModes = Objects.requireNonNull(openModes, "openModes");
+        this.storageAccess = Objects.requireNonNull(storageAccess, "storageAccess");
     }
 
     /// Parses ZIP file system configuration from an environment map.
@@ -76,15 +76,15 @@ public final class ZipArkivoFileSystemConfig {
                         environment,
                         ZipEntryNameEncoding.standard()
                 );
-        ArkivoFileSystemOpenModes openModes =
-                ArkivoFileSystem.OPEN_MODES.readOrDefault(environment, ArkivoFileSystemOpenModes.RANDOM_READ);
+        ArkivoStorageAccessSet storageAccess =
+                ArkivoFileSystem.STORAGE_ACCESS.readOrDefault(environment, ArkivoStorageAccessSet.RANDOM_READ);
 
         return new ZipArkivoFileSystemConfig(
                 passwordProvider,
                 defaultEncryption,
                 splitSize,
                 entryNameEncoding,
-                openModes
+                storageAccess
         );
     }
 
@@ -108,9 +108,9 @@ public final class ZipArkivoFileSystemConfig {
         return entryNameEncoding;
     }
 
-    /// Returns the access capabilities enabled for ZIP archive storage.
-    public ArkivoFileSystemOpenModes openModes() {
-        return openModes;
+    /// Returns the storage access values enabled for ZIP archive storage.
+    public ArkivoStorageAccessSet storageAccess() {
+        return storageAccess;
     }
 
     /// Parses the password provider from an environment map.

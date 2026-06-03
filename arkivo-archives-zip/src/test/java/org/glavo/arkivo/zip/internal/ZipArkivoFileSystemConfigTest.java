@@ -4,8 +4,8 @@
 package org.glavo.arkivo.zip.internal;
 
 import org.glavo.arkivo.ArkivoFileSystem;
-import org.glavo.arkivo.ArkivoFileSystemOpenMode;
-import org.glavo.arkivo.ArkivoFileSystemOpenModes;
+import org.glavo.arkivo.ArkivoStorageAccess;
+import org.glavo.arkivo.ArkivoStorageAccessSet;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipEntryNameEncoding;
 import org.glavo.arkivo.zip.ZipEncryption;
@@ -25,7 +25,7 @@ public final class ZipArkivoFileSystemConfigTest {
     @Test
     public void stringValues() {
         Map<String, Object> environment = new HashMap<>();
-        ArkivoFileSystem.OPEN_MODES.putString(environment, "random-read,stream-read");
+        ArkivoFileSystem.STORAGE_ACCESS.putString(environment, "random-read,stream-read");
         ZipArkivoFileSystem.DEFAULT_ENCRYPTION.putString(environment, "winzip-aes-256");
         ZipArkivoFileSystem.SPLIT_SIZE.putString(environment, "1024");
         ZipArkivoFileSystem.ENTRY_NAME_ENCODING.putString(environment, "gb18030");
@@ -33,21 +33,21 @@ public final class ZipArkivoFileSystemConfigTest {
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
 
         assertEquals(
-                ArkivoFileSystemOpenModes.of(
-                        ArkivoFileSystemOpenMode.RANDOM_READ,
-                        ArkivoFileSystemOpenMode.STREAM_READ
+                ArkivoStorageAccessSet.of(
+                        ArkivoStorageAccess.RANDOM_READ,
+                        ArkivoStorageAccess.STREAM_READ
                 ),
-                config.openModes()
+                config.storageAccess()
         );
         assertEquals(ZipEncryption.winZipAes256(), config.defaultEncryption());
         assertEquals(1024L, config.splitSize());
         assertEquals(ZipEntryNameEncoding.parse("gb18030"), config.entryNameEncoding());
     }
 
-    /// Verifies that invalid open mode string values are rejected.
+    /// Verifies that invalid storage access string values are rejected.
     @Test
-    public void invalidOpenModeString() {
-        Map<String, Object> environment = Map.of(ArkivoFileSystem.OPEN_MODES.key(), "stream-random");
+    public void invalidStorageAccessString() {
+        Map<String, Object> environment = Map.of(ArkivoFileSystem.STORAGE_ACCESS.key(), "stream-random");
 
         assertThrows(IllegalArgumentException.class, () -> ZipArkivoFileSystemConfig.fromEnvironment(environment));
     }

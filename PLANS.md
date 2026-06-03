@@ -80,7 +80,7 @@ ZipArkivoFileSystem.open(path, environment)
 ```
 
 Common file system configuration options should live on `ArkivoFileSystem` as typed `ArkivoFileSystemOption`
-constants, such as `ArkivoFileSystem.OPEN_MODES`.
+constants, such as `ArkivoFileSystem.STORAGE_ACCESS`.
 Format-specific file system configuration options should live on the concrete file system utility class as typed
 `ArkivoFileSystemOption` constants.
 Standalone string key constants should not be exposed by concrete file system utility classes; callers can use
@@ -101,8 +101,8 @@ ArkivoPasswordProvider
 ArkivoVolumeSource
 ArkivoFileSystemOption
 ArkivoFileSystem
-ArkivoFileSystemOpenMode
-ArkivoFileSystemOpenModes
+ArkivoStorageAccess
+ArkivoStorageAccessSet
 ArkivoFileSystemEntryStream
 CompressionCodec
 CompressionCodecs
@@ -217,8 +217,8 @@ SevenZipArkivoFileSystem.open(path)
 ```
 
 Concrete archive file systems should extend `ArkivoFileSystem`.
-The common `ArkivoFileSystem.OPEN_MODES` environment option should select a non-empty set of orthogonal storage
-capabilities: random read, random write, stream read, and stream write.
+The common `ArkivoFileSystem.STORAGE_ACCESS` environment option should select a non-empty set of orthogonal storage
+access values: random read, random write, stream read, and stream write.
 `ArkivoFileSystem.openEntryStream()` should provide forward-only entry traversal for implementations that support
 streaming reads.
 
