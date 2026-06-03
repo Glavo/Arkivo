@@ -31,7 +31,7 @@ arkivo-archives-rar
 arkivo-all
 ```
 
-`arkivo-base` should contain shared format discovery, typed feature contracts, reusable `FileSystem` support, password and volume-source contracts, compression codec contracts, and low-level NIO utilities.
+`arkivo-base` should contain shared format discovery, reusable `FileSystem` support, password and volume-source contracts, compression codec contracts, and low-level NIO utilities.
 
 `arkivo-codecs` should be an aggregate module for compression codec APIs and common codec utilities.
 
@@ -92,8 +92,6 @@ Potential core types include:
 ```java
 ArkivoFormat
 ArkivoFormats
-ArkivoFileSystemFormat
-ArkivoVolumeFileSystemFormat
 ArkivoFileSystemProviderSupport
 ArkivoPasswordProvider
 ArkivoVolumeSource
@@ -267,7 +265,7 @@ Each archive format should define only the attribute interfaces it needs, such a
 ## Implementation Order
 
 1. Convert the repository to a Gradle multi-module project.
-2. Implement `arkivo-base` with format discovery, typed feature contracts, `FileSystem` support contracts, password and volume-source contracts, compression codec contracts, and low-level buffer utilities.
+2. Implement `arkivo-base` with format discovery, `FileSystem` support contracts, password and volume-source contracts, compression codec contracts, and low-level buffer utilities.
 3. Implement gzip, zlib, and raw deflate codec modules to validate the channel-first compression API.
 4. Define archive file system options, password provider contracts, and split archive source abstractions.
 5. Implement `ZipArkivoFileSystem` inside `arkivo-archives-zip`.
@@ -285,6 +283,6 @@ RAR support should initially be read-only.
 
 Some formats may not support efficient random write operations. These formats should expose streaming or copy-on-write APIs instead of pretending to support in-place mutation.
 
-Format-specific features should be represented through typed interfaces and concrete format APIs rather than a shared boolean capability object.
+Format-specific features should be represented through concrete format APIs rather than shared capability interfaces or boolean capability objects.
 
 Feature details such as supported encryption methods, header encryption support, split volume naming schemes, and write-time volume size constraints should remain in format-specific options and attribute views.

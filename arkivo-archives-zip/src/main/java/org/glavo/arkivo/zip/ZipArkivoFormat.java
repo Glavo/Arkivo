@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.zip;
 
-import org.glavo.arkivo.ArkivoVolumeFileSystemFormat;
+import org.glavo.arkivo.ArkivoFormat;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -13,7 +13,7 @@ import java.nio.file.Path;
 
 /// Describes the ZIP archive format support provided by Arkivo.
 @NotNullByDefault
-public final class ZipArkivoFormat implements ArkivoVolumeFileSystemFormat {
+public final class ZipArkivoFormat implements ArkivoFormat {
     /// The stable ZIP format name.
     public static final String NAME = "zip";
 
@@ -36,7 +36,6 @@ public final class ZipArkivoFormat implements ArkivoVolumeFileSystemFormat {
     }
 
     /// Opens a ZIP archive file system.
-    @Override
     public FileSystem open(Path path) throws IOException {
         return ZipArkivoFileSystem.open(path);
     }
@@ -47,7 +46,6 @@ public final class ZipArkivoFormat implements ArkivoVolumeFileSystemFormat {
     }
 
     /// Opens a split ZIP archive file system.
-    @Override
     public FileSystem open(ArkivoVolumeSource volumes) throws IOException {
         return ZipArkivoFileSystem.open(volumes);
     }
