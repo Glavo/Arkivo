@@ -25,6 +25,7 @@ import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileAttributeView;
 import java.nio.file.spi.FileSystemProvider;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /// Provides JDK file system provider entry points for ZIP archives.
@@ -56,14 +57,15 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     public ArkivoFileSystem newFileSystem(URI uri, Map<String, ?> environment) throws IOException {
         requireSupportedScheme(uri);
         ZipArkivoFileSystemConfig.fromEnvironment(environment);
-        throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
+        throw new UnsupportedOperationException("ZIP file system URI storage is not implemented yet");
     }
 
     /// Opens a ZIP archive file system from an archive path.
     @Override
-    public ArkivoFileSystem newFileSystem(Path path, Map<String, ?> environment) throws IOException {
-        ZipArkivoFileSystemConfig.fromEnvironment(environment);
-        throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
+    public ZipArkivoFileSystem newFileSystem(Path path, Map<String, ?> environment) throws IOException {
+        Objects.requireNonNull(path, "path");
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+        return new ZipArkivoFileSystem(this, path, null, config);
     }
 
     /// Returns an open ZIP archive file system for a provider URI.
