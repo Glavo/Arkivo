@@ -18,61 +18,37 @@ import java.util.Objects;
 /// Opens ZIP archives as NIO file systems.
 @NotNullByDefault
 public final class ZipArkivoFileSystem {
-    /// The environment key for an `ArkivoPasswordProvider` value.
-    public static final String PASSWORD_PROVIDER = "passwordProvider";
+    /// The environment option for an `ArkivoPasswordProvider` value.
+    public static final ArkivoFileSystemOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
+            ArkivoFileSystemOption.of("passwordProvider", ArkivoPasswordProvider.class);
 
-    /// The typed environment option for an `ArkivoPasswordProvider` value.
-    public static final ArkivoFileSystemOption<ArkivoPasswordProvider> PASSWORD_PROVIDER_OPTION =
-            ArkivoFileSystemOption.of(PASSWORD_PROVIDER, ArkivoPasswordProvider.class);
+    /// The environment option for a fixed `char[]` password value.
+    public static final ArkivoFileSystemOption<char[]> PASSWORD =
+            ArkivoFileSystemOption.of("password", char[].class, String::toCharArray);
 
-    /// The environment key for a fixed `char[]` password value.
-    public static final String PASSWORD = "password";
+    /// The environment option for a `Boolean` value that requests read-only access.
+    public static final ArkivoFileSystemOption<Boolean> READ_ONLY =
+            ArkivoFileSystemOption.of("readOnly", Boolean.class, ZipArkivoFileSystem::parseBoolean);
 
-    /// The typed environment option for a fixed `char[]` password value.
-    public static final ArkivoFileSystemOption<char[]> PASSWORD_OPTION =
-            ArkivoFileSystemOption.of(PASSWORD, char[].class, String::toCharArray);
+    /// The environment option for a `Boolean` value that requests creating a new ZIP archive.
+    public static final ArkivoFileSystemOption<Boolean> CREATE =
+            ArkivoFileSystemOption.of("create", Boolean.class, ZipArkivoFileSystem::parseBoolean);
 
-    /// The environment key for a `Boolean` value that requests read-only access.
-    public static final String READ_ONLY = "readOnly";
+    /// The environment option for a `Boolean` value that requests append-only streaming write semantics.
+    public static final ArkivoFileSystemOption<Boolean> STREAMING_WRITE =
+            ArkivoFileSystemOption.of("streamingWrite", Boolean.class, ZipArkivoFileSystem::parseBoolean);
 
-    /// The typed environment option for a `Boolean` value that requests read-only access.
-    public static final ArkivoFileSystemOption<Boolean> READ_ONLY_OPTION =
-            ArkivoFileSystemOption.of(READ_ONLY, Boolean.class, ZipArkivoFileSystem::parseBoolean);
+    /// The environment option for a `ZipEncryption` value used as the default encryption method for new entries.
+    public static final ArkivoFileSystemOption<ZipEncryption> DEFAULT_ENCRYPTION =
+            ArkivoFileSystemOption.of("defaultEncryption", ZipEncryption.class, ZipEncryption::of);
 
-    /// The environment key for a `Boolean` value that requests creating a new ZIP archive.
-    public static final String CREATE = "create";
+    /// The environment option for a `Number` value that sets the maximum size of each output volume.
+    public static final ArkivoFileSystemOption<Number> SPLIT_SIZE =
+            ArkivoFileSystemOption.of("splitSize", Number.class, Long::parseLong);
 
-    /// The typed environment option for a `Boolean` value that requests creating a new ZIP archive.
-    public static final ArkivoFileSystemOption<Boolean> CREATE_OPTION =
-            ArkivoFileSystemOption.of(CREATE, Boolean.class, ZipArkivoFileSystem::parseBoolean);
-
-    /// The environment key for a `Boolean` value that requests append-only streaming write semantics.
-    public static final String STREAMING_WRITE = "streamingWrite";
-
-    /// The typed environment option for a `Boolean` value that requests append-only streaming write semantics.
-    public static final ArkivoFileSystemOption<Boolean> STREAMING_WRITE_OPTION =
-            ArkivoFileSystemOption.of(STREAMING_WRITE, Boolean.class, ZipArkivoFileSystem::parseBoolean);
-
-    /// The environment key for a `ZipEncryption` value used as the default encryption method for new entries.
-    public static final String DEFAULT_ENCRYPTION = "defaultEncryption";
-
-    /// The typed environment option for a `ZipEncryption` value used as the default encryption method for new entries.
-    public static final ArkivoFileSystemOption<ZipEncryption> DEFAULT_ENCRYPTION_OPTION =
-            ArkivoFileSystemOption.of(DEFAULT_ENCRYPTION, ZipEncryption.class, ZipEncryption::of);
-
-    /// The environment key for a `Number` value that sets the maximum size of each output volume.
-    public static final String SPLIT_SIZE = "splitSize";
-
-    /// The typed environment option for a `Number` value that sets the maximum size of each output volume.
-    public static final ArkivoFileSystemOption<Number> SPLIT_SIZE_OPTION =
-            ArkivoFileSystemOption.of(SPLIT_SIZE, Number.class, Long::parseLong);
-
-    /// The environment key for a `ZipEntryNameEncoding` value that controls entry name decoding.
-    public static final String ENTRY_NAME_ENCODING = "entryNameEncoding";
-
-    /// The typed environment option for a `ZipEntryNameEncoding` value that controls entry name decoding.
-    public static final ArkivoFileSystemOption<ZipEntryNameEncoding> ENTRY_NAME_ENCODING_OPTION =
-            ArkivoFileSystemOption.of(ENTRY_NAME_ENCODING, ZipEntryNameEncoding.class, ZipEntryNameEncoding::parse);
+    /// The environment option for a `ZipEntryNameEncoding` value that controls entry name decoding.
+    public static final ArkivoFileSystemOption<ZipEntryNameEncoding> ENTRY_NAME_ENCODING =
+            ArkivoFileSystemOption.of("entryNameEncoding", ZipEntryNameEncoding.class, ZipEntryNameEncoding::parse);
 
     /// Creates no instances.
     private ZipArkivoFileSystem() {

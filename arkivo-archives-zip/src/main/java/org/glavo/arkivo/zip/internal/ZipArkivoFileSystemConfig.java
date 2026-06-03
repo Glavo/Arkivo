@@ -87,14 +87,14 @@ public final class ZipArkivoFileSystemConfig {
         }
 
         ArkivoPasswordProvider passwordProvider = passwordProvider(environment);
-        boolean readOnly = ZipArkivoFileSystem.READ_ONLY_OPTION.readOrDefault(environment, false);
-        boolean create = ZipArkivoFileSystem.CREATE_OPTION.readOrDefault(environment, false);
-        boolean streamingWrite = ZipArkivoFileSystem.STREAMING_WRITE_OPTION.readOrDefault(environment, false);
+        boolean readOnly = ZipArkivoFileSystem.READ_ONLY.readOrDefault(environment, false);
+        boolean create = ZipArkivoFileSystem.CREATE.readOrDefault(environment, false);
+        boolean streamingWrite = ZipArkivoFileSystem.STREAMING_WRITE.readOrDefault(environment, false);
         ZipEncryption defaultEncryption =
-                ZipArkivoFileSystem.DEFAULT_ENCRYPTION_OPTION.readOrDefault(environment, ZipEncryption.none());
+                ZipArkivoFileSystem.DEFAULT_ENCRYPTION.readOrDefault(environment, ZipEncryption.none());
         Long splitSize = splitSize(environment);
         ZipEntryNameEncoding entryNameEncoding =
-                ZipArkivoFileSystem.ENTRY_NAME_ENCODING_OPTION.readOrDefault(
+                ZipArkivoFileSystem.ENTRY_NAME_ENCODING.readOrDefault(
                         environment,
                         ZipEntryNameEncoding.standard()
                 );
@@ -147,16 +147,16 @@ public final class ZipArkivoFileSystemConfig {
 
     /// Parses the password provider from an environment map.
     private static @Nullable ArkivoPasswordProvider passwordProvider(Map<String, ?> environment) {
-        Object provider = environment.get(ZipArkivoFileSystem.PASSWORD_PROVIDER_OPTION.key());
-        Object password = environment.get(ZipArkivoFileSystem.PASSWORD_OPTION.key());
+        Object provider = environment.get(ZipArkivoFileSystem.PASSWORD_PROVIDER.key());
+        Object password = environment.get(ZipArkivoFileSystem.PASSWORD.key());
         if (provider != null && password != null) {
             throw new IllegalArgumentException("passwordProvider and password cannot both be set");
         }
         if (provider != null) {
-            return ZipArkivoFileSystem.PASSWORD_PROVIDER_OPTION.read(environment);
+            return ZipArkivoFileSystem.PASSWORD_PROVIDER.read(environment);
         }
         if (password != null) {
-            char[] fixedPassword = ZipArkivoFileSystem.PASSWORD_OPTION.read(environment);
+            char[] fixedPassword = ZipArkivoFileSystem.PASSWORD.read(environment);
             return fixedPassword != null ? ArkivoPasswordProvider.fixed(fixedPassword) : null;
         }
         return null;
@@ -164,7 +164,7 @@ public final class ZipArkivoFileSystemConfig {
 
     /// Parses the split size from an environment map.
     private static @Nullable Long splitSize(Map<String, ?> environment) {
-        Number value = ZipArkivoFileSystem.SPLIT_SIZE_OPTION.read(environment);
+        Number value = ZipArkivoFileSystem.SPLIT_SIZE.read(environment);
         if (value == null) {
             return null;
         }

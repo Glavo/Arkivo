@@ -22,10 +22,10 @@ public final class ZipArkivoFileSystemConfigTest {
     @Test
     public void stringValues() {
         Map<String, Object> environment = new HashMap<>();
-        ZipArkivoFileSystem.READ_ONLY_OPTION.putString(environment, "true");
-        ZipArkivoFileSystem.DEFAULT_ENCRYPTION_OPTION.putString(environment, "winzip-aes-256");
-        ZipArkivoFileSystem.SPLIT_SIZE_OPTION.putString(environment, "1024");
-        ZipArkivoFileSystem.ENTRY_NAME_ENCODING_OPTION.putString(environment, "gb18030");
+        ZipArkivoFileSystem.READ_ONLY.putString(environment, "true");
+        ZipArkivoFileSystem.DEFAULT_ENCRYPTION.putString(environment, "winzip-aes-256");
+        ZipArkivoFileSystem.SPLIT_SIZE.putString(environment, "1024");
+        ZipArkivoFileSystem.ENTRY_NAME_ENCODING.putString(environment, "gb18030");
 
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
 
@@ -38,7 +38,7 @@ public final class ZipArkivoFileSystemConfigTest {
     /// Verifies that invalid boolean string values are rejected.
     @Test
     public void invalidBooleanString() {
-        Map<String, Object> environment = Map.of(ZipArkivoFileSystem.READ_ONLY, "yes");
+        Map<String, Object> environment = Map.of(ZipArkivoFileSystem.READ_ONLY.key(), "yes");
 
         assertThrows(IllegalArgumentException.class, () -> ZipArkivoFileSystemConfig.fromEnvironment(environment));
     }

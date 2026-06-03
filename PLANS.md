@@ -79,9 +79,10 @@ ZipArkivoFileSystem.open(path)
 ZipArkivoFileSystem.open(path, environment)
 ```
 
-File system configuration keys should live on the concrete file system utility class, such as `ZipArkivoFileSystem.CREATE` and `ZipArkivoFileSystem.STREAMING_WRITE`.
-Concrete file system utility classes should also expose typed `ArkivoFileSystemOption` constants, such as
-`ZipArkivoFileSystem.CREATE_OPTION`, so callers can populate environment maps without losing the stable string keys.
+File system configuration options should live on the concrete file system utility class as typed
+`ArkivoFileSystemOption` constants, such as `ZipArkivoFileSystem.CREATE` and `ZipArkivoFileSystem.STREAMING_WRITE`.
+Standalone string key constants should not be exposed by concrete file system utility classes; callers can use
+`ArkivoFileSystemOption.key()` when they need the stable map key.
 
 Low-level reader, writer, editor, and streaming APIs may be introduced later only when a concrete use case cannot be served well through `FileSystem` and file attribute views.
 
