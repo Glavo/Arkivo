@@ -80,15 +80,11 @@ public final class ZipArkivoFileSystemConfig {
         }
 
         ArkivoPasswordProvider passwordProvider = passwordProvider(environment);
-        boolean readOnly = booleanValue(environment, ZipArkivoFileSystem.READ_ONLY, false);
-        boolean create = booleanValue(environment, ZipArkivoFileSystem.CREATE, false);
-        boolean streamingWrite = booleanValue(environment, ZipArkivoFileSystem.STREAMING_WRITE, false);
-        ZipEncryption defaultEncryption = typedValue(
-                environment,
-                ZipArkivoFileSystem.DEFAULT_ENCRYPTION,
-                ZipEncryption.class,
-                ZipEncryption.none()
-        );
+        boolean readOnly = ZipArkivoFileSystem.READ_ONLY_OPTION.readOrDefault(environment, false);
+        boolean create = ZipArkivoFileSystem.CREATE_OPTION.readOrDefault(environment, false);
+        boolean streamingWrite = ZipArkivoFileSystem.STREAMING_WRITE_OPTION.readOrDefault(environment, false);
+        ZipEncryption defaultEncryption =
+                ZipArkivoFileSystem.DEFAULT_ENCRYPTION_OPTION.readOrDefault(environment, ZipEncryption.none());
         Long splitSize = splitSize(environment);
 
         return new ZipArkivoFileSystemConfig(
@@ -133,59 +129,27 @@ public final class ZipArkivoFileSystemConfig {
 
     /// Parses the password provider from an environment map.
     private static @Nullable ArkivoPasswordProvider passwordProvider(Map<String, ?> environment) {
-        Object provider = environment.get(ZipArkivoFileSystem.PASSWORD_PROVIDER);
-        Object password = environment.get(ZipArkivoFileSystem.PASSWORD);
+        Object provider = environment.get(ZipArkivoFileSystem.PASSWORD_PROVIDER_OPTION.key());
+        Object password = environment.get(ZipArkivoFileSystem.PASSWORD_OPTION.key());
         if (provider != null && password != null) {
             throw new IllegalArgumentException("passwordProvider and password cannot both be set");
         }
-        if (provider instanceof ArkivoPasswordProvider passwordProvider) {
-            return passwordProvider;
-        }
         if (provider != null) {
-            throw new IllegalArgumentException("Expected ArkivoPasswordProvider for key: " + ZipArkivoFileSystem.PASSWORD_PROVIDER);
-        }
-        if (password instanceof char[] fixedPassword) {
-            return ArkivoPasswordProvider.fixed(fixedPassword);
+            return ZipArkivoFileSystem.PASSWORD_PROVIDER_OPTION.read(environment);
         }
         if (password != null) {
-            throw new IllegalArgumentException("Expected char[] for key: " + ZipArkivoFileSystem.PASSWORD);
+            char[] fixedPassword = ZipArkivoFileSystem.PASSWORD_OPTION.read(environment);
+            return fixedPassword != null ? ArkivoPasswordProvider.fixed(fixedPassword) : null;
         }
         return null;
     }
 
-    /// Parses a boolean value from an environment map.
-    private static boolean booleanValue(Map<String, ?> environment, String key, boolean defaultValue) {
-        Object value = environment.get(key);
-        if (value == null) {
-            return defaultValue;
-        }
-        if (value instanceof Boolean booleanValue) {
-            return booleanValue;
-        }
-        throw new IllegalArgumentException("Expected Boolean for key: " + key);
-    }
-
-    /// Parses a typed value from an environment map.
-    private static <T> T typedValue(Map<String, ?> environment, String key, Class<T> type, T defaultValue) {
-        Object value = environment.get(key);
-        if (value == null) {
-            return defaultValue;
-        }
-        if (type.isInstance(value)) {
-            return type.cast(value);
-        }
-        throw new IllegalArgumentException("Expected " + type.getSimpleName() + " for key: " + key);
-    }
-
     /// Parses the split size from an environment map.
     private static @Nullable Long splitSize(Map<String, ?> environment) {
-        Object value = environment.get(ZipArkivoFileSystem.SPLIT_SIZE);
+        Number value = ZipArkivoFileSystem.SPLIT_SIZE_OPTION.read(environment);
         if (value == null) {
             return null;
         }
-        if (value instanceof Number number) {
-            return number.longValue();
-        }
-        throw new IllegalArgumentException("Expected Number for key: " + ZipArkivoFileSystem.SPLIT_SIZE);
+        return value.longValue();
     }
 }
