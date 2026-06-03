@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.zip;
 
-import org.glavo.arkivo.ArkivoInfo;
+import org.glavo.arkivo.ArkivoEntryInfo;
 import org.glavo.arkivo.ArkivoItemType;
 import org.glavo.arkivo.ArkivoMetadata;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -12,10 +12,10 @@ import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.attribute.FileTime;
 
-/// Exposes immutable metadata for one ZIP item.
+/// Exposes immutable metadata for one ZIP entry.
 ///
-/// @param zipName the ZIP item name
-/// @param type the ZIP item type
+/// @param zipName the ZIP entry name
+/// @param type the ZIP entry type
 /// @param uncompressedSize the uncompressed size stored in the ZIP metadata
 /// @param compressedSize the compressed size stored in the ZIP metadata
 /// @param modifiedTime the last modified time stored in the ZIP metadata
@@ -24,7 +24,7 @@ import java.nio.file.attribute.FileTime;
 /// @param encryption the ZIP encryption method
 /// @param metadata additional ZIP metadata
 @NotNullByDefault
-public record ZipInfo(
+public record ZipArkivoEntryInfo(
         ZipName zipName,
         ArkivoItemType type,
         @Nullable Long uncompressedSize,
@@ -34,14 +34,14 @@ public record ZipInfo(
         ZipMethod method,
         ZipEncryption encryption,
         ArkivoMetadata metadata
-) implements ArkivoInfo {
-    /// Returns the raw encoded ZIP item path bytes.
+) implements ArkivoEntryInfo {
+    /// Returns the raw encoded ZIP entry path bytes.
     @Override
     public byte @Unmodifiable [] rawPath() {
         return zipName.rawPath();
     }
 
-    /// Returns the decoded ZIP item path text.
+    /// Returns the decoded ZIP entry path text.
     @Override
     public String path() {
         return zipName.path();

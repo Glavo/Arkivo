@@ -39,12 +39,12 @@ public final class ZipArkivoStreamingReader implements Closeable {
         return new ZipArkivoStreamingReader(source, options, false);
     }
 
-    /// Returns the next ZIP item in source order.
-    public @Nullable ZipInfo next() throws IOException {
+    /// Returns metadata for the next ZIP entry in source order.
+    public @Nullable ZipArkivoEntryInfo next() throws IOException {
         throw new UnsupportedOperationException("Streaming ZIP archive reading is not implemented yet");
     }
 
-    /// Opens a channel for reading the current ZIP item contents.
+    /// Opens a channel for reading the current ZIP entry contents.
     public ReadableByteChannel openChannel() throws IOException {
         throw new UnsupportedOperationException("Streaming ZIP archive reading is not implemented yet");
     }

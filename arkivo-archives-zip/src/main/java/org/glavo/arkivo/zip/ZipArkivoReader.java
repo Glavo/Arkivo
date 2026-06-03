@@ -20,7 +20,7 @@ import java.util.List;
 
 /// Reads an existing ZIP archive without modifying it.
 @NotNullByDefault
-public final class ZipArkivoReader implements ArkivoReader<ZipInfo> {
+public final class ZipArkivoReader implements ArkivoReader<ZipArkivoEntry> {
     /// The archive channel.
     private final @Nullable SeekableByteChannel channel;
 
@@ -77,39 +77,38 @@ public final class ZipArkivoReader implements ArkivoReader<ZipInfo> {
         return new ZipArkivoReader(null, volumes, options, null);
     }
 
-    /// Returns all known ZIP items.
+    /// Returns all known ZIP entries.
     @Override
-    public @Unmodifiable List<ZipInfo> infos() throws IOException {
+    public @Unmodifiable List<ZipArkivoEntry> entries() throws IOException {
         throw notImplemented();
     }
 
-    /// Returns the first ZIP item with the given decoded path.
+    /// Returns the first ZIP entry with the given decoded path.
     @Override
-    public @Nullable ZipInfo first(String path) throws IOException {
+    public @Nullable ZipArkivoEntry first(String path) throws IOException {
         throw notImplemented();
     }
 
-    /// Returns the first ZIP item with the given raw encoded path.
+    /// Returns the first ZIP entry with the given raw encoded path.
     @Override
-    public @Nullable ZipInfo first(byte @Unmodifiable [] rawPath) throws IOException {
+    public @Nullable ZipArkivoEntry first(byte @Unmodifiable [] rawPath) throws IOException {
         throw notImplemented();
     }
 
-    /// Returns all ZIP items with the given decoded path.
+    /// Returns all ZIP entries with the given decoded path.
     @Override
-    public @Unmodifiable List<ZipInfo> all(String path) throws IOException {
+    public @Unmodifiable List<ZipArkivoEntry> all(String path) throws IOException {
         throw notImplemented();
     }
 
-    /// Returns all ZIP items with the given raw encoded path.
+    /// Returns all ZIP entries with the given raw encoded path.
     @Override
-    public @Unmodifiable List<ZipInfo> all(byte @Unmodifiable [] rawPath) throws IOException {
+    public @Unmodifiable List<ZipArkivoEntry> all(byte @Unmodifiable [] rawPath) throws IOException {
         throw notImplemented();
     }
 
-    /// Opens a channel for reading the ZIP item contents.
-    @Override
-    public ReadableByteChannel openChannel(ZipInfo info) throws IOException {
+    /// Opens a channel for reading the ZIP entry contents.
+    ReadableByteChannel openChannel(ZipArkivoEntry entry) throws IOException {
         throw notImplemented();
     }
 

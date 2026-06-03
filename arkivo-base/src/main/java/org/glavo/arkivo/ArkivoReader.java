@@ -9,27 +9,23 @@ import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.nio.channels.ReadableByteChannel;
 import java.util.List;
 
-/// Reads archive metadata and item contents without modifying the archive.
+/// Reads archive entries without modifying the archive.
 @NotNullByDefault
-public interface ArkivoReader<I extends ArkivoInfo> extends Closeable {
-    /// Returns all known archive items.
-    @Unmodifiable List<I> infos() throws IOException;
+public interface ArkivoReader<E extends ArkivoEntry<?>> extends Closeable {
+    /// Returns all known archive entries.
+    @Unmodifiable List<E> entries() throws IOException;
 
-    /// Returns the first item with the given decoded path.
-    @Nullable I first(String path) throws IOException;
+    /// Returns the first entry with the given decoded path.
+    @Nullable E first(String path) throws IOException;
 
-    /// Returns the first item with the given raw encoded path.
-    @Nullable I first(byte @Unmodifiable [] rawPath) throws IOException;
+    /// Returns the first entry with the given raw encoded path.
+    @Nullable E first(byte @Unmodifiable [] rawPath) throws IOException;
 
-    /// Returns all items with the given decoded path.
-    @Unmodifiable List<I> all(String path) throws IOException;
+    /// Returns all entries with the given decoded path.
+    @Unmodifiable List<E> all(String path) throws IOException;
 
-    /// Returns all items with the given raw encoded path.
-    @Unmodifiable List<I> all(byte @Unmodifiable [] rawPath) throws IOException;
-
-    /// Opens a channel for reading the item contents.
-    ReadableByteChannel openChannel(I info) throws IOException;
+    /// Returns all entries with the given raw encoded path.
+    @Unmodifiable List<E> all(byte @Unmodifiable [] rawPath) throws IOException;
 }

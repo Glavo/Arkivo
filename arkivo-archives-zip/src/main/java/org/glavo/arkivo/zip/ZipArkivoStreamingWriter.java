@@ -16,7 +16,7 @@ import java.nio.file.Path;
 
 /// Writes ZIP items sequentially to a target channel.
 @NotNullByDefault
-public final class ZipArkivoStreamingWriter implements ArkivoWriter<ZipInfoSpec> {
+public final class ZipArkivoStreamingWriter implements ArkivoWriter<ZipArkivoEntryOptions> {
     /// The target channel.
     private final @Nullable WritableByteChannel target;
 
@@ -62,19 +62,19 @@ public final class ZipArkivoStreamingWriter implements ArkivoWriter<ZipInfoSpec>
         return new ZipArkivoStreamingWriter(null, volumes, options, false);
     }
 
-    /// Adds a new ZIP item from a source channel.
+    /// Adds a new ZIP entry from a source channel.
     @Override
-    public void add(ReadableByteChannel source, ZipInfoSpec spec) throws IOException {
+    public void add(ReadableByteChannel source, ZipArkivoEntryOptions options) throws IOException {
         throw new UnsupportedOperationException("Streaming ZIP archive writing is not implemented yet");
     }
 
-    /// Adds a file system path under the given decoded ZIP path.
+    /// Adds a file system path under the given decoded ZIP entry path.
     @Override
     public void add(Path source, String path) throws IOException {
         throw new UnsupportedOperationException("Streaming ZIP archive writing is not implemented yet");
     }
 
-    /// Adds a file system path under the given raw encoded ZIP path.
+    /// Adds a file system path under the given raw encoded ZIP entry path.
     @Override
     public void add(Path source, byte @Unmodifiable [] rawPath) throws IOException {
         throw new UnsupportedOperationException("Streaming ZIP archive writing is not implemented yet");

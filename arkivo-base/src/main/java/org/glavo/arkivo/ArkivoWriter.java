@@ -13,9 +13,9 @@ import java.nio.file.Path;
 
 /// Writes a new archive.
 @NotNullByDefault
-public interface ArkivoWriter<S extends ArkivoInfoSpec> extends Closeable {
-    /// Adds a new item from a source channel.
-    void add(ReadableByteChannel source, S spec) throws IOException;
+public interface ArkivoWriter<O extends ArkivoEntryOptions> extends Closeable {
+    /// Adds a new entry from a source channel.
+    void add(ReadableByteChannel source, O options) throws IOException;
 
     /// Adds a file system path under the given decoded archive path.
     void add(Path source, String path) throws IOException;

@@ -9,16 +9,16 @@ import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.attribute.FileTime;
 
-/// Exposes immutable metadata for one archive item.
+/// Exposes immutable metadata for one archive entry.
 @NotNullByDefault
-public interface ArkivoInfo {
-    /// Returns the raw encoded item path bytes stored by the archive format.
+public interface ArkivoEntryInfo {
+    /// Returns the raw encoded entry path bytes stored by the archive format.
     byte @Unmodifiable [] rawPath();
 
-    /// Returns the decoded item path text.
+    /// Returns the decoded entry path text.
     String path();
 
-    /// Returns the item type.
+    /// Returns the entry type.
     ArkivoItemType type();
 
     /// Returns the uncompressed size when the archive stores it.

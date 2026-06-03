@@ -9,16 +9,16 @@ import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.attribute.FileTime;
 
-/// Describes metadata requested when writing an archive item.
+/// Describes metadata and policies requested when writing an archive entry.
 @NotNullByDefault
-public interface ArkivoInfoSpec {
-    /// Returns the raw encoded item path bytes to write.
+public interface ArkivoEntryOptions {
+    /// Returns the raw encoded entry path bytes to write.
     byte @Unmodifiable [] rawPath();
 
-    /// Returns the decoded item path text.
+    /// Returns the decoded entry path text.
     String path();
 
-    /// Returns the item type.
+    /// Returns the requested entry type.
     ArkivoItemType type();
 
     /// Returns the expected uncompressed size.
@@ -27,6 +27,6 @@ public interface ArkivoInfoSpec {
     /// Returns the requested last modified time.
     @Nullable FileTime modifiedTime();
 
-    /// Returns additional metadata requested for the item.
+    /// Returns additional metadata requested for the entry.
     ArkivoMetadata metadata();
 }

@@ -21,7 +21,7 @@ import java.nio.file.StandardOpenOption;
 
 /// Edits an existing ZIP archive.
 @NotNullByDefault
-public final class ZipArkivoEditor implements ArkivoEditor<ZipInfo, ZipInfoSpec> {
+public final class ZipArkivoEditor implements ArkivoEditor<ZipArkivoEntry, ZipArkivoEntryOptions> {
     /// The archive channel.
     private final @Nullable SeekableByteChannel channel;
 
@@ -87,31 +87,31 @@ public final class ZipArkivoEditor implements ArkivoEditor<ZipInfo, ZipInfoSpec>
         return new ZipArkivoEditor(null, sourceVolumes, targetVolumes, options, null);
     }
 
-    /// Adds a new ZIP item from the given channel.
+    /// Adds a new ZIP entry from the given channel.
     @Override
-    public void add(ReadableByteChannel source, ZipInfoSpec spec) throws IOException {
+    public void add(ReadableByteChannel source, ZipArkivoEntryOptions options) throws IOException {
         throw notImplemented();
     }
 
-    /// Replaces an existing ZIP item with the given decoded path.
+    /// Replaces an existing ZIP entry with the given decoded path.
     @Override
-    public void replace(String path, ReadableByteChannel source, ZipInfoSpec spec) throws IOException {
+    public void replace(String path, ReadableByteChannel source, ZipArkivoEntryOptions options) throws IOException {
         throw notImplemented();
     }
 
-    /// Replaces an existing ZIP item with the given raw encoded path.
+    /// Replaces an existing ZIP entry with the given raw encoded path.
     @Override
-    public void replace(byte @Unmodifiable [] rawPath, ReadableByteChannel source, ZipInfoSpec spec) throws IOException {
+    public void replace(byte @Unmodifiable [] rawPath, ReadableByteChannel source, ZipArkivoEntryOptions options) throws IOException {
         throw notImplemented();
     }
 
-    /// Removes ZIP items with the given decoded path.
+    /// Removes ZIP entries with the given decoded path.
     @Override
     public void remove(String path) throws IOException {
         throw notImplemented();
     }
 
-    /// Removes ZIP items with the given raw encoded path.
+    /// Removes ZIP entries with the given raw encoded path.
     @Override
     public void remove(byte @Unmodifiable [] rawPath) throws IOException {
         throw notImplemented();
@@ -119,7 +119,7 @@ public final class ZipArkivoEditor implements ArkivoEditor<ZipInfo, ZipInfoSpec>
 
     /// Returns a read-only view of the current ZIP archive state.
     @Override
-    public ArkivoReader<ZipInfo> reader() throws IOException {
+    public ArkivoReader<ZipArkivoEntry> reader() throws IOException {
         throw notImplemented();
     }
 

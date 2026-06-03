@@ -10,54 +10,54 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.FileTime;
 
-/// Provides a general-purpose archive item metadata specification.
+/// Provides general-purpose archive entry options.
 ///
-/// @param rawPath the raw encoded item path bytes
-/// @param path the decoded item path text
-/// @param type the item type
+/// @param rawPath the raw encoded entry path bytes
+/// @param path the decoded entry path text
+/// @param type the requested entry type
 /// @param uncompressedSize the expected uncompressed size
 /// @param modifiedTime the requested last modified time
-/// @param metadata additional metadata requested for the item
+/// @param metadata additional metadata requested for the entry
 @NotNullByDefault
-public record BasicArkivoInfoSpec(
+public record BasicArkivoEntryOptions(
         byte @Unmodifiable [] rawPath,
         String path,
         ArkivoItemType type,
         @Nullable Long uncompressedSize,
         @Nullable FileTime modifiedTime,
         ArkivoMetadata metadata
-) implements ArkivoInfoSpec {
-    /// Creates a basic archive item metadata specification.
-    public BasicArkivoInfoSpec {
+) implements ArkivoEntryOptions {
+    /// Creates basic archive entry options.
+    public BasicArkivoEntryOptions {
         rawPath = rawPath.clone();
     }
 
-    /// Creates a builder for an item with the given decoded path.
+    /// Creates a builder for an entry with the given decoded path.
     public static Builder builder(String path) {
         return new Builder(path.getBytes(StandardCharsets.UTF_8), path);
     }
 
-    /// Creates a builder for an item with the given raw encoded path and decoded path.
+    /// Creates a builder for an entry with the given raw encoded path and decoded path.
     public static Builder builder(byte @Unmodifiable [] rawPath, String path) {
         return new Builder(rawPath, path);
     }
 
-    /// Returns the raw encoded item path bytes.
+    /// Returns the raw encoded entry path bytes.
     @Override
     public byte @Unmodifiable [] rawPath() {
         return rawPath.clone();
     }
 
-    /// Builds `BasicArkivoInfoSpec` instances.
+    /// Builds `BasicArkivoEntryOptions` instances.
     @NotNullByDefault
     public static final class Builder {
-        /// The raw encoded item path bytes.
+        /// The raw encoded entry path bytes.
         private final byte @Unmodifiable [] rawPath;
 
-        /// The decoded item path text.
+        /// The decoded entry path text.
         private final String path;
 
-        /// The requested item type.
+        /// The requested entry type.
         private ArkivoItemType type = ArkivoItemType.REGULAR_FILE;
 
         /// The expected uncompressed size.
@@ -66,16 +66,16 @@ public record BasicArkivoInfoSpec(
         /// The requested last modified time.
         private @Nullable FileTime modifiedTime;
 
-        /// Additional metadata requested for the item.
+        /// Additional metadata requested for the entry.
         private ArkivoMetadata metadata = ArkivoMetadata.empty();
 
-        /// Creates a builder for an item with the given raw encoded path and decoded path.
+        /// Creates a builder for an entry with the given raw encoded path and decoded path.
         public Builder(byte @Unmodifiable [] rawPath, String path) {
             this.rawPath = rawPath.clone();
             this.path = path;
         }
 
-        /// Sets the item type.
+        /// Sets the entry type.
         public Builder type(ArkivoItemType type) {
             this.type = type;
             return this;
@@ -99,9 +99,9 @@ public record BasicArkivoInfoSpec(
             return this;
         }
 
-        /// Builds the metadata specification.
-        public BasicArkivoInfoSpec build() {
-            return new BasicArkivoInfoSpec(rawPath, path, type, uncompressedSize, modifiedTime, metadata);
+        /// Builds the entry options.
+        public BasicArkivoEntryOptions build() {
+            return new BasicArkivoEntryOptions(rawPath, path, type, uncompressedSize, modifiedTime, metadata);
         }
     }
 }

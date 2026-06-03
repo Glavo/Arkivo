@@ -65,6 +65,9 @@ FormatArkivoFileSystem
 For ZIP, the primary types should be:
 
 ```java
+ZipArkivoEntry
+ZipArkivoEntryInfo
+ZipArkivoEntryOptions
 ZipArkivoEditor
 ZipArkivoReader
 ZipArkivoWriter
@@ -102,6 +105,9 @@ ZipArkivoStreamingWriter.open(channel)
 Potential core types include:
 
 ```java
+ArkivoEntry
+ArkivoEntryInfo
+ArkivoEntryOptions
 ArkivoEditor
 ArkivoFormat
 ArkivoReader
@@ -150,10 +156,19 @@ Sequential and random-access behavior should be described by each reader or writ
 Potential API families:
 
 ```java
+ArkivoEntry
+ArkivoEntryInfo
+ArkivoEntryOptions
 ArkivoEditor
 ArkivoReader
 ArkivoWriter
 ```
+
+`ArkivoEntry` should represent a handle bound to the reader that created it and should provide content-opening operations.
+
+`ArkivoEntryInfo` should represent immutable metadata only and should remain usable after the reader is closed.
+
+`ArkivoEntryOptions` should represent write-time metadata and policy requests.
 
 `ArkivoReader` and `ArkivoWriter` should prefer `SeekableByteChannel` for random-access formats.
 
@@ -193,6 +208,9 @@ For example:
 
 ```text
 arkivo-archives-zip
+  ZipArkivoEntry
+  ZipArkivoEntryInfo
+  ZipArkivoEntryOptions
   ZipArkivoEditor
   ZipArkivoReader
   ZipArkivoWriter
