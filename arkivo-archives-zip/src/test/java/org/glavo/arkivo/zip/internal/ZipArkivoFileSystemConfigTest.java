@@ -5,6 +5,7 @@ package org.glavo.arkivo.zip.internal;
 
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemOpenMode;
+import org.glavo.arkivo.ArkivoFileSystemOpenModes;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipEntryNameEncoding;
 import org.glavo.arkivo.zip.ZipEncryption;
@@ -24,14 +25,20 @@ public final class ZipArkivoFileSystemConfigTest {
     @Test
     public void stringValues() {
         Map<String, Object> environment = new HashMap<>();
-        ArkivoFileSystem.OPEN_MODE.putString(environment, "stream-read");
+        ArkivoFileSystem.OPEN_MODES.putString(environment, "random-read,stream-read");
         ZipArkivoFileSystem.DEFAULT_ENCRYPTION.putString(environment, "winzip-aes-256");
         ZipArkivoFileSystem.SPLIT_SIZE.putString(environment, "1024");
         ZipArkivoFileSystem.ENTRY_NAME_ENCODING.putString(environment, "gb18030");
 
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
 
-        assertEquals(ArkivoFileSystemOpenMode.STREAM_READ, config.openMode());
+        assertEquals(
+                ArkivoFileSystemOpenModes.of(
+                        ArkivoFileSystemOpenMode.RANDOM_READ,
+                        ArkivoFileSystemOpenMode.STREAM_READ
+                ),
+                config.openModes()
+        );
         assertEquals(ZipEncryption.winZipAes256(), config.defaultEncryption());
         assertEquals(1024L, config.splitSize());
         assertEquals(ZipEntryNameEncoding.parse("gb18030"), config.entryNameEncoding());
@@ -40,7 +47,7 @@ public final class ZipArkivoFileSystemConfigTest {
     /// Verifies that invalid open mode string values are rejected.
     @Test
     public void invalidOpenModeString() {
-        Map<String, Object> environment = Map.of(ArkivoFileSystem.OPEN_MODE.key(), "stream-random");
+        Map<String, Object> environment = Map.of(ArkivoFileSystem.OPEN_MODES.key(), "stream-random");
 
         assertThrows(IllegalArgumentException.class, () -> ZipArkivoFileSystemConfig.fromEnvironment(environment));
     }

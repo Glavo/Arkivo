@@ -10,19 +10,16 @@ import java.util.Locale;
 /// Identifies how an Arkivo file system accesses archive storage.
 @NotNullByDefault
 public enum ArkivoFileSystemOpenMode {
-    /// Opens existing archive storage for random-access reads.
+    /// Allows random-access reads from archive storage.
     RANDOM_READ("random-read", true, false, true),
 
-    /// Opens archive storage for random-access writes.
+    /// Allows random-access writes to archive storage.
     RANDOM_WRITE("random-write", false, true, true),
 
-    /// Opens archive storage for random-access reads and writes.
-    RANDOM_READ_WRITE("random-read-write", true, true, true),
-
-    /// Opens archive storage for forward-only streaming reads.
+    /// Allows forward-only streaming reads from archive storage.
     STREAM_READ("stream-read", true, false, false),
 
-    /// Opens archive storage for forward-only streaming writes.
+    /// Allows forward-only streaming writes to archive storage.
     STREAM_WRITE("stream-write", false, true, false);
 
     /// The stable environment string for this mode.
