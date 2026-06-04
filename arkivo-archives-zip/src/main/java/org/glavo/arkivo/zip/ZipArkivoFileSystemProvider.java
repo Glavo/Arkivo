@@ -18,6 +18,7 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.FileStore;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystemNotFoundException;
+import java.nio.file.ProviderMismatchException;
 import java.nio.file.LinkOption;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
@@ -90,13 +91,13 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
             Set<? extends OpenOption> options,
             FileAttribute<?>... attributes
     ) throws IOException {
-        throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
+        return fileSystem(path).newByteChannel(path, options, attributes);
     }
 
     /// Opens a directory stream for a path inside a ZIP archive file system.
     @Override
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter) throws IOException {
-        throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
+        return fileSystem(directory).newDirectoryStream(directory, filter);
     }
 
     /// Creates a directory inside a ZIP archive file system.
@@ -126,13 +127,15 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     /// Returns whether two ZIP archive paths refer to the same file.
     @Override
     public boolean isSameFile(Path path, Path other) throws IOException {
-        throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
+        fileSystem(path).checkAccess(path);
+        return path.equals(other);
     }
 
     /// Returns whether a ZIP archive path is hidden.
     @Override
     public boolean isHidden(Path path) throws IOException {
-        throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
+        fileSystem(path).checkAccess(path);
+        return false;
     }
 
     /// Returns the file store for a ZIP archive path.
@@ -144,19 +147,19 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     /// Checks access to a ZIP archive path.
     @Override
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
-        throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
+        fileSystem(path).checkAccess(path, modes);
     }
 
     /// Returns a file attribute view for a ZIP archive path.
     @Override
     public <V extends FileAttributeView> @Nullable V getFileAttributeView(Path path, Class<V> type, LinkOption... options) {
-        throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
+        return fileSystem(path).getFileAttributeView(path, type);
     }
 
     /// Reads file attributes for a ZIP archive path.
     @Override
     public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, LinkOption... options) throws IOException {
-        throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
+        return fileSystem(path).readAttributes(path, type);
     }
 
     /// Reads named file attributes for a ZIP archive path.
@@ -169,6 +172,14 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     @Override
     public void setAttribute(Path path, String attribute, Object value, LinkOption... options) throws IOException {
         throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
+    }
+
+    /// Returns the ZIP file system implementation that owns a path.
+    private static ZipArkivoFileSystemImpl fileSystem(Path path) {
+        if (path.getFileSystem() instanceof ZipArkivoFileSystemImpl fileSystem) {
+            return fileSystem;
+        }
+        throw new ProviderMismatchException();
     }
 
     /// Requires a provider URI to use the ZIP Arkivo scheme.

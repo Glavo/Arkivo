@@ -15,10 +15,15 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -114,6 +119,35 @@ public final class ZipArkivoFileSystemTest {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
                 assertEquals(preamble.length, fileSystem.preambleSize());
                 assertPreambleContent(preamble, fileSystem);
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that regular ZIP entries can be read through NIO file operations.
+    @Test
+    public void readDeflatedZipEntries() throws IOException {
+        Path archivePath = createDeflatedZipArchive();
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/dir/hello.txt");
+
+                assertEquals("hello", Files.readString(file, StandardCharsets.UTF_8));
+
+                ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
+                assertEquals(5L, attributes.size());
+                assertEquals(ZipMethod.deflated(), attributes.method());
+                assertEquals(true, attributes.compressedSize() > 0);
+
+                ArrayList<String> children = new ArrayList<>();
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(fileSystem.getPath("/dir"))) {
+                    for (Path child : stream) {
+                        children.add(child.toString());
+                    }
+                }
+                assertEquals(List.of("/dir/hello.txt"), children);
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -227,6 +261,22 @@ public final class ZipArkivoFileSystemTest {
         Path temporaryDirectory = Files.createTempDirectory(temporaryRoot, "preamble-");
         Path archivePath = temporaryDirectory.resolve("sfx.zip");
         Files.write(archivePath, content);
+        return archivePath;
+    }
+
+    /// Creates a temporary deflated ZIP archive under the module build directory.
+    private static Path createDeflatedZipArchive() throws IOException {
+        Path temporaryRoot = Path.of("build", "tmp", "arkivo-zip-tests");
+        Files.createDirectories(temporaryRoot);
+        Path temporaryDirectory = Files.createTempDirectory(temporaryRoot, "real-zip-");
+        Path archivePath = temporaryDirectory.resolve("sample.zip");
+        try (ZipOutputStream output = new ZipOutputStream(Files.newOutputStream(archivePath), StandardCharsets.UTF_8)) {
+            output.putNextEntry(new ZipEntry("dir/"));
+            output.closeEntry();
+            output.putNextEntry(new ZipEntry("dir/hello.txt"));
+            output.write("hello".getBytes(StandardCharsets.UTF_8));
+            output.closeEntry();
+        }
         return archivePath;
     }
 
