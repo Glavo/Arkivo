@@ -4,6 +4,7 @@
 package org.glavo.arkivo.zip.internal;
 
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
+import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -11,6 +12,7 @@ import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.WatchEvent;
@@ -245,7 +247,15 @@ final class ZipArkivoPath implements Path {
     /// Converts this path to a URI.
     @Override
     public URI toUri() {
-        throw new UnsupportedOperationException("ZIP path URI conversion is not implemented yet");
+        URI archiveUri = archiveUri();
+        ZipArkivoPath absolutePath = (ZipArkivoPath) toAbsolutePath().normalize();
+        return URI.create(
+                ZipArkivoFileSystemProvider.SCHEME
+                        + ":"
+                        + archiveUri.toASCIIString()
+                        + "!/"
+                        + uriPath(absolutePath.names)
+        );
     }
 
     /// Returns this path as an absolute path.
@@ -257,7 +267,14 @@ final class ZipArkivoPath implements Path {
     /// Resolves this path to a real path.
     @Override
     public Path toRealPath(LinkOption... options) throws IOException {
-        throw new UnsupportedOperationException("ZIP real paths are not implemented yet");
+        Objects.requireNonNull(options, "options");
+        for (LinkOption option : options) {
+            Objects.requireNonNull(option, "option");
+        }
+
+        Path realPath = toAbsolutePath().normalize();
+        fileSystem.provider().checkAccess(realPath);
+        return realPath;
     }
 
     /// Registers this path with a watch service.
@@ -323,6 +340,43 @@ final class ZipArkivoPath implements Path {
             throw new IllegalArgumentException("Path belongs to a different file system");
         }
         return that;
+    }
+
+    /// Returns the archive URI used by this path.
+    private URI archiveUri() {
+        if (fileSystem instanceof ZipArkivoFileSystemImpl implementation) {
+            URI archiveUri = implementation.archiveUri();
+            if (archiveUri != null) {
+                return archiveUri;
+            }
+        }
+        throw new UnsupportedOperationException("ZIP paths backed by volume sources cannot be converted to URIs");
+    }
+
+    /// Returns an encoded URI path for ZIP path names.
+    private static String uriPath(List<String> names) {
+        if (names.isEmpty()) {
+            return "";
+        }
+
+        StringBuilder builder = new StringBuilder();
+        for (String name : names) {
+            if (!builder.isEmpty()) {
+                builder.append('/');
+            }
+            builder.append(uriPathSegment(name));
+        }
+        return builder.toString();
+    }
+
+    /// Returns an encoded URI path segment.
+    private static String uriPathSegment(String name) {
+        try {
+            String rawPath = new URI(null, null, "/" + name, null).getRawPath();
+            return rawPath != null ? rawPath.substring(1) : "";
+        } catch (URISyntaxException exception) {
+            throw new IllegalArgumentException("Invalid ZIP path segment", exception);
+        }
     }
 
     /// Returns path text for path components.

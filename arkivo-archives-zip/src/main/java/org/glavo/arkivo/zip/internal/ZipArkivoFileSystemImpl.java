@@ -17,6 +17,7 @@ import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.Channels;
@@ -209,6 +210,11 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 channel.close();
             }
         }
+    }
+
+    /// Returns the archive URI used by ZIP path URI conversion, or `null` for volume-backed file systems.
+    @Nullable URI archiveUri() {
+        return archivePath != null ? archivePath.toUri().normalize() : null;
     }
 
     /// Opens a forward-only stream over ZIP entry paths in storage order.

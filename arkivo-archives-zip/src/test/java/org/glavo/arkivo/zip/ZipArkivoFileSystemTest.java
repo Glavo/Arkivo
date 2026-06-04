@@ -141,6 +141,11 @@ public final class ZipArkivoFileSystemTest {
                 Path file = fileSystem.getPath("/dir/hello.txt");
 
                 assertEquals("hello", Files.readString(file, StandardCharsets.UTF_8));
+                assertEquals(file, file.toRealPath());
+                assertEquals(
+                        URI.create(ZipArkivoFileSystemProvider.SCHEME + ":" + archivePath.toUri() + "!/dir/hello.txt"),
+                        file.toUri()
+                );
                 try (var input = Files.newInputStream(file)) {
                     assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
                 }
@@ -207,7 +212,9 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ArkivoFileSystem fileSystem = provider.newFileSystem(fileSystemUri, Map.of())) {
                 assertEquals(fileSystem, provider.getFileSystem(fileSystemUri));
-                assertEquals("hello", Files.readString(provider.getPath(entryUri), StandardCharsets.UTF_8));
+                Path entry = provider.getPath(entryUri);
+                assertEquals(entryUri, entry.toUri());
+                assertEquals("hello", Files.readString(entry, StandardCharsets.UTF_8));
                 assertThrows(
                         FileSystemAlreadyExistsException.class,
                         () -> provider.newFileSystem(fileSystemUri, Map.of())
