@@ -4,6 +4,7 @@
 package org.glavo.arkivo.zlib;
 
 import org.glavo.arkivo.compress.CompressionCodec;
+import org.glavo.arkivo.compress.CompressionCodecs;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -13,6 +14,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -26,11 +28,17 @@ public final class ZlibCodecTest {
         ZlibCodec codec = new ZlibCodec();
         byte[] input = "hello zlib".getBytes(StandardCharsets.UTF_8);
 
-        assertEquals(CompressionCodec.class, codec.getClass().getInterfaces()[0]);
+        assertEquals(true, codec instanceof CompressionCodec);
         assertEquals(ZlibCodec.NAME, codec.name());
         assertEquals(true, codec.canCompress());
         assertEquals(true, codec.canDecompress());
         assertArrayEquals(input, roundTrip(codec, input));
+    }
+
+    /// Verifies that the zlib codec can be discovered through service loading.
+    @Test
+    public void findInstalledCodec() {
+        assertEquals(ZlibCodec.class, Objects.requireNonNull(CompressionCodecs.find(ZlibCodec.NAME)).getClass());
     }
 
     /// Compresses and decompresses the given bytes.
