@@ -12,11 +12,14 @@ import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
+import java.nio.file.FileSystemAlreadyExistsException;
+import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -188,6 +191,29 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals("z", Files.readString(file, StandardCharsets.UTF_8));
                 assertEquals(1L, Files.size(file));
             }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a ZIP file system can be opened and resolved through provider URIs.
+    @Test
+    public void openUri() throws IOException {
+        Path archivePath = createDeflatedZipArchive();
+        ZipArkivoFileSystemProvider provider = new ZipArkivoFileSystemProvider();
+        URI fileSystemUri = URI.create(ZipArkivoFileSystemProvider.SCHEME + ":" + archivePath.toUri());
+        URI entryUri = URI.create(fileSystemUri + "!/dir/hello.txt");
+
+        try {
+            try (ArkivoFileSystem fileSystem = provider.newFileSystem(fileSystemUri, Map.of())) {
+                assertEquals(fileSystem, provider.getFileSystem(fileSystemUri));
+                assertEquals("hello", Files.readString(provider.getPath(entryUri), StandardCharsets.UTF_8));
+                assertThrows(
+                        FileSystemAlreadyExistsException.class,
+                        () -> provider.newFileSystem(fileSystemUri, Map.of())
+                );
+            }
+            assertThrows(FileSystemNotFoundException.class, () -> provider.getFileSystem(fileSystemUri));
         } finally {
             deleteTemporaryArchive(archivePath);
         }

@@ -126,6 +126,9 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// The parsed ZIP file system configuration.
     private final ZipArkivoFileSystemConfig config;
 
+    /// The callback invoked after this file system closes, or `null` when no callback is needed.
+    private final @Nullable Runnable closeAction;
+
     /// The root path for this ZIP file system.
     private final ZipArkivoPath rootPath;
 
@@ -145,6 +148,17 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             @Nullable ArkivoVolumeSource volumes,
             ZipArkivoFileSystemConfig config
     ) {
+        this(provider, archivePath, volumes, config, null);
+    }
+
+    /// Creates a ZIP archive file system instance with a close callback.
+    public ZipArkivoFileSystemImpl(
+            ZipArkivoFileSystemProvider provider,
+            @Nullable Path archivePath,
+            @Nullable ArkivoVolumeSource volumes,
+            ZipArkivoFileSystemConfig config,
+            @Nullable Runnable closeAction
+    ) {
         super(config.storageAccess());
         if (archivePath == null && volumes == null) {
             throw new IllegalArgumentException("archivePath or volumes must be set");
@@ -156,6 +170,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         this.archivePath = archivePath;
         this.volumes = volumes;
         this.config = Objects.requireNonNull(config, "config");
+        this.closeAction = closeAction;
         this.rootPath = ZipArkivoPath.root(this);
     }
 
@@ -220,8 +235,15 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             return;
         }
         open = false;
-        if (volumes != null) {
-            volumes.close();
+        try {
+            if (volumes != null) {
+                volumes.close();
+            }
+        } finally {
+            Runnable action = closeAction;
+            if (action != null) {
+                action.run();
+            }
         }
     }
 
