@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.zip.internal;
 
+import org.glavo.arkivo.ArkivoFileSystemEntryStream;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
@@ -45,15 +46,7 @@ import java.nio.file.spi.FileSystemProvider;
 import java.time.DateTimeException;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 import java.util.zip.Inflater;
 import java.util.zip.InflaterInputStream;
 
@@ -201,6 +194,17 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 channel.close();
             }
         }
+    }
+
+    /// Opens a forward-only stream over ZIP entry paths in storage order.
+    @Override
+    public ArkivoFileSystemEntryStream openEntryStream() throws IOException {
+        ZipIndex loadedIndex = index();
+        ArrayList<Path> paths = new ArrayList<>(loadedIndex.storageEntries.size());
+        for (ZipEntryRecord entry : loadedIndex.storageEntries) {
+            paths.add(getPath("/" + entry.key));
+        }
+        return new EntryPathStream(List.copyOf(paths));
     }
 
     /// Returns the provider that created this ZIP file system.
@@ -560,6 +564,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             ZipEndRecord endRecord = readEndRecord(channel);
             ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(config.entryNameEncoding());
             HashMap<String, ZipEntryRecord> entries = new HashMap<>();
+            ArrayList<ZipEntryRecord> storageEntries = new ArrayList<>();
             HashSet<String> directories = new HashSet<>();
             HashMap<String, HashSet<String>> children = new HashMap<>();
             directories.add("");
@@ -648,6 +653,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                             directory
                     );
                     entries.put(key, entry);
+                    storageEntries.add(entry);
                     addTreePath(key, directory, directories, children);
                 }
 
@@ -656,6 +662,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
 
             return new ZipIndex(
                     Map.copyOf(entries),
+                    storageEntriesByOffset(storageEntries),
                     Set.copyOf(directories),
                     freezeChildren(children)
             );
@@ -783,6 +790,12 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             frozenChildren.put(entry.getKey(), List.copyOf(values));
         }
         return Map.copyOf(frozenChildren);
+    }
+
+    /// Returns immutable entry records sorted by physical local header offset.
+    private static List<ZipEntryRecord> storageEntriesByOffset(ArrayList<ZipEntryRecord> entries) {
+        entries.sort(Comparator.comparingLong(left -> left.localHeaderOffset));
+        return List.copyOf(entries);
     }
 
     /// Reads a byte array range from a buffer without changing its position.
@@ -1127,6 +1140,9 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         /// The entry records keyed by normalized entry path.
         private final Map<String, ZipEntryRecord> entries;
 
+        /// The entry records in physical local header order.
+        private final List<ZipEntryRecord> storageEntries;
+
         /// The normalized directory paths.
         private final Set<String> directories;
 
@@ -1136,10 +1152,12 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         /// Creates a parsed ZIP central directory index.
         private ZipIndex(
                 Map<String, ZipEntryRecord> entries,
+                List<ZipEntryRecord> storageEntries,
                 Set<String> directories,
                 Map<String, List<String>> children
         ) {
             this.entries = entries;
+            this.storageEntries = storageEntries;
             this.directories = directories;
             this.children = children;
         }
@@ -1669,6 +1687,42 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         @Override
         public void setRawComment(byte @Nullable [] rawComment) {
             throw new java.nio.file.ReadOnlyFileSystemException();
+        }
+    }
+
+    /// Implements a forward-only path stream backed by a path list.
+    @NotNullByDefault
+    private static final class EntryPathStream implements ArkivoFileSystemEntryStream {
+        /// The paths returned by this stream.
+        private final List<Path> paths;
+
+        /// The next path index.
+        private int index;
+
+        /// Whether this stream is open.
+        private boolean open = true;
+
+        /// Creates an entry path stream.
+        private EntryPathStream(List<Path> paths) {
+            this.paths = paths;
+        }
+
+        /// Returns the next path or `null` when traversal is complete.
+        @Override
+        public @Nullable Path next() throws IOException {
+            if (!open) {
+                throw new IOException("Entry stream is closed");
+            }
+            if (index >= paths.size()) {
+                return null;
+            }
+            return paths.get(index++);
+        }
+
+        /// Closes this stream.
+        @Override
+        public void close() {
+            open = false;
         }
     }
 

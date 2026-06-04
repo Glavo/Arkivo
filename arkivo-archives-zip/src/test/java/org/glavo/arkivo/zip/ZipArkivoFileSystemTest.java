@@ -28,6 +28,7 @@ import java.util.zip.ZipOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests basic ZIP Arkivo file system behavior.
@@ -159,6 +160,12 @@ public final class ZipArkivoFileSystemTest {
                     }
                 }
                 assertEquals(List.of("/dir/hello.txt"), children);
+
+                try (var entries = fileSystem.openEntryStream()) {
+                    assertEquals("/dir", entries.next().toString());
+                    assertEquals("/dir/hello.txt", entries.next().toString());
+                    assertNull(entries.next());
+                }
 
                 Files.copy(file, copyTarget);
                 assertEquals("hello", Files.readString(copyTarget, StandardCharsets.UTF_8));
