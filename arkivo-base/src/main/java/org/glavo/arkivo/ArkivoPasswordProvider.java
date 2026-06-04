@@ -18,13 +18,13 @@ import java.util.Objects;
 public interface ArkivoPasswordProvider {
     /// Returns a provider that never supplies a password.
     static ArkivoPasswordProvider none() {
-        return path -> null;
+        return () -> null;
     }
 
     /// Returns a provider that supplies a defensive copy of the given password bytes.
     static ArkivoPasswordProvider fixed(byte[] password) {
         byte[] storedPassword = password.clone();
-        return path -> storedPassword.clone();
+        return () -> storedPassword.clone();
     }
 
     /// Returns a provider that encodes the given password characters with the given charset.
@@ -37,6 +37,12 @@ public interface ArkivoPasswordProvider {
         return fixed(bytes);
     }
 
-    /// Returns a password for the archive path, or for the archive as a whole when the path is `null`.
-    byte @Nullable [] passwordFor(@Nullable Path path) throws IOException;
+    /// Returns the archive-level password.
+    byte @Nullable [] passwordForArchive() throws IOException;
+
+    /// Returns the entry-level password.
+    default byte @Nullable [] passwordForEntry(Path path) throws IOException {
+        Objects.requireNonNull(path, "path");
+        return passwordForArchive();
+    }
 }

@@ -70,6 +70,6 @@ public final class ZipArkivoFileSystemConfigTest {
 
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
 
-        assertArrayEquals(new byte[]{1, 2, 3}, config.passwordProvider().passwordFor(null));
+        assertArrayEquals(new byte[]{1, 2, 3}, config.passwordProvider().passwordForArchive());
     }
 }

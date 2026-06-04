@@ -7,6 +7,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 
@@ -20,8 +21,8 @@ public final class ArkivoPasswordProviderTest {
         ArkivoPasswordProvider provider = ArkivoPasswordProvider.fixed(password);
 
         password[0] = 9;
-        byte[] firstCopy = provider.passwordFor(null);
-        byte[] secondCopy = provider.passwordFor(null);
+        byte[] firstCopy = provider.passwordForArchive();
+        byte[] secondCopy = provider.passwordForArchive();
         firstCopy[1] = 9;
 
         assertArrayEquals(new byte[]{1, 2, 3}, secondCopy);
@@ -32,6 +33,14 @@ public final class ArkivoPasswordProviderTest {
     public void fixedCharactersUseCharset() throws Exception {
         ArkivoPasswordProvider provider = ArkivoPasswordProvider.fixed("abc".toCharArray(), StandardCharsets.UTF_8);
 
-        assertArrayEquals("abc".getBytes(StandardCharsets.UTF_8), provider.passwordFor(null));
+        assertArrayEquals("abc".getBytes(StandardCharsets.UTF_8), provider.passwordForArchive());
+    }
+
+    /// Verifies that entry passwords fall back to archive passwords by default.
+    @Test
+    public void entryPasswordFallsBackToArchivePassword() throws Exception {
+        ArkivoPasswordProvider provider = ArkivoPasswordProvider.fixed(new byte[]{1, 2, 3});
+
+        assertArrayEquals(new byte[]{1, 2, 3}, provider.passwordForEntry(Path.of("entry.txt")));
     }
 }
