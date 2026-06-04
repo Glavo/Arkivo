@@ -4,8 +4,8 @@
 package org.glavo.arkivo.zip.internal;
 
 import org.glavo.arkivo.ArkivoFileSystemEntryStream;
-import org.glavo.arkivo.ArkivoPathMatchers;
 import org.glavo.arkivo.ArkivoVolumeSource;
+import org.glavo.arkivo.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
