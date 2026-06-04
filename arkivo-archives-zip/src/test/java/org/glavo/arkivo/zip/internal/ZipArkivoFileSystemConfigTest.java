@@ -22,6 +22,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Tests ZIP file system environment configuration parsing.
 @NotNullByDefault
 public final class ZipArkivoFileSystemConfigTest {
+    /// Verifies that default ZIP configuration uses the split size sentinel.
+    @Test
+    public void defaultSplitSizeUsesSentinel() {
+        assertEquals(ZipArkivoFileSystemConfig.NO_SPLIT_SIZE, ZipArkivoFileSystemConfig.DEFAULTS.splitSize());
+    }
+
     /// Verifies that ZIP file system option keys use the ZIP namespace.
     @Test
     public void zipOptionKeysUseZipNamespace() {

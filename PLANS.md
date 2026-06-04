@@ -303,7 +303,9 @@ Common metadata should map to standard NIO concepts where possible:
 
 Time values should use `FileTime`.
 
-Optional or absent metadata should use `@Nullable`, not `Optional`.
+Optional or absent object metadata should use `@Nullable`, not `Optional`.
+Optional or absent numeric metadata should use primitive numeric types with named negative sentinel constants when the
+valid value domain is non-negative, such as `UNKNOWN_SIZE = -1L` or `UNKNOWN_OFFSET = -1L`.
 
 Immutable collections, arrays, and buffer views should use JetBrains immutability annotations where applicable.
 

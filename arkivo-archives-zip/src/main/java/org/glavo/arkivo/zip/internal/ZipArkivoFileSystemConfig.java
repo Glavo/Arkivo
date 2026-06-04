@@ -18,11 +18,14 @@ import java.util.Objects;
 /// Stores parsed ZIP file system configuration.
 @NotNullByDefault
 public final class ZipArkivoFileSystemConfig {
+    /// The split size value used when split output is disabled.
+    public static final long NO_SPLIT_SIZE = -1L;
+
     /// The default parsed ZIP file system configuration.
     public static final ZipArkivoFileSystemConfig DEFAULTS = new ZipArkivoFileSystemConfig(
             null,
             ZipEncryption.none(),
-            null,
+            NO_SPLIT_SIZE,
             ZipEntryNameEncoding.standard(),
             ArkivoStorageAccessSet.RANDOM_READ
     );
@@ -33,8 +36,8 @@ public final class ZipArkivoFileSystemConfig {
     /// The encryption method used for new entries that do not override encryption.
     private final ZipEncryption defaultEncryption;
 
-    /// The maximum size of each output volume.
-    private final @Nullable Long splitSize;
+    /// The maximum size of each output volume, or `NO_SPLIT_SIZE` when split output is disabled.
+    private final long splitSize;
 
     /// The policy used to decode ZIP entry names when no authoritative Unicode name is available.
     private final ZipEntryNameEncoding entryNameEncoding;
@@ -46,12 +49,12 @@ public final class ZipArkivoFileSystemConfig {
     public ZipArkivoFileSystemConfig(
             @Nullable ArkivoPasswordProvider passwordProvider,
             ZipEncryption defaultEncryption,
-            @Nullable Long splitSize,
+            long splitSize,
             ZipEntryNameEncoding entryNameEncoding,
             ArkivoStorageAccessSet storageAccess
     ) {
-        if (splitSize != null && splitSize <= 0) {
-            throw new IllegalArgumentException("splitSize must be positive");
+        if (splitSize != NO_SPLIT_SIZE && splitSize <= 0) {
+            throw new IllegalArgumentException("splitSize must be positive or NO_SPLIT_SIZE");
         }
         this.passwordProvider = passwordProvider;
         this.defaultEncryption = Objects.requireNonNull(defaultEncryption, "defaultEncryption");
@@ -70,7 +73,7 @@ public final class ZipArkivoFileSystemConfig {
         ArkivoPasswordProvider passwordProvider = passwordProvider(environment);
         ZipEncryption defaultEncryption =
                 ZipArkivoFileSystem.DEFAULT_ENCRYPTION.readOrDefault(environment, ZipEncryption.none());
-        Long splitSize = splitSize(environment);
+        long splitSize = splitSize(environment);
         ZipEntryNameEncoding entryNameEncoding =
                 ZipArkivoFileSystem.ENTRY_NAME_ENCODING.readOrDefault(
                         environment,
@@ -98,8 +101,8 @@ public final class ZipArkivoFileSystemConfig {
         return defaultEncryption;
     }
 
-    /// Returns the maximum size of each output volume.
-    public @Nullable Long splitSize() {
+    /// Returns the maximum size of each output volume, or `NO_SPLIT_SIZE` when split output is disabled.
+    public long splitSize() {
         return splitSize;
     }
 
@@ -131,7 +134,8 @@ public final class ZipArkivoFileSystemConfig {
     }
 
     /// Parses the split size from an environment map.
-    private static @Nullable Long splitSize(Map<String, ?> environment) {
-        return ZipArkivoFileSystem.SPLIT_SIZE.read(environment);
+    private static long splitSize(Map<String, ?> environment) {
+        Long splitSize = ZipArkivoFileSystem.SPLIT_SIZE.read(environment);
+        return splitSize != null ? splitSize : NO_SPLIT_SIZE;
     }
 }

@@ -11,7 +11,11 @@ These rules apply to all Java code written or modified in this repository.
 ## Optional Values
 
 - Do not use Java `Optional`.
-- Represent optional or absent values with `@Nullable` instead.
+- Represent optional or absent object values with `@Nullable`.
+- Represent optional or absent numeric values with primitive numeric types and named negative sentinel constants when the
+  valid value domain is non-negative, for example `UNKNOWN_SIZE = -1L`.
+- Do not use boxed numeric values such as `@Nullable Long` for optional numeric values when a primitive sentinel can
+  represent absence.
 - Do not introduce APIs that require callers to unwrap `Optional`.
 
 ## Java Types

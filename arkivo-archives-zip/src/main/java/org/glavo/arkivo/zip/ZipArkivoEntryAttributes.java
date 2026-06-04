@@ -12,17 +12,23 @@ import java.nio.file.attribute.BasicFileAttributes;
 /// Exposes ZIP-specific file attributes for an archive entry path.
 @NotNullByDefault
 public interface ZipArkivoEntryAttributes extends BasicFileAttributes {
+    /// The numeric value returned when a ZIP entry size is not known.
+    long UNKNOWN_SIZE = -1L;
+
+    /// The numeric value returned when a ZIP entry CRC-32 value is not known.
+    long UNKNOWN_CRC32 = -1L;
+
     /// Returns the raw encoded ZIP entry path bytes.
     byte @Unmodifiable [] rawPath();
 
     /// Returns the decoded ZIP entry path text.
     String path();
 
-    /// Returns the compressed size stored in the ZIP metadata.
-    @Nullable Long compressedSize();
+    /// Returns the compressed size stored in the ZIP metadata, or `UNKNOWN_SIZE` when it is not known.
+    long compressedSize();
 
-    /// Returns the CRC-32 value stored in the ZIP metadata.
-    @Nullable Long crc32();
+    /// Returns the CRC-32 value stored in the ZIP metadata, or `UNKNOWN_CRC32` when it is not known.
+    long crc32();
 
     /// Returns the general purpose bit flags stored for the ZIP entry.
     int generalPurposeFlags();
