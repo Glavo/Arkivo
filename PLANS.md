@@ -153,6 +153,8 @@ ZipArkivoEntryAttributeView
 
 ZIP-specific attributes should expose both typed common ZIP properties and raw low-level fields. Typed fields should include compression method, encryption method, sizes, CRC values, and comments. Raw fields should include encoded paths, raw comments, extra data, general purpose bit flags, version fields, and internal and external file attributes.
 
+ZIP file systems should expose the optional preamble bytes stored before the first local file header, such as self-extracting executable stubs, through channel-based APIs instead of forcing the content into memory.
+
 Streaming archive APIs may be added later for formats that cannot naturally expose an efficient `FileSystem`, such as tar.
 
 ZIP file system support should distinguish normal editable file system mode from append-only streaming creation mode.

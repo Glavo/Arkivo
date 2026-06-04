@@ -13,10 +13,11 @@ import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.FileStore;
-import java.nio.file.PathMatcher;
 import java.nio.file.Path;
+import java.nio.file.PathMatcher;
 import java.nio.file.WatchService;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.spi.FileSystemProvider;
@@ -138,6 +139,18 @@ public final class ZipArkivoFileSystem extends ArkivoFileSystem {
     /// Returns the root path for this ZIP file system.
     ZipArkivoPath rootPath() {
         return rootPath;
+    }
+
+    /// Returns the number of bytes stored before the first ZIP local file header.
+    public long preambleSize() throws IOException {
+        checkOpen();
+        throw new UnsupportedOperationException("ZIP preamble parsing is not implemented yet");
+    }
+
+    /// Opens a read-only channel over the bytes stored before the first ZIP local file header.
+    public SeekableByteChannel openPreambleChannel() throws IOException {
+        checkOpen();
+        throw new UnsupportedOperationException("ZIP preamble access is not implemented yet");
     }
 
     /// Returns the provider that created this ZIP file system.
