@@ -6,5 +6,6 @@ include(
     "arkivo-codecs-zlib",
     "arkivo-codecs-deflate",
     "arkivo-codecs-xz",
+    "arkivo-codecs-bzip2",
     "arkivo-archives-zip",
 )
