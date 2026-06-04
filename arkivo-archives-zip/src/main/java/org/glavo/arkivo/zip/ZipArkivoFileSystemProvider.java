@@ -10,6 +10,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.AccessMode;
@@ -96,6 +97,12 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
             FileAttribute<?>... attributes
     ) throws IOException {
         return fileSystem(path).newByteChannel(path, options, attributes);
+    }
+
+    /// Opens an input stream for a path inside a ZIP archive file system.
+    @Override
+    public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
+        return fileSystem(path).newInputStream(path, options);
     }
 
     /// Opens a directory stream for a path inside a ZIP archive file system.

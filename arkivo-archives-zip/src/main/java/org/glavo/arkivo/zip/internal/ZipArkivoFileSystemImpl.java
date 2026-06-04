@@ -84,11 +84,23 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// The ZIP central directory file header signature.
     private static final int ZIP_CENTRAL_DIRECTORY_HEADER_SIGNATURE = 0x02014b50;
 
+    /// The ZIP64 end of central directory record signature.
+    private static final int ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE = 0x06064b50;
+
+    /// The ZIP64 end of central directory locator signature.
+    private static final int ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIGNATURE = 0x07064b50;
+
     /// The minimum ZIP end of central directory record size.
     private static final int ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE = 22;
 
     /// The minimum ZIP central directory file header size.
     private static final int ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE = 46;
+
+    /// The ZIP64 end of central directory locator size.
+    private static final int ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE = 20;
+
+    /// The minimum ZIP64 end of central directory record size.
+    private static final int ZIP64_END_OF_CENTRAL_DIRECTORY_MIN_SIZE = 56;
 
     /// The general purpose bit flag that marks encrypted entries.
     private static final int ZIP_ENCRYPTED_FLAG = 1;
@@ -260,15 +272,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     ) throws IOException {
         Objects.requireNonNull(attributes, "attributes");
         requireReadOnlyOptions(options);
-        String key = pathKey(path);
-        ZipEntryRecord entry = requireEntry(key);
-        if (entry.directory) {
-            throw new IOException("ZIP entry is a directory: " + path);
-        }
-        if ((entry.generalPurposeFlags & ZIP_ENCRYPTED_FLAG) != 0) {
-            throw new IOException("Encrypted ZIP entries are not supported yet: " + path);
-        }
-
+        ZipEntryRecord entry = requireReadableEntry(path);
         long dataOffset = dataOffset(entry);
         if (entry.method == ZipMethod.STORED_ID) {
             return new BoundedSeekableByteChannel(openArchiveChannel(), dataOffset, entry.compressedSize);
@@ -277,6 +281,48 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             return new ByteArraySeekableByteChannel(inflateEntry(entry, dataOffset));
         }
         throw new IOException("Unsupported ZIP compression method: " + entry.method);
+    }
+
+    /// Opens an input stream for an entry path.
+    public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
+        requireReadOnlyOptions(options);
+        ZipEntryRecord entry = requireReadableEntry(path);
+        if (entry.method != ZipMethod.STORED_ID && entry.method != ZipMethod.DEFLATED_ID) {
+            throw new IOException("Unsupported ZIP compression method: " + entry.method);
+        }
+
+        long dataOffset = dataOffset(entry);
+        SeekableByteChannel archive = openArchiveChannel();
+        boolean completed = false;
+        try {
+            SeekableByteChannel compressed = new BoundedSeekableByteChannel(archive, dataOffset, entry.compressedSize);
+            if (entry.method == ZipMethod.STORED_ID) {
+                InputStream input = Channels.newInputStream(compressed);
+                completed = true;
+                return input;
+            }
+
+            InputStream input = new EntryInflaterInputStream(Channels.newInputStream(compressed));
+            completed = true;
+            return input;
+        } finally {
+            if (!completed) {
+                archive.close();
+            }
+        }
+    }
+
+    /// Returns a readable entry record for a path.
+    private ZipEntryRecord requireReadableEntry(Path path) throws IOException {
+        String key = pathKey(path);
+        ZipEntryRecord entry = requireEntry(key);
+        if (entry.directory) {
+            throw new IOException("ZIP entry is a directory: " + path);
+        }
+        if ((entry.generalPurposeFlags & ZIP_ENCRYPTED_FLAG) != 0) {
+            throw new IOException("Encrypted ZIP entries are not supported yet: " + path);
+        }
+        return entry;
     }
 
     /// Opens a directory stream for an entry path.
@@ -654,8 +700,20 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     private static void requireReadOnlyOptions(Set<? extends OpenOption> options) {
         Objects.requireNonNull(options, "options");
         for (OpenOption option : options) {
+            Objects.requireNonNull(option, "option");
             if (option != StandardOpenOption.READ) {
                 throw new UnsupportedOperationException("ZIP entry channels are read-only");
+            }
+        }
+    }
+
+    /// Requires input stream options to describe a read-only open.
+    private static void requireReadOnlyOptions(OpenOption... options) {
+        Objects.requireNonNull(options, "options");
+        for (OpenOption option : options) {
+            Objects.requireNonNull(option, "option");
+            if (option != StandardOpenOption.READ) {
+                throw new UnsupportedOperationException("ZIP entry streams are read-only");
             }
         }
     }
@@ -800,7 +858,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                     buffer.getInt(index + ZIP_END_OF_CENTRAL_DIRECTORY_OFFSET_OFFSET)
             );
             if (centralDirectorySize == ZIP_UINT32_MAX || centralDirectoryOffset == ZIP_UINT32_MAX) {
-                throw new IOException("ZIP64 central directory indexing is not implemented yet");
+                return readZip64EndRecord(channel, searchOffset + index);
             }
 
             long actualCentralDirectoryOffset = searchOffset + index - centralDirectorySize;
@@ -816,6 +874,74 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         }
 
         throw new IOException("ZIP end of central directory record not found");
+    }
+
+    /// Reads ZIP64 central directory location from the ZIP64 end records.
+    private static ZipEndRecord readZip64EndRecord(SeekableByteChannel channel, long eocdOffset) throws IOException {
+        long locatorOffset = eocdOffset - ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE;
+        if (locatorOffset < 0) {
+            throw new IOException("ZIP64 end of central directory locator not found");
+        }
+
+        ByteBuffer locator = ByteBuffer.allocate(ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        readFully(channel, locatorOffset, locator);
+        locator.flip();
+        if (locator.getInt(0) != ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIGNATURE) {
+            throw new IOException("ZIP64 end of central directory locator not found");
+        }
+
+        long storedZip64EndOffset = locator.getLong(8);
+        long actualZip64EndOffset = locateZip64EndRecord(channel, locatorOffset, storedZip64EndOffset);
+        ByteBuffer fixedRecord = ByteBuffer.allocate(ZIP64_END_OF_CENTRAL_DIRECTORY_MIN_SIZE)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        readFully(channel, actualZip64EndOffset, fixedRecord);
+        fixedRecord.flip();
+        if (fixedRecord.getInt(0) != ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
+            throw new IOException("ZIP64 end of central directory record not found");
+        }
+
+        long centralDirectorySize = fixedRecord.getLong(40);
+        long centralDirectoryOffset = fixedRecord.getLong(48);
+        long actualCentralDirectoryOffset = actualZip64EndOffset - centralDirectorySize;
+        if (actualCentralDirectoryOffset < centralDirectoryOffset) {
+            throw new IOException("ZIP64 central directory offset is inconsistent");
+        }
+        return new ZipEndRecord(
+                centralDirectorySize,
+                centralDirectoryOffset,
+                actualCentralDirectoryOffset,
+                actualCentralDirectoryOffset - centralDirectoryOffset
+        );
+    }
+
+    /// Locates the actual ZIP64 end record offset in physical storage.
+    private static long locateZip64EndRecord(
+            SeekableByteChannel channel,
+            long locatorOffset,
+            long storedZip64EndOffset
+    ) throws IOException {
+        if (storedZip64EndOffset >= 0 && storedZip64EndOffset + ZIP64_END_OF_CENTRAL_DIRECTORY_MIN_SIZE <= locatorOffset) {
+            ByteBuffer signature = ByteBuffer.allocate(Integer.BYTES).order(ByteOrder.LITTLE_ENDIAN);
+            readFully(channel, storedZip64EndOffset, signature);
+            signature.flip();
+            if (signature.getInt(0) == ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
+                return storedZip64EndOffset;
+            }
+        }
+
+        int searchSize = (int) Math.min(locatorOffset, ZIP_END_OF_CENTRAL_DIRECTORY_MAX_SEARCH);
+        long searchOffset = locatorOffset - searchSize;
+        ByteBuffer buffer = ByteBuffer.allocate(searchSize).order(ByteOrder.LITTLE_ENDIAN);
+        readFully(channel, searchOffset, buffer);
+        buffer.flip();
+        for (int index = searchSize - ZIP64_END_OF_CENTRAL_DIRECTORY_MIN_SIZE; index >= 0; index--) {
+            if (buffer.getInt(index) == ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
+                return searchOffset + index;
+            }
+        }
+
+        throw new IOException("ZIP64 end of central directory record not found");
     }
 
     /// Opens a channel for the physical storage that contains the beginning of this ZIP archive.
@@ -1579,6 +1705,40 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         @Override
         public void close() {
             open = false;
+        }
+    }
+
+    /// Inflates a ZIP entry stream and releases the native inflater when closed.
+    @NotNullByDefault
+    private static final class EntryInflaterInputStream extends InflaterInputStream {
+        /// The inflater used by this stream.
+        private final Inflater inflater;
+
+        /// Whether the inflater has been released.
+        private boolean released;
+
+        /// Creates an inflater stream for raw ZIP deflate data.
+        private EntryInflaterInputStream(InputStream input) {
+            this(input, new Inflater(true));
+        }
+
+        /// Creates an inflater stream with the given raw deflate inflater.
+        private EntryInflaterInputStream(InputStream input, Inflater inflater) {
+            super(input, inflater);
+            this.inflater = inflater;
+        }
+
+        /// Closes the stream and releases the inflater.
+        @Override
+        public void close() throws IOException {
+            try {
+                super.close();
+            } finally {
+                if (!released) {
+                    released = true;
+                    inflater.end();
+                }
+            }
         }
     }
 

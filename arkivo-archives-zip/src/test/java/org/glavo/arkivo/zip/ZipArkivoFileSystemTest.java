@@ -22,6 +22,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -136,6 +137,9 @@ public final class ZipArkivoFileSystemTest {
                 Path file = fileSystem.getPath("/dir/hello.txt");
 
                 assertEquals("hello", Files.readString(file, StandardCharsets.UTF_8));
+                try (var input = Files.newInputStream(file)) {
+                    assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
+                }
                 assertEquals("zip", Files.getFileStore(file).type());
 
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
@@ -161,6 +165,23 @@ public final class ZipArkivoFileSystemTest {
             }
         } finally {
             Files.deleteIfExists(copyTarget);
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that ZIP64 end records can locate the central directory.
+    @Test
+    public void readZip64CentralDirectory() throws IOException {
+        Path archivePath = createTemporaryArchiveContent(zip64CentralDirectoryArchive());
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/a");
+
+                assertEquals("z", Files.readString(file, StandardCharsets.UTF_8));
+                assertEquals(1L, Files.size(file));
+            }
+        } finally {
             deleteTemporaryArchive(archivePath);
         }
     }
@@ -256,6 +277,87 @@ public final class ZipArkivoFileSystemTest {
         buffer.putShort((short) 1);
         buffer.putInt(centralDirectorySize);
         buffer.putInt(centralDirectoryOffset);
+        buffer.putShort((short) 0);
+        return buffer.array();
+    }
+
+    /// Returns a minimal ZIP64 archive whose EOCD stores central directory location through ZIP64 fields.
+    private static byte[] zip64CentralDirectoryArchive() {
+        byte[] name = new byte[]{'a'};
+        byte[] content = new byte[]{'z'};
+        CRC32 crc32 = new CRC32();
+        crc32.update(content);
+        int localHeaderOffset = 0;
+        int localHeaderSize = 30 + name.length;
+        int centralDirectoryOffset = localHeaderSize + content.length;
+        int centralDirectorySize = 46 + name.length;
+        int zip64EndOffset = centralDirectoryOffset + centralDirectorySize;
+
+        ByteBuffer buffer = ByteBuffer.allocate(
+                localHeaderSize
+                        + content.length
+                        + centralDirectorySize
+                        + 56
+                        + 20
+                        + 22
+        ).order(ByteOrder.LITTLE_ENDIAN);
+
+        buffer.putInt(0x04034b50);
+        buffer.putShort((short) 20);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putInt((int) crc32.getValue());
+        buffer.putInt(content.length);
+        buffer.putInt(content.length);
+        buffer.putShort((short) name.length);
+        buffer.putShort((short) 0);
+        buffer.put(name);
+        buffer.put(content);
+
+        buffer.putInt(0x02014b50);
+        buffer.putShort((short) 45);
+        buffer.putShort((short) 20);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putInt((int) crc32.getValue());
+        buffer.putInt(content.length);
+        buffer.putInt(content.length);
+        buffer.putShort((short) name.length);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putInt(0);
+        buffer.putInt(localHeaderOffset);
+        buffer.put(name);
+
+        buffer.putInt(0x06064b50);
+        buffer.putLong(44);
+        buffer.putShort((short) 45);
+        buffer.putShort((short) 45);
+        buffer.putInt(0);
+        buffer.putInt(0);
+        buffer.putLong(1);
+        buffer.putLong(1);
+        buffer.putLong(centralDirectorySize);
+        buffer.putLong(centralDirectoryOffset);
+
+        buffer.putInt(0x07064b50);
+        buffer.putInt(0);
+        buffer.putLong(zip64EndOffset);
+        buffer.putInt(1);
+
+        buffer.putInt(0x06054b50);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0xffff);
+        buffer.putShort((short) 0xffff);
+        buffer.putInt(0xffffffff);
+        buffer.putInt(0xffffffff);
         buffer.putShort((short) 0);
         return buffer.array();
     }
