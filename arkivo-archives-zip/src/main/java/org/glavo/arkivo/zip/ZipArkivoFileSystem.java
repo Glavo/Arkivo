@@ -32,9 +32,9 @@ public final class ZipArkivoFileSystem extends ArkivoFileSystem {
     public static final ArkivoFileSystemOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArkivoFileSystemOption.of("passwordProvider", ArkivoPasswordProvider.class);
 
-    /// The environment option for a fixed `char[]` password value.
-    public static final ArkivoFileSystemOption<char[]> PASSWORD =
-            ArkivoFileSystemOption.of("password", char[].class, ZipArkivoFileSystem::passwordOptionValue);
+    /// The environment option for a fixed `byte[]` password value.
+    public static final ArkivoFileSystemOption<byte[]> PASSWORD =
+            ArkivoFileSystemOption.of("password", byte[].class, ZipArkivoFileSystem::passwordOptionValue);
 
     /// The environment option for a `ZipEncryption` value used as the default encryption method for new entries.
     public static final ArkivoFileSystemOption<ZipEncryption> DEFAULT_ENCRYPTION =
@@ -227,14 +227,11 @@ public final class ZipArkivoFileSystem extends ArkivoFileSystem {
     }
 
     /// Converts a raw password option value.
-    private static char[] passwordOptionValue(Object value) {
-        if (value instanceof char[] password) {
+    private static byte[] passwordOptionValue(Object value) {
+        if (value instanceof byte[] password) {
             return password;
         }
-        if (value instanceof String stringValue) {
-            return stringValue.toCharArray();
-        }
-        throw new IllegalArgumentException("Expected char[] or String for key: password");
+        throw new IllegalArgumentException("Expected byte[] for key: password");
     }
 
     /// Converts a raw default encryption option value.

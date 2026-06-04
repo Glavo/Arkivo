@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import java.util.HashMap;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -60,5 +61,15 @@ public final class ZipArkivoFileSystemConfigTest {
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
 
         assertEquals(1024L, config.splitSize());
+    }
+
+    /// Verifies that fixed password bytes are converted into a password provider.
+    @Test
+    public void passwordBytes() throws Exception {
+        Map<String, Object> environment = Map.of(ZipArkivoFileSystem.PASSWORD.key(), new byte[]{1, 2, 3});
+
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+
+        assertArrayEquals(new byte[]{1, 2, 3}, config.passwordProvider().passwordFor(null));
     }
 }

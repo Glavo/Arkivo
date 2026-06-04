@@ -124,7 +124,7 @@ public final class ZipArkivoFileSystemConfig {
             return ZipArkivoFileSystem.PASSWORD_PROVIDER.read(environment);
         }
         if (password != null) {
-            char[] fixedPassword = ZipArkivoFileSystem.PASSWORD.read(environment);
+            byte[] fixedPassword = ZipArkivoFileSystem.PASSWORD.read(environment);
             return fixedPassword != null ? ArkivoPasswordProvider.fixed(fixedPassword) : null;
         }
         return null;

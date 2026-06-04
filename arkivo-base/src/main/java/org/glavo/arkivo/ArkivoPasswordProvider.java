@@ -5,24 +5,38 @@ package org.glavo.arkivo;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
-import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.Charset;
+import java.nio.file.Path;
+import java.util.Objects;
 
 /// Supplies passwords for encrypted archive data.
 @NotNullByDefault
 public interface ArkivoPasswordProvider {
     /// Returns a provider that never supplies a password.
     static ArkivoPasswordProvider none() {
-        return (rawPath, path) -> null;
+        return path -> null;
     }
 
-    /// Returns a provider that supplies a defensive copy of the given password.
-    static ArkivoPasswordProvider fixed(char[] password) {
-        char[] storedPassword = password.clone();
-        return (rawPath, path) -> storedPassword.clone();
+    /// Returns a provider that supplies a defensive copy of the given password bytes.
+    static ArkivoPasswordProvider fixed(byte[] password) {
+        byte[] storedPassword = password.clone();
+        return path -> storedPassword.clone();
     }
 
-    /// Returns a password for the archive item, or for the archive as a whole when both path values are `null`.
-    char @Nullable [] passwordFor(byte @Nullable @Unmodifiable [] rawPath, @Nullable String path) throws IOException;
+    /// Returns a provider that encodes the given password characters with the given charset.
+    static ArkivoPasswordProvider fixed(char[] password, Charset charset) {
+        Objects.requireNonNull(password, "password");
+        Objects.requireNonNull(charset, "charset");
+        ByteBuffer buffer = charset.encode(CharBuffer.wrap(password));
+        byte[] bytes = new byte[buffer.remaining()];
+        buffer.get(bytes);
+        return fixed(bytes);
+    }
+
+    /// Returns a password for the archive path, or for the archive as a whole when the path is `null`.
+    byte @Nullable [] passwordFor(@Nullable Path path) throws IOException;
 }
