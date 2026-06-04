@@ -22,6 +22,18 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Tests ZIP file system environment configuration parsing.
 @NotNullByDefault
 public final class ZipArkivoFileSystemConfigTest {
+    /// Verifies that ZIP file system option keys use the ZIP namespace.
+    @Test
+    public void zipOptionKeysUseZipNamespace() {
+        assertEquals("arkivo.zip", ZipArkivoFileSystem.PASSWORD_PROVIDER.namespace());
+        assertEquals("passwordProvider", ZipArkivoFileSystem.PASSWORD_PROVIDER.name());
+        assertEquals("arkivo.zip.passwordProvider", ZipArkivoFileSystem.PASSWORD_PROVIDER.key());
+        assertEquals("arkivo.zip.password", ZipArkivoFileSystem.PASSWORD.key());
+        assertEquals("arkivo.zip.defaultEncryption", ZipArkivoFileSystem.DEFAULT_ENCRYPTION.key());
+        assertEquals("arkivo.zip.splitSize", ZipArkivoFileSystem.SPLIT_SIZE.key());
+        assertEquals("arkivo.zip.entryNameEncoding", ZipArkivoFileSystem.ENTRY_NAME_ENCODING.key());
+    }
+
     /// Verifies that string environment values are parsed through typed ZIP options.
     @Test
     public void stringValues() {

@@ -14,7 +14,12 @@ import java.util.Objects;
 public abstract class ArkivoFileSystem extends FileSystem {
     /// The common environment option that controls which archive storage access values are enabled.
     public static final ArkivoFileSystemOption<ArkivoStorageAccessSet> STORAGE_ACCESS =
-            ArkivoFileSystemOption.of("storageAccess", ArkivoStorageAccessSet.class, ArkivoFileSystem::storageAccessOptionValue);
+            ArkivoFileSystemOption.of(
+                    "arkivo",
+                    "storageAccess",
+                    ArkivoStorageAccessSet.class,
+                    ArkivoFileSystem::storageAccessOptionValue
+            );
 
     /// The storage access values enabled for this file system.
     private final ArkivoStorageAccessSet storageAccess;
@@ -42,6 +47,8 @@ public abstract class ArkivoFileSystem extends FileSystem {
         if (value instanceof String stringValue) {
             return ArkivoStorageAccessSet.parse(stringValue);
         }
-        throw new IllegalArgumentException("Expected ArkivoStorageAccessSet or String for key: storageAccess");
+        throw new IllegalArgumentException(
+                "Expected ArkivoStorageAccessSet or String for key: " + STORAGE_ACCESS.key()
+        );
     }
 }

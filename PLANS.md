@@ -83,6 +83,11 @@ Common file system configuration options should live on `ArkivoFileSystem` as ty
 constants, such as `ArkivoFileSystem.STORAGE_ACCESS`.
 Format-specific file system configuration options should live on the concrete file system utility class as typed
 `ArkivoFileSystemOption` constants.
+Environment option keys should use a compact Arkivo namespace. Common option keys should use `arkivo.<option>`,
+such as `arkivo.storageAccess`, while format-specific option keys should use `arkivo.<format>.<option>`, such as
+`arkivo.zip.password`.
+`ArkivoFileSystemOption` should model the namespace and local option name separately, with the environment key derived
+from those parts.
 Standalone string key constants should not be exposed by concrete file system utility classes; callers can use
 `ArkivoFileSystemOption.key()` when they need the stable map key.
 
@@ -153,7 +158,7 @@ ZipArkivoEntryAttributeView
 
 ZIP-specific attributes should expose both typed common ZIP properties and raw low-level fields. Typed fields should include compression method, encryption method, sizes, CRC values, and comments. Raw fields should include encoded paths, raw comments, extra data, general purpose bit flags, version fields, and internal and external file attributes.
 
-ZIP file systems should expose the optional preamble bytes stored before the first local file header, such as self-extracting executable stubs, through channel-based APIs instead of forcing the content into memory.
+ZIP file systems should expose the optional preamble bytes stored before the ZIP archive body, such as self-extracting executable stubs, through channel-based APIs instead of forcing the content into memory.
 
 Streaming archive APIs may be added later for formats that cannot naturally expose an efficient `FileSystem`, such as tar.
 

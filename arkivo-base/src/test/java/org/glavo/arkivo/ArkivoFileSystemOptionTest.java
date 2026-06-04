@@ -15,10 +15,18 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Tests typed file system environment options.
 @NotNullByDefault
 public final class ArkivoFileSystemOptionTest {
+    /// Verifies that common file system option keys use the Arkivo namespace.
+    @Test
+    public void commonOptionKeysUseArkivoNamespace() {
+        assertEquals("arkivo", ArkivoFileSystem.STORAGE_ACCESS.namespace());
+        assertEquals("storageAccess", ArkivoFileSystem.STORAGE_ACCESS.name());
+        assertEquals("arkivo.storageAccess", ArkivoFileSystem.STORAGE_ACCESS.key());
+    }
+
     /// Verifies that typed values can be written and read.
     @Test
     public void typedValue() {
-        ArkivoFileSystemOption<Boolean> option = ArkivoFileSystemOption.of("enabled", Boolean.class);
+        ArkivoFileSystemOption<Boolean> option = ArkivoFileSystemOption.of("test", "enabled", Boolean.class);
         Map<String, Object> environment = new HashMap<>();
 
         option.put(environment, true);
@@ -42,9 +50,9 @@ public final class ArkivoFileSystemOptionTest {
     public void integralValueConversion() {
         ArkivoFileSystemOption<Long> option = longOption();
 
-        assertEquals(1L, option.read(Map.of("size", (byte) 1)));
-        assertEquals(2L, option.read(Map.of("size", (short) 2)));
-        assertEquals(3L, option.read(Map.of("size", 3)));
+        assertEquals(1L, option.read(Map.of("test.size", (byte) 1)));
+        assertEquals(2L, option.read(Map.of("test.size", (short) 2)));
+        assertEquals(3L, option.read(Map.of("test.size", 3)));
     }
 
     /// Verifies that floating-point values are not converted to integral option types.
@@ -52,13 +60,13 @@ public final class ArkivoFileSystemOptionTest {
     public void rejectFloatingPointToIntegralConversion() {
         ArkivoFileSystemOption<Long> option = longOption();
 
-        assertThrows(IllegalArgumentException.class, () -> option.read(Map.of("size", 1.5)));
+        assertThrows(IllegalArgumentException.class, () -> option.read(Map.of("test.size", 1.5)));
     }
 
     /// Verifies that unsupported string values are rejected before being written.
     @Test
     public void unsupportedStringValue() {
-        ArkivoFileSystemOption<Boolean> option = ArkivoFileSystemOption.of("enabled", Boolean.class);
+        ArkivoFileSystemOption<Boolean> option = ArkivoFileSystemOption.of("test", "enabled", Boolean.class);
         Map<String, Object> environment = new HashMap<>();
 
         assertThrows(IllegalArgumentException.class, () -> option.putString(environment, "true"));
@@ -76,15 +84,15 @@ public final class ArkivoFileSystemOptionTest {
     /// Verifies that incompatible raw values are rejected when read.
     @Test
     public void incompatibleValue() {
-        ArkivoFileSystemOption<Boolean> option = ArkivoFileSystemOption.of("enabled", Boolean.class);
-        Map<String, Object> environment = Map.of("enabled", 1);
+        ArkivoFileSystemOption<Boolean> option = ArkivoFileSystemOption.of("test", "enabled", Boolean.class);
+        Map<String, Object> environment = Map.of("test.enabled", 1);
 
         assertThrows(IllegalArgumentException.class, () -> option.read(environment));
     }
 
     /// Returns a Long option that parses string values.
     private static ArkivoFileSystemOption<Long> longOption() {
-        return ArkivoFileSystemOption.of("size", Long.class, value -> {
+        return ArkivoFileSystemOption.of("test", "size", Long.class, value -> {
             if (value instanceof Long longValue) {
                 return longValue;
             }
@@ -94,7 +102,7 @@ public final class ArkivoFileSystemOptionTest {
             if (value instanceof String stringValue) {
                 return Long.parseLong(stringValue);
             }
-            throw new IllegalArgumentException("Expected Long, compatible integral number, or String for key: size");
+            throw new IllegalArgumentException("Expected Long, compatible integral number, or String for key: test.size");
         });
     }
 }

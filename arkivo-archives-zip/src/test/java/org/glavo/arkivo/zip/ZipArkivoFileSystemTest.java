@@ -12,10 +12,15 @@ import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -68,6 +73,55 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that preamble bytes can be read from an archive path.
+    @Test
+    public void preambleFromArchivePath() throws IOException {
+        byte[] preamble = new byte[]{1, 2, 3, 4};
+        Path archivePath = createTemporaryArchive(preamble);
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals(preamble.length, fileSystem.preambleSize());
+                assertPreambleContent(preamble, fileSystem);
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that preamble bytes can be read from a volume source.
+    @Test
+    public void preambleFromVolumeSource() throws IOException {
+        byte[] preamble = new byte[]{5, 6, 7};
+        Path archivePath = createTemporaryArchive(preamble);
+
+        try {
+            try (ZipArkivoFileSystem fileSystem =
+                         ZipArkivoFileSystem.open(ArkivoVolumeSource.of(List.of(archivePath)))) {
+                assertEquals(preamble.length, fileSystem.preambleSize());
+                assertPreambleContent(preamble, fileSystem);
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that preamble detection handles ZIP offsets that already include the preamble size.
+    @Test
+    public void preambleFromArchivePathWithAdjustedZipOffsets() throws IOException {
+        byte[] preamble = new byte[]{9, 8, 7, 6, 5};
+        Path archivePath = createTemporaryArchiveContent(singleEntryZipWithPreambleAndAdjustedOffsets(preamble));
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals(preamble.length, fileSystem.preambleSize());
+                assertPreambleContent(preamble, fileSystem);
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that closing a ZIP file system closes an owned volume source.
     @Test
     public void closeVolumeSource() throws IOException {
@@ -79,6 +133,109 @@ public final class ZipArkivoFileSystemTest {
         assertEquals(false, fileSystem.isOpen());
         assertEquals(true, volumes.closed);
         assertThrows(IllegalStateException.class, () -> fileSystem.getPath("/"));
+    }
+
+    /// Asserts that the preamble channel exposes exactly the expected preamble bytes.
+    private static void assertPreambleContent(byte[] expected, ZipArkivoFileSystem fileSystem) throws IOException {
+        try (SeekableByteChannel channel = fileSystem.openPreambleChannel()) {
+            assertEquals(expected.length, channel.size());
+            ByteBuffer buffer = ByteBuffer.allocate(expected.length);
+            assertEquals(expected.length, channel.read(buffer));
+            assertEquals(-1, channel.read(ByteBuffer.allocate(1)));
+            assertArrayEquals(expected, buffer.array());
+        }
+    }
+
+    /// Returns a minimal empty ZIP archive with the given preamble bytes.
+    private static byte[] emptyZipWithPreamble(byte[] preamble) {
+        ByteBuffer buffer = ByteBuffer.allocate(preamble.length + 22).order(ByteOrder.LITTLE_ENDIAN);
+        buffer.put(preamble);
+        buffer.putInt(0x06054b50);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putInt(0);
+        buffer.putInt(0);
+        buffer.putShort((short) 0);
+        return buffer.array();
+    }
+
+    /// Returns a minimal ZIP archive whose offsets include the preamble size.
+    private static byte[] singleEntryZipWithPreambleAndAdjustedOffsets(byte[] preamble) {
+        byte[] name = new byte[]{'a'};
+        int localHeaderOffset = preamble.length;
+        int localHeaderSize = 30 + name.length;
+        int centralDirectoryOffset = localHeaderOffset + localHeaderSize;
+        int centralDirectorySize = 46 + name.length;
+
+        ByteBuffer buffer = ByteBuffer.allocate(
+                preamble.length + localHeaderSize + centralDirectorySize + 22
+        ).order(ByteOrder.LITTLE_ENDIAN);
+
+        buffer.put(preamble);
+        buffer.putInt(0x04034b50);
+        buffer.putShort((short) 20);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putInt(0);
+        buffer.putInt(0);
+        buffer.putInt(0);
+        buffer.putShort((short) name.length);
+        buffer.putShort((short) 0);
+        buffer.put(name);
+
+        buffer.putInt(0x02014b50);
+        buffer.putShort((short) 20);
+        buffer.putShort((short) 20);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putInt(0);
+        buffer.putInt(0);
+        buffer.putInt(0);
+        buffer.putShort((short) name.length);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putInt(0);
+        buffer.putInt(localHeaderOffset);
+        buffer.put(name);
+
+        buffer.putInt(0x06054b50);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 1);
+        buffer.putShort((short) 1);
+        buffer.putInt(centralDirectorySize);
+        buffer.putInt(centralDirectoryOffset);
+        buffer.putShort((short) 0);
+        return buffer.array();
+    }
+
+    /// Creates a temporary archive file under the module build directory.
+    private static Path createTemporaryArchive(byte[] preamble) throws IOException {
+        return createTemporaryArchiveContent(emptyZipWithPreamble(preamble));
+    }
+
+    /// Creates a temporary archive file with the given content under the module build directory.
+    private static Path createTemporaryArchiveContent(byte[] content) throws IOException {
+        Path temporaryRoot = Path.of("build", "tmp", "arkivo-zip-tests");
+        Files.createDirectories(temporaryRoot);
+        Path temporaryDirectory = Files.createTempDirectory(temporaryRoot, "preamble-");
+        Path archivePath = temporaryDirectory.resolve("sfx.zip");
+        Files.write(archivePath, content);
+        return archivePath;
+    }
+
+    /// Deletes a temporary archive file and its containing directory.
+    private static void deleteTemporaryArchive(Path archivePath) throws IOException {
+        Files.deleteIfExists(archivePath);
+        Files.deleteIfExists(archivePath.getParent());
     }
 
     /// Test volume source that records close calls.

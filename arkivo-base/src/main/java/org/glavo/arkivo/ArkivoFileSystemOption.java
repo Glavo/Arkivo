@@ -15,6 +15,12 @@ import java.util.function.Function;
 /// @param <T> the typed value accepted by this option
 @NotNullByDefault
 public final class ArkivoFileSystemOption<T> {
+    /// The namespace that owns this option.
+    private final String namespace;
+
+    /// The local option name inside the namespace.
+    private final String name;
+
     /// The environment map key used by this option.
     private final String key;
 
@@ -25,15 +31,18 @@ public final class ArkivoFileSystemOption<T> {
     private final Function<Object, T> converter;
 
     /// Creates a typed option that accepts only values of the given type.
-    private ArkivoFileSystemOption(String key, Class<T> type, Function<Object, T> converter) {
-        this.key = Objects.requireNonNull(key, "key");
+    private ArkivoFileSystemOption(String namespace, String name, Class<T> type, Function<Object, T> converter) {
+        this.namespace = validateNamespace(namespace);
+        this.name = validateName(name);
+        this.key = this.namespace + "." + this.name;
         this.type = Objects.requireNonNull(type, "type");
         this.converter = Objects.requireNonNull(converter, "converter");
     }
 
     /// Returns a typed option that accepts only values of the given type.
-    public static <T> ArkivoFileSystemOption<T> of(String key, Class<T> type) {
-        return new ArkivoFileSystemOption<>(key, type, value -> {
+    public static <T> ArkivoFileSystemOption<T> of(String namespace, String name, Class<T> type) {
+        String key = key(namespace, name);
+        return new ArkivoFileSystemOption<>(namespace, name, type, value -> {
             if (type.isInstance(value)) {
                 return type.cast(value);
             }
@@ -43,11 +52,22 @@ public final class ArkivoFileSystemOption<T> {
 
     /// Returns a typed option that accepts values of the given type and values converted by the given converter.
     public static <T> ArkivoFileSystemOption<T> of(
-            String key,
+            String namespace,
+            String name,
             Class<T> type,
             Function<Object, T> converter
     ) {
-        return new ArkivoFileSystemOption<>(key, type, converter);
+        return new ArkivoFileSystemOption<>(namespace, name, type, converter);
+    }
+
+    /// Returns the namespace that owns this option.
+    public String namespace() {
+        return namespace;
+    }
+
+    /// Returns the local option name inside the namespace.
+    public String name() {
+        return name;
     }
 
     /// Returns the environment map key used by this option.
@@ -105,5 +125,28 @@ public final class ArkivoFileSystemOption<T> {
     @Override
     public String toString() {
         return key;
+    }
+
+    /// Returns the environment key for an option namespace and local name.
+    private static String key(String namespace, String name) {
+        return validateNamespace(namespace) + "." + validateName(name);
+    }
+
+    /// Returns a validated option namespace.
+    private static String validateNamespace(String namespace) {
+        Objects.requireNonNull(namespace, "namespace");
+        if (namespace.isEmpty() || namespace.startsWith(".") || namespace.endsWith(".") || namespace.contains("..")) {
+            throw new IllegalArgumentException("namespace must contain non-empty dot-separated segments");
+        }
+        return namespace;
+    }
+
+    /// Returns a validated local option name.
+    private static String validateName(String name) {
+        Objects.requireNonNull(name, "name");
+        if (name.isEmpty() || name.indexOf('.') >= 0) {
+            throw new IllegalArgumentException("name must be a non-empty local option name");
+        }
+        return name;
     }
 }
