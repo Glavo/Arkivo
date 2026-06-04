@@ -4,6 +4,7 @@
 package org.glavo.arkivo.zip;
 
 import org.glavo.arkivo.ArkivoFileSystem;
+import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoStorageAccess;
 import org.glavo.arkivo.ArkivoStorageAccessSet;
 import org.glavo.arkivo.ArkivoVolumeSource;
@@ -49,6 +50,7 @@ public final class ZipArkivoFileSystemTest {
                     ArkivoStorageAccess.RANDOM_READ,
                     ArkivoStorageAccess.STREAM_READ
             ), fileSystem.storageAccess());
+            assertEquals(ArkivoFileSystemThreadSafety.CONCURRENT_READ, fileSystem.threadSafety());
             assertEquals(true, fileSystem.isOpen());
             assertEquals(true, fileSystem.isReadOnly());
             assertEquals("/", fileSystem.getSeparator());

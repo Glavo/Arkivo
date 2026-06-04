@@ -7,6 +7,7 @@ import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemOption;
 import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.ArkivoStorageAccessSet;
+import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemImpl;
@@ -52,8 +53,11 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem permit
             );
 
     /// Creates a ZIP archive file system base instance.
-    protected ZipArkivoFileSystem(ArkivoStorageAccessSet storageAccess) {
-        super(storageAccess);
+    protected ZipArkivoFileSystem(
+            ArkivoStorageAccessSet storageAccess,
+            ArkivoFileSystemThreadSafety threadSafety
+    ) {
+        super(storageAccess, threadSafety);
     }
 
     /// Opens a ZIP archive file system.

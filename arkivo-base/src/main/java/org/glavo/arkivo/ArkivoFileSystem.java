@@ -21,17 +21,43 @@ public abstract class ArkivoFileSystem extends FileSystem {
                     ArkivoFileSystem::storageAccessOptionValue
             );
 
+    /// The common environment option that controls the requested file system thread-safety strategy.
+    public static final ArkivoFileSystemOption<ArkivoFileSystemThreadSafety> THREAD_SAFETY =
+            ArkivoFileSystemOption.of(
+                    "arkivo",
+                    "threadSafety",
+                    ArkivoFileSystemThreadSafety.class,
+                    ArkivoFileSystem::threadSafetyOptionValue
+            );
+
     /// The storage access values enabled for this file system.
     private final ArkivoStorageAccessSet storageAccess;
 
+    /// The requested file system thread-safety strategy.
+    private final ArkivoFileSystemThreadSafety threadSafety;
+
     /// Creates an archive-backed file system.
     protected ArkivoFileSystem(ArkivoStorageAccessSet storageAccess) {
+        this(storageAccess, ArkivoFileSystemThreadSafety.CONCURRENT_READ);
+    }
+
+    /// Creates an archive-backed file system with a thread-safety strategy.
+    protected ArkivoFileSystem(
+            ArkivoStorageAccessSet storageAccess,
+            ArkivoFileSystemThreadSafety threadSafety
+    ) {
         this.storageAccess = Objects.requireNonNull(storageAccess, "storageAccess");
+        this.threadSafety = Objects.requireNonNull(threadSafety, "threadSafety");
     }
 
     /// Returns the storage access values enabled for this file system.
     public final ArkivoStorageAccessSet storageAccess() {
         return storageAccess;
+    }
+
+    /// Returns the requested file system thread-safety strategy.
+    public final ArkivoFileSystemThreadSafety threadSafety() {
+        return threadSafety;
     }
 
     /// Opens a forward-only stream over archive entry paths in storage order.
@@ -48,7 +74,20 @@ public abstract class ArkivoFileSystem extends FileSystem {
             return ArkivoStorageAccessSet.parse(stringValue);
         }
         throw new IllegalArgumentException(
-                "Expected ArkivoStorageAccessSet or String for key: " + STORAGE_ACCESS.key()
+            "Expected ArkivoStorageAccessSet or String for key: " + STORAGE_ACCESS.key()
+        );
+    }
+
+    /// Converts a raw thread-safety option value.
+    private static ArkivoFileSystemThreadSafety threadSafetyOptionValue(Object value) {
+        if (value instanceof ArkivoFileSystemThreadSafety threadSafety) {
+            return threadSafety;
+        }
+        if (value instanceof String stringValue) {
+            return ArkivoFileSystemThreadSafety.parse(stringValue);
+        }
+        throw new IllegalArgumentException(
+                "Expected ArkivoFileSystemThreadSafety or String for key: " + THREAD_SAFETY.key()
         );
     }
 }

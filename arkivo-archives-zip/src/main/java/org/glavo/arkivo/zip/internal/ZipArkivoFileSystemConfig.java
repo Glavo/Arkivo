@@ -4,6 +4,7 @@
 package org.glavo.arkivo.zip.internal;
 
 import org.glavo.arkivo.ArkivoFileSystem;
+import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.ArkivoStorageAccessSet;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
@@ -27,7 +28,8 @@ public final class ZipArkivoFileSystemConfig {
             ZipEncryption.none(),
             NO_SPLIT_SIZE,
             ZipEntryNameEncoding.standard(),
-            ArkivoStorageAccessSet.RANDOM_READ
+            ArkivoStorageAccessSet.RANDOM_READ,
+            ArkivoFileSystemThreadSafety.CONCURRENT_READ
     );
 
     /// The provider used to decrypt encrypted ZIP entries.
@@ -45,13 +47,17 @@ public final class ZipArkivoFileSystemConfig {
     /// The storage access values enabled for ZIP archive storage.
     private final ArkivoStorageAccessSet storageAccess;
 
+    /// The requested ZIP file system thread-safety strategy.
+    private final ArkivoFileSystemThreadSafety threadSafety;
+
     /// Creates parsed ZIP file system configuration.
     public ZipArkivoFileSystemConfig(
             @Nullable ArkivoPasswordProvider passwordProvider,
             ZipEncryption defaultEncryption,
             long splitSize,
             ZipEntryNameEncoding entryNameEncoding,
-            ArkivoStorageAccessSet storageAccess
+            ArkivoStorageAccessSet storageAccess,
+            ArkivoFileSystemThreadSafety threadSafety
     ) {
         if (splitSize != NO_SPLIT_SIZE && splitSize <= 0) {
             throw new IllegalArgumentException("splitSize must be positive or NO_SPLIT_SIZE");
@@ -61,6 +67,7 @@ public final class ZipArkivoFileSystemConfig {
         this.splitSize = splitSize;
         this.entryNameEncoding = Objects.requireNonNull(entryNameEncoding, "entryNameEncoding");
         this.storageAccess = Objects.requireNonNull(storageAccess, "storageAccess");
+        this.threadSafety = Objects.requireNonNull(threadSafety, "threadSafety");
     }
 
     /// Parses ZIP file system configuration from an environment map.
@@ -81,13 +88,19 @@ public final class ZipArkivoFileSystemConfig {
                 );
         ArkivoStorageAccessSet storageAccess =
                 ArkivoFileSystem.STORAGE_ACCESS.readOrDefault(environment, ArkivoStorageAccessSet.RANDOM_READ);
+        ArkivoFileSystemThreadSafety threadSafety =
+                ArkivoFileSystem.THREAD_SAFETY.readOrDefault(
+                        environment,
+                        ArkivoFileSystemThreadSafety.CONCURRENT_READ
+                );
 
         return new ZipArkivoFileSystemConfig(
                 passwordProvider,
                 defaultEncryption,
                 splitSize,
                 entryNameEncoding,
-                storageAccess
+                storageAccess,
+                threadSafety
         );
     }
 
@@ -114,6 +127,11 @@ public final class ZipArkivoFileSystemConfig {
     /// Returns the storage access values enabled for ZIP archive storage.
     public ArkivoStorageAccessSet storageAccess() {
         return storageAccess;
+    }
+
+    /// Returns the requested ZIP file system thread-safety strategy.
+    public ArkivoFileSystemThreadSafety threadSafety() {
+        return threadSafety;
     }
 
     /// Parses the password provider from an environment map.

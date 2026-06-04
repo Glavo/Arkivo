@@ -40,6 +40,7 @@ public final class ArkivoStorageAccessTest {
         Map<String, Object> environment = new HashMap<>();
 
         ArkivoFileSystem.STORAGE_ACCESS.putString(environment, "random-read+stream-write");
+        ArkivoFileSystem.THREAD_SAFETY.putString(environment, "strict");
 
         assertEquals(
                 ArkivoStorageAccessSet.of(
@@ -48,6 +49,15 @@ public final class ArkivoStorageAccessTest {
                 ),
                 ArkivoFileSystem.STORAGE_ACCESS.read(environment)
         );
+        assertEquals(ArkivoFileSystemThreadSafety.STRICT, ArkivoFileSystem.THREAD_SAFETY.read(environment));
+    }
+
+    /// Verifies that file system thread-safety values parse stable option strings.
+    @Test
+    public void parseThreadSafety() {
+        assertEquals(ArkivoFileSystemThreadSafety.NONE, ArkivoFileSystemThreadSafety.parse("none"));
+        assertEquals(ArkivoFileSystemThreadSafety.CONCURRENT_READ, ArkivoFileSystemThreadSafety.parse("concurrent_read"));
+        assertEquals(ArkivoFileSystemThreadSafety.STRICT, ArkivoFileSystemThreadSafety.parse("strict"));
     }
 
     /// Verifies that unknown storage access names are rejected.

@@ -4,6 +4,7 @@
 package org.glavo.arkivo.zip.internal;
 
 import org.glavo.arkivo.ArkivoFileSystem;
+import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoStorageAccess;
 import org.glavo.arkivo.ArkivoStorageAccessSet;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
@@ -38,6 +39,7 @@ public final class ZipArkivoFileSystemConfigTest {
         assertEquals("arkivo.zip.defaultEncryption", ZipArkivoFileSystem.DEFAULT_ENCRYPTION.key());
         assertEquals("arkivo.zip.splitSize", ZipArkivoFileSystem.SPLIT_SIZE.key());
         assertEquals("arkivo.zip.entryNameEncoding", ZipArkivoFileSystem.ENTRY_NAME_ENCODING.key());
+        assertEquals("arkivo.threadSafety", ArkivoFileSystem.THREAD_SAFETY.key());
     }
 
     /// Verifies that string environment values are parsed through typed ZIP options.
@@ -45,6 +47,7 @@ public final class ZipArkivoFileSystemConfigTest {
     public void stringValues() {
         Map<String, Object> environment = new HashMap<>();
         ArkivoFileSystem.STORAGE_ACCESS.putString(environment, "random-read,stream-read");
+        ArkivoFileSystem.THREAD_SAFETY.putString(environment, "strict");
         ZipArkivoFileSystem.DEFAULT_ENCRYPTION.putString(environment, "winzip-aes-256");
         ZipArkivoFileSystem.SPLIT_SIZE.putString(environment, "1024");
         ZipArkivoFileSystem.ENTRY_NAME_ENCODING.putString(environment, "gb18030");
@@ -61,6 +64,7 @@ public final class ZipArkivoFileSystemConfigTest {
         assertEquals(ZipEncryption.winZipAes256(), config.defaultEncryption());
         assertEquals(1024L, config.splitSize());
         assertEquals(ZipEntryNameEncoding.parse("gb18030"), config.entryNameEncoding());
+        assertEquals(ArkivoFileSystemThreadSafety.STRICT, config.threadSafety());
     }
 
     /// Verifies that invalid storage access string values are rejected.

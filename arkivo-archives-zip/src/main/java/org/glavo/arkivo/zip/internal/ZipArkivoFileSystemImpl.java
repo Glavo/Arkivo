@@ -166,7 +166,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             ZipArkivoFileSystemConfig config,
             @Nullable Runnable closeAction
     ) {
-        super(config.storageAccess());
+        super(config.storageAccess(), config.threadSafety());
         if (archivePath == null && volumes == null) {
             throw new IllegalArgumentException("archivePath or volumes must be set");
         }
