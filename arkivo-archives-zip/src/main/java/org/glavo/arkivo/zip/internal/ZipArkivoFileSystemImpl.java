@@ -4,6 +4,7 @@
 package org.glavo.arkivo.zip.internal;
 
 import org.glavo.arkivo.ArkivoFileSystemEntryStream;
+import org.glavo.arkivo.ArkivoPathMatchers;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
@@ -48,7 +49,6 @@ import java.time.DateTimeException;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.*;
-import java.util.regex.Pattern;
 import java.util.zip.Inflater;
 import java.util.zip.InflaterInputStream;
 
@@ -543,118 +543,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Returns a path matcher for this ZIP file system.
     @Override
     public PathMatcher getPathMatcher(String syntaxAndPattern) {
-        Objects.requireNonNull(syntaxAndPattern, "syntaxAndPattern");
-        int separator = syntaxAndPattern.indexOf(':');
-        if (separator <= 0) {
-            throw new IllegalArgumentException("Path matcher syntax must be syntax:pattern");
-        }
-
-        String syntax = syntaxAndPattern.substring(0, separator);
-        String pattern = syntaxAndPattern.substring(separator + 1);
-        Pattern compiledPattern = switch (syntax) {
-            case "glob" -> Pattern.compile(globToRegex(pattern));
-            case "regex" -> Pattern.compile(pattern);
-            default -> throw new UnsupportedOperationException("Unsupported ZIP path matcher syntax: " + syntax);
-        };
-        return path -> compiledPattern.matcher(path.toString()).matches();
-    }
-
-    /// Converts a ZIP glob pattern to a regular expression that treats `/` as the only separator.
-    private static String globToRegex(String glob) {
-        StringBuilder regex = new StringBuilder(glob.length() * 2);
-        int groupDepth = 0;
-        for (int index = 0; index < glob.length(); index++) {
-            char ch = glob.charAt(index);
-            switch (ch) {
-                case '*' -> {
-                    if (index + 1 < glob.length() && glob.charAt(index + 1) == '*') {
-                        regex.append(".*");
-                        index++;
-                    } else {
-                        regex.append("[^/]*");
-                    }
-                }
-                case '?' -> regex.append("[^/]");
-                case '[' -> index = appendGlobCharacterClass(glob, index, regex);
-                case '{' -> {
-                    regex.append("(?:");
-                    groupDepth++;
-                }
-                case '}' -> {
-                    if (groupDepth > 0) {
-                        regex.append(')');
-                        groupDepth--;
-                    } else {
-                        appendRegexLiteral(regex, ch);
-                    }
-                }
-                case ',' -> {
-                    if (groupDepth > 0) {
-                        regex.append('|');
-                    } else {
-                        appendRegexLiteral(regex, ch);
-                    }
-                }
-                case '\\' -> {
-                    if (index + 1 >= glob.length()) {
-                        appendRegexLiteral(regex, ch);
-                    } else {
-                        appendRegexLiteral(regex, glob.charAt(++index));
-                    }
-                }
-                default -> appendRegexLiteral(regex, ch);
-            }
-        }
-
-        if (groupDepth != 0) {
-            throw new IllegalArgumentException("Unclosed glob group: " + glob);
-        }
-        return regex.toString();
-    }
-
-    /// Appends a glob character class and returns the final consumed index.
-    private static int appendGlobCharacterClass(String glob, int startIndex, StringBuilder regex) {
-        int index = startIndex + 1;
-        if (index >= glob.length()) {
-            throw new IllegalArgumentException("Unclosed glob character class: " + glob);
-        }
-
-        regex.append('[');
-        if (glob.charAt(index) == '!') {
-            regex.append('^');
-            index++;
-        } else if (glob.charAt(index) == '^') {
-            regex.append("\\^");
-            index++;
-        }
-
-        boolean closed = false;
-        for (; index < glob.length(); index++) {
-            char ch = glob.charAt(index);
-            if (ch == ']') {
-                regex.append(']');
-                closed = true;
-                break;
-            }
-            if (ch == '\\') {
-                regex.append("\\\\");
-            } else {
-                regex.append(ch);
-            }
-        }
-
-        if (!closed) {
-            throw new IllegalArgumentException("Unclosed glob character class: " + glob);
-        }
-        return index;
-    }
-
-    /// Appends one regular expression literal character.
-    private static void appendRegexLiteral(StringBuilder regex, char ch) {
-        if ("\\.[]{}()+-^$|".indexOf(ch) >= 0) {
-            regex.append('\\');
-        }
-        regex.append(ch);
+        return ArkivoPathMatchers.create(syntaxAndPattern, '/');
     }
 
     /// Returns a user principal lookup service for this ZIP file system.
