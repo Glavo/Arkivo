@@ -1,7 +1,9 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.zip;
+package org.glavo.arkivo.zip.internal;
+
+import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -88,7 +90,7 @@ final class ZipArkivoPath implements Path {
     /// Returns the root component of this path.
     @Override
     public @Nullable Path getRoot() {
-        return absolute ? fileSystem.rootPath() : null;
+        return absolute ? root(fileSystem) : null;
     }
 
     /// Returns the final name component of this path.
@@ -107,7 +109,7 @@ final class ZipArkivoPath implements Path {
             return null;
         }
         if (names.size() == 1) {
-            return absolute ? fileSystem.rootPath() : null;
+            return absolute ? root(fileSystem) : null;
         }
         return new ZipArkivoPath(fileSystem, absolute, names.subList(0, names.size() - 1));
     }
@@ -249,7 +251,7 @@ final class ZipArkivoPath implements Path {
     /// Returns this path as an absolute path.
     @Override
     public Path toAbsolutePath() {
-        return absolute ? this : fileSystem.rootPath().resolve(this);
+        return absolute ? this : root(fileSystem).resolve(this);
     }
 
     /// Resolves this path to a real path.

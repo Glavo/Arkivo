@@ -34,8 +34,6 @@ public final class ZipArkivoFileSystemTest {
         Map<String, Object> environment = Map.of(ArkivoFileSystem.STORAGE_ACCESS.key(), "random-read,stream-read");
 
         try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, environment)) {
-            assertEquals(archivePath, fileSystem.archivePath());
-            assertEquals(null, fileSystem.volumes());
             assertEquals(ZipArkivoFileSystemProvider.instance(), fileSystem.provider());
             assertEquals(ArkivoStorageAccessSet.of(
                     ArkivoStorageAccess.RANDOM_READ,

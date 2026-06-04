@@ -5,6 +5,7 @@ package org.glavo.arkivo.zip;
 
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemConfig;
+import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -65,7 +66,7 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     public ZipArkivoFileSystem newFileSystem(Path path, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(path, "path");
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
-        return new ZipArkivoFileSystem(this, path, null, config);
+        return new ZipArkivoFileSystemImpl(this, path, null, config);
     }
 
     /// Returns an open ZIP archive file system for a provider URI.

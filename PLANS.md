@@ -224,6 +224,8 @@ SevenZipArkivoFileSystem.open(path)
 ```
 
 Concrete archive file systems should extend `ArkivoFileSystem`.
+Public archive file system classes may be sealed abstract API types, with concrete implementations kept in the
+format module's internal package so implementation state and helper methods are not exposed as public API.
 The common `ArkivoFileSystem.STORAGE_ACCESS` environment option should select a non-empty set of orthogonal storage
 access values: random read, random write, stream read, and stream write.
 `ArkivoFileSystem.openEntryStream()` should provide forward-only entry traversal for implementations that support
