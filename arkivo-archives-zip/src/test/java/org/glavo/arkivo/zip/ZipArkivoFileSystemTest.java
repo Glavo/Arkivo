@@ -149,6 +149,9 @@ public final class ZipArkivoFileSystemTest {
                 try (var input = Files.newInputStream(file)) {
                     assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
                 }
+                assertEquals(true, fileSystem.getPathMatcher("glob:**/*.txt").matches(file));
+                assertEquals(false, fileSystem.getPathMatcher("glob:**/*.bin").matches(file));
+                assertEquals(true, fileSystem.getPathMatcher("regex:.*/hello\\.txt").matches(file));
                 assertEquals("zip", Files.getFileStore(file).type());
 
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
