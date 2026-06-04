@@ -38,6 +38,7 @@ import java.nio.file.WatchService;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.FileStoreAttributeView;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.spi.FileSystemProvider;
@@ -45,8 +46,10 @@ import java.time.DateTimeException;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -233,7 +236,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Returns the file stores exposed by this ZIP file system.
     @Override
     public @Unmodifiable Iterable<FileStore> getFileStores() {
-        return List.of();
+        return List.of(fileStore());
     }
 
     /// Returns the supported file attribute view names.
@@ -349,6 +352,113 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             return EntryAttributes.syntheticDirectory(key);
         }
         throw new NoSuchFileException(path.toString());
+    }
+
+    /// Returns the file store exposed by this ZIP file system.
+    public FileStore fileStore() {
+        return ZipFileStore.INSTANCE;
+    }
+
+    /// Reads named attributes for an entry path.
+    public Map<String, Object> readAttributes(Path path, String attributes) throws IOException {
+        Objects.requireNonNull(attributes, "attributes");
+        int separator = attributes.indexOf(':');
+        String view = separator >= 0 ? attributes.substring(0, separator) : "basic";
+        String names = separator >= 0 ? attributes.substring(separator + 1) : attributes;
+        if (!"basic".equals(view) && !"zip".equals(view)) {
+            throw new UnsupportedOperationException("Unsupported ZIP attribute view: " + view);
+        }
+
+        ZipArkivoEntryAttributes zipAttributes = readZipAttributes(path);
+        LinkedHashMap<String, Object> values = new LinkedHashMap<>();
+        if ("*".equals(names)) {
+            addBasicAttributes(values, zipAttributes);
+            if ("zip".equals(view)) {
+                addZipAttributes(values, zipAttributes);
+            }
+            return Collections.unmodifiableMap(values);
+        }
+
+        for (String name : names.split(",")) {
+            addNamedAttribute(values, zipAttributes, name.trim(), "zip".equals(view));
+        }
+        return Collections.unmodifiableMap(values);
+    }
+
+    /// Adds all basic attributes to a named attribute map.
+    private static void addBasicAttributes(Map<String, Object> values, ZipArkivoEntryAttributes attributes) {
+        values.put("lastModifiedTime", attributes.lastModifiedTime());
+        values.put("lastAccessTime", attributes.lastAccessTime());
+        values.put("creationTime", attributes.creationTime());
+        values.put("size", attributes.size());
+        values.put("isRegularFile", attributes.isRegularFile());
+        values.put("isDirectory", attributes.isDirectory());
+        values.put("isSymbolicLink", attributes.isSymbolicLink());
+        values.put("isOther", attributes.isOther());
+        values.put("fileKey", attributes.fileKey());
+    }
+
+    /// Adds all ZIP-specific attributes to a named attribute map.
+    private static void addZipAttributes(Map<String, Object> values, ZipArkivoEntryAttributes attributes) {
+        values.put("rawPath", attributes.rawPath());
+        values.put("path", attributes.path());
+        values.put("compressedSize", attributes.compressedSize());
+        values.put("crc32", attributes.crc32());
+        values.put("generalPurposeFlags", attributes.generalPurposeFlags());
+        values.put("versionMadeBy", attributes.versionMadeBy());
+        values.put("versionNeededToExtract", attributes.versionNeededToExtract());
+        values.put("internalAttributes", attributes.internalAttributes());
+        values.put("externalAttributes", attributes.externalAttributes());
+        values.put("method", attributes.method());
+        values.put("encryption", attributes.encryption());
+        values.put("localExtraData", attributes.localExtraData());
+        values.put("centralDirectoryExtraData", attributes.centralDirectoryExtraData());
+        values.put("rawComment", attributes.rawComment());
+        values.put("comment", attributes.comment());
+    }
+
+    /// Adds one named attribute to a named attribute map.
+    private static void addNamedAttribute(
+            Map<String, Object> values,
+            ZipArkivoEntryAttributes attributes,
+            String name,
+            boolean zipView
+    ) {
+        switch (name) {
+            case "lastModifiedTime" -> values.put(name, attributes.lastModifiedTime());
+            case "lastAccessTime" -> values.put(name, attributes.lastAccessTime());
+            case "creationTime" -> values.put(name, attributes.creationTime());
+            case "size" -> values.put(name, attributes.size());
+            case "isRegularFile" -> values.put(name, attributes.isRegularFile());
+            case "isDirectory" -> values.put(name, attributes.isDirectory());
+            case "isSymbolicLink" -> values.put(name, attributes.isSymbolicLink());
+            case "isOther" -> values.put(name, attributes.isOther());
+            case "fileKey" -> values.put(name, attributes.fileKey());
+            case "rawPath" -> requireZipView(values, name, zipView, attributes.rawPath());
+            case "path" -> requireZipView(values, name, zipView, attributes.path());
+            case "compressedSize" -> requireZipView(values, name, zipView, attributes.compressedSize());
+            case "crc32" -> requireZipView(values, name, zipView, attributes.crc32());
+            case "generalPurposeFlags" -> requireZipView(values, name, zipView, attributes.generalPurposeFlags());
+            case "versionMadeBy" -> requireZipView(values, name, zipView, attributes.versionMadeBy());
+            case "versionNeededToExtract" -> requireZipView(values, name, zipView, attributes.versionNeededToExtract());
+            case "internalAttributes" -> requireZipView(values, name, zipView, attributes.internalAttributes());
+            case "externalAttributes" -> requireZipView(values, name, zipView, attributes.externalAttributes());
+            case "method" -> requireZipView(values, name, zipView, attributes.method());
+            case "encryption" -> requireZipView(values, name, zipView, attributes.encryption());
+            case "localExtraData" -> requireZipView(values, name, zipView, attributes.localExtraData());
+            case "centralDirectoryExtraData" -> requireZipView(values, name, zipView, attributes.centralDirectoryExtraData());
+            case "rawComment" -> requireZipView(values, name, zipView, attributes.rawComment());
+            case "comment" -> requireZipView(values, name, zipView, attributes.comment());
+            default -> throw new IllegalArgumentException("Unsupported ZIP attribute: " + name);
+        }
+    }
+
+    /// Adds a ZIP-view-only attribute or rejects it for the basic view.
+    private static void requireZipView(Map<String, Object> values, String name, boolean zipView, @Nullable Object value) {
+        if (!zipView) {
+            throw new IllegalArgumentException("Attribute requires zip view: " + name);
+        }
+        values.put(name, value);
     }
 
     /// Returns a path matcher for this ZIP file system.
@@ -1082,6 +1192,76 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 throw new IOException("Invalid ZIP64 extended information extra field");
             }
             return data.getLong();
+        }
+    }
+
+    /// Exposes the ZIP archive as a read-only file store.
+    private static final class ZipFileStore extends FileStore {
+        /// The shared ZIP file store instance.
+        private static final ZipFileStore INSTANCE = new ZipFileStore();
+
+        /// Creates a ZIP file store.
+        private ZipFileStore() {
+        }
+
+        /// Returns the file store name.
+        @Override
+        public String name() {
+            return "zip";
+        }
+
+        /// Returns the file store type.
+        @Override
+        public String type() {
+            return "zip";
+        }
+
+        /// Returns whether this file store is read-only.
+        @Override
+        public boolean isReadOnly() {
+            return true;
+        }
+
+        /// Returns the total space in bytes, or zero when it is not available.
+        @Override
+        public long getTotalSpace() {
+            return 0;
+        }
+
+        /// Returns the usable space in bytes.
+        @Override
+        public long getUsableSpace() {
+            return 0;
+        }
+
+        /// Returns the unallocated space in bytes.
+        @Override
+        public long getUnallocatedSpace() {
+            return 0;
+        }
+
+        /// Returns whether a file attribute view is supported.
+        @Override
+        public boolean supportsFileAttributeView(Class<? extends java.nio.file.attribute.FileAttributeView> type) {
+            return type == BasicFileAttributeView.class || type == ZipArkivoEntryAttributeView.class;
+        }
+
+        /// Returns whether a file attribute view is supported.
+        @Override
+        public boolean supportsFileAttributeView(String name) {
+            return "basic".equals(name) || "zip".equals(name);
+        }
+
+        /// Returns a file store attribute view.
+        @Override
+        public <V extends FileStoreAttributeView> @Nullable V getFileStoreAttributeView(Class<V> type) {
+            return null;
+        }
+
+        /// Reads a file store attribute.
+        @Override
+        public @Nullable Object getAttribute(String attribute) {
+            return null;
         }
     }
 

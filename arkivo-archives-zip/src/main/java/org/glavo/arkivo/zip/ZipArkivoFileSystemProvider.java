@@ -15,13 +15,17 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.file.AccessMode;
 import java.nio.file.CopyOption;
 import java.nio.file.DirectoryStream;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileStore;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystemNotFoundException;
+import java.nio.file.Files;
 import java.nio.file.ProviderMismatchException;
 import java.nio.file.LinkOption;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.ReadOnlyFileSystemException;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileAttributeView;
@@ -103,25 +107,55 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     /// Creates a directory inside a ZIP archive file system.
     @Override
     public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
-        throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
+        throw new ReadOnlyFileSystemException();
     }
 
     /// Deletes a path inside a ZIP archive file system.
     @Override
     public void delete(Path path) throws IOException {
-        throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
+        throw new ReadOnlyFileSystemException();
     }
 
     /// Copies a path inside or across ZIP archive file systems.
     @Override
     public void copy(Path source, Path target, CopyOption... options) throws IOException {
-        throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
+        boolean replaceExisting = false;
+        for (CopyOption option : options) {
+            if (option == StandardCopyOption.REPLACE_EXISTING) {
+                replaceExisting = true;
+            } else {
+                throw new UnsupportedOperationException("Unsupported ZIP copy option: " + option);
+            }
+        }
+
+        BasicFileAttributes attributes = readAttributes(source, BasicFileAttributes.class);
+        if (attributes.isDirectory()) {
+            if (Files.exists(target)) {
+                if (!replaceExisting) {
+                    throw new FileAlreadyExistsException(target.toString());
+                }
+            } else {
+                Files.createDirectories(target);
+            }
+            return;
+        }
+
+        if (Files.exists(target) && !replaceExisting) {
+            throw new FileAlreadyExistsException(target.toString());
+        }
+        try (java.io.InputStream input = newInputStream(source)) {
+            if (replaceExisting) {
+                Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
+            } else {
+                Files.copy(input, target);
+            }
+        }
     }
 
     /// Moves a path inside or across ZIP archive file systems.
     @Override
     public void move(Path source, Path target, CopyOption... options) throws IOException {
-        throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
+        throw new ReadOnlyFileSystemException();
     }
 
     /// Returns whether two ZIP archive paths refer to the same file.
@@ -141,7 +175,8 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     /// Returns the file store for a ZIP archive path.
     @Override
     public FileStore getFileStore(Path path) throws IOException {
-        throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
+        fileSystem(path).checkAccess(path);
+        return fileSystem(path).fileStore();
     }
 
     /// Checks access to a ZIP archive path.
@@ -165,13 +200,13 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     /// Reads named file attributes for a ZIP archive path.
     @Override
     public Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options) throws IOException {
-        throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
+        return fileSystem(path).readAttributes(path, attributes);
     }
 
     /// Sets a named file attribute for a ZIP archive path.
     @Override
     public void setAttribute(Path path, String attribute, Object value, LinkOption... options) throws IOException {
-        throw new UnsupportedOperationException("ZIP archive file systems are not implemented yet");
+        throw new ReadOnlyFileSystemException();
     }
 
     /// Returns the ZIP file system implementation that owns a path.

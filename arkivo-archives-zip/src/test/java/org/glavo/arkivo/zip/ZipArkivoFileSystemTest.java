@@ -129,17 +129,24 @@ public final class ZipArkivoFileSystemTest {
     @Test
     public void readDeflatedZipEntries() throws IOException {
         Path archivePath = createDeflatedZipArchive();
+        Path copyTarget = archivePath.getParent().resolve("copied.txt");
 
         try {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
                 Path file = fileSystem.getPath("/dir/hello.txt");
 
                 assertEquals("hello", Files.readString(file, StandardCharsets.UTF_8));
+                assertEquals("zip", Files.getFileStore(file).type());
 
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
                 assertEquals(5L, attributes.size());
                 assertEquals(ZipMethod.deflated(), attributes.method());
                 assertEquals(true, attributes.compressedSize() > 0);
+
+                Map<String, Object> namedAttributes = Files.readAttributes(file, "zip:size,compressedSize,method");
+                assertEquals(5L, namedAttributes.get("size"));
+                assertEquals(ZipMethod.deflated(), namedAttributes.get("method"));
+                assertEquals(true, ((Long) namedAttributes.get("compressedSize")) > 0);
 
                 ArrayList<String> children = new ArrayList<>();
                 try (DirectoryStream<Path> stream = Files.newDirectoryStream(fileSystem.getPath("/dir"))) {
@@ -148,8 +155,12 @@ public final class ZipArkivoFileSystemTest {
                     }
                 }
                 assertEquals(List.of("/dir/hello.txt"), children);
+
+                Files.copy(file, copyTarget);
+                assertEquals("hello", Files.readString(copyTarget, StandardCharsets.UTF_8));
             }
         } finally {
+            Files.deleteIfExists(copyTarget);
             deleteTemporaryArchive(archivePath);
         }
     }
