@@ -37,24 +37,6 @@ public abstract class ArkivoStreamingWriter implements Closeable {
         return Channels.newOutputStream(openChannel());
     }
 
-    /// Creates a directory entry for the given logical archive path text.
-    public void createDirectory(String path) throws IOException {
-        beginEntry(path);
-        createDirectory();
-    }
-
-    /// Opens a writable channel for the next regular file entry at the given logical archive path text.
-    public WritableByteChannel openChannel(String path) throws IOException {
-        beginEntry(path);
-        return openChannel();
-    }
-
-    /// Opens an output stream for the next regular file entry at the given logical archive path text.
-    public OutputStream openOutputStream(String path) throws IOException {
-        beginEntry(path);
-        return openOutputStream();
-    }
-
     /// Closes this streaming writer and finishes the archive stream.
     @Override
     public abstract void close() throws IOException;

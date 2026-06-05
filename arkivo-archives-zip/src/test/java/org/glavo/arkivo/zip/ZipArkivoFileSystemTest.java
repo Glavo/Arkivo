@@ -67,8 +67,10 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                writer.createDirectory("dir");
-                try (var output = writer.openOutputStream("dir/hello.txt")) {
+                writer.beginEntry("dir");
+                writer.createDirectory();
+                writer.beginEntry("dir/hello.txt");
+                try (var output = writer.openOutputStream()) {
                     output.write("hello".getBytes(StandardCharsets.UTF_8));
                 }
             }
@@ -513,8 +515,10 @@ public final class ZipArkivoFileSystemTest {
     private static Path createDeflatedZipArchive() throws IOException {
         Path archivePath = createTemporaryArchivePath("real-zip-");
         try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-            writer.createDirectory("dir");
-            try (var output = writer.openOutputStream("dir/hello.txt")) {
+            writer.beginEntry("dir");
+            writer.createDirectory();
+            writer.beginEntry("dir/hello.txt");
+            try (var output = writer.openOutputStream()) {
                 output.write("hello".getBytes(StandardCharsets.UTF_8));
             }
         }
