@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.zip;
+package org.glavo.arkivo;
 
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -10,9 +10,9 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.file.OpenOption;
 import java.util.Set;
 
-/// Provides seekable access to one staged ZIP entry body.
+/// Provides seekable access to one staged archive entry body.
 @NotNullByDefault
-public interface ZipArkivoStoredContent extends AutoCloseable {
+public interface ArkivoStoredContent extends AutoCloseable {
     /// Opens a channel over the staged content with the given open options.
     SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException;
 

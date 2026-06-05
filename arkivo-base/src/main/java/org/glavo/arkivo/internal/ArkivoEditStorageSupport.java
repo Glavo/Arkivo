@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.zip.internal;
+package org.glavo.arkivo.internal;
 
-import org.glavo.arkivo.zip.ZipArkivoEditStorage;
-import org.glavo.arkivo.zip.ZipArkivoStoredContent;
+import org.glavo.arkivo.ArkivoEditStorage;
+import org.glavo.arkivo.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -21,28 +21,28 @@ import java.util.Arrays;
 import java.util.Objects;
 import java.util.Set;
 
-/// Provides built-in ZIP editor storage strategies.
+/// Provides built-in archive editor storage strategies.
 @NotNullByDefault
-public final class ZipArkivoEditStorageSupport {
+public final class ArkivoEditStorageSupport {
     /// The shared memory storage strategy.
-    private static final ZipArkivoEditStorage MEMORY = new MemoryStorage();
+    private static final ArkivoEditStorage MEMORY = new MemoryStorage();
 
-    /// Creates built-in ZIP editor storage strategies.
-    private ZipArkivoEditStorageSupport() {
+    /// Creates built-in archive editor storage strategies.
+    private ArkivoEditStorageSupport() {
     }
 
     /// Returns an edit storage that keeps staged content in memory.
-    public static ZipArkivoEditStorage memory() {
+    public static ArkivoEditStorage memory() {
         return MEMORY;
     }
 
     /// Returns an edit storage that keeps staged content in temporary files under the given directory.
-    public static ZipArkivoEditStorage temporaryFiles(Path directory) {
+    public static ArkivoEditStorage temporaryFiles(Path directory) {
         return new TemporaryFileStorage(directory);
     }
 
     /// Returns an edit storage that keeps small staged content in memory and larger content in temporary files.
-    public static ZipArkivoEditStorage hybrid(long memoryThreshold, Path directory) {
+    public static ArkivoEditStorage hybrid(long memoryThreshold, Path directory) {
         if (memoryThreshold < 0) {
             throw new IllegalArgumentException("memoryThreshold must not be negative");
         }
@@ -64,16 +64,16 @@ public final class ZipArkivoEditStorageSupport {
 
     /// Implements memory-backed edit storage.
     @NotNullByDefault
-    private static final class MemoryStorage implements ZipArkivoEditStorage {
+    private static final class MemoryStorage implements ArkivoEditStorage {
         /// Creates memory-backed edit storage.
         private MemoryStorage() {
         }
 
         /// Creates in-memory content storage.
         @Override
-        public ZipArkivoStoredContent createContent(String path, long expectedSize) {
+        public ArkivoStoredContent createContent(String path, long expectedSize) {
             Objects.requireNonNull(path, "path");
-            if (expectedSize < ZipArkivoEditStorage.UNKNOWN_SIZE) {
+            if (expectedSize < ArkivoEditStorage.UNKNOWN_SIZE) {
                 throw new IllegalArgumentException("expectedSize must be UNKNOWN_SIZE or non-negative");
             }
             return new MemoryStoredContent(expectedSize);
@@ -87,7 +87,7 @@ public final class ZipArkivoEditStorageSupport {
 
     /// Implements temporary-file edit storage.
     @NotNullByDefault
-    private static final class TemporaryFileStorage implements ZipArkivoEditStorage {
+    private static final class TemporaryFileStorage implements ArkivoEditStorage {
         /// The directory that receives temporary content files.
         private final Path directory;
 
@@ -98,9 +98,9 @@ public final class ZipArkivoEditStorageSupport {
 
         /// Creates temporary-file content storage.
         @Override
-        public ZipArkivoStoredContent createContent(String path, long expectedSize) throws IOException {
+        public ArkivoStoredContent createContent(String path, long expectedSize) throws IOException {
             Objects.requireNonNull(path, "path");
-            if (expectedSize < ZipArkivoEditStorage.UNKNOWN_SIZE) {
+            if (expectedSize < ArkivoEditStorage.UNKNOWN_SIZE) {
                 throw new IllegalArgumentException("expectedSize must be UNKNOWN_SIZE or non-negative");
             }
             Files.createDirectories(directory);
@@ -115,7 +115,7 @@ public final class ZipArkivoEditStorageSupport {
 
     /// Implements hybrid memory and temporary-file edit storage.
     @NotNullByDefault
-    private static final class HybridStorage implements ZipArkivoEditStorage {
+    private static final class HybridStorage implements ArkivoEditStorage {
         /// The maximum known size stored in memory.
         private final long memoryThreshold;
 
@@ -130,7 +130,7 @@ public final class ZipArkivoEditStorageSupport {
 
         /// Creates content storage based on the expected size.
         @Override
-        public ZipArkivoStoredContent createContent(String path, long expectedSize) throws IOException {
+        public ArkivoStoredContent createContent(String path, long expectedSize) throws IOException {
             if (expectedSize >= 0 && expectedSize <= memoryThreshold) {
                 return MEMORY.createContent(path, expectedSize);
             }
@@ -145,7 +145,7 @@ public final class ZipArkivoEditStorageSupport {
 
     /// Implements memory-backed stored content.
     @NotNullByDefault
-    private static final class MemoryStoredContent implements ZipArkivoStoredContent {
+    private static final class MemoryStoredContent implements ArkivoStoredContent {
         /// The staged bytes.
         private byte[] data;
 
@@ -322,7 +322,7 @@ public final class ZipArkivoEditStorageSupport {
 
     /// Implements temporary-file stored content.
     @NotNullByDefault
-    private static final class TemporaryFileStoredContent implements ZipArkivoStoredContent {
+    private static final class TemporaryFileStoredContent implements ArkivoStoredContent {
         /// The temporary file path.
         private final Path path;
 

@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.zip.internal;
+package org.glavo.arkivo.internal;
 
-import org.glavo.arkivo.zip.ZipArkivoCommitOutput;
-import org.glavo.arkivo.zip.ZipArkivoCommitTarget;
+import org.glavo.arkivo.ArkivoCommitOutput;
+import org.glavo.arkivo.ArkivoCommitTarget;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -16,47 +16,47 @@ import java.nio.file.StandardCopyOption;
 import java.util.Objects;
 import java.util.Set;
 
-/// Provides built-in ZIP editor commit targets.
+/// Provides built-in archive editor commit targets.
 @NotNullByDefault
-public final class ZipArkivoCommitTargetSupport {
+public final class ArkivoCommitTargetSupport {
     /// The commit target that writes directly to the original archive path.
-    private static final ZipArkivoCommitTarget REPLACE_ORIGINAL = DirectOriginalTarget.INSTANCE;
+    private static final ArkivoCommitTarget REPLACE_ORIGINAL = DirectOriginalTarget.INSTANCE;
 
-    /// Creates built-in ZIP editor commit targets.
-    private ZipArkivoCommitTargetSupport() {
+    /// Creates built-in archive editor commit targets.
+    private ArkivoCommitTargetSupport() {
     }
 
     /// Returns a target that writes directly to the original archive path.
-    public static ZipArkivoCommitTarget replaceOriginal() {
+    public static ArkivoCommitTarget replaceOriginal() {
         return REPLACE_ORIGINAL;
     }
 
     /// Returns a target that writes to a temporary file and atomically replaces the original archive path on commit.
-    public static ZipArkivoCommitTarget atomicReplace(Path directory) {
+    public static ArkivoCommitTarget atomicReplace(Path directory) {
         return new AtomicReplaceTarget(directory);
     }
 
     /// Returns a target that writes the assembled archive to the given path.
-    public static ZipArkivoCommitTarget writeTo(Path path) {
+    public static ArkivoCommitTarget writeTo(Path path) {
         return new FixedPathTarget(path);
     }
 
     /// Implements direct writes to the original archive path.
     @NotNullByDefault
-    private enum DirectOriginalTarget implements ZipArkivoCommitTarget {
+    private enum DirectOriginalTarget implements ArkivoCommitTarget {
         /// The shared direct target instance.
         INSTANCE;
 
         /// Opens output over the source archive path.
         @Override
-        public ZipArkivoCommitOutput openOutput(Path sourcePath) {
+        public ArkivoCommitOutput openOutput(Path sourcePath) {
             return new PathCommitOutput(Objects.requireNonNull(sourcePath, "sourcePath"), null);
         }
     }
 
     /// Implements atomic replacement through a temporary output file.
     @NotNullByDefault
-    private static final class AtomicReplaceTarget implements ZipArkivoCommitTarget {
+    private static final class AtomicReplaceTarget implements ArkivoCommitTarget {
         /// The directory that receives temporary archive output.
         private final Path directory;
 
@@ -67,7 +67,7 @@ public final class ZipArkivoCommitTargetSupport {
 
         /// Opens temporary output for the given source archive path.
         @Override
-        public ZipArkivoCommitOutput openOutput(Path sourcePath) throws IOException {
+        public ArkivoCommitOutput openOutput(Path sourcePath) throws IOException {
             Objects.requireNonNull(sourcePath, "sourcePath");
             Files.createDirectories(directory);
             Path temporaryPath = Files.createTempFile(directory, "arkivo-zip-archive-", ".tmp");
@@ -77,7 +77,7 @@ public final class ZipArkivoCommitTargetSupport {
 
     /// Implements output to a fixed target path.
     @NotNullByDefault
-    private static final class FixedPathTarget implements ZipArkivoCommitTarget {
+    private static final class FixedPathTarget implements ArkivoCommitTarget {
         /// The output path.
         private final Path path;
 
@@ -88,7 +88,7 @@ public final class ZipArkivoCommitTargetSupport {
 
         /// Opens output over the fixed target path.
         @Override
-        public ZipArkivoCommitOutput openOutput(Path sourcePath) {
+        public ArkivoCommitOutput openOutput(Path sourcePath) {
             Objects.requireNonNull(sourcePath, "sourcePath");
             return new PathCommitOutput(path, null);
         }
@@ -96,7 +96,7 @@ public final class ZipArkivoCommitTargetSupport {
 
     /// Implements path-backed commit output.
     @NotNullByDefault
-    private static final class PathCommitOutput implements ZipArkivoCommitOutput {
+    private static final class PathCommitOutput implements ArkivoCommitOutput {
         /// The path that receives assembled archive bytes.
         private final Path path;
 

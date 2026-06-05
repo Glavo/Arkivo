@@ -1,13 +1,13 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.zip;
+package org.glavo.arkivo;
 
 import org.jetbrains.annotations.NotNullByDefault;
 
 /// Describes how an editor should handle a potential direct source-file mutation.
 @NotNullByDefault
-public enum ZipArkivoSourceMutationDecision {
+public enum ArkivoSourceMutationDecision {
     /// Allows the editor to mutate the source archive directly.
     ALLOW,
 

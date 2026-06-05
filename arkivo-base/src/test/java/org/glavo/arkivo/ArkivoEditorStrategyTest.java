@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.zip;
+package org.glavo.arkivo;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -18,16 +18,16 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/// Tests built-in ZIP editor strategies.
+/// Tests built-in archive editor strategies.
 @NotNullByDefault
-public final class ZipArkivoEditorStrategyTest {
+public final class ArkivoEditorStrategyTest {
     /// Verifies that memory edit storage can stage and reopen content.
     @Test
     public void memoryEditStorage() throws IOException {
         byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
 
-        try (ZipArkivoEditStorage storage = ZipArkivoEditStorage.memory();
-             ZipArkivoStoredContent stored = storage.createContent("hello.txt", ZipArkivoEditStorage.UNKNOWN_SIZE)) {
+        try (ArkivoEditStorage storage = ArkivoEditStorage.memory();
+             ArkivoStoredContent stored = storage.createContent("hello.txt", ArkivoEditStorage.UNKNOWN_SIZE)) {
             try (SeekableByteChannel channel = stored.openChannel(Set.of(
                     StandardOpenOption.CREATE,
                     StandardOpenOption.TRUNCATE_EXISTING,
@@ -54,8 +54,8 @@ public final class ZipArkivoEditorStrategyTest {
         byte[] content = "zip".getBytes(StandardCharsets.UTF_8);
 
         try {
-            ZipArkivoCommitTarget target = ZipArkivoCommitTarget.writeTo(targetPath);
-            try (ZipArkivoCommitOutput output = target.openOutput(sourcePath)) {
+            ArkivoCommitTarget target = ArkivoCommitTarget.writeTo(targetPath);
+            try (ArkivoCommitOutput output = target.openOutput(sourcePath)) {
                 assertEquals(targetPath, output.path());
                 try (SeekableByteChannel channel = output.openChannel(Set.of(
                         StandardOpenOption.CREATE,
@@ -78,27 +78,27 @@ public final class ZipArkivoEditorStrategyTest {
     /// Verifies that source mutation policies return the expected decisions.
     @Test
     public void sourceMutationPolicies() throws IOException {
-        ZipArkivoSourceMutationRequest fixedPatch = request(true, true);
-        ZipArkivoSourceMutationRequest unsupportedPatch = request(false, false);
+        ArkivoSourceMutationRequest fixedPatch = request(true, true);
+        ArkivoSourceMutationRequest unsupportedPatch = request(false, false);
 
-        assertEquals(ZipArkivoSourceMutationDecision.REWRITE, ZipArkivoSourceMutationPolicy.never().decide(fixedPatch));
+        assertEquals(ArkivoSourceMutationDecision.REWRITE, ArkivoSourceMutationPolicy.never().decide(fixedPatch));
         assertEquals(
-                ZipArkivoSourceMutationDecision.ALLOW,
-                ZipArkivoSourceMutationPolicy.patchWhenSafe().decide(fixedPatch)
+                ArkivoSourceMutationDecision.ALLOW,
+                ArkivoSourceMutationPolicy.patchWhenSafe().decide(fixedPatch)
         );
         assertEquals(
-                ZipArkivoSourceMutationDecision.REWRITE,
-                ZipArkivoSourceMutationPolicy.patchWhenSafe().decide(unsupportedPatch)
+                ArkivoSourceMutationDecision.REWRITE,
+                ArkivoSourceMutationPolicy.patchWhenSafe().decide(unsupportedPatch)
         );
         assertEquals(
-                ZipArkivoSourceMutationDecision.ALLOW,
-                ZipArkivoSourceMutationPolicy.directWhenPossible().decide(fixedPatch)
+                ArkivoSourceMutationDecision.ALLOW,
+                ArkivoSourceMutationPolicy.directWhenPossible().decide(fixedPatch)
         );
     }
 
     /// Returns a source mutation request for tests.
-    private static ZipArkivoSourceMutationRequest request(boolean fixedLengthPatch, boolean directMutationSupported) {
-        return new ZipArkivoSourceMutationRequest() {
+    private static ArkivoSourceMutationRequest request(boolean fixedLengthPatch, boolean directMutationSupported) {
+        return new ArkivoSourceMutationRequest() {
             /// Returns the test entry path.
             @Override
             public String path() {

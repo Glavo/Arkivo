@@ -107,6 +107,11 @@ ArkivoVolumeSource
 ArkivoFileSystemOption
 ArkivoFileSystem
 ArkivoStreamingReader
+ArkivoEditStorage
+ArkivoStoredContent
+ArkivoCommitTarget
+ArkivoCommitOutput
+ArkivoSourceMutationPolicy
 CompressionCodec
 CompressionCodecs
 ```
