@@ -61,6 +61,13 @@ final class ZipPosixSupport {
         return permissions != null ? permissions : defaultPermissions(directory);
     }
 
+    /// Returns whether ZIP external file attributes describe a Unix symbolic link.
+    static boolean isSymbolicLink(int versionMadeBy, long externalAttributes) {
+        int hostSystem = (versionMadeBy >>> 8) & 0xff;
+        int mode = (int) ((externalAttributes >>> 16) & 0xffff);
+        return hostSystem == 3 && (mode & 0170000) == 0120000;
+    }
+
     /// Decodes POSIX permissions from ZIP external file attributes.
     private static @Nullable @Unmodifiable Set<PosixFilePermission> permissionsFromExternalAttributes(
             int versionMadeBy,
@@ -106,6 +113,28 @@ final class ZipPosixSupport {
     /// Encodes POSIX permissions as ZIP external file attributes.
     static long externalAttributes(Set<PosixFilePermission> permissions, boolean directory) {
         int mode = directory ? 040000 : 0100000;
+        return externalAttributes(mode, permissions, directory ? 0x10L : 0L);
+    }
+
+    /// Encodes symbolic link attributes as ZIP external file attributes.
+    static long symbolicLinkExternalAttributes(@Nullable Set<PosixFilePermission> permissions) {
+        Set<PosixFilePermission> linkPermissions = permissions != null
+                ? permissions
+                : Set.of(
+                        PosixFilePermission.OWNER_READ,
+                        PosixFilePermission.OWNER_WRITE,
+                        PosixFilePermission.OWNER_EXECUTE,
+                        PosixFilePermission.GROUP_READ,
+                        PosixFilePermission.GROUP_EXECUTE,
+                        PosixFilePermission.OTHERS_READ,
+                        PosixFilePermission.OTHERS_EXECUTE
+                );
+        return externalAttributes(0120000, linkPermissions, 0L);
+    }
+
+    /// Encodes POSIX permissions and file type bits as ZIP external file attributes.
+    private static long externalAttributes(int fileTypeMode, Set<PosixFilePermission> permissions, long lowAttributes) {
+        int mode = fileTypeMode;
         if (permissions.contains(PosixFilePermission.OWNER_READ)) {
             mode |= 0400;
         }
@@ -134,7 +163,7 @@ final class ZipPosixSupport {
             mode |= 0001;
         }
         long externalAttributes = Integer.toUnsignedLong(mode << 16);
-        return directory ? externalAttributes | 0x10L : externalAttributes;
+        return externalAttributes | lowAttributes;
     }
 
     /// Stores a synthetic named user principal.

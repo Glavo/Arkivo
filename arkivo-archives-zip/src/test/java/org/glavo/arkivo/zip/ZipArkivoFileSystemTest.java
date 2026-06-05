@@ -23,6 +23,7 @@ import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
@@ -147,6 +148,77 @@ public final class ZipArkivoFileSystemTest {
                         PosixFilePermission.OWNER_EXECUTE,
                         PosixFilePermission.GROUP_READ
                 ), attributes.permissions());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a streaming ZIP writer persists ZIP metadata for stored entries.
+    @Test
+    public void streamingWriterStoredEntryMetadata() throws IOException {
+        Path archivePath = createTemporaryArchivePath("stream-write-stored-");
+        byte[] content = "stored-content".getBytes(StandardCharsets.UTF_8);
+        byte[] localExtraData = new byte[]{1, 2, 3};
+        byte[] centralExtraData = new byte[]{4, 5};
+        byte[] rawComment = new byte[]{6, 7, 8};
+        FileTime lastModifiedTime = FileTime.fromMillis(1_893_456_000_000L);
+        long crc32 = crc32(content);
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+                writer.beginDirectory("meta");
+                ZipArkivoEntryAttributeView directoryView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(directoryView);
+                directoryView.setTimes(lastModifiedTime, null, null);
+                directoryView.setRawComment(rawComment);
+                writer.endEntry();
+
+                writer.beginFile("meta/stored.bin");
+                ZipArkivoEntryAttributeView fileView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(fileView);
+                fileView.setMethod(ZipMethod.stored());
+                fileView.setTimes(lastModifiedTime, null, null);
+                fileView.setUncompressedSizeAndCrc32(content.length, crc32);
+                fileView.setInternalAttributes(1);
+                fileView.setExternalAttributes(0x20L);
+                fileView.setLocalExtraData(localExtraData);
+                fileView.setCentralDirectoryExtraData(centralExtraData);
+                fileView.setRawComment(rawComment);
+                try (var output = writer.openOutputStream()) {
+                    output.write(content);
+                }
+
+                writer.beginSymbolicLink("meta/link", "stored.bin");
+                writer.endEntry();
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                ZipArkivoEntryAttributes directoryAttributes =
+                        Files.readAttributes(fileSystem.getPath("/meta"), ZipArkivoEntryAttributes.class);
+                assertEquals(true, directoryAttributes.isDirectory());
+                assertEquals(ZipMethod.stored(), directoryAttributes.method());
+                assertArrayEquals(rawComment, directoryAttributes.rawComment());
+                assertEquals(lastModifiedTime, directoryAttributes.lastModifiedTime());
+
+                ZipArkivoEntryAttributes fileAttributes =
+                        Files.readAttributes(fileSystem.getPath("/meta/stored.bin"), ZipArkivoEntryAttributes.class);
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/meta/stored.bin")));
+                assertEquals(ZipMethod.stored(), fileAttributes.method());
+                assertEquals(content.length, fileAttributes.compressedSize());
+                assertEquals(content.length, fileAttributes.size());
+                assertEquals(crc32, fileAttributes.crc32());
+                assertEquals(1, fileAttributes.internalAttributes());
+                assertEquals(0x20L, fileAttributes.externalAttributes());
+                assertArrayEquals(localExtraData, fileAttributes.localExtraData());
+                assertArrayEquals(centralExtraData, fileAttributes.centralDirectoryExtraData());
+                assertArrayEquals(rawComment, fileAttributes.rawComment());
+                assertEquals(lastModifiedTime, fileAttributes.lastModifiedTime());
+
+                ZipArkivoEntryAttributes linkAttributes =
+                        Files.readAttributes(fileSystem.getPath("/meta/link"), ZipArkivoEntryAttributes.class);
+                assertEquals(true, linkAttributes.isSymbolicLink());
+                assertEquals("stored.bin", Files.readString(fileSystem.getPath("/meta/link"), StandardCharsets.UTF_8));
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -531,6 +603,13 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0xffffffff);
         buffer.putShort((short) 0);
         return buffer.array();
+    }
+
+    /// Returns the unsigned ZIP CRC-32 value of the given content.
+    private static long crc32(byte[] content) {
+        CRC32 crc32 = new CRC32();
+        crc32.update(content);
+        return crc32.getValue();
     }
 
     /// Creates a temporary archive file under the module build directory.

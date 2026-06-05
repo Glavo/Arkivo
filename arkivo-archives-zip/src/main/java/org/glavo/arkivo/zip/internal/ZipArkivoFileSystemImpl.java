@@ -1623,7 +1623,9 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         @Override
         public boolean isRegularFile() {
             ZipEntryRecord record = entry;
-            return record != null && !record.directory;
+            return record != null
+                    && !record.directory
+                    && !ZipPosixSupport.isSymbolicLink(record.versionMadeBy, record.externalAttributes);
         }
 
         /// Returns whether this path is a directory.
@@ -1636,7 +1638,8 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         /// Returns whether this path is a symbolic link.
         @Override
         public boolean isSymbolicLink() {
-            return false;
+            ZipEntryRecord record = entry;
+            return record != null && ZipPosixSupport.isSymbolicLink(record.versionMadeBy, record.externalAttributes);
         }
 
         /// Returns whether this path is another file type.

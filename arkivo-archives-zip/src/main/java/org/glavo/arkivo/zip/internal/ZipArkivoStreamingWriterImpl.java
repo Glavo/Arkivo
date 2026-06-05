@@ -149,8 +149,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
                     entry.attributes.requireSupportedFile();
                     try (OutputStream ignored = fileSystem.newOutputStream(
                             fileSystem.getPath("/" + entry.entryPath),
-                            entry.versionMadeBy(),
-                            entry.externalAttributes()
+                            entry.attributes.metadata(entry, true)
                     )) {
                         // Closing the entry output stream writes an empty ZIP entry.
                     }
@@ -159,13 +158,16 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
                     entry.attributes.requireSupportedDirectory();
                     fileSystem.createDirectory(
                             fileSystem.getPath("/" + entry.entryPath),
-                            entry.versionMadeBy(),
-                            entry.externalAttributes()
+                            entry.attributes.metadata(entry, false)
                     );
                 }
                 case SYMBOLIC_LINK -> {
                     entry.attributes.requireSupportedSymbolicLink();
-                    throw new UnsupportedOperationException("ZIP streaming writer does not support symbolic links yet");
+                    fileSystem.writeStoredEntry(
+                            fileSystem.getPath("/" + entry.entryPath),
+                            Objects.requireNonNull(entry.linkTarget, "linkTarget").getBytes(StandardCharsets.UTF_8),
+                            entry.attributes.metadata(entry, false)
+                    );
                 }
             }
             entry.submitted = true;
@@ -194,8 +196,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             entry.attributes.requireSupportedFile();
             OutputStream output = fileSystem.newOutputStream(
                     fileSystem.getPath("/" + entry.entryPath),
-                    entry.versionMadeBy(),
-                    entry.externalAttributes()
+                    entry.attributes.metadata(entry, false)
             );
             entry.submitted = true;
             pendingEntry = null;
@@ -316,20 +317,6 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             if (submitted || pendingEntry != this) {
                 throw new IllegalStateException("ZIP streaming entry has already been committed");
             }
-        }
-
-        /// Returns the ZIP version made by field to write for this entry.
-        private int versionMadeBy() {
-            return posixAttributes.permissions != null ? ZipPosixSupport.UNIX_VERSION_MADE_BY : ZipConstants.VERSION_NEEDED;
-        }
-
-        /// Returns the ZIP external file attributes to write for this entry.
-        private long externalAttributes() {
-            Set<PosixFilePermission> permissions = posixAttributes.permissions;
-            if (permissions != null) {
-                return ZipPosixSupport.externalAttributes(permissions, type == EntryType.DIRECTORY);
-            }
-            return type == EntryType.DIRECTORY ? 0x10L : 0L;
         }
     }
 
@@ -504,8 +491,8 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// The requested creation time, or `null` when not configured.
         private @Nullable FileTime creationTime;
 
-        /// The requested ZIP compression method.
-        private ZipMethod method = ZipMethod.deflated();
+        /// The requested ZIP compression method, or `null` when the entry type default is used.
+        private @Nullable ZipMethod method;
 
         /// The requested ZIP encryption method.
         private ZipEncryption encryption = ZipEncryption.none();
@@ -680,26 +667,22 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Requires the configured metadata to be supported for the current streaming directory writer.
         private void requireSupportedDirectory() {
             requireCommonSupportedMetadata();
-            if (!method.equals(ZipMethod.deflated()) && !method.equals(ZipMethod.stored())) {
-                throw new UnsupportedOperationException("Unsupported ZIP directory method: " + method);
+            if (!method().equals(ZipMethod.stored())) {
+                throw new UnsupportedOperationException("ZIP directory entries must use the stored method");
             }
         }
 
         /// Requires the configured metadata to be supported for the current streaming symbolic link writer.
         private void requireSupportedSymbolicLink() {
             requireCommonSupportedMetadata();
+            if (!method().equals(ZipMethod.stored())) {
+                throw new UnsupportedOperationException("ZIP symbolic link entries must use the stored method");
+            }
         }
 
         /// Requires the configured metadata to be supported for the current streaming file writer.
         private void requireSupportedFile() {
             requireCommonSupportedMetadata();
-            if (!method.equals(ZipMethod.deflated())) {
-                throw new UnsupportedOperationException("ZIP streaming writer currently supports only deflated file entries");
-            }
-            if (uncompressedSize != ZipArkivoEntryAttributes.UNKNOWN_SIZE
-                    || crc32 != ZipArkivoEntryAttributes.UNKNOWN_CRC32) {
-                throw new UnsupportedOperationException("ZIP streaming writer currently computes file size and CRC-32 while writing");
-            }
         }
 
         /// Requires the configured metadata to be supported by the current streaming ZIP implementation.
@@ -707,18 +690,63 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             if (!encryption.equals(ZipEncryption.none())) {
                 throw new UnsupportedOperationException("ZIP streaming writer does not support encrypted entries yet");
             }
-            if (lastModifiedTime != null || lastAccessTime != null || creationTime != null) {
-                throw new UnsupportedOperationException("ZIP streaming writer does not support custom entry timestamps yet");
+        }
+
+        /// Returns the effective ZIP compression method.
+        private ZipMethod method() {
+            ZipMethod configuredMethod = method;
+            if (configuredMethod != null) {
+                return configuredMethod;
             }
-            if (internalAttributes != 0 || externalAttributes != UNKNOWN_EXTERNAL_ATTRIBUTES) {
-                throw new UnsupportedOperationException("ZIP streaming writer does not support custom entry attributes yet");
+            return entry.type == EntryType.FILE ? ZipMethod.deflated() : ZipMethod.stored();
+        }
+
+        /// Returns write metadata for the pending entry.
+        private StreamingZipArkivoFileSystemImpl.EntryMetadata metadata(ZipStreamingEntry entry, boolean emptyFile) {
+            ZipMethod effectiveMethod = method();
+            long expectedSize = uncompressedSize;
+            long expectedCrc32 = crc32;
+            if (emptyFile && effectiveMethod.equals(ZipMethod.stored())) {
+                expectedSize = 0;
+                expectedCrc32 = 0;
             }
-            if (localExtraData.length != 0 || centralDirectoryExtraData.length != 0) {
-                throw new UnsupportedOperationException("ZIP streaming writer does not support custom extra data yet");
+            return new StreamingZipArkivoFileSystemImpl.EntryMetadata(
+                    effectiveMethod.id(),
+                    lastModifiedTime,
+                    versionMadeBy(entry),
+                    internalAttributes,
+                    externalAttributes(entry),
+                    expectedSize,
+                    expectedCrc32,
+                    localExtraData,
+                    centralDirectoryExtraData,
+                    rawComment
+            );
+        }
+
+        /// Returns the ZIP version made by field to write for this entry.
+        private int versionMadeBy(ZipStreamingEntry entry) {
+            return needsUnixExternalAttributes(entry) ? ZipPosixSupport.UNIX_VERSION_MADE_BY : ZipConstants.VERSION_NEEDED;
+        }
+
+        /// Returns the ZIP external file attributes to write for this entry.
+        private long externalAttributes(ZipStreamingEntry entry) {
+            if (externalAttributes != UNKNOWN_EXTERNAL_ATTRIBUTES) {
+                return externalAttributes;
             }
-            if (rawComment != null) {
-                throw new UnsupportedOperationException("ZIP streaming writer does not support entry comments yet");
+            Set<PosixFilePermission> permissions = entry.posixAttributes.permissions;
+            if (entry.type == EntryType.SYMBOLIC_LINK) {
+                return ZipPosixSupport.symbolicLinkExternalAttributes(permissions);
             }
+            if (permissions != null) {
+                return ZipPosixSupport.externalAttributes(permissions, entry.type == EntryType.DIRECTORY);
+            }
+            return entry.type == EntryType.DIRECTORY ? 0x10L : 0L;
+        }
+
+        /// Returns whether this entry needs Unix external attributes.
+        private boolean needsUnixExternalAttributes(ZipStreamingEntry entry) {
+            return entry.type == EntryType.SYMBOLIC_LINK || entry.posixAttributes.permissions != null;
         }
     }
 
@@ -743,7 +771,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// The requested creation time, or `null` when not configured.
         private final @Nullable FileTime creationTime;
 
-        /// The requested ZIP compression method.
+        /// The effective ZIP compression method.
         private final ZipMethod method;
 
         /// The requested ZIP encryption method.
@@ -781,7 +809,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             this.lastModifiedTime = view.lastModifiedTime;
             this.lastAccessTime = view.lastAccessTime;
             this.creationTime = view.creationTime;
-            this.method = view.method;
+            this.method = view.method();
             this.encryption = view.encryption;
             this.uncompressedSize = view.uncompressedSize;
             this.crc32 = view.crc32;
