@@ -20,7 +20,6 @@ import java.nio.ByteOrder;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
-import java.nio.file.FileVisitResult;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
@@ -99,29 +98,19 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
                 ArrayList<String> visited = new ArrayList<>();
-                reader.read(new ZipArkivoStreamingVisitor() {
-                    /// Verifies a directory entry.
-                    @Override
-                    public FileVisitResult preVisitDirectory(String path, ZipArkivoEntryAttributes attributes) {
-                        visited.add(path);
+                reader.read((path, attributes) -> {
+                    visited.add(path);
+                    if (attributes.isDirectory()) {
                         assertEquals("dir/", path);
                         assertEquals("dir/", attributes.path());
-                        assertEquals(true, attributes.isDirectory());
-                        return FileVisitResult.CONTINUE;
-                    }
-
-                    /// Verifies and reads a regular file entry.
-                    @Override
-                    public FileVisitResult visitFile(String path, ZipArkivoEntryAttributes attributes) throws IOException {
-                        visited.add(path);
+                    } else {
                         assertEquals("dir/hello.txt", path);
                         assertEquals("dir/hello.txt", attributes.path());
-                        assertEquals(false, attributes.isDirectory());
                         try (var input = reader.openInputStream()) {
                             assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
                         }
-                        return FileVisitResult.CONTINUE;
                     }
+                    return ZipArkivoStreamingVisitResult.CONTINUE;
                 });
                 assertEquals(List.of("dir/", "dir/hello.txt"), visited);
             }

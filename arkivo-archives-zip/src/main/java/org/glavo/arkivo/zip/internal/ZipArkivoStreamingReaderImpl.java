@@ -7,6 +7,7 @@ import org.glavo.arkivo.ArkivoFileSystemEntryStream;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
 import org.glavo.arkivo.zip.ZipArkivoStreamingReader;
+import org.glavo.arkivo.zip.ZipArkivoStreamingVisitResult;
 import org.glavo.arkivo.zip.ZipArkivoStreamingVisitor;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -14,7 +15,6 @@ import org.jetbrains.annotations.Nullable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.channels.ReadableByteChannel;
-import java.nio.file.FileVisitResult;
 import java.util.Objects;
 
 /// Implements the public forward-only ZIP streaming reader API.
@@ -58,10 +58,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 throw new IOException("ZIP streaming reader did not expose the current entry");
             }
 
-            FileVisitResult result = attributes.isDirectory()
-                    ? visitor.preVisitDirectory(attributes.path(), attributes)
-                    : visitor.visitFile(attributes.path(), attributes);
-            if (Objects.requireNonNull(result, "result") == FileVisitResult.TERMINATE) {
+            ZipArkivoStreamingVisitResult result = visitor.visitEntry(attributes.path(), attributes);
+            if (Objects.requireNonNull(result, "result") == ZipArkivoStreamingVisitResult.TERMINATE) {
                 return;
             }
         }
