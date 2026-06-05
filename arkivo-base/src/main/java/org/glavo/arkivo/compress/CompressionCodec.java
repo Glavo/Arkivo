@@ -70,59 +70,26 @@ public interface CompressionCodec {
     /// Opens a channel that accepts uncompressed bytes and writes compressed bytes to the target channel.
     WritableByteChannel compressTo(WritableByteChannel target) throws IOException;
 
-    /// Opens a channel that accepts uncompressed bytes and writes compressed bytes to the target channel.
-    default WritableByteChannel compressTo(
-            WritableByteChannel target,
-            CompressionParameters parameters
-    ) throws IOException {
-        Objects.requireNonNull(parameters, "parameters");
-        return compressTo(target);
-    }
-
     /// Opens a stream that accepts uncompressed bytes and writes compressed bytes to the target stream.
     default OutputStream compressTo(OutputStream target) throws IOException {
         return Channels.newOutputStream(compressTo(Channels.newChannel(target)));
     }
 
-    /// Opens a stream that accepts uncompressed bytes and writes compressed bytes to the target stream.
-    default OutputStream compressTo(OutputStream target, CompressionParameters parameters) throws IOException {
-        return Channels.newOutputStream(compressTo(Channels.newChannel(target), parameters));
-    }
-
     /// Opens a channel that reads compressed bytes from the source channel and exposes uncompressed bytes.
     ReadableByteChannel decompressFrom(ReadableByteChannel source) throws IOException;
-
-    /// Opens a channel that reads compressed bytes from the source channel and exposes uncompressed bytes.
-    default ReadableByteChannel decompressFrom(
-            ReadableByteChannel source,
-            CompressionParameters parameters
-    ) throws IOException {
-        Objects.requireNonNull(parameters, "parameters");
-        return decompressFrom(source);
-    }
 
     /// Opens a stream that reads compressed bytes from the source stream and exposes uncompressed bytes.
     default InputStream decompressFrom(InputStream source) throws IOException {
         return Channels.newInputStream(decompressFrom(Channels.newChannel(source)));
     }
 
-    /// Opens a stream that reads compressed bytes from the source stream and exposes uncompressed bytes.
-    default InputStream decompressFrom(InputStream source, CompressionParameters parameters) throws IOException {
-        return Channels.newInputStream(decompressFrom(Channels.newChannel(source), parameters));
-    }
-
     /// Compresses all remaining bytes from `source` into `target`.
     ///
     /// Both buffers are advanced by the number of bytes consumed and produced.
     /// Implementations may require specific buffer forms, such as direct buffers, when backed by native codecs.
-    default void compress(
-            ByteBuffer source,
-            ByteBuffer target,
-            CompressionParameters parameters
-    ) throws IOException {
+    default void compress(ByteBuffer source, ByteBuffer target) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(parameters, "parameters");
         throw new UnsupportedOperationException("ByteBuffer compression is not supported");
     }
 
@@ -130,14 +97,9 @@ public interface CompressionCodec {
     ///
     /// Both buffers are advanced by the number of bytes consumed and produced.
     /// Implementations may require specific buffer forms, such as direct buffers, when backed by native codecs.
-    default void decompress(
-            ByteBuffer source,
-            ByteBuffer target,
-            CompressionParameters parameters
-    ) throws IOException {
+    default void decompress(ByteBuffer source, ByteBuffer target) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(parameters, "parameters");
         throw new UnsupportedOperationException("ByteBuffer decompression is not supported");
     }
 }

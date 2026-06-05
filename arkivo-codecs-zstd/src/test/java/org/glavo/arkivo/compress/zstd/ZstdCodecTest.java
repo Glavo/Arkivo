@@ -5,7 +5,6 @@ package org.glavo.arkivo.compress.zstd;
 
 import org.glavo.arkivo.compress.CompressionCodec;
 import org.glavo.arkivo.compress.CompressionCodecs;
-import org.glavo.arkivo.compress.CompressionParameters;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -20,6 +19,7 @@ import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /// Tests Zstandard codec behavior.
 @NotNullByDefault
@@ -27,7 +27,7 @@ public final class ZstdCodecTest {
     /// Verifies that Zstandard compression round-trips bytes.
     @Test
     public void roundTrip() throws IOException {
-        ZstdCodec codec = new ZstdCodec();
+        ZstdCodec codec = new ZstdCodec().withCompressionLevel(1);
         byte[] input = "hello zstd".getBytes(StandardCharsets.UTF_8);
 
         assertEquals(true, codec instanceof CompressionCodec);
@@ -54,17 +54,35 @@ public final class ZstdCodecTest {
 
         assertEquals(true, codec.canCompressBuffers());
         assertEquals(true, codec.canDecompressBuffers());
-        codec.compress(source, compressed, CompressionParameters.builder().compressionLevel(1).build());
+        codec.compress(source, compressed);
         compressed.flip();
         assertEquals(true, codec.matches(compressed.duplicate()));
 
         ByteBuffer decompressed = ByteBuffer.allocateDirect(input.length);
-        codec.decompress(compressed, decompressed, CompressionParameters.defaults());
+        codec.decompress(compressed, decompressed);
         decompressed.flip();
 
         byte[] output = new byte[decompressed.remaining()];
         decompressed.get(output);
         assertArrayEquals(input, output);
+    }
+
+    /// Verifies configured Zstandard codec instances are immutable.
+    @Test
+    public void configuredCodec() {
+        byte[] dictionary = {1, 2, 3};
+        ZstdCodec codec = new ZstdCodec()
+                .withCompressionLevel(2)
+                .withDictionary(dictionary);
+
+        dictionary[0] = 9;
+        assertEquals(2, codec.compressionLevel());
+        assertArrayEquals(new byte[]{1, 2, 3}, codec.dictionary());
+
+        byte[] returned = codec.dictionary();
+        returned[1] = 9;
+        assertArrayEquals(new byte[]{1, 2, 3}, codec.dictionary());
+        assertNull(codec.withoutDictionary().dictionary());
     }
 
     /// Compresses and decompresses the given bytes.
