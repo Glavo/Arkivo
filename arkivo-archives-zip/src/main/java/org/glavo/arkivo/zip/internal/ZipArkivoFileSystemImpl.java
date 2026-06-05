@@ -44,8 +44,14 @@ import java.nio.file.WatchService;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.FileOwnerAttributeView;
 import java.nio.file.attribute.FileStoreAttributeView;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.GroupPrincipal;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.spi.FileSystemProvider;
 import java.time.DateTimeException;
@@ -278,7 +284,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Returns the supported file attribute view names.
     @Override
     public @Unmodifiable Set<String> supportedFileAttributeViews() {
-        return Set.of("basic", "zip");
+        return Set.of("basic", "zip", "owner", "posix");
     }
 
     /// Returns a path inside this ZIP file system.
@@ -398,6 +404,12 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         if (type == BasicFileAttributeView.class || type == ZipArkivoEntryAttributeView.class) {
             return type.cast(new EntryAttributeView(this, path));
         }
+        if (type == FileOwnerAttributeView.class) {
+            return type.cast(new OwnerEntryAttributeView(this, path));
+        }
+        if (type == PosixFileAttributeView.class) {
+            return type.cast(new PosixEntryAttributeView(this, path));
+        }
         return null;
     }
 
@@ -406,6 +418,9 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         Objects.requireNonNull(type, "type");
         if (type == BasicFileAttributes.class || type == ZipArkivoEntryAttributes.class) {
             return type.cast(readZipAttributes(path));
+        }
+        if (type == PosixFileAttributes.class) {
+            return type.cast(new PosixEntryAttributes(readZipAttributes(path)));
         }
         throw new UnsupportedOperationException("Unsupported ZIP attribute type: " + type.getName());
     }
@@ -435,22 +450,29 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         int separator = attributes.indexOf(':');
         String view = separator >= 0 ? attributes.substring(0, separator) : "basic";
         String names = separator >= 0 ? attributes.substring(separator + 1) : attributes;
-        if (!"basic".equals(view) && !"zip".equals(view)) {
+        if (!"basic".equals(view) && !"zip".equals(view) && !"owner".equals(view) && !"posix".equals(view)) {
             throw new UnsupportedOperationException("Unsupported ZIP attribute view: " + view);
         }
 
         ZipArkivoEntryAttributes zipAttributes = readZipAttributes(path);
+        PosixEntryAttributes posixAttributes = new PosixEntryAttributes(zipAttributes);
         LinkedHashMap<String, Object> values = new LinkedHashMap<>();
         if ("*".equals(names)) {
-            addBasicAttributes(values, zipAttributes);
+            if ("owner".equals(view)) {
+                addOwnerAttributes(values, posixAttributes);
+            } else {
+                addBasicAttributes(values, zipAttributes);
+            }
             if ("zip".equals(view)) {
                 addZipAttributes(values, zipAttributes);
+            } else if ("posix".equals(view)) {
+                addPosixAttributes(values, posixAttributes);
             }
             return Collections.unmodifiableMap(values);
         }
 
         for (String name : names.split(",")) {
-            addNamedAttribute(values, zipAttributes, name.trim(), "zip".equals(view));
+            addNamedAttribute(values, zipAttributes, posixAttributes, name.trim(), view);
         }
         return Collections.unmodifiableMap(values);
     }
@@ -487,13 +509,27 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         values.put("comment", attributes.comment());
     }
 
+    /// Adds owner attributes to a named attribute map.
+    private static void addOwnerAttributes(Map<String, Object> values, PosixFileAttributes attributes) {
+        values.put("owner", attributes.owner());
+    }
+
+    /// Adds POSIX attributes to a named attribute map.
+    private static void addPosixAttributes(Map<String, Object> values, PosixFileAttributes attributes) {
+        addOwnerAttributes(values, attributes);
+        values.put("group", attributes.group());
+        values.put("permissions", attributes.permissions());
+    }
+
     /// Adds one named attribute to a named attribute map.
     private static void addNamedAttribute(
             Map<String, Object> values,
             ZipArkivoEntryAttributes attributes,
+            PosixFileAttributes posixAttributes,
             String name,
-            boolean zipView
+            String view
     ) {
+        boolean zipView = "zip".equals(view);
         switch (name) {
             case "lastModifiedTime" -> values.put(name, attributes.lastModifiedTime());
             case "lastAccessTime" -> values.put(name, attributes.lastAccessTime());
@@ -519,6 +555,9 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             case "centralDirectoryExtraData" -> requireZipView(values, name, zipView, attributes.centralDirectoryExtraData());
             case "rawComment" -> requireZipView(values, name, zipView, attributes.rawComment());
             case "comment" -> requireZipView(values, name, zipView, attributes.comment());
+            case "owner" -> requireOwnerView(values, name, view, posixAttributes.owner());
+            case "group" -> requirePosixView(values, name, view, posixAttributes.group());
+            case "permissions" -> requirePosixView(values, name, view, posixAttributes.permissions());
             default -> throw new IllegalArgumentException("Unsupported ZIP attribute: " + name);
         }
     }
@@ -527,6 +566,22 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     private static void requireZipView(Map<String, Object> values, String name, boolean zipView, @Nullable Object value) {
         if (!zipView) {
             throw new IllegalArgumentException("Attribute requires zip view: " + name);
+        }
+        values.put(name, value);
+    }
+
+    /// Requires the owner or POSIX view before adding an owner attribute.
+    private static void requireOwnerView(Map<String, Object> values, String name, String view, Object value) {
+        if (!"owner".equals(view) && !"posix".equals(view)) {
+            throw new IllegalArgumentException("Attribute requires owner or posix view: " + name);
+        }
+        values.put(name, value);
+    }
+
+    /// Requires the POSIX view before adding a POSIX attribute.
+    private static void requirePosixView(Map<String, Object> values, String name, String view, Object value) {
+        if (!"posix".equals(view)) {
+            throw new IllegalArgumentException("Attribute requires posix view: " + name);
         }
         values.put(name, value);
     }
@@ -1621,6 +1676,187 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         public @Nullable Object fileKey() {
             ZipEntryRecord record = entry;
             return record != null ? record.key : syntheticDirectoryKey;
+        }
+    }
+
+    /// Exposes synthesized POSIX attributes for a ZIP entry.
+    private static final class PosixEntryAttributes implements PosixFileAttributes {
+        /// The ZIP attributes used as the basic attribute source.
+        private final ZipArkivoEntryAttributes attributes;
+
+        /// Creates synthesized POSIX attributes.
+        private PosixEntryAttributes(ZipArkivoEntryAttributes attributes) {
+            this.attributes = Objects.requireNonNull(attributes, "attributes");
+        }
+
+        /// Returns the last modification time.
+        @Override
+        public FileTime lastModifiedTime() {
+            return attributes.lastModifiedTime();
+        }
+
+        /// Returns the last access time.
+        @Override
+        public FileTime lastAccessTime() {
+            return attributes.lastAccessTime();
+        }
+
+        /// Returns the creation time.
+        @Override
+        public FileTime creationTime() {
+            return attributes.creationTime();
+        }
+
+        /// Returns whether this path is a regular file.
+        @Override
+        public boolean isRegularFile() {
+            return attributes.isRegularFile();
+        }
+
+        /// Returns whether this path is a directory.
+        @Override
+        public boolean isDirectory() {
+            return attributes.isDirectory();
+        }
+
+        /// Returns whether this path is a symbolic link.
+        @Override
+        public boolean isSymbolicLink() {
+            return attributes.isSymbolicLink();
+        }
+
+        /// Returns whether this path is another file type.
+        @Override
+        public boolean isOther() {
+            return attributes.isOther();
+        }
+
+        /// Returns the uncompressed entry size.
+        @Override
+        public long size() {
+            return attributes.size();
+        }
+
+        /// Returns an implementation-specific file key.
+        @Override
+        public @Nullable Object fileKey() {
+            return attributes.fileKey();
+        }
+
+        /// Returns the synthesized owner.
+        @Override
+        public UserPrincipal owner() {
+            return ZipPosixSupport.DEFAULT_OWNER;
+        }
+
+        /// Returns the synthesized group.
+        @Override
+        public GroupPrincipal group() {
+            return ZipPosixSupport.DEFAULT_GROUP;
+        }
+
+        /// Returns the synthesized POSIX permissions.
+        @Override
+        public @Unmodifiable Set<PosixFilePermission> permissions() {
+            return ZipPosixSupport.defaultPermissions(attributes.isDirectory());
+        }
+    }
+
+    /// Implements the synthesized POSIX entry attribute view.
+    private static final class PosixEntryAttributeView implements PosixFileAttributeView {
+        /// The file system used to read attributes.
+        private final ZipArkivoFileSystemImpl fileSystem;
+
+        /// The path whose attributes are exposed.
+        private final Path path;
+
+        /// Creates a synthesized POSIX attribute view.
+        private PosixEntryAttributeView(ZipArkivoFileSystemImpl fileSystem, Path path) {
+            this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
+            this.path = Objects.requireNonNull(path, "path");
+        }
+
+        /// Returns the attribute view name.
+        @Override
+        public String name() {
+            return "posix";
+        }
+
+        /// Reads synthesized POSIX attributes.
+        @Override
+        public PosixFileAttributes readAttributes() throws IOException {
+            return new PosixEntryAttributes(fileSystem.readZipAttributes(path));
+        }
+
+        /// Returns the synthesized owner.
+        @Override
+        public UserPrincipal getOwner() throws IOException {
+            return readAttributes().owner();
+        }
+
+        /// Sets entry timestamps.
+        @Override
+        public void setTimes(
+                @Nullable FileTime lastModifiedTime,
+                @Nullable FileTime lastAccessTime,
+                @Nullable FileTime createTime
+        ) {
+            throw new java.nio.file.ReadOnlyFileSystemException();
+        }
+
+        /// Sets the file owner.
+        @Override
+        public void setOwner(UserPrincipal owner) {
+            Objects.requireNonNull(owner, "owner");
+            throw new java.nio.file.ReadOnlyFileSystemException();
+        }
+
+        /// Sets the file group.
+        @Override
+        public void setGroup(GroupPrincipal group) {
+            Objects.requireNonNull(group, "group");
+            throw new java.nio.file.ReadOnlyFileSystemException();
+        }
+
+        /// Sets POSIX permissions.
+        @Override
+        public void setPermissions(Set<PosixFilePermission> permissions) {
+            Objects.requireNonNull(permissions, "permissions");
+            throw new java.nio.file.ReadOnlyFileSystemException();
+        }
+    }
+
+    /// Implements the synthesized owner entry attribute view.
+    private static final class OwnerEntryAttributeView implements FileOwnerAttributeView {
+        /// The file system used to read attributes.
+        private final ZipArkivoFileSystemImpl fileSystem;
+
+        /// The path whose owner is exposed.
+        private final Path path;
+
+        /// Creates a synthesized owner attribute view.
+        private OwnerEntryAttributeView(ZipArkivoFileSystemImpl fileSystem, Path path) {
+            this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
+            this.path = Objects.requireNonNull(path, "path");
+        }
+
+        /// Returns the attribute view name.
+        @Override
+        public String name() {
+            return "owner";
+        }
+
+        /// Returns the synthesized owner.
+        @Override
+        public UserPrincipal getOwner() throws IOException {
+            return new PosixEntryAttributes(fileSystem.readZipAttributes(path)).owner();
+        }
+
+        /// Sets the file owner.
+        @Override
+        public void setOwner(UserPrincipal owner) {
+            Objects.requireNonNull(owner, "owner");
+            throw new java.nio.file.ReadOnlyFileSystemException();
         }
     }
 

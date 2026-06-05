@@ -9,12 +9,19 @@ import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.zip.ZipArkivoStreamingReader;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.GroupPrincipal;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
 
 /// Implements the public forward-only ZIP streaming reader API.
@@ -90,6 +97,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             if (type == BasicFileAttributes.class || type == ZipArkivoEntryAttributes.class) {
                 return type.cast(attributes);
             }
+            if (type == PosixFileAttributes.class) {
+                return type.cast(new StreamingPosixEntryAttributes(attributes));
+            }
             throw new UnsupportedOperationException("Unsupported ZIP streaming attributes type: " + type.getName());
         } finally {
             unlock();
@@ -163,5 +173,88 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     /// Releases the state lock when it is present.
     private void unlock() {
         ZipLocks.unlock(lock);
+    }
+
+    /// Exposes synthesized POSIX attributes for the current streaming ZIP entry.
+    private static final class StreamingPosixEntryAttributes implements PosixFileAttributes {
+        /// The ZIP attributes used as the basic attribute source.
+        private final ZipArkivoEntryAttributes attributes;
+
+        /// Creates synthesized POSIX attributes.
+        private StreamingPosixEntryAttributes(ZipArkivoEntryAttributes attributes) {
+            this.attributes = Objects.requireNonNull(attributes, "attributes");
+        }
+
+        /// Returns the last modification time.
+        @Override
+        public FileTime lastModifiedTime() {
+            return attributes.lastModifiedTime();
+        }
+
+        /// Returns the last access time.
+        @Override
+        public FileTime lastAccessTime() {
+            return attributes.lastAccessTime();
+        }
+
+        /// Returns the creation time.
+        @Override
+        public FileTime creationTime() {
+            return attributes.creationTime();
+        }
+
+        /// Returns whether this entry is a regular file.
+        @Override
+        public boolean isRegularFile() {
+            return attributes.isRegularFile();
+        }
+
+        /// Returns whether this entry is a directory.
+        @Override
+        public boolean isDirectory() {
+            return attributes.isDirectory();
+        }
+
+        /// Returns whether this entry is a symbolic link.
+        @Override
+        public boolean isSymbolicLink() {
+            return attributes.isSymbolicLink();
+        }
+
+        /// Returns whether this entry is another file type.
+        @Override
+        public boolean isOther() {
+            return attributes.isOther();
+        }
+
+        /// Returns the uncompressed entry size.
+        @Override
+        public long size() {
+            return attributes.size();
+        }
+
+        /// Returns the file key.
+        @Override
+        public @Nullable Object fileKey() {
+            return attributes.fileKey();
+        }
+
+        /// Returns the synthesized owner.
+        @Override
+        public UserPrincipal owner() {
+            return ZipPosixSupport.DEFAULT_OWNER;
+        }
+
+        /// Returns the synthesized group.
+        @Override
+        public GroupPrincipal group() {
+            return ZipPosixSupport.DEFAULT_GROUP;
+        }
+
+        /// Returns synthesized POSIX permissions.
+        @Override
+        public @Unmodifiable Set<PosixFilePermission> permissions() {
+            return ZipPosixSupport.defaultPermissions(attributes.isDirectory());
+        }
     }
 }

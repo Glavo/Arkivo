@@ -23,6 +23,8 @@ import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -49,6 +51,8 @@ public final class ZipArkivoFileSystemTest {
             assertEquals(true, fileSystem.isReadOnly());
             assertEquals("/", fileSystem.getSeparator());
             assertEquals(true, fileSystem.supportedFileAttributeViews().contains("zip"));
+            assertEquals(true, fileSystem.supportedFileAttributeViews().contains("owner"));
+            assertEquals(true, fileSystem.supportedFileAttributeViews().contains("posix"));
         }
     }
 
@@ -80,6 +84,11 @@ public final class ZipArkivoFileSystemTest {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
                 assertEquals("hello", Files.readString(fileSystem.getPath("/dir/hello.txt"), StandardCharsets.UTF_8));
                 assertArrayEquals(new byte[0], Files.readAllBytes(fileSystem.getPath("/dir/empty.txt")));
+                PosixFileAttributes posixAttributes =
+                        Files.readAttributes(fileSystem.getPath("/dir/hello.txt"), PosixFileAttributes.class);
+                assertEquals(true, posixAttributes.isRegularFile());
+                assertEquals("owner", posixAttributes.owner().getName());
+                assertEquals(true, posixAttributes.permissions().contains(java.nio.file.attribute.PosixFilePermission.OWNER_READ));
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -96,8 +105,11 @@ public final class ZipArkivoFileSystemTest {
                 writer.beginFile("dir/hello.txt");
                 BasicFileAttributeView basicView = writer.attributeView(BasicFileAttributeView.class);
                 ZipArkivoEntryAttributeView zipView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                PosixFileAttributeView posixView = writer.attributeView(PosixFileAttributeView.class);
                 assertNotNull(basicView);
                 assertNotNull(zipView);
+                assertNotNull(posixView);
+                assertEquals("posix", posixView.name());
 
                 zipView.setMethod(ZipMethod.deflated());
                 ZipArkivoEntryAttributes attributes = zipView.readAttributes();
@@ -129,6 +141,9 @@ public final class ZipArkivoFileSystemTest {
                 ArrayList<String> visited = new ArrayList<>();
                 while (reader.next()) {
                     ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                    PosixFileAttributes posixAttributes = reader.readAttributes(PosixFileAttributes.class);
+                    assertEquals(attributes.isDirectory(), posixAttributes.isDirectory());
+                    assertEquals("owner", posixAttributes.owner().getName());
                     visited.add(attributes.path());
                     if (attributes.isDirectory()) {
                         assertEquals("dir/", attributes.path());

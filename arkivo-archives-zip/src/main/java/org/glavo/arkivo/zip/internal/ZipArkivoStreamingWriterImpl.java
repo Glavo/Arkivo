@@ -22,7 +22,13 @@ import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.FileAttributeView;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.GroupPrincipal;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
 
 /// Implements the public forward-only ZIP streaming writer API.
@@ -121,6 +127,9 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             ZipStreamingEntry entry = requirePendingEntry();
             if (type == BasicFileAttributeView.class || type == ZipArkivoEntryAttributeView.class) {
                 return type.cast(entry.attributes);
+            }
+            if (type == PosixFileAttributeView.class) {
+                return type.cast(entry.posixAttributes);
             }
             return null;
         } finally {
@@ -277,6 +286,9 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// The mutable pending ZIP attribute view.
         private final PendingZipEntryAttributeView attributes = new PendingZipEntryAttributeView(this);
 
+        /// The mutable pending POSIX attribute view.
+        private final PendingPosixEntryAttributeView posixAttributes = new PendingPosixEntryAttributeView(this);
+
         /// Whether this entry has already been committed.
         private boolean submitted;
 
@@ -292,6 +304,162 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             if (submitted || pendingEntry != this) {
                 throw new IllegalStateException("ZIP streaming entry has already been committed");
             }
+        }
+    }
+
+    /// Stores writable POSIX entry metadata before a streaming entry is committed.
+    @NotNullByDefault
+    private final class PendingPosixEntryAttributeView implements PosixFileAttributeView {
+        /// The entry configured by this view.
+        private final ZipStreamingEntry entry;
+
+        /// The requested POSIX permissions, or `null` when defaults are used.
+        private @Nullable Set<PosixFilePermission> permissions;
+
+        /// Creates a pending POSIX entry attribute view.
+        private PendingPosixEntryAttributeView(ZipStreamingEntry entry) {
+            this.entry = Objects.requireNonNull(entry, "entry");
+        }
+
+        /// Returns the attribute view name.
+        @Override
+        public String name() {
+            return "posix";
+        }
+
+        /// Reads the pending POSIX entry attributes.
+        @Override
+        public PosixFileAttributes readAttributes() {
+            return new PendingPosixEntryAttributes(entry, permissions);
+        }
+
+        /// Returns the synthesized owner.
+        @Override
+        public UserPrincipal getOwner() {
+            return ZipPosixSupport.DEFAULT_OWNER;
+        }
+
+        /// Sets entry timestamps.
+        @Override
+        public void setTimes(
+                @Nullable FileTime lastModifiedTime,
+                @Nullable FileTime lastAccessTime,
+                @Nullable FileTime createTime
+        ) throws IOException {
+            entry.attributes.setTimes(lastModifiedTime, lastAccessTime, createTime);
+        }
+
+        /// Sets the file owner.
+        @Override
+        public void setOwner(UserPrincipal owner) {
+            Objects.requireNonNull(owner, "owner");
+            throw new UnsupportedOperationException("ZIP streaming writer does not support persisting entry owners yet");
+        }
+
+        /// Sets the file group.
+        @Override
+        public void setGroup(GroupPrincipal group) {
+            Objects.requireNonNull(group, "group");
+            throw new UnsupportedOperationException("ZIP streaming writer does not support persisting entry groups yet");
+        }
+
+        /// Sets POSIX permissions.
+        @Override
+        public void setPermissions(Set<PosixFilePermission> permissions) {
+            Objects.requireNonNull(permissions, "permissions");
+            entry.ensurePending();
+            this.permissions = Set.copyOf(permissions);
+        }
+    }
+
+    /// Exposes a snapshot of pending synthesized POSIX entry metadata.
+    @NotNullByDefault
+    private static final class PendingPosixEntryAttributes implements PosixFileAttributes {
+        /// The pending ZIP entry.
+        private final ZipStreamingEntry entry;
+
+        /// The configured permissions, or `null` when defaults are used.
+        private final @Nullable Set<PosixFilePermission> permissions;
+
+        /// Creates a pending POSIX attributes snapshot.
+        private PendingPosixEntryAttributes(ZipStreamingEntry entry, @Nullable Set<PosixFilePermission> permissions) {
+            this.entry = Objects.requireNonNull(entry, "entry");
+            this.permissions = permissions != null ? Set.copyOf(permissions) : null;
+        }
+
+        /// Returns the last modification time.
+        @Override
+        public FileTime lastModifiedTime() {
+            return entry.attributes.readAttributes().lastModifiedTime();
+        }
+
+        /// Returns the last access time.
+        @Override
+        public FileTime lastAccessTime() {
+            return entry.attributes.readAttributes().lastAccessTime();
+        }
+
+        /// Returns the creation time.
+        @Override
+        public FileTime creationTime() {
+            return entry.attributes.readAttributes().creationTime();
+        }
+
+        /// Returns whether this pending entry is a regular file.
+        @Override
+        public boolean isRegularFile() {
+            return entry.type == EntryType.FILE;
+        }
+
+        /// Returns whether this pending entry is a directory.
+        @Override
+        public boolean isDirectory() {
+            return entry.type == EntryType.DIRECTORY;
+        }
+
+        /// Returns whether this pending entry is a symbolic link.
+        @Override
+        public boolean isSymbolicLink() {
+            return entry.type == EntryType.SYMBOLIC_LINK;
+        }
+
+        /// Returns whether this pending entry is another file type.
+        @Override
+        public boolean isOther() {
+            return false;
+        }
+
+        /// Returns the expected uncompressed entry size.
+        @Override
+        public long size() {
+            return entry.attributes.readAttributes().size();
+        }
+
+        /// Returns no stable file key for a pending streaming entry.
+        @Override
+        public @Nullable Object fileKey() {
+            return null;
+        }
+
+        /// Returns the synthesized owner.
+        @Override
+        public UserPrincipal owner() {
+            return ZipPosixSupport.DEFAULT_OWNER;
+        }
+
+        /// Returns the synthesized group.
+        @Override
+        public GroupPrincipal group() {
+            return ZipPosixSupport.DEFAULT_GROUP;
+        }
+
+        /// Returns configured or synthesized permissions.
+        @Override
+        public @Unmodifiable Set<PosixFilePermission> permissions() {
+            Set<PosixFilePermission> configuredPermissions = permissions;
+            return configuredPermissions != null
+                    ? configuredPermissions
+                    : ZipPosixSupport.defaultPermissions(entry.type == EntryType.DIRECTORY);
         }
     }
 
@@ -529,6 +697,9 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             }
             if (internalAttributes != 0 || externalAttributes != UNKNOWN_EXTERNAL_ATTRIBUTES) {
                 throw new UnsupportedOperationException("ZIP streaming writer does not support custom entry attributes yet");
+            }
+            if (entry.posixAttributes.permissions != null) {
+                throw new UnsupportedOperationException("ZIP streaming writer does not support custom POSIX permissions yet");
             }
             if (localExtraData.length != 0 || centralDirectoryExtraData.length != 0) {
                 throw new UnsupportedOperationException("ZIP streaming writer does not support custom extra data yet");

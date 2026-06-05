@@ -160,7 +160,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
     /// Returns the supported file attribute view names.
     @Override
     public @Unmodifiable Set<String> supportedFileAttributeViews() {
-        return Set.of("basic", "zip");
+        return Set.of("basic", "zip", "owner", "posix");
     }
 
     /// Returns a path inside this ZIP file system.
