@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.zip;
 
-import org.glavo.arkivo.ArkivoStreamingEntry;
 import org.glavo.arkivo.ArkivoStreamingWriter;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.zip.internal.ZipArkivoStreamingWriterImpl;
@@ -65,10 +64,6 @@ public abstract sealed class ZipArkivoStreamingWriter extends ArkivoStreamingWri
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
         return ZipArkivoStreamingWriterImpl.open(output, config);
     }
-
-    /// Creates a pending ZIP entry for the given logical archive path.
-    @Override
-    public abstract ArkivoStreamingEntry entry(Path path) throws IOException;
 
     /// Closes this streaming writer and finishes the ZIP stream.
     @Override

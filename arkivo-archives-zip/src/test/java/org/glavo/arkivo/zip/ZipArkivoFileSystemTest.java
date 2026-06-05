@@ -5,7 +5,6 @@ package org.glavo.arkivo.zip;
 
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
-import org.glavo.arkivo.ArkivoStreamingEntry;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -89,9 +88,9 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                ArkivoStreamingEntry entry = writer.entry(Path.of("dir", "hello.txt"));
-                BasicFileAttributeView basicView = entry.attributeView(BasicFileAttributeView.class);
-                ZipArkivoEntryAttributeView zipView = entry.attributeView(ZipArkivoEntryAttributeView.class);
+                writer.beginEntry(Path.of("dir", "hello.txt"));
+                BasicFileAttributeView basicView = writer.attributeView(BasicFileAttributeView.class);
+                ZipArkivoEntryAttributeView zipView = writer.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(basicView);
                 assertNotNull(zipView);
 
@@ -100,7 +99,7 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals("dir/hello.txt", attributes.path());
                 assertEquals(ZipMethod.deflated(), attributes.method());
 
-                try (var output = entry.openOutputStream()) {
+                try (var output = writer.openOutputStream()) {
                     output.write("hello".getBytes(StandardCharsets.UTF_8));
                 }
                 assertThrows(IllegalStateException.class, () -> zipView.setMethod(ZipMethod.stored()));

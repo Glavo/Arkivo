@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.zip.internal;
 
-import org.glavo.arkivo.ArkivoStreamingEntry;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
@@ -70,17 +69,70 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         ), config);
     }
 
-    /// Creates a pending ZIP entry for the given logical archive path.
+    /// Begins a pending ZIP entry for the given logical archive path.
     @Override
-    public ArkivoStreamingEntry entry(Path path) throws IOException {
+    public void beginEntry(Path path) {
         lock();
         try {
             if (pendingEntry != null) {
                 throw new IllegalStateException("A ZIP streaming entry is already pending");
             }
-            ZipStreamingEntry entry = new ZipStreamingEntry(path, entryPathText(path));
-            pendingEntry = entry;
-            return entry;
+            pendingEntry = new ZipStreamingEntry(entryPathText(path));
+        } finally {
+            unlock();
+        }
+    }
+
+    /// Returns an attribute view used to configure the current pending entry before it is committed.
+    @Override
+    public <V extends FileAttributeView> @Nullable V attributeView(Class<V> type) {
+        Objects.requireNonNull(type, "type");
+        lock();
+        try {
+            ZipStreamingEntry entry = requirePendingEntry();
+            if (type == BasicFileAttributeView.class || type == ZipArkivoEntryAttributeView.class) {
+                return type.cast(entry.attributes);
+            }
+            return null;
+        } finally {
+            unlock();
+        }
+    }
+
+    /// Creates the current pending entry as a directory and commits its metadata.
+    @Override
+    public void createDirectory() throws IOException {
+        lock();
+        try {
+            ZipStreamingEntry entry = requirePendingEntry();
+            entry.ensurePending();
+            entry.attributes.requireSupportedDirectory();
+            fileSystem.createDirectory(fileSystem.getPath("/" + entry.entryPath));
+            entry.submitted = true;
+            pendingEntry = null;
+        } finally {
+            unlock();
+        }
+    }
+
+    /// Opens a writable channel for the current pending entry and commits its metadata.
+    @Override
+    public WritableByteChannel openChannel() throws IOException {
+        return Channels.newChannel(openOutputStream());
+    }
+
+    /// Opens an output stream for the current pending entry and commits its metadata.
+    @Override
+    public OutputStream openOutputStream() throws IOException {
+        lock();
+        try {
+            ZipStreamingEntry entry = requirePendingEntry();
+            entry.ensurePending();
+            entry.attributes.requireSupportedFile();
+            OutputStream output = fileSystem.newOutputStream(fileSystem.getPath("/" + entry.entryPath));
+            entry.submitted = true;
+            pendingEntry = null;
+            return output;
         } finally {
             unlock();
         }
@@ -97,33 +149,13 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         }
     }
 
-    /// Commits a pending entry as a directory.
-    private void createDirectory(ZipStreamingEntry entry) throws IOException {
-        lock();
-        try {
-            entry.ensurePending();
-            entry.attributes.requireSupportedDirectory();
-            fileSystem.createDirectory(fileSystem.getPath("/" + entry.entryPath));
-            entry.submitted = true;
-            pendingEntry = null;
-        } finally {
-            unlock();
+    /// Returns the current pending entry.
+    private ZipStreamingEntry requirePendingEntry() {
+        ZipStreamingEntry entry = pendingEntry;
+        if (entry == null) {
+            throw new IllegalStateException("No ZIP streaming entry is pending");
         }
-    }
-
-    /// Commits a pending entry as a regular file and opens its output stream.
-    private OutputStream openOutputStream(ZipStreamingEntry entry) throws IOException {
-        lock();
-        try {
-            entry.ensurePending();
-            entry.attributes.requireSupportedFile();
-            OutputStream output = fileSystem.newOutputStream(fileSystem.getPath("/" + entry.entryPath));
-            entry.submitted = true;
-            pendingEntry = null;
-            return output;
-        } finally {
-            unlock();
-        }
+        return entry;
     }
 
     /// Acquires the state lock when it is present.
@@ -166,10 +198,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
 
     /// Implements one pending ZIP streaming entry.
     @NotNullByDefault
-    private final class ZipStreamingEntry extends ArkivoStreamingEntry {
-        /// The logical path requested by the caller.
-        private final Path path;
-
+    private final class ZipStreamingEntry {
         /// The normalized ZIP entry path text.
         private final String entryPath;
 
@@ -180,43 +209,8 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         private boolean submitted;
 
         /// Creates a pending ZIP streaming entry.
-        private ZipStreamingEntry(Path path, String entryPath) {
-            this.path = Objects.requireNonNull(path, "path");
+        private ZipStreamingEntry(String entryPath) {
             this.entryPath = Objects.requireNonNull(entryPath, "entryPath");
-        }
-
-        /// Returns the logical entry path requested by the caller.
-        @Override
-        public Path path() {
-            return path;
-        }
-
-        /// Returns an attribute view used to configure this entry before it is committed.
-        @Override
-        public <V extends FileAttributeView> @Nullable V attributeView(Class<V> type) {
-            Objects.requireNonNull(type, "type");
-            if (type == BasicFileAttributeView.class || type == ZipArkivoEntryAttributeView.class) {
-                return type.cast(attributes);
-            }
-            return null;
-        }
-
-        /// Creates this entry as a directory and commits its metadata.
-        @Override
-        public void createDirectory() throws IOException {
-            ZipArkivoStreamingWriterImpl.this.createDirectory(this);
-        }
-
-        /// Opens a writable channel for this entry and commits its metadata.
-        @Override
-        public WritableByteChannel openChannel() throws IOException {
-            return Channels.newChannel(openOutputStream());
-        }
-
-        /// Opens an output stream for this entry and commits its metadata.
-        @Override
-        public OutputStream openOutputStream() throws IOException {
-            return ZipArkivoStreamingWriterImpl.this.openOutputStream(this);
         }
 
         /// Requires this entry to still be pending.
