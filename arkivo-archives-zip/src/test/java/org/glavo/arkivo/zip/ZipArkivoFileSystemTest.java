@@ -113,6 +113,8 @@ public final class ZipArkivoFileSystemTest {
                 assertNotNull(zipView);
                 assertNotNull(posixView);
                 assertEquals("posix", posixView.name());
+                assertThrows(UnsupportedOperationException.class, () -> zipView.setOwner(posixView.getOwner()));
+                assertThrows(UnsupportedOperationException.class, () -> zipView.setGroup(posixView.readAttributes().group()));
 
                 zipView.setMethod(ZipMethod.deflated());
                 ZipArkivoEntryAttributes attributes = zipView.readAttributes();
