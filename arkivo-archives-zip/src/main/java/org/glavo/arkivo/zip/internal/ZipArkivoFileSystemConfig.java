@@ -208,25 +208,39 @@ public final class ZipArkivoFileSystemConfig {
         for (OpenOption option : options) {
             result.add(Objects.requireNonNull(option, "option"));
         }
-        if (result.isEmpty()) {
+
+        boolean read = result.contains(StandardOpenOption.READ);
+        boolean write = result.contains(StandardOpenOption.WRITE);
+        boolean append = result.contains(StandardOpenOption.APPEND);
+        boolean create = result.contains(StandardOpenOption.CREATE);
+        boolean createNew = result.contains(StandardOpenOption.CREATE_NEW);
+        boolean truncate = result.contains(StandardOpenOption.TRUNCATE_EXISTING);
+
+        if (!read && !write && !append && !create && !createNew && !truncate) {
             result.add(StandardOpenOption.READ);
+            read = true;
         }
 
-        if (result.contains(StandardOpenOption.READ)) {
-            if (result.size() != 1) {
-                throw new IllegalArgumentException("ZIP archive read open options cannot be mixed with write options");
+        if (append) {
+            throw new UnsupportedOperationException("ZIP archive streaming writes do not support APPEND");
+        }
+
+        if (read) {
+            if (write) {
+                throw new UnsupportedOperationException("ZIP archive update mode is not supported yet");
+            }
+            if (create || createNew || truncate) {
+                throw new IllegalArgumentException(
+                        "ZIP archive read open options cannot include create or truncate options"
+                );
             }
             return Set.copyOf(result);
         }
 
-        if (result.contains(StandardOpenOption.APPEND)) {
-            throw new UnsupportedOperationException("ZIP archive streaming writes do not support APPEND");
-        }
-        if (!result.contains(StandardOpenOption.WRITE)) {
+        if (!write) {
             throw new IllegalArgumentException("ZIP archive write open options must include WRITE");
         }
-        if (!result.contains(StandardOpenOption.TRUNCATE_EXISTING)
-                && !result.contains(StandardOpenOption.CREATE_NEW)) {
+        if (!truncate && !createNew) {
             throw new IllegalArgumentException(
                     "ZIP archive write open options must include TRUNCATE_EXISTING or CREATE_NEW"
             );

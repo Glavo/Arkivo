@@ -1022,7 +1022,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Opens a channel for the physical storage that contains the beginning of this ZIP archive.
     private SeekableByteChannel openArchiveChannel() throws IOException {
         if (archivePath != null) {
-            return Files.newByteChannel(archivePath, StandardOpenOption.READ);
+            return Files.newByteChannel(archivePath, config.openOptions());
         }
 
         assert volumes != null;

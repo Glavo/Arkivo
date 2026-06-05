@@ -6,6 +6,7 @@ package org.glavo.arkivo.zip;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoVolumeSource;
+import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemConfig;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -21,6 +22,7 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
@@ -314,6 +316,18 @@ public final class ZipArkivoFileSystemTest {
         } finally {
             deleteTemporaryArchive(archivePath);
         }
+    }
+
+    /// Verifies that read open options allow provider-specific non-write options.
+    @Test
+    public void fileSystemReadOpenOptionsAcceptProviderOptions() {
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.<OpenOption>of(StandardOpenOption.READ, TestOpenOption.DIRECT)
+        ));
+
+        assertEquals(false, config.archiveWritable());
+        assertEquals(Set.<OpenOption>of(StandardOpenOption.READ, TestOpenOption.DIRECT), config.openOptions());
     }
 
     /// Verifies that a streaming ZIP reader can read entries from an input stream.
@@ -779,5 +793,11 @@ public final class ZipArkivoFileSystemTest {
         public void close() {
             closed = true;
         }
+    }
+
+    /// Open option used to emulate provider-specific options in tests.
+    private enum TestOpenOption implements OpenOption {
+        /// Provider-specific direct I/O marker.
+        DIRECT
     }
 }
