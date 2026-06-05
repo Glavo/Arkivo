@@ -4,11 +4,14 @@
 package org.glavo.arkivo;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.FileSystem;
 import java.nio.file.OpenOption;
 import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.Objects;
+import java.util.Set;
 
 /// Provides shared behavior for archive-backed file systems.
 @NotNullByDefault
@@ -24,12 +27,13 @@ public abstract class ArkivoFileSystem extends FileSystem {
 
     /// The common environment option that controls how the backing archive path is opened.
     ///
-    /// The option accepts an `OpenOption[]`, a single `OpenOption`, or a `Collection` of `OpenOption` values.
-    public static final ArkivoFileSystemOption<OpenOption[]> OPEN_OPTIONS =
+    /// The typed option value is a `Set<OpenOption>`. Raw environment maps may also provide an `OpenOption[]`,
+    /// a single `OpenOption`, or a `Collection` of `OpenOption` values.
+    public static final ArkivoFileSystemOption<Set<OpenOption>> OPEN_OPTIONS =
             ArkivoFileSystemOption.of(
                     "arkivo",
                     "openOptions",
-                    OpenOption[].class,
+                    openOptionsType(),
                     ArkivoFileSystem::openOptionsValue
             );
 
@@ -65,29 +69,37 @@ public abstract class ArkivoFileSystem extends FileSystem {
     }
 
     /// Converts a raw open options value.
-    private static OpenOption[] openOptionsValue(Object value) {
-        if (value instanceof OpenOption[] options) {
-            return options.clone();
+    private static @Unmodifiable Set<OpenOption> openOptionsValue(Object value) {
+        LinkedHashSet<OpenOption> options = new LinkedHashSet<>();
+        if (value instanceof OpenOption[] array) {
+            for (OpenOption option : array) {
+                options.add(Objects.requireNonNull(option, "option"));
+            }
+            return Set.copyOf(options);
         }
         if (value instanceof OpenOption option) {
-            return new OpenOption[]{option};
+            return Set.of(option);
         }
         if (value instanceof Collection<?> collection) {
-            OpenOption[] options = new OpenOption[collection.size()];
-            int index = 0;
             for (Object item : collection) {
                 if (!(item instanceof OpenOption option)) {
                     throw new IllegalArgumentException(
                             "Expected OpenOption values for key: " + OPEN_OPTIONS.key()
                     );
                 }
-                options[index++] = option;
+                options.add(option);
             }
-            return options;
+            return Set.copyOf(options);
         }
         throw new IllegalArgumentException(
-                "Expected OpenOption, OpenOption[], or Collection<? extends OpenOption> for key: "
+                "Expected Set<OpenOption>, OpenOption[], OpenOption, or Collection<? extends OpenOption> for key: "
                         + OPEN_OPTIONS.key()
         );
+    }
+
+    /// Returns the erased runtime class used by the typed open options environment option.
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static Class<Set<OpenOption>> openOptionsType() {
+        return (Class) Set.class;
     }
 }

@@ -75,7 +75,7 @@ public final class ZipArkivoFileSystemConfig {
             throw new IllegalArgumentException("splitSize must be positive or NO_SPLIT_SIZE");
         }
         this.openOptions = normalizeOpenOptions(
-                Objects.requireNonNull(openOptions, "openOptions").toArray(OpenOption[]::new)
+                Objects.requireNonNull(openOptions, "openOptions")
         );
         this.passwordProvider = passwordProvider;
         this.defaultEncryption = Objects.requireNonNull(defaultEncryption, "defaultEncryption");
@@ -194,15 +194,15 @@ public final class ZipArkivoFileSystemConfig {
             Map<String, ?> environment,
             Set<? extends OpenOption> defaultOpenOptions
     ) {
-        OpenOption[] options = ArkivoFileSystem.OPEN_OPTIONS.readOrDefault(
+        Set<OpenOption> options = ArkivoFileSystem.OPEN_OPTIONS.readOrDefault(
                 environment,
-                defaultOpenOptions.toArray(OpenOption[]::new)
+                Set.copyOf(defaultOpenOptions)
         );
         return normalizeOpenOptions(options);
     }
 
     /// Normalizes and validates open options.
-    private static @Unmodifiable Set<OpenOption> normalizeOpenOptions(OpenOption[] options) {
+    private static @Unmodifiable Set<OpenOption> normalizeOpenOptions(Set<? extends OpenOption> options) {
         Objects.requireNonNull(options, "options");
         LinkedHashSet<OpenOption> result = new LinkedHashSet<>();
         for (OpenOption option : options) {
