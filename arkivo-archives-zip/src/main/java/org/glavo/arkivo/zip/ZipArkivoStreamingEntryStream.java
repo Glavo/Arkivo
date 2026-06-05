@@ -15,7 +15,8 @@ import java.nio.channels.ReadableByteChannel;
 
 /// Reads ZIP entries from a streaming reader in storage order.
 @NotNullByDefault
-public sealed interface ZipArkivoStreamingEntryStream extends Closeable permits ZipArkivoStreamingEntryStreamImpl {
+public sealed interface ZipArkivoStreamingEntryStream extends Closeable, Iterable<ZipArkivoEntryAttributes>
+        permits ZipArkivoStreamingEntryStreamImpl {
     /// Returns the next ZIP entry attributes, or `null` when no entries remain.
     @Nullable ZipArkivoEntryAttributes next() throws IOException;
 

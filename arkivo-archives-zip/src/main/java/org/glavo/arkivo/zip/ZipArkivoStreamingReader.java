@@ -10,13 +10,15 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.util.Map;
 import java.util.Objects;
 
 /// Reads ZIP entries from a forward-only stream.
 @NotNullByDefault
-public abstract sealed class ZipArkivoStreamingReader implements Closeable permits ZipArkivoStreamingReaderImpl {
+public abstract sealed class ZipArkivoStreamingReader implements Closeable, Iterable<ZipArkivoEntryAttributes>
+        permits ZipArkivoStreamingReaderImpl {
     /// Creates a streaming ZIP reader base instance.
     protected ZipArkivoStreamingReader() {
     }
@@ -52,6 +54,14 @@ public abstract sealed class ZipArkivoStreamingReader implements Closeable permi
 
     /// Opens the single entry stream for this reader.
     public abstract ZipArkivoStreamingEntryStream openEntryStream() throws IOException;
+
+    /// Opens a readable channel for the current file entry.
+    public abstract ReadableByteChannel openChannel() throws IOException;
+
+    /// Opens an input stream for the current file entry.
+    public InputStream openInputStream() throws IOException {
+        return Channels.newInputStream(openChannel());
+    }
 
     /// Closes this streaming reader.
     @Override

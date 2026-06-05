@@ -10,7 +10,10 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
+import java.nio.file.DirectoryIteratorException;
 import java.nio.channels.ReadableByteChannel;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
 import java.util.Objects;
 
 /// Implements a ZIP streaming entry stream.
@@ -24,6 +27,9 @@ public final class ZipArkivoStreamingEntryStreamImpl implements ZipArkivoStreami
 
     /// Whether this entry stream is open.
     private boolean open = true;
+
+    /// Whether an iterator has already been created.
+    private boolean iteratorCreated;
 
     /// Creates a ZIP streaming entry stream.
     ZipArkivoStreamingEntryStreamImpl(
@@ -65,10 +71,80 @@ public final class ZipArkivoStreamingEntryStreamImpl implements ZipArkivoStreami
         entries.close();
     }
 
+    /// Returns the single iterator for this streaming entry stream.
+    @Override
+    public synchronized Iterator<ZipArkivoEntryAttributes> iterator() {
+        ensureOpenUnchecked();
+        if (iteratorCreated) {
+            throw new IllegalStateException("ZIP streaming entry stream iterator has already been created");
+        }
+        iteratorCreated = true;
+        return new EntryIterator();
+    }
+
     /// Requires this entry stream to be open.
     private void ensureOpen() throws IOException {
         if (!open) {
             throw new IOException("ZIP streaming entry stream is closed");
+        }
+    }
+
+    /// Requires this entry stream to be open.
+    private void ensureOpenUnchecked() {
+        if (!open) {
+            throw new IllegalStateException("ZIP streaming entry stream is closed");
+        }
+    }
+
+    /// Iterates ZIP entry attributes in storage order.
+    private final class EntryIterator implements Iterator<ZipArkivoEntryAttributes> {
+        /// The prefetched next entry attributes, or `null` when no entry is prefetched.
+        private @Nullable ZipArkivoEntryAttributes nextAttributes;
+
+        /// Whether the next entry has been prefetched.
+        private boolean prefetched;
+
+        /// Whether the stream has reached the end.
+        private boolean finished;
+
+        /// Creates an entry iterator.
+        private EntryIterator() {
+        }
+
+        /// Returns whether another entry is available.
+        @Override
+        public boolean hasNext() {
+            prefetch();
+            return !finished;
+        }
+
+        /// Returns the next entry attributes.
+        @Override
+        public ZipArkivoEntryAttributes next() {
+            prefetch();
+            if (finished) {
+                throw new NoSuchElementException();
+            }
+            ZipArkivoEntryAttributes attributes = Objects.requireNonNull(nextAttributes, "nextAttributes");
+            nextAttributes = null;
+            prefetched = false;
+            return attributes;
+        }
+
+        /// Prefetches the next entry attributes.
+        private void prefetch() {
+            if (prefetched || finished) {
+                return;
+            }
+            try {
+                nextAttributes = ZipArkivoStreamingEntryStreamImpl.this.next();
+                prefetched = true;
+                if (nextAttributes == null) {
+                    finished = true;
+                }
+            } catch (IOException exception) {
+                throw new DirectoryIteratorException(exception);
+            }
         }
     }
 }
