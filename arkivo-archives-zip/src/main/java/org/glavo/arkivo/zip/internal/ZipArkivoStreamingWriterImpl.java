@@ -115,6 +115,24 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         }
     }
 
+    /// Commits the current pending entry without opening a body channel.
+    @Override
+    public void endEntry() throws IOException {
+        lock();
+        try {
+            ZipStreamingEntry entry = requirePendingEntry();
+            entry.ensurePending();
+            entry.attributes.requireSupportedFile();
+            try (OutputStream ignored = fileSystem.newOutputStream(fileSystem.getPath("/" + entry.entryPath))) {
+                // Closing the entry output stream writes an empty ZIP entry.
+            }
+            entry.submitted = true;
+            pendingEntry = null;
+        } finally {
+            unlock();
+        }
+    }
+
     /// Opens a writable channel for the current pending entry and commits its metadata.
     @Override
     public WritableByteChannel openChannel() throws IOException {

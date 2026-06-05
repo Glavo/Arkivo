@@ -29,6 +29,9 @@ public abstract class ArkivoStreamingWriter implements Closeable {
     /// Creates the current pending entry as a directory and commits its metadata.
     public abstract void createDirectory() throws IOException;
 
+    /// Commits the current pending entry without opening a body channel.
+    public abstract void endEntry() throws IOException;
+
     /// Opens a writable channel for the current pending entry and commits its metadata.
     public abstract WritableByteChannel openChannel() throws IOException;
 

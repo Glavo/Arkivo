@@ -73,10 +73,13 @@ public final class ZipArkivoFileSystemTest {
                 try (var output = writer.openOutputStream()) {
                     output.write("hello".getBytes(StandardCharsets.UTF_8));
                 }
+                writer.beginEntry("dir/empty.txt");
+                writer.endEntry();
             }
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
                 assertEquals("hello", Files.readString(fileSystem.getPath("/dir/hello.txt"), StandardCharsets.UTF_8));
+                assertArrayEquals(new byte[0], Files.readAllBytes(fileSystem.getPath("/dir/empty.txt")));
             }
         } finally {
             deleteTemporaryArchive(archivePath);
