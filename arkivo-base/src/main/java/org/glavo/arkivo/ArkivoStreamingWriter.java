@@ -11,7 +11,6 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
-import java.nio.file.Path;
 import java.nio.file.attribute.FileAttributeView;
 
 /// Writes archive entries to a forward-only stream.
@@ -21,8 +20,8 @@ public abstract class ArkivoStreamingWriter implements Closeable {
     protected ArkivoStreamingWriter() {
     }
 
-    /// Begins a pending entry for the given logical archive path.
-    public abstract void beginEntry(Path path) throws IOException;
+    /// Begins a pending entry for the given logical archive path text.
+    public abstract void beginEntry(String path) throws IOException;
 
     /// Returns an attribute view used to configure the current pending entry before it is committed.
     public abstract <V extends FileAttributeView> @Nullable V attributeView(Class<V> type);
@@ -38,20 +37,20 @@ public abstract class ArkivoStreamingWriter implements Closeable {
         return Channels.newOutputStream(openChannel());
     }
 
-    /// Creates a directory entry for the given logical archive path.
-    public void createDirectory(Path path) throws IOException {
+    /// Creates a directory entry for the given logical archive path text.
+    public void createDirectory(String path) throws IOException {
         beginEntry(path);
         createDirectory();
     }
 
-    /// Opens a writable channel for the next regular file entry at the given logical archive path.
-    public WritableByteChannel openChannel(Path path) throws IOException {
+    /// Opens a writable channel for the next regular file entry at the given logical archive path text.
+    public WritableByteChannel openChannel(String path) throws IOException {
         beginEntry(path);
         return openChannel();
     }
 
-    /// Opens an output stream for the next regular file entry at the given logical archive path.
-    public OutputStream openOutputStream(Path path) throws IOException {
+    /// Opens an output stream for the next regular file entry at the given logical archive path text.
+    public OutputStream openOutputStream(String path) throws IOException {
         beginEntry(path);
         return openOutputStream();
     }

@@ -67,8 +67,8 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                writer.createDirectory(Path.of("dir"));
-                try (var output = writer.openOutputStream(Path.of("dir", "hello.txt"))) {
+                writer.createDirectory("dir");
+                try (var output = writer.openOutputStream("dir/hello.txt")) {
                     output.write("hello".getBytes(StandardCharsets.UTF_8));
                 }
             }
@@ -88,7 +88,7 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-                writer.beginEntry(Path.of("dir", "hello.txt"));
+                writer.beginEntry("dir/hello.txt");
                 BasicFileAttributeView basicView = writer.attributeView(BasicFileAttributeView.class);
                 ZipArkivoEntryAttributeView zipView = writer.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(basicView);
@@ -513,8 +513,8 @@ public final class ZipArkivoFileSystemTest {
     private static Path createDeflatedZipArchive() throws IOException {
         Path archivePath = createTemporaryArchivePath("real-zip-");
         try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
-            writer.createDirectory(Path.of("dir"));
-            try (var output = writer.openOutputStream(Path.of("dir", "hello.txt"))) {
+            writer.createDirectory("dir");
+            try (var output = writer.openOutputStream("dir/hello.txt")) {
                 output.write("hello".getBytes(StandardCharsets.UTF_8));
             }
         }

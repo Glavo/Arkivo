@@ -71,7 +71,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
 
     /// Begins a pending ZIP entry for the given logical archive path.
     @Override
-    public void beginEntry(Path path) {
+    public void beginEntry(String path) {
         lock();
         try {
             if (pendingEntry != null) {
@@ -169,26 +169,37 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
     }
 
     /// Converts a logical entry path to ZIP path text.
-    private static String entryPathText(Path path) {
+    private static String entryPathText(String path) {
         Objects.requireNonNull(path, "path");
-        if (path.isAbsolute()) {
+        String normalizedSeparators = path.replace('\\', '/');
+        if (normalizedSeparators.startsWith("/")) {
             throw new IllegalArgumentException("ZIP streaming entry paths must be relative");
         }
+        if (normalizedSeparators.length() >= 2 && normalizedSeparators.charAt(1) == ':') {
+            throw new IllegalArgumentException("ZIP streaming entry paths must not contain drive roots");
+        }
 
-        Path normalizedPath = path.normalize();
         StringBuilder builder = new StringBuilder();
-        for (Path name : normalizedPath) {
-            String text = name.toString();
-            if (text.equals(".") || text.isEmpty()) {
+        int start = 0;
+        while (start <= normalizedSeparators.length()) {
+            int end = normalizedSeparators.indexOf('/', start);
+            if (end < 0) {
+                end = normalizedSeparators.length();
+            }
+
+            String segment = normalizedSeparators.substring(start, end);
+            if (segment.isEmpty() || segment.equals(".")) {
+                start = end + 1;
                 continue;
             }
-            if (text.equals("..")) {
+            if (segment.equals("..")) {
                 throw new IllegalArgumentException("ZIP streaming entry paths must not contain ..");
             }
             if (!builder.isEmpty()) {
                 builder.append('/');
             }
-            builder.append(text.replace('\\', '/'));
+            builder.append(segment);
+            start = end + 1;
         }
         if (builder.isEmpty()) {
             throw new IllegalArgumentException("ZIP streaming entry path must not be empty");
