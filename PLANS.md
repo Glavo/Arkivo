@@ -329,7 +329,7 @@ Each archive format should define only the attribute interfaces it needs, such a
 8. Add lower-level reader, writer, or streaming APIs only if FileSystem APIs are not sufficient for a concrete format.
 9. Add xz and zstd codec modules.
 10. Add tar support after deciding whether the public surface should be a filesystem, streaming API, or both.
-11. Extend 7z support from plain empty-entry headers to packed stream decoding, non-empty file reads, and richer metadata.
+11. Extend 7z support from plain headers and Copy-method file reads to compressed folder decoding and richer metadata.
 12. Add rar read support and a read-only rar filesystem.
 
 ## Compatibility Notes

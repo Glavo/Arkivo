@@ -144,6 +144,34 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that a non-empty file stored with the 7z Copy method can be read.
+    @Test
+    public void copyFileEntry() throws IOException {
+        byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("copy-file-");
+        Files.write(archivePath, archiveWithCopyFile(content));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(false, attributes.isDirectory());
+                assertEquals(true, attributes.isRegularFile());
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+                try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                    assertEquals(content.length, channel.size());
+                    ByteBuffer buffer = ByteBuffer.allocate(content.length);
+                    assertEquals(content.length, channel.read(buffer));
+                    assertArrayEquals(content, buffer.array());
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that a 7z file system can be opened and resolved through provider URIs.
     @Test
     public void openUri() throws IOException {
@@ -249,16 +277,29 @@ public final class SevenZipArkivoFileSystemTest {
         return archive(header, crc32(header));
     }
 
+    /// Returns a 7z archive with one file stored through the Copy method.
+    private static byte[] archiveWithCopyFile(byte[] content) throws IOException {
+        byte[] header = copyFileHeader(content.length);
+        return archive(content, header, crc32(header));
+    }
+
     /// Returns a 7z archive with the given next header and expected next header CRC-32.
     private static byte[] archive(byte[] nextHeader, long nextHeaderCrc32) {
-        ByteBuffer buffer = ByteBuffer.allocate(32 + nextHeader.length).order(ByteOrder.LITTLE_ENDIAN);
+        return archive(new byte[0], nextHeader, nextHeaderCrc32);
+    }
+
+    /// Returns a 7z archive with packed data followed by the given next header.
+    private static byte[] archive(byte[] packedData, byte[] nextHeader, long nextHeaderCrc32) {
+        ByteBuffer buffer = ByteBuffer.allocate(32 + packedData.length + nextHeader.length)
+                .order(ByteOrder.LITTLE_ENDIAN);
         buffer.put(new byte[]{'7', 'z', (byte) 0xbc, (byte) 0xaf, 0x27, 0x1c});
         buffer.put((byte) 0);
         buffer.put((byte) 4);
         buffer.putInt(0);
-        buffer.putLong(0);
+        buffer.putLong(packedData.length);
         buffer.putLong(nextHeader.length);
         buffer.putInt((int) nextHeaderCrc32);
+        buffer.put(packedData);
         buffer.put(nextHeader);
 
         CRC32 crc32 = new CRC32();
@@ -290,6 +331,43 @@ public final class SevenZipArkivoFileSystemTest {
         output.write(names);
 
         output.write(0x00);
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header with one Copy-method file.
+    private static byte[] copyFileHeader(int size) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+
+        output.write(0x04);
+        output.write(0x06);
+        writeNumber(output, 0);
+        writeNumber(output, 1);
+        output.write(0x09);
+        writeNumber(output, size);
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(0);
+        writeNumber(output, 1);
+        output.write(0x01);
+        output.write(0x00);
+        output.write(0x0c);
+        writeNumber(output, size);
+        output.write(0x00);
+        output.write(0x00);
+
+        output.write(0x05);
+        writeNumber(output, 1);
+        byte[] names = namesProperty("hello.txt");
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
+        output.write(0x00);
+
         output.write(0x00);
         return output.toByteArray();
     }

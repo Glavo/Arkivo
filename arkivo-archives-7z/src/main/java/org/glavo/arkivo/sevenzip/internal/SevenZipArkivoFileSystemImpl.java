@@ -15,6 +15,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.nio.channels.Channels;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.AccessDeniedException;
@@ -251,7 +252,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         if (metadata.directory()) {
             throw new java.nio.file.FileSystemException(path.toString(), null, "Is a directory");
         }
-        return new SevenZipByteChannel(new byte[0]);
+        if (metadata.dataOffset() == SevenZipEntryMetadata.NO_DATA_OFFSET) {
+            return new SevenZipByteChannel(new byte[0]);
+        }
+        return new SevenZipFileSliceChannel(openArchiveChannel(), metadata.dataOffset(), metadata.size());
     }
 
     /// Opens an input stream for an entry.
@@ -261,7 +265,14 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         if (metadata.directory()) {
             throw new java.nio.file.FileSystemException(path.toString(), null, "Is a directory");
         }
-        return new ByteArrayInputStream(new byte[0]);
+        if (metadata.dataOffset() == SevenZipEntryMetadata.NO_DATA_OFFSET) {
+            return new ByteArrayInputStream(new byte[0]);
+        }
+        return Channels.newInputStream(new SevenZipFileSliceChannel(
+                openArchiveChannel(),
+                metadata.dataOffset(),
+                metadata.size()
+        ));
     }
 
     /// Opens a directory stream.
@@ -370,19 +381,22 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// Reads archive metadata from the archive storage.
     private SevenZipArchiveMetadata readArchiveMetadata() throws IOException {
+        try (SeekableByteChannel channel = openArchiveChannel()) {
+            return SevenZipHeaderReader.readArchiveMetadata(channel);
+        }
+    }
+
+    /// Opens the underlying archive channel.
+    private SeekableByteChannel openArchiveChannel() throws IOException {
         if (archivePath != null) {
-            try (SeekableByteChannel channel = Files.newByteChannel(archivePath, config.openOptions())) {
-                return SevenZipHeaderReader.readArchiveMetadata(channel);
-            }
+            return Files.newByteChannel(archivePath, config.openOptions());
         }
         if (volumes != null) {
             SeekableByteChannel channel = volumes.openVolume(0);
             if (channel == null) {
                 throw new IOException("7z volume source did not provide the first volume");
             }
-            try (channel) {
-                return SevenZipHeaderReader.readArchiveMetadata(channel);
-            }
+            return channel;
         }
         throw new IOException("7z archive storage is not available");
     }
