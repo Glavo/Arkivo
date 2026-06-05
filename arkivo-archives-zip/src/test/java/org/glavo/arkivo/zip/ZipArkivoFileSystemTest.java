@@ -98,20 +98,22 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
                 ArrayList<String> visited = new ArrayList<>();
-                reader.read((path, attributes) -> {
-                    visited.add(path);
-                    if (attributes.isDirectory()) {
-                        assertEquals("dir/", path);
-                        assertEquals("dir/", attributes.path());
-                    } else {
-                        assertEquals("dir/hello.txt", path);
-                        assertEquals("dir/hello.txt", attributes.path());
-                        try (var input = reader.openInputStream()) {
-                            assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
-                        }
+                try (ZipArkivoStreamingEntryStream entries = reader.openEntryStream()) {
+                    ZipArkivoEntryAttributes attributes = entries.next();
+                    visited.add(attributes.path());
+                    assertEquals("dir/", attributes.path());
+                    assertEquals(true, attributes.isDirectory());
+
+                    attributes = entries.next();
+                    visited.add(attributes.path());
+                    assertEquals("dir/hello.txt", attributes.path());
+                    assertEquals(false, attributes.isDirectory());
+                    try (var input = entries.openInputStream()) {
+                        assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
                     }
-                    return ZipArkivoStreamingVisitResult.CONTINUE;
-                });
+
+                    assertNull(entries.next());
+                }
                 assertEquals(List.of("dir/", "dir/hello.txt"), visited);
             }
         } finally {

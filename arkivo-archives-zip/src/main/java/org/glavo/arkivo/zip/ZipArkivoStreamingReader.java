@@ -10,7 +10,6 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.util.Map;
 import java.util.Objects;
@@ -51,16 +50,8 @@ public abstract sealed class ZipArkivoStreamingReader implements Closeable permi
         return new ZipArkivoStreamingReaderImpl(source, config);
     }
 
-    /// Reads remaining entries and calls the visitor for each entry in storage order.
-    public abstract void read(ZipArkivoStreamingVisitor visitor) throws IOException;
-
-    /// Opens a readable channel for the current entry.
-    public abstract ReadableByteChannel openChannel() throws IOException;
-
-    /// Opens an input stream for the current entry.
-    public InputStream openInputStream() throws IOException {
-        return Channels.newInputStream(openChannel());
-    }
+    /// Opens the single entry stream for this reader.
+    public abstract ZipArkivoStreamingEntryStream openEntryStream() throws IOException;
 
     /// Closes this streaming reader.
     @Override
