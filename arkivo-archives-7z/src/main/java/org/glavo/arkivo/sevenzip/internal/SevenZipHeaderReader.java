@@ -25,6 +25,11 @@ public final class SevenZipHeaderReader {
 
     /// Reads and validates the fixed 7z signature header.
     public static SevenZipSignatureHeader readSignatureHeader(SeekableByteChannel channel) throws IOException {
+        return readArchiveMetadata(channel).signatureHeader();
+    }
+
+    /// Reads and validates 7z archive metadata.
+    public static SevenZipArchiveMetadata readArchiveMetadata(SeekableByteChannel channel) throws IOException {
         Objects.requireNonNull(channel, "channel");
         ByteBuffer buffer = ByteBuffer.allocate(SevenZipSignatureHeader.SIZE).order(ByteOrder.LITTLE_ENDIAN);
         channel.position(0);
@@ -60,7 +65,11 @@ public final class SevenZipHeaderReader {
                 nextHeaderCrc32
         );
         validateNextHeader(channel, signatureHeader);
-        return signatureHeader;
+        byte[] nextHeader = readNextHeader(channel, signatureHeader);
+        return new SevenZipArchiveMetadata(
+                signatureHeader,
+                SevenZipHeaderParser.parseEntries(nextHeader)
+        );
     }
 
     /// Reads bytes until the destination buffer is full.
@@ -108,6 +117,22 @@ public final class SevenZipHeaderReader {
         if (crc32.getValue() != signatureHeader.nextHeaderCrc32()) {
             throw new IOException("Invalid 7z next header CRC-32");
         }
+    }
+
+    /// Reads the validated next header bytes.
+    private static byte[] readNextHeader(
+            SeekableByteChannel channel,
+            SevenZipSignatureHeader signatureHeader
+    ) throws IOException {
+        if (signatureHeader.nextHeaderSize() > Integer.MAX_VALUE) {
+            throw new IOException("7z next header is too large to index");
+        }
+
+        byte[] bytes = new byte[(int) signatureHeader.nextHeaderSize()];
+        ByteBuffer buffer = ByteBuffer.wrap(bytes);
+        channel.position(SevenZipSignatureHeader.SIZE + signatureHeader.nextHeaderOffset());
+        readFully(channel, buffer);
+        return bytes;
     }
 
     /// Adds two non-negative 7z size values and reports overflow as an I/O failure.

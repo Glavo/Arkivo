@@ -11,6 +11,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
@@ -33,7 +34,10 @@ import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileAttributeView;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.UserPrincipalLookupService;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -56,6 +60,12 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// The fixed 7z signature header.
     private final SevenZipSignatureHeader signatureHeader;
+
+    /// Parsed entries by absolute path text.
+    private final Map<String, SevenZipEntryMetadata> entries;
+
+    /// Child paths by absolute parent path text.
+    private final Map<String, List<Path>> children;
 
     /// The action invoked after this file system closes.
     private final @Nullable Runnable closeAction;
@@ -93,8 +103,11 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         this.volumes = volumes;
         this.config = config;
         this.closeAction = closeAction;
-        this.signatureHeader = readSignatureHeader();
         this.root = SevenZipArkivoPath.root(this);
+        SevenZipArchiveMetadata archiveMetadata = readArchiveMetadata();
+        this.signatureHeader = archiveMetadata.signatureHeader();
+        this.entries = entriesByPath(archiveMetadata.entries());
+        this.children = childrenByPath(this.entries);
     }
 
     /// Returns the archive URI, or `null` when this file system is backed by explicit volumes.
@@ -234,15 +247,21 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     ) throws IOException {
         Objects.requireNonNull(options, "options");
         Objects.requireNonNull(attributes, "attributes");
-        checkAccess(path, AccessMode.READ);
-        throw new UnsupportedOperationException("7z entry data reading is not implemented yet");
+        SevenZipEntryMetadata metadata = requireEntry(path);
+        if (metadata.directory()) {
+            throw new java.nio.file.FileSystemException(path.toString(), null, "Is a directory");
+        }
+        return new SevenZipByteChannel(new byte[0]);
     }
 
     /// Opens an input stream for an entry.
     public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
         Objects.requireNonNull(options, "options");
-        checkAccess(path, AccessMode.READ);
-        throw new UnsupportedOperationException("7z entry data reading is not implemented yet");
+        SevenZipEntryMetadata metadata = requireEntry(path);
+        if (metadata.directory()) {
+            throw new java.nio.file.FileSystemException(path.toString(), null, "Is a directory");
+        }
+        return new ByteArrayInputStream(new byte[0]);
     }
 
     /// Opens a directory stream.
@@ -251,13 +270,17 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             DirectoryStream.Filter<? super Path> filter
     ) throws IOException {
         Objects.requireNonNull(filter, "filter");
-        requireRoot(directory);
-        return new EmptyDirectoryStream();
+        String pathText = requireExistingPath(directory);
+        SevenZipEntryMetadata metadata = entries.get(pathText);
+        if (metadata != null && !metadata.directory()) {
+            throw new java.nio.file.NotDirectoryException(directory.toString());
+        }
+        return new EntryDirectoryStream(children.getOrDefault(pathText, List.of()), filter);
     }
 
     /// Checks access to a path.
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
-        requireRoot(path);
+        requireExistingPath(path);
         for (AccessMode mode : modes) {
             Objects.requireNonNull(mode, "mode");
             if (mode != AccessMode.READ) {
@@ -270,12 +293,16 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     public <V extends FileAttributeView> @Nullable V getFileAttributeView(Path path, Class<V> type) {
         Objects.requireNonNull(type, "type");
         try {
-            requireRoot(path);
+            requireExistingPath(path);
         } catch (IOException exception) {
             return null;
         }
         if (type == BasicFileAttributeView.class) {
-            return type.cast(new RootAttributeView());
+            try {
+                return type.cast(new BasicAttributeView(readAttributes(path, BasicFileAttributes.class)));
+            } catch (IOException exception) {
+                return null;
+            }
         }
         return null;
     }
@@ -283,9 +310,12 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Reads file attributes for a path.
     public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type) throws IOException {
         Objects.requireNonNull(type, "type");
-        requireRoot(path);
+        String pathText = requireExistingPath(path);
         if (type == BasicFileAttributes.class) {
-            return type.cast(SevenZipRootAttributes.INSTANCE);
+            SevenZipEntryMetadata metadata = entries.get(pathText);
+            return type.cast(metadata != null
+                    ? new SevenZipEntryAttributes(metadata)
+                    : SevenZipRootAttributes.INSTANCE);
         }
         throw new UnsupportedOperationException("Unsupported 7z attribute type: " + type.getName());
     }
@@ -293,16 +323,18 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Reads named file attributes for a path.
     public Map<String, Object> readAttributes(Path path, String attributes) throws IOException {
         Objects.requireNonNull(attributes, "attributes");
-        requireRoot(path);
+        String pathText = requireExistingPath(path);
         if (!attributes.startsWith("basic:")) {
             throw new UnsupportedOperationException("Unsupported 7z attribute view: " + attributes);
         }
+        SevenZipEntryMetadata metadata = entries.get(pathText);
+        boolean directory = metadata == null || metadata.directory();
         return Map.of(
-                "isDirectory", true,
-                "isRegularFile", false,
+                "isDirectory", directory,
+                "isRegularFile", !directory,
                 "isSymbolicLink", false,
                 "isOther", false,
-                "size", 0L
+                "size", metadata != null ? metadata.size() : 0L
         );
     }
 
@@ -313,22 +345,34 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
-    /// Requires a path to be the root path of this file system.
-    private void requireRoot(Path path) throws IOException {
+    /// Requires a path to exist in this file system and returns its absolute path text.
+    private String requireExistingPath(Path path) throws IOException {
         ensureOpen();
         if (!(path instanceof SevenZipArkivoPath sevenZipPath) || sevenZipPath.getFileSystem() != this) {
             throw new java.nio.file.ProviderMismatchException();
         }
-        if (!"/".equals(sevenZipPath.toAbsolutePath().normalize().toString())) {
-            throw new NoSuchFileException(path.toString());
+        String pathText = sevenZipPath.toAbsolutePath().normalize().toString();
+        if ("/".equals(pathText) || entries.containsKey(pathText)) {
+            return pathText;
         }
+        throw new NoSuchFileException(path.toString());
     }
 
-    /// Reads the fixed 7z signature header from the archive storage.
-    private SevenZipSignatureHeader readSignatureHeader() throws IOException {
+    /// Returns metadata for a non-root entry.
+    private SevenZipEntryMetadata requireEntry(Path path) throws IOException {
+        String pathText = requireExistingPath(path);
+        SevenZipEntryMetadata metadata = entries.get(pathText);
+        if (metadata == null) {
+            throw new java.nio.file.FileSystemException(path.toString(), null, "Is a directory");
+        }
+        return metadata;
+    }
+
+    /// Reads archive metadata from the archive storage.
+    private SevenZipArchiveMetadata readArchiveMetadata() throws IOException {
         if (archivePath != null) {
             try (SeekableByteChannel channel = Files.newByteChannel(archivePath, config.openOptions())) {
-                return SevenZipHeaderReader.readSignatureHeader(channel);
+                return SevenZipHeaderReader.readArchiveMetadata(channel);
             }
         }
         if (volumes != null) {
@@ -337,26 +381,81 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 throw new IOException("7z volume source did not provide the first volume");
             }
             try (channel) {
-                return SevenZipHeaderReader.readSignatureHeader(channel);
+                return SevenZipHeaderReader.readArchiveMetadata(channel);
             }
         }
         throw new IOException("7z archive storage is not available");
     }
 
-    /// Empty directory stream used until 7z entry indexing is implemented.
+    /// Returns parsed entries keyed by normalized absolute path text.
+    private Map<String, SevenZipEntryMetadata> entriesByPath(List<SevenZipEntryMetadata> parsedEntries) {
+        LinkedHashMap<String, SevenZipEntryMetadata> result = new LinkedHashMap<>();
+        for (SevenZipEntryMetadata metadata : parsedEntries) {
+            String pathText = getPath(metadata.path()).toAbsolutePath().normalize().toString();
+            if ("/".equals(pathText)) {
+                throw new IllegalArgumentException("7z entries cannot use the root path as a file name");
+            }
+            if (result.put(pathText, metadata) != null) {
+                throw new IllegalArgumentException("Duplicate 7z entry path: " + metadata.path());
+            }
+        }
+        return Collections.unmodifiableMap(new LinkedHashMap<>(result));
+    }
+
+    /// Returns directory children keyed by normalized absolute parent path text.
+    private Map<String, List<Path>> childrenByPath(Map<String, SevenZipEntryMetadata> entries) {
+        LinkedHashMap<String, ArrayList<Path>> result = new LinkedHashMap<>();
+        result.put("/", new ArrayList<>());
+        for (String pathText : entries.keySet()) {
+            Path path = getPath(pathText);
+            Path parent = path.getParent();
+            String parentText = parent != null ? parent.toString() : "/";
+            result.computeIfAbsent(parentText, ignored -> new ArrayList<>()).add(path);
+        }
+
+        LinkedHashMap<String, List<Path>> copied = new LinkedHashMap<>();
+        for (Map.Entry<String, ArrayList<Path>> entry : result.entrySet()) {
+            copied.put(entry.getKey(), List.copyOf(entry.getValue()));
+        }
+        return Collections.unmodifiableMap(copied);
+    }
+
+    /// Directory stream over parsed 7z child paths.
     @NotNullByDefault
-    private static final class EmptyDirectoryStream implements DirectoryStream<Path> {
+    private static final class EntryDirectoryStream implements DirectoryStream<Path> {
+        /// The child paths to expose.
+        private final List<Path> children;
+
+        /// The directory stream filter.
+        private final DirectoryStream.Filter<? super Path> filter;
+
         /// Whether this stream is open.
         private boolean open = true;
 
-        /// Returns an empty iterator.
+        /// Creates a directory stream.
+        private EntryDirectoryStream(List<Path> children, DirectoryStream.Filter<? super Path> filter) {
+            this.children = children;
+            this.filter = filter;
+        }
+
+        /// Returns a filtered iterator.
         @Override
         public Iterator<Path> iterator() {
             if (!open) {
                 throw new IllegalStateException("Directory stream is closed");
             }
             open = false;
-            return List.<Path>of().iterator();
+            ArrayList<Path> accepted = new ArrayList<>();
+            for (Path child : children) {
+                try {
+                    if (filter.accept(child)) {
+                        accepted.add(child);
+                    }
+                } catch (IOException exception) {
+                    throw new java.io.UncheckedIOException(exception);
+                }
+            }
+            return List.copyOf(accepted).iterator();
         }
 
         /// Closes this stream.
@@ -366,19 +465,27 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
-    /// Basic attribute view for the synthetic root directory.
+    /// Basic attribute view for one 7z path.
     @NotNullByDefault
-    private static final class RootAttributeView implements BasicFileAttributeView {
+    private static final class BasicAttributeView implements BasicFileAttributeView {
+        /// The attributes returned by this view.
+        private final BasicFileAttributes attributes;
+
+        /// Creates a basic attribute view.
+        private BasicAttributeView(BasicFileAttributes attributes) {
+            this.attributes = attributes;
+        }
+
         /// Returns the attribute view name.
         @Override
         public String name() {
             return "basic";
         }
 
-        /// Reads root attributes.
+        /// Reads attributes.
         @Override
         public BasicFileAttributes readAttributes() {
-            return SevenZipRootAttributes.INSTANCE;
+            return attributes;
         }
 
         /// Rejects root time mutation.

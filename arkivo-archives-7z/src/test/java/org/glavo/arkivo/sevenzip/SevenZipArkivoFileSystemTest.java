@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.sevenzip;
 
+import java.io.ByteArrayOutputStream;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -12,6 +13,8 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.channels.SeekableByteChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
@@ -23,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.zip.CRC32;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -104,17 +108,36 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
-    /// Verifies that entry data reading is explicitly not implemented yet.
+    /// Verifies that empty directory and file entries are indexed.
     @Test
-    public void entryDataReadingIsNotImplementedYet() throws IOException {
-        Path archivePath = createMinimalArchive();
+    public void emptyEntries() throws IOException {
+        Path archivePath = createTemporaryArchivePath("empty-entries-");
+        Files.write(archivePath, archiveWithEmptyEntries());
 
         try {
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
-                assertThrows(
-                        UnsupportedOperationException.class,
-                        () -> Files.newInputStream(fileSystem.getPath("/")).close()
-                );
+                ArrayList<String> rootChildren = new ArrayList<>();
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(fileSystem.getPath("/"))) {
+                    for (Path child : stream) {
+                        rootChildren.add(child.toString());
+                    }
+                }
+
+                Path directory = fileSystem.getPath("/dir");
+                Path emptyFile = fileSystem.getPath("/empty.txt");
+                BasicFileAttributes directoryAttributes = Files.readAttributes(directory, BasicFileAttributes.class);
+                BasicFileAttributes fileAttributes = Files.readAttributes(emptyFile, BasicFileAttributes.class);
+
+                assertEquals(List.of("/dir", "/empty.txt"), rootChildren);
+                assertEquals(true, directoryAttributes.isDirectory());
+                assertEquals(false, directoryAttributes.isRegularFile());
+                assertEquals(false, fileAttributes.isDirectory());
+                assertEquals(true, fileAttributes.isRegularFile());
+                assertEquals(0L, fileAttributes.size());
+                assertArrayEquals(new byte[0], Files.readAllBytes(emptyFile));
+                try (SeekableByteChannel channel = Files.newByteChannel(emptyFile)) {
+                    assertEquals(0L, channel.size());
+                }
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -220,6 +243,12 @@ public final class SevenZipArkivoFileSystemTest {
         return archive(new byte[0], 0L);
     }
 
+    /// Returns a 7z archive with one empty directory and one empty file.
+    private static byte[] archiveWithEmptyEntries() throws IOException {
+        byte[] header = emptyEntriesHeader();
+        return archive(header, crc32(header));
+    }
+
     /// Returns a 7z archive with the given next header and expected next header CRC-32.
     private static byte[] archive(byte[] nextHeader, long nextHeaderCrc32) {
         ByteBuffer buffer = ByteBuffer.allocate(32 + nextHeader.length).order(ByteOrder.LITTLE_ENDIAN);
@@ -236,6 +265,53 @@ public final class SevenZipArkivoFileSystemTest {
         crc32.update(buffer.array(), 12, 20);
         buffer.putInt(8, (int) crc32.getValue());
         return buffer.array();
+    }
+
+    /// Returns a plain 7z header with one empty directory and one empty file.
+    private static byte[] emptyEntriesHeader() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+        output.write(0x05);
+        writeNumber(output, 2);
+
+        byte[] emptyStreamBits = new byte[]{(byte) 0xc0};
+        output.write(0x0e);
+        writeNumber(output, emptyStreamBits.length);
+        output.write(emptyStreamBits);
+
+        byte[] emptyFileBits = new byte[]{0x40};
+        output.write(0x0f);
+        writeNumber(output, emptyFileBits.length);
+        output.write(emptyFileBits);
+
+        byte[] names = namesProperty("dir", "empty.txt");
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
+
+        output.write(0x00);
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a 7z names property payload.
+    private static byte[] namesProperty(String... names) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0);
+        for (String name : names) {
+            output.write(name.getBytes(StandardCharsets.UTF_16LE));
+            output.write(0);
+            output.write(0);
+        }
+        return output.toByteArray();
+    }
+
+    /// Writes a small 7z variable-length integer.
+    private static void writeNumber(ByteArrayOutputStream output, int value) {
+        if (value < 0 || value > 0x7f) {
+            throw new IllegalArgumentException("test value is out of range");
+        }
+        output.write(value);
     }
 
     /// Returns the unsigned CRC-32 value of the given content.
