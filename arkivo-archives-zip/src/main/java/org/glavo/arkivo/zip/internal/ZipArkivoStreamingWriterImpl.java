@@ -31,6 +31,18 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
     /// The marker used when ZIP external attributes have not been configured.
     private static final long UNKNOWN_EXTERNAL_ATTRIBUTES = -1L;
 
+    /// Identifies the type requested for a pending streaming entry.
+    private enum EntryType {
+        /// A regular file entry.
+        FILE,
+
+        /// A directory entry.
+        DIRECTORY,
+
+        /// A symbolic link entry.
+        SYMBOLIC_LINK
+    }
+
     /// The internal streaming ZIP file system used by the current writer implementation.
     private final StreamingZipArkivoFileSystemImpl fileSystem;
 
@@ -69,15 +81,32 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         ), config);
     }
 
-    /// Begins a pending ZIP entry for the given logical archive path.
+    /// Begins a pending regular file ZIP entry for the given logical archive path.
     @Override
-    public void beginEntry(String path) {
+    public void beginFile(String path) {
+        beginEntry(path, EntryType.FILE, null);
+    }
+
+    /// Begins a pending directory ZIP entry for the given logical archive path.
+    @Override
+    public void beginDirectory(String path) {
+        beginEntry(path, EntryType.DIRECTORY, null);
+    }
+
+    /// Begins a pending symbolic link ZIP entry for the given logical archive path and target path text.
+    @Override
+    public void beginSymbolicLink(String path, String target) {
+        beginEntry(path, EntryType.SYMBOLIC_LINK, linkTargetText(target));
+    }
+
+    /// Begins a pending ZIP entry for the given logical archive path and type.
+    private void beginEntry(String path, EntryType type, @Nullable String linkTarget) {
         lock();
         try {
             if (pendingEntry != null) {
                 throw new IllegalStateException("A ZIP streaming entry is already pending");
             }
-            pendingEntry = new ZipStreamingEntry(entryPathText(path));
+            pendingEntry = new ZipStreamingEntry(entryPathText(path), type, linkTarget);
         } finally {
             unlock();
         }
@@ -99,22 +128,6 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         }
     }
 
-    /// Creates the current pending entry as a directory and commits its metadata.
-    @Override
-    public void createDirectory() throws IOException {
-        lock();
-        try {
-            ZipStreamingEntry entry = requirePendingEntry();
-            entry.ensurePending();
-            entry.attributes.requireSupportedDirectory();
-            fileSystem.createDirectory(fileSystem.getPath("/" + entry.entryPath));
-            entry.submitted = true;
-            pendingEntry = null;
-        } finally {
-            unlock();
-        }
-    }
-
     /// Commits the current pending entry without opening a body channel.
     @Override
     public void endEntry() throws IOException {
@@ -122,9 +135,21 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         try {
             ZipStreamingEntry entry = requirePendingEntry();
             entry.ensurePending();
-            entry.attributes.requireSupportedFile();
-            try (OutputStream ignored = fileSystem.newOutputStream(fileSystem.getPath("/" + entry.entryPath))) {
-                // Closing the entry output stream writes an empty ZIP entry.
+            switch (entry.type) {
+                case FILE -> {
+                    entry.attributes.requireSupportedFile();
+                    try (OutputStream ignored = fileSystem.newOutputStream(fileSystem.getPath("/" + entry.entryPath))) {
+                        // Closing the entry output stream writes an empty ZIP entry.
+                    }
+                }
+                case DIRECTORY -> {
+                    entry.attributes.requireSupportedDirectory();
+                    fileSystem.createDirectory(fileSystem.getPath("/" + entry.entryPath));
+                }
+                case SYMBOLIC_LINK -> {
+                    entry.attributes.requireSupportedSymbolicLink();
+                    throw new UnsupportedOperationException("ZIP streaming writer does not support symbolic links yet");
+                }
             }
             entry.submitted = true;
             pendingEntry = null;
@@ -146,6 +171,9 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         try {
             ZipStreamingEntry entry = requirePendingEntry();
             entry.ensurePending();
+            if (entry.type != EntryType.FILE) {
+                throw new IllegalStateException("Only ZIP file entries can open a body channel");
+            }
             entry.attributes.requireSupportedFile();
             OutputStream output = fileSystem.newOutputStream(fileSystem.getPath("/" + entry.entryPath));
             entry.submitted = true;
@@ -225,11 +253,26 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         return builder.toString();
     }
 
+    /// Returns a normalized symbolic link target path text.
+    private static String linkTargetText(String target) {
+        Objects.requireNonNull(target, "target");
+        if (target.isEmpty()) {
+            throw new IllegalArgumentException("ZIP streaming symbolic link target must not be empty");
+        }
+        return target.replace('\\', '/');
+    }
+
     /// Implements one pending ZIP streaming entry.
     @NotNullByDefault
     private final class ZipStreamingEntry {
         /// The normalized ZIP entry path text.
         private final String entryPath;
+
+        /// The requested entry type.
+        private final EntryType type;
+
+        /// The normalized symbolic link target path text, or `null` when this entry is not a symbolic link.
+        private final @Nullable String linkTarget;
 
         /// The mutable pending ZIP attribute view.
         private final PendingZipEntryAttributeView attributes = new PendingZipEntryAttributeView(this);
@@ -238,8 +281,10 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         private boolean submitted;
 
         /// Creates a pending ZIP streaming entry.
-        private ZipStreamingEntry(String entryPath) {
+        private ZipStreamingEntry(String entryPath, EntryType type, @Nullable String linkTarget) {
             this.entryPath = Objects.requireNonNull(entryPath, "entryPath");
+            this.type = Objects.requireNonNull(type, "type");
+            this.linkTarget = linkTarget;
         }
 
         /// Requires this entry to still be pending.
@@ -457,6 +502,11 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             }
         }
 
+        /// Requires the configured metadata to be supported for the current streaming symbolic link writer.
+        private void requireSupportedSymbolicLink() {
+            requireCommonSupportedMetadata();
+        }
+
         /// Requires the configured metadata to be supported for the current streaming file writer.
         private void requireSupportedFile() {
             requireCommonSupportedMetadata();
@@ -497,6 +547,9 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
 
         /// The raw encoded entry path bytes.
         private final byte @Unmodifiable [] rawPath;
+
+        /// The pending entry type.
+        private final EntryType type;
 
         /// The requested last modified time, or `null` when not configured.
         private final @Nullable FileTime lastModifiedTime;
@@ -541,6 +594,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         private PendingZipEntryAttributes(String path, PendingZipEntryAttributeView view) {
             this.path = Objects.requireNonNull(path, "path");
             this.rawPath = path.getBytes(StandardCharsets.UTF_8);
+            this.type = view.entry.type;
             this.lastModifiedTime = view.lastModifiedTime;
             this.lastAccessTime = view.lastAccessTime;
             this.creationTime = view.creationTime;
@@ -670,19 +724,19 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Returns whether this pending entry is a regular file.
         @Override
         public boolean isRegularFile() {
-            return true;
+            return type == EntryType.FILE;
         }
 
         /// Returns whether this pending entry is a directory.
         @Override
         public boolean isDirectory() {
-            return false;
+            return type == EntryType.DIRECTORY;
         }
 
         /// Returns whether this pending entry is a symbolic link.
         @Override
         public boolean isSymbolicLink() {
-            return false;
+            return type == EntryType.SYMBOLIC_LINK;
         }
 
         /// Returns whether this pending entry is another file type.
@@ -694,7 +748,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Returns the expected uncompressed entry size.
         @Override
         public long size() {
-            return uncompressedSize;
+            return type == EntryType.FILE ? uncompressedSize : 0L;
         }
 
         /// Returns no stable file key for a pending streaming entry.

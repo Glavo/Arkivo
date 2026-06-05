@@ -20,14 +20,17 @@ public abstract class ArkivoStreamingWriter implements Closeable {
     protected ArkivoStreamingWriter() {
     }
 
-    /// Begins a pending entry for the given logical archive path text.
-    public abstract void beginEntry(String path) throws IOException;
+    /// Begins a pending regular file entry for the given logical archive path text.
+    public abstract void beginFile(String path) throws IOException;
+
+    /// Begins a pending directory entry for the given logical archive path text.
+    public abstract void beginDirectory(String path) throws IOException;
+
+    /// Begins a pending symbolic link entry for the given logical archive path and target path text.
+    public abstract void beginSymbolicLink(String path, String target) throws IOException;
 
     /// Returns an attribute view used to configure the current pending entry before it is committed.
     public abstract <V extends FileAttributeView> @Nullable V attributeView(Class<V> type);
-
-    /// Creates the current pending entry as a directory and commits its metadata.
-    public abstract void createDirectory() throws IOException;
 
     /// Commits the current pending entry without opening a body channel.
     public abstract void endEntry() throws IOException;
