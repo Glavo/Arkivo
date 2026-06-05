@@ -506,7 +506,6 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         values.put("localExtraData", attributes.localExtraData());
         values.put("centralDirectoryExtraData", attributes.centralDirectoryExtraData());
         values.put("rawComment", attributes.rawComment());
-        values.put("comment", attributes.comment());
     }
 
     /// Adds owner attributes to a named attribute map.
@@ -554,7 +553,6 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             case "localExtraData" -> requireZipView(values, name, zipView, attributes.localExtraData());
             case "centralDirectoryExtraData" -> requireZipView(values, name, zipView, attributes.centralDirectoryExtraData());
             case "rawComment" -> requireZipView(values, name, zipView, attributes.rawComment());
-            case "comment" -> requireZipView(values, name, zipView, attributes.comment());
             case "owner" -> requireOwnerView(values, name, view, posixAttributes.owner());
             case "group" -> requirePosixView(values, name, view, posixAttributes.group());
             case "permissions" -> requirePosixView(values, name, view, posixAttributes.permissions());
@@ -694,12 +692,8 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 localHeaderOffset = zip64.localHeaderOffset;
 
                 String decodedPath;
-                String decodedComment = null;
                 try {
                     decodedPath = decoder.decodePath(rawPath, flags, extraData);
-                    if (rawComment.length > 0) {
-                        decodedComment = decoder.decodeComment(rawComment, flags, extraData);
-                    }
                 } catch (java.nio.charset.CharacterCodingException exception) {
                     throw new IOException("Failed to decode ZIP entry name", exception);
                 }
@@ -726,7 +720,6 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                             localExtraData,
                             extraData,
                             rawComment.length > 0 ? rawComment : null,
-                            decodedComment,
                             dosTime(lastModifiedDate, lastModifiedTime),
                             directory
                     );
@@ -1291,9 +1284,6 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         /// The raw encoded comment bytes, or `null` when absent.
         private final byte @Nullable [] rawComment;
 
-        /// The decoded comment, or `null` when absent.
-        private final @Nullable String comment;
-
         /// The last modified time.
         private final FileTime lastModifiedTime;
 
@@ -1318,7 +1308,6 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 byte[] localExtraData,
                 byte[] centralDirectoryExtraData,
                 byte @Nullable [] rawComment,
-                @Nullable String comment,
                 FileTime lastModifiedTime,
                 boolean directory
         ) {
@@ -1338,7 +1327,6 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             this.localExtraData = localExtraData;
             this.centralDirectoryExtraData = centralDirectoryExtraData;
             this.rawComment = rawComment;
-            this.comment = comment;
             this.lastModifiedTime = lastModifiedTime;
             this.directory = directory;
         }
@@ -1612,13 +1600,6 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             return record != null && record.rawComment != null ? record.rawComment.clone() : null;
         }
 
-        /// Returns the decoded ZIP entry comment, or `null` when no comment is present.
-        @Override
-        public @Nullable String comment() {
-            ZipEntryRecord record = entry;
-            return record != null ? record.comment : null;
-        }
-
         /// Returns the last modified time.
         @Override
         public FileTime lastModifiedTime() {
@@ -1878,12 +1859,6 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         @Override
         public void setCentralDirectoryExtraData(byte[] extraData) {
             Objects.requireNonNull(extraData, "extraData");
-            throw new java.nio.file.ReadOnlyFileSystemException();
-        }
-
-        /// Sets the decoded ZIP entry comment.
-        @Override
-        public void setComment(@Nullable String comment) {
             throw new java.nio.file.ReadOnlyFileSystemException();
         }
 

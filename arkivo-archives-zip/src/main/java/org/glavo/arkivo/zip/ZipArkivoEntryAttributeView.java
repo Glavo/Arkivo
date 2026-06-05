@@ -66,9 +66,6 @@ public interface ZipArkivoEntryAttributeView extends PosixFileAttributeView {
     /// Sets the raw central directory extra data bytes.
     void setCentralDirectoryExtraData(byte[] extraData) throws IOException;
 
-    /// Sets the decoded ZIP entry comment.
-    void setComment(@Nullable String comment) throws IOException;
-
     /// Sets the raw ZIP entry comment bytes.
     void setRawComment(byte @Nullable [] rawComment) throws IOException;
 }

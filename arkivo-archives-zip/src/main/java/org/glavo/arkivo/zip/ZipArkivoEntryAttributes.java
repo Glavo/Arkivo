@@ -59,7 +59,4 @@ public interface ZipArkivoEntryAttributes extends PosixFileAttributes {
 
     /// Returns the raw ZIP entry comment bytes, or `null` when no comment is present.
     byte @Nullable @Unmodifiable [] rawComment();
-
-    /// Returns the decoded ZIP entry comment, or `null` when no comment is present.
-    @Nullable String comment();
 }

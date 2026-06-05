@@ -528,9 +528,6 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// The requested raw central directory extra data bytes.
         private byte @Unmodifiable [] centralDirectoryExtraData = new byte[0];
 
-        /// The requested decoded ZIP entry comment, or `null` when not configured.
-        private @Nullable String comment;
-
         /// The requested raw ZIP entry comment bytes, or `null` when not configured.
         private byte @Nullable @Unmodifiable [] rawComment;
 
@@ -668,19 +665,6 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             }
         }
 
-        /// Sets the decoded ZIP entry comment.
-        @Override
-        public void setComment(@Nullable String comment) throws IOException {
-            lock();
-            try {
-                entry.ensurePending();
-                this.comment = comment;
-                this.rawComment = null;
-            } finally {
-                unlock();
-            }
-        }
-
         /// Sets the raw ZIP entry comment bytes.
         @Override
         public void setRawComment(byte @Nullable [] rawComment) throws IOException {
@@ -688,7 +672,6 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             try {
                 entry.ensurePending();
                 this.rawComment = rawComment != null ? rawComment.clone() : null;
-                this.comment = null;
             } finally {
                 unlock();
             }
@@ -733,7 +716,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             if (localExtraData.length != 0 || centralDirectoryExtraData.length != 0) {
                 throw new UnsupportedOperationException("ZIP streaming writer does not support custom extra data yet");
             }
-            if (comment != null || rawComment != null) {
+            if (rawComment != null) {
                 throw new UnsupportedOperationException("ZIP streaming writer does not support entry comments yet");
             }
         }
@@ -787,9 +770,6 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// The requested raw central directory extra data bytes.
         private final byte @Unmodifiable [] centralDirectoryExtraData;
 
-        /// The requested decoded ZIP entry comment, or `null` when not configured.
-        private final @Nullable String comment;
-
         /// The requested raw ZIP entry comment bytes, or `null` when not configured.
         private final byte @Nullable @Unmodifiable [] rawComment;
 
@@ -812,7 +792,6 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
                     : null;
             this.localExtraData = view.localExtraData.clone();
             this.centralDirectoryExtraData = view.centralDirectoryExtraData.clone();
-            this.comment = view.comment;
             this.rawComment = view.rawComment != null ? view.rawComment.clone() : null;
         }
 
@@ -905,12 +884,6 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         @Override
         public byte @Nullable @Unmodifiable [] rawComment() {
             return rawComment != null ? rawComment.clone() : null;
-        }
-
-        /// Returns the decoded ZIP entry comment, or `null` when no comment is present.
-        @Override
-        public @Nullable String comment() {
-            return comment;
         }
 
         /// Returns the last modification time.

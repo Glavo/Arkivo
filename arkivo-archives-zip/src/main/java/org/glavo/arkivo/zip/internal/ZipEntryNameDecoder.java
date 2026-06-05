@@ -19,17 +19,14 @@ import java.util.zip.CRC32;
 import static org.glavo.arkivo.zip.internal.ZipLittleEndian.readInt;
 import static org.glavo.arkivo.zip.internal.ZipLittleEndian.readUnsignedShort;
 
-/// Decodes raw ZIP entry name and comment bytes.
+/// Decodes raw ZIP entry name bytes.
 @NotNullByDefault
 public final class ZipEntryNameDecoder {
-    /// The general purpose bit flag that marks entry names and comments as UTF-8.
+    /// The general purpose bit flag that marks entry names as UTF-8.
     public static final int UTF_8_FLAG = ZipConstants.UTF8_FLAG;
 
     /// The Info-ZIP Unicode Path Extra Field identifier.
     public static final int UNICODE_PATH_EXTRA_FIELD_ID = 0x7075;
-
-    /// The Info-ZIP Unicode Comment Extra Field identifier.
-    public static final int UNICODE_COMMENT_EXTRA_FIELD_ID = 0x6375;
 
     /// The entry name encoding policy used when no authoritative Unicode name is available.
     private final ZipEntryNameEncoding encoding;
@@ -46,15 +43,6 @@ public final class ZipEntryNameDecoder {
             return unicodePath;
         }
         return decodeFallback(rawPath, generalPurposeFlags);
-    }
-
-    /// Decodes a raw ZIP entry comment.
-    public String decodeComment(byte[] rawComment, int generalPurposeFlags, byte[] extraData) throws CharacterCodingException {
-        String unicodeComment = decodeUnicodeExtraField(rawComment, extraData, UNICODE_COMMENT_EXTRA_FIELD_ID);
-        if (unicodeComment != null) {
-            return unicodeComment;
-        }
-        return decodeFallback(rawComment, generalPurposeFlags);
     }
 
     /// Decodes a validated Info-ZIP Unicode extra field value, or returns `null` when no valid field is present.

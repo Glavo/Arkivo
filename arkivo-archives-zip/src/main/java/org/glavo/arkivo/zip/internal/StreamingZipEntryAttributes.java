@@ -164,12 +164,6 @@ final class StreamingZipEntryAttributes implements ZipArkivoEntryAttributes {
         return null;
     }
 
-    /// Returns the decoded ZIP entry comment, or `null` when no comment is present.
-    @Override
-    public @Nullable String comment() {
-        return null;
-    }
-
     /// Returns the last modified time.
     @Override
     public FileTime lastModifiedTime() {
