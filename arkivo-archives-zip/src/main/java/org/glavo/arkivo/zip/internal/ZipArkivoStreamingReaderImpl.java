@@ -13,9 +13,6 @@ import org.jetbrains.annotations.Nullable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.channels.ReadableByteChannel;
-import java.nio.file.DirectoryIteratorException;
-import java.util.Iterator;
-import java.util.NoSuchElementException;
 import java.util.Objects;
 
 /// Implements the public forward-only ZIP streaming reader API.
@@ -26,9 +23,6 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
     /// The internal entry stream, or `null` until iteration starts.
     private @Nullable ArkivoFileSystemEntryStream entries;
-
-    /// Whether an iterator has already been created.
-    private boolean iteratorCreated;
 
     /// Whether this reader is open.
     private boolean open = true;
@@ -51,21 +45,23 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         );
     }
 
+    /// Returns the next ZIP entry attributes, or `null` when no entries remain.
+    @Override
+    public synchronized @Nullable ZipArkivoEntryAttributes next() throws IOException {
+        if (openedEntryStream().next() == null) {
+            return null;
+        }
+        ZipArkivoEntryAttributes attributes = fileSystem.currentEntryAttributes();
+        if (attributes == null) {
+            throw new IOException("ZIP streaming reader did not expose the current entry");
+        }
+        return attributes;
+    }
+
     /// Opens a readable channel for the current file entry.
     @Override
     public synchronized ReadableByteChannel openChannel() throws IOException {
         return entryStream().openChannel();
-    }
-
-    /// Returns the single iterator over ZIP entry attributes.
-    @Override
-    public synchronized Iterator<ZipArkivoEntryAttributes> iterator() {
-        ensureOpenUnchecked();
-        if (iteratorCreated) {
-            throw new IllegalStateException("ZIP streaming reader iterator has already been created");
-        }
-        iteratorCreated = true;
-        return new EntryIterator();
     }
 
     /// Closes this streaming reader.
@@ -110,68 +106,4 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         return entryStream;
     }
 
-    /// Requires this reader to be open.
-    private void ensureOpenUnchecked() {
-        if (!open) {
-            throw new IllegalStateException("ZIP streaming reader is closed");
-        }
-    }
-
-    /// Iterates ZIP entry attributes in storage order.
-    private final class EntryIterator implements Iterator<ZipArkivoEntryAttributes> {
-        /// The prefetched next entry attributes, or `null` when no entry is prefetched.
-        private @Nullable ZipArkivoEntryAttributes nextAttributes;
-
-        /// Whether the next entry has been prefetched.
-        private boolean prefetched;
-
-        /// Whether the stream has reached the end.
-        private boolean finished;
-
-        /// Creates an entry iterator.
-        private EntryIterator() {
-        }
-
-        /// Returns whether another entry is available.
-        @Override
-        public boolean hasNext() {
-            prefetch();
-            return !finished;
-        }
-
-        /// Returns the next entry attributes.
-        @Override
-        public ZipArkivoEntryAttributes next() {
-            prefetch();
-            if (finished) {
-                throw new NoSuchElementException();
-            }
-            ZipArkivoEntryAttributes attributes = Objects.requireNonNull(nextAttributes, "nextAttributes");
-            nextAttributes = null;
-            prefetched = false;
-            return attributes;
-        }
-
-        /// Prefetches the next entry attributes.
-        private void prefetch() {
-            if (prefetched || finished) {
-                return;
-            }
-            try {
-                if (openedEntryStream().next() == null) {
-                    finished = true;
-                    prefetched = true;
-                    return;
-                }
-                ZipArkivoEntryAttributes attributes = fileSystem.currentEntryAttributes();
-                if (attributes == null) {
-                    throw new IOException("ZIP streaming reader did not expose the current entry");
-                }
-                nextAttributes = attributes;
-                prefetched = true;
-            } catch (IOException exception) {
-                throw new DirectoryIteratorException(exception);
-            }
-        }
-    }
 }

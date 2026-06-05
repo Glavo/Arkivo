@@ -6,6 +6,7 @@ package org.glavo.arkivo.zip;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.zip.internal.ZipArkivoStreamingReaderImpl;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -17,8 +18,7 @@ import java.util.Objects;
 
 /// Reads ZIP entries from a forward-only stream.
 @NotNullByDefault
-public abstract sealed class ZipArkivoStreamingReader implements Closeable, Iterable<ZipArkivoEntryAttributes>
-        permits ZipArkivoStreamingReaderImpl {
+public abstract sealed class ZipArkivoStreamingReader implements Closeable permits ZipArkivoStreamingReaderImpl {
     /// Creates a streaming ZIP reader base instance.
     protected ZipArkivoStreamingReader() {
     }
@@ -51,6 +51,9 @@ public abstract sealed class ZipArkivoStreamingReader implements Closeable, Iter
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
         return new ZipArkivoStreamingReaderImpl(source, config);
     }
+
+    /// Returns the next ZIP entry attributes, or `null` when no entries remain.
+    public abstract @Nullable ZipArkivoEntryAttributes next() throws IOException;
 
     /// Opens a readable channel for the current file entry.
     public abstract ReadableByteChannel openChannel() throws IOException;
