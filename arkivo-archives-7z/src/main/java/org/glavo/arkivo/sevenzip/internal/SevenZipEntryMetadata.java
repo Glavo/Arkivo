@@ -4,7 +4,9 @@
 package org.glavo.arkivo.sevenzip.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 
+import java.util.Arrays;
 import java.util.Objects;
 
 /// Stores parsed metadata for one 7z entry.
@@ -25,18 +27,41 @@ public final class SevenZipEntryMetadata {
     /// The absolute archive data offset, or `NO_DATA_OFFSET` when this entry has no stored body.
     private final long dataOffset;
 
+    /// The packed entry size.
+    private final long packedSize;
+
+    /// The 7z method ID used to store this entry.
+    private final byte @Unmodifiable [] methodId;
+
+    /// The 7z coder properties used to store this entry.
+    private final byte @Unmodifiable [] coderProperties;
+
     /// Creates parsed 7z entry metadata.
-    public SevenZipEntryMetadata(String path, boolean directory, long size, long dataOffset) {
+    public SevenZipEntryMetadata(
+            String path,
+            boolean directory,
+            long size,
+            long dataOffset,
+            long packedSize,
+            byte[] methodId,
+            byte[] coderProperties
+    ) {
         if (size < 0) {
             throw new IllegalArgumentException("size must be non-negative");
         }
         if (dataOffset < NO_DATA_OFFSET) {
             throw new IllegalArgumentException("dataOffset must be non-negative or NO_DATA_OFFSET");
         }
+        if (packedSize < 0) {
+            throw new IllegalArgumentException("packedSize must be non-negative");
+        }
         this.path = Objects.requireNonNull(path, "path");
         this.directory = directory;
         this.size = size;
         this.dataOffset = dataOffset;
+        this.packedSize = packedSize;
+        this.methodId = Objects.requireNonNull(methodId, "methodId").clone();
+        this.coderProperties = Objects.requireNonNull(coderProperties, "coderProperties").clone();
     }
 
     /// Returns the decoded entry path.
@@ -57,5 +82,25 @@ public final class SevenZipEntryMetadata {
     /// Returns the absolute archive data offset, or `NO_DATA_OFFSET` when this entry has no stored body.
     public long dataOffset() {
         return dataOffset;
+    }
+
+    /// Returns the packed entry size.
+    public long packedSize() {
+        return packedSize;
+    }
+
+    /// Returns the 7z method ID used to store this entry.
+    public byte @Unmodifiable [] methodId() {
+        return methodId.clone();
+    }
+
+    /// Returns whether this entry is stored with the given 7z method ID.
+    public boolean hasMethod(byte[] expectedMethodId) {
+        return Arrays.equals(methodId, expectedMethodId);
+    }
+
+    /// Returns the 7z coder properties used to store this entry.
+    public byte @Unmodifiable [] coderProperties() {
+        return coderProperties.clone();
     }
 }

@@ -8,6 +8,8 @@ import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.tukaani.xz.LZMA2Options;
+import org.tukaani.xz.LZMAOutputStream;
 
 import java.io.IOException;
 import java.net.URI;
@@ -172,6 +174,33 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that a non-empty file stored with the 7z LZMA method can be read.
+    @Test
+    public void lzmaFileEntry() throws IOException {
+        byte[] content = "hello lzma".getBytes(StandardCharsets.UTF_8);
+        LZMAPayload payload = lzmaPayload(content);
+        Path archivePath = createTemporaryArchivePath("lzma-file-");
+        Files.write(archivePath, archiveWithLZMAFile(payload, content.length));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+                try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                    assertEquals(content.length, channel.size());
+                    ByteBuffer buffer = ByteBuffer.allocate(content.length);
+                    assertEquals(content.length, channel.read(buffer));
+                    assertArrayEquals(content, buffer.array());
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that a 7z file system can be opened and resolved through provider URIs.
     @Test
     public void openUri() throws IOException {
@@ -279,8 +308,19 @@ public final class SevenZipArkivoFileSystemTest {
 
     /// Returns a 7z archive with one file stored through the Copy method.
     private static byte[] archiveWithCopyFile(byte[] content) throws IOException {
-        byte[] header = copyFileHeader(content.length);
+        byte[] header = fileHeader(content.length, content.length, new byte[]{0x00}, new byte[0]);
         return archive(content, header, crc32(header));
+    }
+
+    /// Returns a 7z archive with one file stored through the LZMA method.
+    private static byte[] archiveWithLZMAFile(LZMAPayload payload, int uncompressedSize) throws IOException {
+        byte[] header = fileHeader(
+                payload.content().length,
+                uncompressedSize,
+                new byte[]{0x03, 0x01, 0x01},
+                payload.properties()
+        );
+        return archive(payload.content(), header, crc32(header));
     }
 
     /// Returns a 7z archive with the given next header and expected next header CRC-32.
@@ -335,8 +375,13 @@ public final class SevenZipArkivoFileSystemTest {
         return output.toByteArray();
     }
 
-    /// Returns a plain 7z header with one Copy-method file.
-    private static byte[] copyFileHeader(int size) throws IOException {
+    /// Returns a plain 7z header with one file using the given coder.
+    private static byte[] fileHeader(
+            int packedSize,
+            int uncompressedSize,
+            byte[] methodId,
+            byte[] properties
+    ) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         output.write(0x01);
 
@@ -345,7 +390,7 @@ public final class SevenZipArkivoFileSystemTest {
         writeNumber(output, 0);
         writeNumber(output, 1);
         output.write(0x09);
-        writeNumber(output, size);
+        writeNumber(output, packedSize);
         output.write(0x00);
 
         output.write(0x07);
@@ -353,10 +398,14 @@ public final class SevenZipArkivoFileSystemTest {
         writeNumber(output, 1);
         output.write(0);
         writeNumber(output, 1);
-        output.write(0x01);
-        output.write(0x00);
+        output.write(methodId.length | (properties.length != 0 ? 0x20 : 0));
+        output.write(methodId);
+        if (properties.length != 0) {
+            writeNumber(output, properties.length);
+            output.write(properties);
+        }
         output.write(0x0c);
-        writeNumber(output, size);
+        writeNumber(output, uncompressedSize);
         output.write(0x00);
         output.write(0x00);
 
@@ -370,6 +419,47 @@ public final class SevenZipArkivoFileSystemTest {
 
         output.write(0x00);
         return output.toByteArray();
+    }
+
+    /// Returns a raw LZMA payload and its 7z coder properties.
+    private static LZMAPayload lzmaPayload(byte[] content) throws IOException {
+        LZMA2Options options = new LZMA2Options();
+        options.setDictSize(1 << 20);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (LZMAOutputStream lzma = new LZMAOutputStream(output, options, false)) {
+            lzma.write(content);
+        }
+
+        byte[] properties = new byte[5];
+        properties[0] = (byte) ((options.getPb() * 5 + options.getLp()) * 9 + options.getLc());
+        ByteBuffer.wrap(properties, 1, 4).order(ByteOrder.LITTLE_ENDIAN).putInt(options.getDictSize());
+        return new LZMAPayload(output.toByteArray(), properties);
+    }
+
+    /// Stores generated raw LZMA payload bytes and 7z coder properties.
+    @NotNullByDefault
+    private static final class LZMAPayload {
+        /// The raw LZMA payload bytes.
+        private final byte[] content;
+
+        /// The five-byte 7z LZMA properties.
+        private final byte[] properties;
+
+        /// Creates a generated LZMA payload.
+        private LZMAPayload(byte[] content, byte[] properties) {
+            this.content = content;
+            this.properties = properties;
+        }
+
+        /// Returns the raw LZMA payload bytes.
+        private byte[] content() {
+            return content;
+        }
+
+        /// Returns the five-byte 7z LZMA properties.
+        private byte[] properties() {
+            return properties;
+        }
     }
 
     /// Returns a 7z names property payload.

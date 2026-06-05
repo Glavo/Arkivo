@@ -255,7 +255,13 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         if (metadata.dataOffset() == SevenZipEntryMetadata.NO_DATA_OFFSET) {
             return new SevenZipByteChannel(new byte[0]);
         }
-        return new SevenZipFileSliceChannel(openArchiveChannel(), metadata.dataOffset(), metadata.size());
+        if (SevenZipLZMADecoder.isCopy(metadata.methodId())) {
+            return new SevenZipFileSliceChannel(openArchiveChannel(), metadata.dataOffset(), metadata.size());
+        }
+        if (SevenZipLZMADecoder.isLZMA(metadata.methodId())) {
+            return new SevenZipByteChannel(readDecodedEntry(metadata));
+        }
+        throw new UnsupportedOperationException("Unsupported 7z entry method");
     }
 
     /// Opens an input stream for an entry.
@@ -268,11 +274,18 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         if (metadata.dataOffset() == SevenZipEntryMetadata.NO_DATA_OFFSET) {
             return new ByteArrayInputStream(new byte[0]);
         }
-        return Channels.newInputStream(new SevenZipFileSliceChannel(
+        InputStream input = Channels.newInputStream(new SevenZipFileSliceChannel(
                 openArchiveChannel(),
                 metadata.dataOffset(),
-                metadata.size()
+                metadata.packedSize()
         ));
+        if (SevenZipLZMADecoder.isCopy(metadata.methodId())) {
+            return input;
+        }
+        if (SevenZipLZMADecoder.isLZMA(metadata.methodId())) {
+            return SevenZipLZMADecoder.open(input, metadata.size(), metadata.coderProperties());
+        }
+        throw new UnsupportedOperationException("Unsupported 7z entry method");
     }
 
     /// Opens a directory stream.
@@ -399,6 +412,16 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             return channel;
         }
         throw new IOException("7z archive storage is not available");
+    }
+
+    /// Reads a decoded entry into memory for seekable channel access.
+    private byte[] readDecodedEntry(SevenZipEntryMetadata metadata) throws IOException {
+        if (metadata.size() > Integer.MAX_VALUE) {
+            throw new IOException("7z entry is too large for seekable decoded access");
+        }
+        try (InputStream input = newInputStream(getPath(metadata.path()))) {
+            return input.readAllBytes();
+        }
     }
 
     /// Returns parsed entries keyed by normalized absolute path text.

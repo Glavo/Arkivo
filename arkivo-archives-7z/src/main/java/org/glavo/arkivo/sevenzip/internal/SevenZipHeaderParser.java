@@ -63,6 +63,12 @@ public final class SevenZipHeaderParser {
     /// The `kEncodedHeader` property ID.
     private static final int K_ENCODED_HEADER = 0x17;
 
+    /// The 7z Copy method ID.
+    private static final byte[] COPY_METHOD_ID = new byte[]{0x00};
+
+    /// The 7z LZMA method ID.
+    private static final byte[] LZMA_METHOD_ID = new byte[]{0x03, 0x01, 0x01};
+
     /// Creates no instances.
     private SevenZipHeaderParser() {
     }
@@ -122,15 +128,15 @@ public final class SevenZipHeaderParser {
     /// Reads a `StreamsInfo` block for unpacked Copy streams.
     private static StreamsInfo readStreamsInfo(HeaderInput input) throws IOException {
         PackInfo packInfo = PackInfo.EMPTY;
-        long[] unpackSizes = new long[0];
+        FolderInfo[] folders = new FolderInfo[0];
         while (true) {
             int property = input.readId();
             switch (property) {
                 case K_END -> {
-                    return new StreamsInfo(packInfo.packPosition, packInfo.packSizes, unpackSizes);
+                    return new StreamsInfo(packInfo.packPosition, packInfo.packSizes, folders);
                 }
                 case K_PACK_INFO -> packInfo = readPackInfo(input);
-                case K_UNPACK_INFO -> unpackSizes = readUnPackInfo(input);
+                case K_UNPACK_INFO -> folders = readUnPackInfo(input);
                 case K_SUBSTREAMS_INFO -> skipStreamsInfo(input);
                 default -> throw new UnsupportedOperationException(
                         "Unsupported 7z streams info property: 0x" + Integer.toHexString(property)
@@ -163,35 +169,34 @@ public final class SevenZipHeaderParser {
         }
     }
 
-    /// Reads an `UnPackInfo` block and returns one unpack size per supported Copy folder.
-    private static long[] readUnPackInfo(HeaderInput input) throws IOException {
-        int folderCount = -1;
+    /// Reads an `UnPackInfo` block and returns one folder per unpack stream.
+    private static FolderInfo[] readUnPackInfo(HeaderInput input) throws IOException {
+        FolderInfo[] folders = new FolderInfo[0];
         while (true) {
             int property = input.readId();
             switch (property) {
                 case K_END -> {
-                    if (folderCount < 0) {
-                        return new long[0];
+                    if (folders.length == 0) {
+                        return folders;
                     }
                     throw new IOException("7z unpack sizes are missing");
                 }
-                case K_FOLDER -> folderCount = readCopyFolders(input);
+                case K_FOLDER -> folders = readFolders(input);
                 case K_CODERS_UNPACK_SIZE -> {
-                    if (folderCount < 0) {
+                    if (folders.length == 0) {
                         throw new IOException("7z unpack sizes appeared before folders");
                     }
-                    long[] unpackSizes = new long[folderCount];
-                    for (int index = 0; index < folderCount; index++) {
-                        unpackSizes[index] = input.readNumber();
+                    for (FolderInfo folder : folders) {
+                        folder.setUnpackSize(input.readNumber());
                     }
-                    requireUnPackInfoEnd(input);
-                    return unpackSizes;
+                    requireUnPackInfoEnd(input, folders.length);
+                    return folders;
                 }
                 case K_CRC -> {
-                    if (folderCount < 0) {
+                    if (folders.length == 0) {
                         throw new IOException("7z folder CRC appeared before folders");
                     }
-                    skipDigests(input, folderCount);
+                    skipDigests(input, folders.length);
                 }
                 default -> throw new UnsupportedOperationException(
                         "Unsupported 7z unpack info property: 0x" + Integer.toHexString(property)
@@ -201,14 +206,14 @@ public final class SevenZipHeaderParser {
     }
 
     /// Requires the remaining `UnPackInfo` block to contain only supported optional data and `kEnd`.
-    private static void requireUnPackInfoEnd(HeaderInput input) throws IOException {
+    private static void requireUnPackInfoEnd(HeaderInput input, int folderCount) throws IOException {
         while (true) {
             int property = input.readId();
             switch (property) {
                 case K_END -> {
                     return;
                 }
-                case K_CRC -> skipDigests(input, 1);
+                case K_CRC -> skipDigests(input, folderCount);
                 default -> throw new UnsupportedOperationException(
                         "Unsupported 7z unpack info property after sizes: 0x" + Integer.toHexString(property)
                 );
@@ -216,21 +221,22 @@ public final class SevenZipHeaderParser {
         }
     }
 
-    /// Reads folders and requires each folder to use a single Copy coder.
-    private static int readCopyFolders(HeaderInput input) throws IOException {
+    /// Reads folders and requires each folder to use a single supported coder.
+    private static FolderInfo[] readFolders(HeaderInput input) throws IOException {
         int folderCount = input.readIntNumber("folder count");
         int external = input.readUnsignedByte();
         if (external != 0) {
             throw new UnsupportedOperationException("7z external folder storage is not implemented yet");
         }
+        FolderInfo[] folders = new FolderInfo[folderCount];
         for (int index = 0; index < folderCount; index++) {
-            readCopyFolder(input);
+            folders[index] = readFolder(input);
         }
-        return folderCount;
+        return folders;
     }
 
-    /// Reads one folder and requires it to use a single Copy coder.
-    private static void readCopyFolder(HeaderInput input) throws IOException {
+    /// Reads one folder and requires it to use a single supported coder.
+    private static FolderInfo readFolder(HeaderInput input) throws IOException {
         int coderCount = input.readIntNumber("coder count");
         if (coderCount != 1) {
             throw new UnsupportedOperationException("7z multi-coder folders are not implemented yet");
@@ -247,13 +253,18 @@ public final class SevenZipHeaderParser {
             inputStreamCount = input.readNumber();
             outputStreamCount = input.readNumber();
         }
+        byte[] properties = new byte[0];
         if (attributes) {
-            input.skipBytes(input.readIntNumber("coder properties size"));
+            properties = input.readBytes(input.readIntNumber("coder properties size"));
         }
 
-        if (inputStreamCount != 1 || outputStreamCount != 1 || methodId.length != 1 || methodId[0] != 0) {
-            throw new UnsupportedOperationException("Only 7z Copy folders are implemented yet");
+        if (inputStreamCount != 1 || outputStreamCount != 1) {
+            throw new UnsupportedOperationException("7z multi-stream coders are not implemented yet");
         }
+        if (!Arrays.equals(methodId, COPY_METHOD_ID) && !Arrays.equals(methodId, LZMA_METHOD_ID)) {
+            throw new UnsupportedOperationException("Unsupported 7z coder method: " + Arrays.toString(methodId));
+        }
+        return new FolderInfo(methodId, properties);
     }
 
     /// Reads a `FilesInfo` block.
@@ -304,14 +315,20 @@ public final class SevenZipHeaderParser {
                         name,
                         directory,
                         0L,
-                        SevenZipEntryMetadata.NO_DATA_OFFSET
+                        SevenZipEntryMetadata.NO_DATA_OFFSET,
+                        0L,
+                        new byte[0],
+                        new byte[0]
                 ));
             } else {
                 entries.add(new SevenZipEntryMetadata(
                         name,
                         false,
                         streamsInfo.unpackSize(streamIndex),
-                        streamsInfo.dataOffset(streamIndex)
+                        streamsInfo.dataOffset(streamIndex),
+                        streamsInfo.packedSize(streamIndex),
+                        streamsInfo.methodId(streamIndex),
+                        streamsInfo.properties(streamIndex)
                 ));
                 streamIndex++;
             }
@@ -423,7 +440,7 @@ public final class SevenZipHeaderParser {
     @NotNullByDefault
     private static final class StreamsInfo {
         /// The empty streams information value.
-        private static final StreamsInfo EMPTY = new StreamsInfo(0L, new long[0], new long[0]);
+        private static final StreamsInfo EMPTY = new StreamsInfo(0L, new long[0], new FolderInfo[0]);
 
         /// The first pack stream position relative to the first byte after the signature header.
         private final long packPosition;
@@ -431,28 +448,46 @@ public final class SevenZipHeaderParser {
         /// The pack stream sizes.
         private final long[] packSizes;
 
-        /// The unpack stream sizes.
-        private final long[] unpackSizes;
+        /// The parsed folders.
+        private final FolderInfo[] folders;
 
         /// Creates stream information.
-        private StreamsInfo(long packPosition, long[] packSizes, long[] unpackSizes) {
-            if (packSizes.length != unpackSizes.length) {
-                throw new IllegalArgumentException("packSizes and unpackSizes must have the same length");
+        private StreamsInfo(long packPosition, long[] packSizes, FolderInfo[] folders) {
+            if (packSizes.length != folders.length) {
+                throw new IllegalArgumentException("packSizes and folders must have the same length");
             }
             this.packPosition = packPosition;
             this.packSizes = packSizes.clone();
-            this.unpackSizes = unpackSizes.clone();
+            this.folders = folders.clone();
         }
 
         /// Returns the number of unpack streams.
         private int streamCount() {
-            return unpackSizes.length;
+            return folders.length;
         }
 
         /// Returns the unpack size for a stream.
         private long unpackSize(int index) throws IOException {
             requireStreamIndex(index);
-            return unpackSizes[index];
+            return folders[index].unpackSize();
+        }
+
+        /// Returns the packed size for a stream.
+        private long packedSize(int index) throws IOException {
+            requireStreamIndex(index);
+            return packSizes[index];
+        }
+
+        /// Returns the method ID for a stream.
+        private byte[] methodId(int index) throws IOException {
+            requireStreamIndex(index);
+            return folders[index].methodId();
+        }
+
+        /// Returns the coder properties for a stream.
+        private byte[] properties(int index) throws IOException {
+            requireStreamIndex(index);
+            return folders[index].properties();
         }
 
         /// Returns the absolute archive data offset for a stream.
@@ -467,12 +502,54 @@ public final class SevenZipHeaderParser {
 
         /// Requires a stream index to be valid and supported.
         private void requireStreamIndex(int index) throws IOException {
-            if (index < 0 || index >= unpackSizes.length) {
+            if (index < 0 || index >= folders.length) {
                 throw new IOException("7z file entry references a missing stream");
             }
-            if (packSizes[index] != unpackSizes[index]) {
-                throw new UnsupportedOperationException("7z compressed streams are not implemented yet");
+        }
+    }
+
+    /// Stores parsed single-coder folder information.
+    @NotNullByDefault
+    private static final class FolderInfo {
+        /// The method ID.
+        private final byte[] methodId;
+
+        /// The coder properties.
+        private final byte[] properties;
+
+        /// The unpack size, or `-1` before it is read.
+        private long unpackSize = -1L;
+
+        /// Creates folder information.
+        private FolderInfo(byte[] methodId, byte[] properties) {
+            this.methodId = methodId.clone();
+            this.properties = properties.clone();
+        }
+
+        /// Sets the unpack size.
+        private void setUnpackSize(long unpackSize) {
+            if (unpackSize < 0) {
+                throw new IllegalArgumentException("unpackSize must be non-negative");
             }
+            this.unpackSize = unpackSize;
+        }
+
+        /// Returns the unpack size.
+        private long unpackSize() throws IOException {
+            if (unpackSize < 0) {
+                throw new IOException("7z folder unpack size is missing");
+            }
+            return unpackSize;
+        }
+
+        /// Returns the method ID.
+        private byte[] methodId() {
+            return methodId.clone();
+        }
+
+        /// Returns the coder properties.
+        private byte[] properties() {
+            return properties.clone();
         }
     }
 
