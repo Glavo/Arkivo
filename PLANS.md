@@ -107,6 +107,7 @@ ArkivoVolumeSource
 ArkivoFileSystemOption
 ArkivoFileSystem
 ArkivoFileSystemEntryStream
+ArkivoStreamingReader
 CompressionCodec
 CompressionCodecs
 ```
