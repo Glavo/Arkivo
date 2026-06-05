@@ -9,12 +9,16 @@ import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.ArkivoStorageAccessSet;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoVolumeSource;
+import org.glavo.arkivo.zip.internal.StreamingZipArkivoReadFileSystemImpl;
 import org.glavo.arkivo.zip.internal.StreamingZipArkivoFileSystemImpl;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
 import java.util.Map;
@@ -23,7 +27,7 @@ import java.util.Objects;
 /// Opens ZIP archives as NIO file systems.
 @NotNullByDefault
 public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
-        permits StreamingZipArkivoFileSystemImpl, ZipArkivoFileSystemImpl {
+        permits StreamingZipArkivoFileSystemImpl, StreamingZipArkivoReadFileSystemImpl, ZipArkivoFileSystemImpl {
     /// The environment option for an `ArkivoPasswordProvider` value.
     public static final ArkivoFileSystemOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArkivoFileSystemOption.of("arkivo.zip", "passwordProvider", ArkivoPasswordProvider.class);
@@ -85,6 +89,37 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
         Objects.requireNonNull(environment, "environment");
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
         return new ZipArkivoFileSystemImpl(ZipArkivoFileSystemProvider.instance(), null, volumes, config);
+    }
+
+    /// Opens a forward-only streaming ZIP archive file system from an input stream.
+    public static ZipArkivoFileSystem openStreaming(InputStream source) {
+        Objects.requireNonNull(source, "source");
+        return openStreaming(Channels.newChannel(source));
+    }
+
+    /// Opens a forward-only streaming ZIP archive file system from a readable channel.
+    public static ZipArkivoFileSystem openStreaming(ReadableByteChannel source) {
+        Objects.requireNonNull(source, "source");
+        return openStreaming(source, Map.of());
+    }
+
+    /// Opens a forward-only streaming ZIP archive file system from a readable channel with environment options.
+    public static ZipArkivoFileSystem openStreaming(
+            ReadableByteChannel source,
+            Map<String, ?> environment
+    ) {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(environment, "environment");
+        ZipArkivoFileSystemConfig parsedConfig = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+        ZipArkivoFileSystemConfig config = new ZipArkivoFileSystemConfig(
+                parsedConfig.passwordProvider(),
+                parsedConfig.defaultEncryption(),
+                parsedConfig.splitSize(),
+                parsedConfig.entryNameEncoding(),
+                ArkivoStorageAccessSet.STREAM_READ,
+                parsedConfig.threadSafety()
+        );
+        return new StreamingZipArkivoReadFileSystemImpl(ZipArkivoFileSystemProvider.instance(), source, config);
     }
 
     /// Creates a forward-only streaming ZIP archive file system.

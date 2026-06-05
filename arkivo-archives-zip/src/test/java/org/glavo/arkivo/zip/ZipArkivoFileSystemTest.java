@@ -13,6 +13,7 @@ import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.io.ByteArrayInputStream;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -83,6 +84,29 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
                 assertEquals("hello", Files.readString(fileSystem.getPath("/dir/hello.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a streaming ZIP file system can read entries from an input stream.
+    @Test
+    public void streamingReadFileSystemFromInputStream() throws IOException {
+        Path archivePath = createDeflatedZipArchive();
+
+        try {
+            byte[] archive = Files.readAllBytes(archivePath);
+            try (ZipArkivoFileSystem fileSystem =
+                         ZipArkivoFileSystem.openStreaming(new ByteArrayInputStream(archive))) {
+                try (var entries = fileSystem.openEntryStream()) {
+                    assertEquals("/dir", entries.next().toString());
+                    assertEquals("/dir/hello.txt", entries.next().toString());
+                    try (var input = entries.openInputStream()) {
+                        assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
+                    }
+                    assertNull(entries.next());
+                }
             }
         } finally {
             deleteTemporaryArchive(archivePath);
