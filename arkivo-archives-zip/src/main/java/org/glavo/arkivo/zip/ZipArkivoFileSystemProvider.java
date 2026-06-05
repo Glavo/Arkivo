@@ -4,7 +4,6 @@
 package org.glavo.arkivo.zip;
 
 import org.glavo.arkivo.ArkivoFileSystem;
-import org.glavo.arkivo.zip.internal.StreamingZipArkivoFileSystemImpl;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -140,12 +139,9 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
         return fileSystem(path).newInputStream(path, options);
     }
 
-    /// Opens an output stream for a path inside a streaming ZIP archive file system.
+    /// Always rejects output streams because ZIP file system writes are exposed by streaming writer APIs.
     @Override
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
-        if (path.getFileSystem() instanceof StreamingZipArkivoFileSystemImpl fileSystem) {
-            return fileSystem.newOutputStream(path, options);
-        }
         throw new ReadOnlyFileSystemException();
     }
 
@@ -155,13 +151,9 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
         return fileSystem(directory).newDirectoryStream(directory, filter);
     }
 
-    /// Creates a directory inside a ZIP archive file system.
+    /// Always rejects directory creation because ZIP file system writes are exposed by streaming writer APIs.
     @Override
     public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
-        if (directory.getFileSystem() instanceof StreamingZipArkivoFileSystemImpl fileSystem) {
-            fileSystem.createDirectory(directory, attributes);
-            return;
-        }
         throw new ReadOnlyFileSystemException();
     }
 

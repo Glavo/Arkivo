@@ -68,6 +68,9 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
     /// Whether an entry stream has already been opened.
     private boolean entryStreamOpened;
 
+    /// The current parsed entry exposed to streaming reader adapters, or `null` when no entry is active.
+    private @Nullable LocalEntry currentStreamingEntry;
+
     /// Whether this file system is open.
     private boolean open = true;
 
@@ -77,9 +80,18 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             ReadableByteChannel source,
             ZipArkivoFileSystemConfig config
     ) {
+        this(provider, Channels.newInputStream(Objects.requireNonNull(source, "source")), config);
+    }
+
+    /// Creates a streaming ZIP archive file system from an input stream.
+    public StreamingZipArkivoReadFileSystemImpl(
+            ZipArkivoFileSystemProvider provider,
+            InputStream source,
+            ZipArkivoFileSystemConfig config
+    ) {
         super(ArkivoStorageAccessSet.STREAM_READ, config.threadSafety());
         this.provider = Objects.requireNonNull(provider, "provider");
-        this.input = new PushbackInputStream(Channels.newInputStream(source), PUSHBACK_BUFFER_SIZE);
+        this.input = new PushbackInputStream(Objects.requireNonNull(source, "source"), PUSHBACK_BUFFER_SIZE);
         this.config = Objects.requireNonNull(config, "config");
         this.rootPath = ZipArkivoPath.root(this);
     }
@@ -171,6 +183,18 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         }
         entryStreamOpened = true;
         return new StreamingEntryStream();
+    }
+
+    /// Returns the current decoded ZIP entry path text, or `null` when no entry is active.
+    public synchronized @Nullable String currentEntryPathText() {
+        LocalEntry entry = currentStreamingEntry;
+        return entry != null ? entry.path : null;
+    }
+
+    /// Returns whether the current ZIP entry is a directory.
+    public synchronized boolean currentEntryDirectory() {
+        LocalEntry entry = currentStreamingEntry;
+        return entry != null && entry.directory;
     }
 
     /// Returns the number of bytes stored before the ZIP archive body.
@@ -274,6 +298,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
                     || signature == CENTRAL_DIRECTORY_HEADER_SIGNATURE
                     || signature == END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
                 currentEntry = null;
+                currentStreamingEntry = null;
                 return null;
             }
             if (signature != LOCAL_FILE_HEADER_SIGNATURE) {
@@ -297,6 +322,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             boolean directory = path.endsWith("/");
             LocalEntry entry = new LocalEntry(path, flags, method, crc32, compressedSize, uncompressedSize, directory);
             currentEntry = entry;
+            currentStreamingEntry = entry;
             return getPath("/" + path);
         }
 
@@ -367,6 +393,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
                 }
             }
             currentEntry = null;
+            currentStreamingEntry = null;
         }
 
         /// Marks the current input stream as closed.
@@ -374,6 +401,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             if (currentInput == inputStream) {
                 currentInput = null;
                 currentEntry = null;
+                currentStreamingEntry = null;
             }
         }
 

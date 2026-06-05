@@ -57,8 +57,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// The provider that created this ZIP file system.
     private final ZipArkivoFileSystemProvider provider;
 
-    /// The archive path backing this file system.
-    private final Path archivePath;
+    /// The archive path backing this file system, or `null` when writing to an output stream.
+    private final @Nullable Path archivePath;
 
     /// The output stream that receives ZIP bytes.
     private final CountingOutputStream output;
@@ -96,9 +96,26 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         this.rootPath = ZipArkivoPath.root(this);
     }
 
+    /// Creates a streaming ZIP archive file system over an output stream.
+    public StreamingZipArkivoFileSystemImpl(
+            ZipArkivoFileSystemProvider provider,
+            OutputStream output,
+            ZipArkivoFileSystemConfig config
+    ) {
+        super(ArkivoStorageAccessSet.STREAM_WRITE, config.threadSafety());
+        this.provider = Objects.requireNonNull(provider, "provider");
+        this.archivePath = null;
+        this.output = new CountingOutputStream(Objects.requireNonNull(output, "output"));
+        this.rootPath = ZipArkivoPath.root(this);
+    }
+
     /// Returns the archive URI used by ZIP path URI conversion.
     public URI archiveUri() {
-        return archivePath.toUri().normalize();
+        Path path = archivePath;
+        if (path == null) {
+            throw new UnsupportedOperationException("Streaming ZIP output paths backed by output streams cannot be converted to URIs");
+        }
+        return path.toUri().normalize();
     }
 
     /// Returns the provider that created this ZIP file system.

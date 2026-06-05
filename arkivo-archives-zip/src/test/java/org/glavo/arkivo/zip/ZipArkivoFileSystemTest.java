@@ -68,18 +68,17 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
-    /// Verifies that a streaming ZIP file system can write entries in storage order.
+    /// Verifies that a streaming ZIP writer can write entries in storage order.
     @Test
-    public void streamingWriteFileSystem() throws IOException {
+    public void streamingWriter() throws IOException {
         Path archivePath = createTemporaryArchivePath("stream-write-");
 
         try {
-            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.createStreaming(archivePath)) {
-                assertEquals(ArkivoStorageAccessSet.STREAM_WRITE, fileSystem.storageAccess());
-                assertEquals(false, fileSystem.isReadOnly());
-
-                Files.createDirectory(fileSystem.getPath("/dir"));
-                Files.writeString(fileSystem.getPath("/dir/hello.txt"), "hello", StandardCharsets.UTF_8);
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+                writer.createDirectory(Path.of("dir"));
+                try (var output = writer.openOutputStream(Path.of("dir", "hello.txt"))) {
+                    output.write("hello".getBytes(StandardCharsets.UTF_8));
+                }
             }
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
@@ -90,23 +89,27 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
-    /// Verifies that a streaming ZIP file system can read entries from an input stream.
+    /// Verifies that a streaming ZIP reader can read entries from an input stream.
     @Test
-    public void streamingReadFileSystemFromInputStream() throws IOException {
+    public void streamingReaderFromInputStream() throws IOException {
         Path archivePath = createDeflatedZipArchive();
 
         try {
             byte[] archive = Files.readAllBytes(archivePath);
-            try (ZipArkivoFileSystem fileSystem =
-                         ZipArkivoFileSystem.openStreaming(new ByteArrayInputStream(archive))) {
-                try (var entries = fileSystem.openEntryStream()) {
-                    assertEquals("/dir", entries.next().toString());
-                    assertEquals("/dir/hello.txt", entries.next().toString());
-                    try (var input = entries.openInputStream()) {
-                        assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
-                    }
-                    assertNull(entries.next());
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+                ZipArkivoStreamingEntry directory = reader.next();
+                assertEquals(Path.of("dir"), directory.path());
+                assertEquals("dir/", directory.pathText());
+                assertEquals(true, directory.directory());
+
+                ZipArkivoStreamingEntry file = reader.next();
+                assertEquals(Path.of("dir", "hello.txt"), file.path());
+                assertEquals("dir/hello.txt", file.pathText());
+                assertEquals(false, file.directory());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
                 }
+                assertNull(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -484,9 +487,11 @@ public final class ZipArkivoFileSystemTest {
     /// Creates a temporary deflated ZIP archive under the module build directory.
     private static Path createDeflatedZipArchive() throws IOException {
         Path archivePath = createTemporaryArchivePath("real-zip-");
-        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.createStreaming(archivePath)) {
-            Files.createDirectory(fileSystem.getPath("/dir"));
-            Files.writeString(fileSystem.getPath("/dir/hello.txt"), "hello", StandardCharsets.UTF_8);
+        try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+            writer.createDirectory(Path.of("dir"));
+            try (var output = writer.openOutputStream(Path.of("dir", "hello.txt"))) {
+                output.write("hello".getBytes(StandardCharsets.UTF_8));
+            }
         }
         return archivePath;
     }
