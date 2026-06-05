@@ -52,9 +52,6 @@ public abstract sealed class ZipArkivoStreamingReader implements Closeable, Iter
         return new ZipArkivoStreamingReaderImpl(source, config);
     }
 
-    /// Opens the single entry stream for this reader.
-    public abstract ZipArkivoStreamingEntryStream openEntryStream() throws IOException;
-
     /// Opens a readable channel for the current file entry.
     public abstract ReadableByteChannel openChannel() throws IOException;
 
