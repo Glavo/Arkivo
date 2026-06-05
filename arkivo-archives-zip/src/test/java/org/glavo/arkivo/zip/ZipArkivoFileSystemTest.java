@@ -225,6 +225,28 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that a ZIP file system can create a new archive through NIO write operations.
+    @Test
+    public void fileSystemCreateWritesArchive() throws IOException {
+        Path archivePath = createTemporaryArchivePath("fs-create-");
+
+        try {
+            try (ZipArkivoFileSystem fileSystem =
+                         ZipArkivoFileSystem.open(archivePath, Map.of(ZipArkivoFileSystem.CREATE.key(), true))) {
+                assertEquals(false, fileSystem.isReadOnly());
+                Files.createDirectory(fileSystem.getPath("/dir"));
+                Files.writeString(fileSystem.getPath("/dir/hello.txt"), "hello", StandardCharsets.UTF_8);
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals(true, Files.isDirectory(fileSystem.getPath("/dir")));
+                assertEquals("hello", Files.readString(fileSystem.getPath("/dir/hello.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that a streaming ZIP reader can read entries from an input stream.
     @Test
     public void streamingReaderFromInputStream() throws IOException {

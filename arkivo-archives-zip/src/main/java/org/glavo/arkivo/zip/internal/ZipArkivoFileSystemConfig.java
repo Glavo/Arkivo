@@ -23,12 +23,16 @@ public final class ZipArkivoFileSystemConfig {
 
     /// The default parsed ZIP file system configuration.
     public static final ZipArkivoFileSystemConfig DEFAULTS = new ZipArkivoFileSystemConfig(
+            false,
             null,
             ZipEncryption.none(),
             NO_SPLIT_SIZE,
             ZipEntryNameEncoding.standard(),
             ArkivoFileSystemThreadSafety.CONCURRENT_READ
     );
+
+    /// Whether opening by path should create a new forward-only ZIP file system.
+    private final boolean create;
 
     /// The provider used to decrypt encrypted ZIP entries.
     private final @Nullable ArkivoPasswordProvider passwordProvider;
@@ -47,6 +51,7 @@ public final class ZipArkivoFileSystemConfig {
 
     /// Creates parsed ZIP file system configuration.
     public ZipArkivoFileSystemConfig(
+            boolean create,
             @Nullable ArkivoPasswordProvider passwordProvider,
             ZipEncryption defaultEncryption,
             long splitSize,
@@ -56,6 +61,7 @@ public final class ZipArkivoFileSystemConfig {
         if (splitSize != NO_SPLIT_SIZE && splitSize <= 0) {
             throw new IllegalArgumentException("splitSize must be positive or NO_SPLIT_SIZE");
         }
+        this.create = create;
         this.passwordProvider = passwordProvider;
         this.defaultEncryption = Objects.requireNonNull(defaultEncryption, "defaultEncryption");
         this.splitSize = splitSize;
@@ -71,6 +77,7 @@ public final class ZipArkivoFileSystemConfig {
         }
 
         ArkivoPasswordProvider passwordProvider = passwordProvider(environment);
+        boolean create = ZipArkivoFileSystem.CREATE.readOrDefault(environment, false);
         ZipEncryption defaultEncryption =
                 ZipArkivoFileSystem.DEFAULT_ENCRYPTION.readOrDefault(environment, ZipEncryption.none());
         long splitSize = splitSize(environment);
@@ -86,12 +93,18 @@ public final class ZipArkivoFileSystemConfig {
                 );
 
         return new ZipArkivoFileSystemConfig(
+                create,
                 passwordProvider,
                 defaultEncryption,
                 splitSize,
                 entryNameEncoding,
                 threadSafety
         );
+    }
+
+    /// Returns whether opening by path should create a new forward-only ZIP file system.
+    public boolean create() {
+        return create;
     }
 
     /// Returns the provider used to decrypt encrypted ZIP entries.

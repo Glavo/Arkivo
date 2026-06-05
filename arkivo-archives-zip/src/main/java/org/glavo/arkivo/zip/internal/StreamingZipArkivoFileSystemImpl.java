@@ -16,6 +16,7 @@ import java.io.OutputStream;
 import java.net.URI;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AccessMode;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.FileStore;
 import java.nio.file.Files;
@@ -212,6 +213,20 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     @Override
     public WatchService newWatchService() {
         throw new UnsupportedOperationException("ZIP watch services are not supported");
+    }
+
+    /// Checks whether the given path can be accessed in streaming output mode.
+    public void checkAccess(Path path, AccessMode... modes) {
+        checkOpen();
+        if (path.getFileSystem() != this) {
+            throw new java.nio.file.ProviderMismatchException();
+        }
+        for (AccessMode mode : modes) {
+            Objects.requireNonNull(mode, "mode");
+            if (mode != AccessMode.WRITE) {
+                throw new UnsupportedOperationException("Streaming ZIP output supports only write access checks");
+            }
+        }
     }
 
     /// Always rejects user principal lookups because ZIP does not expose principals.

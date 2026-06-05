@@ -28,6 +28,10 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
     public static final ArkivoFileSystemOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArkivoFileSystemOption.of("arkivo.zip", "passwordProvider", ArkivoPasswordProvider.class);
 
+    /// The environment option for a `Boolean` value that creates a new forward-only ZIP file system.
+    public static final ArkivoFileSystemOption<Boolean> CREATE =
+            ArkivoFileSystemOption.of("arkivo.zip", "create", Boolean.class, ZipArkivoFileSystem::createOptionValue);
+
     /// The environment option for a fixed `byte[]` password value.
     public static final ArkivoFileSystemOption<byte[]> PASSWORD =
             ArkivoFileSystemOption.of("arkivo.zip", "password", byte[].class, ZipArkivoFileSystem::passwordOptionValue);
@@ -89,6 +93,17 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
 
     /// Opens a read-only channel over the bytes stored before the ZIP archive body.
     public abstract SeekableByteChannel openPreambleChannel() throws IOException;
+
+    /// Converts a raw create option value.
+    private static Boolean createOptionValue(Object value) {
+        if (value instanceof Boolean booleanValue) {
+            return booleanValue;
+        }
+        if (value instanceof String stringValue) {
+            return Boolean.parseBoolean(stringValue);
+        }
+        throw new IllegalArgumentException("Expected Boolean or String for key: " + CREATE.key());
+    }
 
     /// Converts a raw password option value.
     private static byte[] passwordOptionValue(Object value) {
