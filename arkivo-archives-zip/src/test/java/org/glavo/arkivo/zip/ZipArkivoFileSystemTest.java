@@ -27,8 +27,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.zip.CRC32;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -461,16 +459,10 @@ public final class ZipArkivoFileSystemTest {
 
     /// Creates a temporary deflated ZIP archive under the module build directory.
     private static Path createDeflatedZipArchive() throws IOException {
-        Path temporaryRoot = Path.of("build", "tmp", "arkivo-zip-tests");
-        Files.createDirectories(temporaryRoot);
-        Path temporaryDirectory = Files.createTempDirectory(temporaryRoot, "real-zip-");
-        Path archivePath = temporaryDirectory.resolve("sample.zip");
-        try (ZipOutputStream output = new ZipOutputStream(Files.newOutputStream(archivePath), StandardCharsets.UTF_8)) {
-            output.putNextEntry(new ZipEntry("dir/"));
-            output.closeEntry();
-            output.putNextEntry(new ZipEntry("dir/hello.txt"));
-            output.write("hello".getBytes(StandardCharsets.UTF_8));
-            output.closeEntry();
+        Path archivePath = createTemporaryArchivePath("real-zip-");
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.createStreaming(archivePath)) {
+            Files.createDirectory(fileSystem.getPath("/dir"));
+            Files.writeString(fileSystem.getPath("/dir/hello.txt"), "hello", StandardCharsets.UTF_8);
         }
         return archivePath;
     }

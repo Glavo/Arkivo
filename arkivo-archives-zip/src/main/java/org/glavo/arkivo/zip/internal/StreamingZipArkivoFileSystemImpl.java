@@ -14,8 +14,8 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URI;
-import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.FileStore;
 import java.nio.file.Files;
@@ -29,29 +29,70 @@ import java.nio.file.attribute.FileStoreAttributeView;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.spi.FileSystemProvider;
 import java.util.HashSet;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
+import java.util.zip.CRC32;
+import java.util.zip.Deflater;
+import java.util.zip.DeflaterOutputStream;
 
 /// Implements a forward-only ZIP archive file system for streaming writes.
 @NotNullByDefault
 public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
+    /// The ZIP local file header signature.
+    private static final int ZIP_LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
+
+    /// The ZIP central directory file header signature.
+    private static final int ZIP_CENTRAL_DIRECTORY_HEADER_SIGNATURE = 0x02014b50;
+
+    /// The ZIP data descriptor signature.
+    private static final int ZIP_DATA_DESCRIPTOR_SIGNATURE = 0x08074b50;
+
+    /// The ZIP end of central directory signature.
+    private static final int ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE = 0x06054b50;
+
+    /// The ZIP version needed to extract entries written by this file system.
+    private static final int ZIP_VERSION_NEEDED = 20;
+
+    /// The ZIP general purpose flag indicating a data descriptor follows entry data.
+    private static final int ZIP_DATA_DESCRIPTOR_FLAG = 1 << 3;
+
+    /// The ZIP general purpose flag indicating UTF-8 entry names.
+    private static final int ZIP_UTF8_FLAG = 1 << 11;
+
+    /// The ZIP stored method identifier.
+    private static final int ZIP_STORED_METHOD = 0;
+
+    /// The ZIP deflated method identifier.
+    private static final int ZIP_DEFLATED_METHOD = 8;
+
+    /// The DOS date for 1980-01-01.
+    private static final int ZIP_DOS_DATE_1980_01_01 = 0x21;
+
+    /// The maximum value stored in an unsigned 16-bit ZIP field.
+    private static final int ZIP_UINT16_MAX = 0xffff;
+
+    /// The maximum value stored in an unsigned 32-bit ZIP field.
+    private static final long ZIP_UINT32_MAX = 0xffff_ffffL;
+
     /// The provider that created this ZIP file system.
     private final ZipArkivoFileSystemProvider provider;
 
     /// The archive path backing this file system.
     private final Path archivePath;
 
-    /// The ZIP output stream that receives entries in storage order.
-    private final ZipOutputStream output;
+    /// The output stream that receives ZIP bytes.
+    private final CountingOutputStream output;
 
     /// The root path for this ZIP file system.
     private final ZipArkivoPath rootPath;
 
     /// The entry names already written to the stream.
     private final HashSet<String> writtenEntries = new HashSet<>();
+
+    /// The central directory entries to write when the file system closes.
+    private final ArrayList<CentralEntry> centralEntries = new ArrayList<>();
 
     /// The currently open entry output stream, or `null` when no entry is active.
     private @Nullable EntryOutputStream currentEntryOutput;
@@ -68,7 +109,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         super(ArkivoStorageAccessSet.STREAM_WRITE, config.threadSafety());
         this.provider = Objects.requireNonNull(provider, "provider");
         this.archivePath = Objects.requireNonNull(archivePath, "archivePath");
-        this.output = new ZipOutputStream(Files.newOutputStream(
+        this.output = new CountingOutputStream(Files.newOutputStream(
                 archivePath,
                 StandardOpenOption.CREATE,
                 StandardOpenOption.TRUNCATE_EXISTING,
@@ -99,6 +140,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         if (entryOutput != null) {
             entryOutput.close();
         }
+        writeCentralDirectory();
         output.close();
     }
 
@@ -172,8 +214,17 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         requireNoActiveEntry();
         requireNewEntry(entryName);
 
-        output.putNextEntry(new ZipEntry(entryName));
-        EntryOutputStream entryOutput = new EntryOutputStream();
+        byte[] rawName = rawEntryName(entryName);
+        long localHeaderOffset = output.position();
+        writeLocalHeader(
+                rawName,
+                ZIP_DATA_DESCRIPTOR_FLAG | ZIP_UTF8_FLAG,
+                ZIP_DEFLATED_METHOD,
+                0,
+                0,
+                0
+        );
+        EntryOutputStream entryOutput = new EntryOutputStream(entryName, rawName, localHeaderOffset, output.position());
         currentEntryOutput = entryOutput;
         return entryOutput;
     }
@@ -192,8 +243,20 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
         requireNoActiveEntry();
         requireNewEntry(entryName);
-        output.putNextEntry(new ZipEntry(entryName));
-        output.closeEntry();
+        byte[] rawName = rawEntryName(entryName);
+        long localHeaderOffset = output.position();
+        writeLocalHeader(rawName, ZIP_UTF8_FLAG, ZIP_STORED_METHOD, 0, 0, 0);
+        centralEntries.add(new CentralEntry(
+                entryName,
+                rawName,
+                ZIP_UTF8_FLAG,
+                ZIP_STORED_METHOD,
+                0,
+                0,
+                0,
+                localHeaderOffset,
+                true
+        ));
     }
 
     /// Returns the number of bytes stored before the ZIP archive body.
@@ -271,13 +334,156 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
     }
 
+    /// Writes the local file header for an entry.
+    private void writeLocalHeader(
+            byte[] rawName,
+            int flags,
+            int method,
+            long crc32,
+            long compressedSize,
+            long uncompressedSize
+    ) throws IOException {
+        writeInt(ZIP_LOCAL_FILE_HEADER_SIGNATURE);
+        writeShort(ZIP_VERSION_NEEDED);
+        writeShort(flags);
+        writeShort(method);
+        writeShort(0);
+        writeShort(ZIP_DOS_DATE_1980_01_01);
+        writeInt(crc32);
+        writeInt(compressedSize);
+        writeInt(uncompressedSize);
+        writeShort(rawName.length);
+        writeShort(0);
+        output.write(rawName);
+    }
+
+    /// Writes the data descriptor for a streamed entry.
+    private void writeDataDescriptor(long crc32, long compressedSize, long uncompressedSize) throws IOException {
+        writeInt(ZIP_DATA_DESCRIPTOR_SIGNATURE);
+        writeInt(crc32);
+        writeInt(compressedSize);
+        writeInt(uncompressedSize);
+    }
+
+    /// Writes the central directory and end record.
+    private void writeCentralDirectory() throws IOException {
+        long centralDirectoryOffset = output.position();
+        for (CentralEntry entry : centralEntries) {
+            writeCentralDirectoryEntry(entry);
+        }
+        long centralDirectorySize = output.position() - centralDirectoryOffset;
+        requireUInt16(centralEntries.size(), "central directory entry count");
+        requireUInt32(centralDirectorySize, "central directory size");
+        requireUInt32(centralDirectoryOffset, "central directory offset");
+
+        writeInt(ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE);
+        writeShort(0);
+        writeShort(0);
+        writeShort(centralEntries.size());
+        writeShort(centralEntries.size());
+        writeInt(centralDirectorySize);
+        writeInt(centralDirectoryOffset);
+        writeShort(0);
+    }
+
+    /// Writes one central directory entry.
+    private void writeCentralDirectoryEntry(CentralEntry entry) throws IOException {
+        requireUInt32(entry.compressedSize, "compressed size");
+        requireUInt32(entry.uncompressedSize, "uncompressed size");
+        requireUInt32(entry.localHeaderOffset, "local header offset");
+
+        writeInt(ZIP_CENTRAL_DIRECTORY_HEADER_SIGNATURE);
+        writeShort(ZIP_VERSION_NEEDED);
+        writeShort(ZIP_VERSION_NEEDED);
+        writeShort(entry.flags);
+        writeShort(entry.method);
+        writeShort(0);
+        writeShort(ZIP_DOS_DATE_1980_01_01);
+        writeInt(entry.crc32);
+        writeInt(entry.compressedSize);
+        writeInt(entry.uncompressedSize);
+        writeShort(entry.rawName.length);
+        writeShort(0);
+        writeShort(0);
+        writeShort(0);
+        writeShort(0);
+        writeInt(entry.directory ? 0x10 : 0);
+        writeInt(entry.localHeaderOffset);
+        output.write(entry.rawName);
+    }
+
+    /// Returns UTF-8 encoded entry name bytes.
+    private static byte[] rawEntryName(String entryName) {
+        byte[] rawName = entryName.getBytes(StandardCharsets.UTF_8);
+        requireUInt16(rawName.length, "entry name length");
+        return rawName;
+    }
+
+    /// Writes a little-endian unsigned 16-bit value.
+    private void writeShort(long value) throws IOException {
+        requireUInt16(value, "short value");
+        output.write((int) (value & 0xff));
+        output.write((int) ((value >>> 8) & 0xff));
+    }
+
+    /// Writes a little-endian unsigned 32-bit value.
+    private void writeInt(long value) throws IOException {
+        requireUInt32(value, "int value");
+        output.write((int) (value & 0xff));
+        output.write((int) ((value >>> 8) & 0xff));
+        output.write((int) ((value >>> 16) & 0xff));
+        output.write((int) ((value >>> 24) & 0xff));
+    }
+
+    /// Requires a value to fit in an unsigned 16-bit ZIP field.
+    private static void requireUInt16(long value, String name) {
+        if (value < 0 || value > ZIP_UINT16_MAX) {
+            throw new IllegalArgumentException(name + " is out of ZIP range");
+        }
+    }
+
+    /// Requires a value to fit in an unsigned 32-bit ZIP field.
+    private static void requireUInt32(long value, String name) {
+        if (value < 0 || value > ZIP_UINT32_MAX) {
+            throw new IllegalArgumentException(name + " is out of ZIP32 range");
+        }
+    }
+
     /// Writes bytes to the current ZIP entry.
     private final class EntryOutputStream extends OutputStream {
+        /// The entry name.
+        private final String entryName;
+
+        /// The raw entry name bytes.
+        private final byte[] rawName;
+
+        /// The local header offset.
+        private final long localHeaderOffset;
+
+        /// The compressed data offset.
+        private final long compressedDataOffset;
+
+        /// The CRC-32 of uncompressed entry data.
+        private final CRC32 crc32 = new CRC32();
+
+        /// The raw deflater used for ZIP deflated data.
+        private final Deflater deflater = new Deflater(Deflater.DEFAULT_COMPRESSION, true);
+
+        /// The deflated output stream.
+        private final DeflaterOutputStream deflatedOutput = new DeflaterOutputStream(output, deflater);
+
+        /// The uncompressed entry size.
+        private long uncompressedSize;
+
         /// Whether this entry output stream is open.
         private boolean entryOpen = true;
 
         /// Creates an entry output stream.
-        private EntryOutputStream() {
+        private EntryOutputStream(String entryName, byte[] rawName, long localHeaderOffset, long compressedDataOffset) {
+            this.entryName = entryName;
+            this.rawName = rawName;
+            this.localHeaderOffset = localHeaderOffset;
+            this.compressedDataOffset = compressedDataOffset;
         }
 
         /// Writes one byte to the current ZIP entry.
@@ -285,7 +491,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         public void write(int value) throws IOException {
             synchronized (StreamingZipArkivoFileSystemImpl.this) {
                 ensureEntryOpen();
-                output.write(value);
+                crc32.update(value);
+                uncompressedSize++;
+                deflatedOutput.write(value);
             }
         }
 
@@ -295,7 +503,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             Objects.checkFromIndexSize(offset, length, bytes.length);
             synchronized (StreamingZipArkivoFileSystemImpl.this) {
                 ensureEntryOpen();
-                output.write(bytes, offset, length);
+                crc32.update(bytes, offset, length);
+                uncompressedSize += length;
+                deflatedOutput.write(bytes, offset, length);
             }
         }
 
@@ -307,7 +517,25 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     return;
                 }
                 entryOpen = false;
-                output.closeEntry();
+                try {
+                    deflatedOutput.finish();
+                    long compressedSize = output.position() - compressedDataOffset;
+                    long crcValue = crc32.getValue();
+                    writeDataDescriptor(crcValue, compressedSize, uncompressedSize);
+                    centralEntries.add(new CentralEntry(
+                            entryName,
+                            rawName,
+                            ZIP_DATA_DESCRIPTOR_FLAG | ZIP_UTF8_FLAG,
+                            ZIP_DEFLATED_METHOD,
+                            crcValue,
+                            compressedSize,
+                            uncompressedSize,
+                            localHeaderOffset,
+                            false
+                    ));
+                } finally {
+                    deflater.end();
+                }
                 currentEntryOutput = null;
             }
         }
@@ -318,6 +546,106 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 throw new IOException("ZIP entry output stream is closed");
             }
             checkOpen();
+        }
+    }
+
+    /// Counts bytes written to an output stream.
+    @NotNullByDefault
+    private static final class CountingOutputStream extends OutputStream {
+        /// The wrapped output stream.
+        private final OutputStream output;
+
+        /// The number of bytes written.
+        private long position;
+
+        /// Creates a counting output stream.
+        private CountingOutputStream(OutputStream output) {
+            this.output = Objects.requireNonNull(output, "output");
+        }
+
+        /// Returns the number of bytes written.
+        private long position() {
+            return position;
+        }
+
+        /// Writes one byte.
+        @Override
+        public void write(int value) throws IOException {
+            output.write(value);
+            position++;
+        }
+
+        /// Writes bytes.
+        @Override
+        public void write(byte[] bytes, int offset, int length) throws IOException {
+            output.write(bytes, offset, length);
+            position += length;
+        }
+
+        /// Flushes the wrapped output stream.
+        @Override
+        public void flush() throws IOException {
+            output.flush();
+        }
+
+        /// Closes the wrapped output stream.
+        @Override
+        public void close() throws IOException {
+            output.close();
+        }
+    }
+
+    /// Stores central directory metadata for one entry.
+    @NotNullByDefault
+    private static final class CentralEntry {
+        /// The decoded entry name.
+        private final String entryName;
+
+        /// The raw entry name bytes.
+        private final byte[] rawName;
+
+        /// The general purpose bit flags.
+        private final int flags;
+
+        /// The ZIP compression method.
+        private final int method;
+
+        /// The CRC-32 value.
+        private final long crc32;
+
+        /// The compressed entry size.
+        private final long compressedSize;
+
+        /// The uncompressed entry size.
+        private final long uncompressedSize;
+
+        /// The local header offset.
+        private final long localHeaderOffset;
+
+        /// Whether this entry is a directory.
+        private final boolean directory;
+
+        /// Creates central directory metadata.
+        private CentralEntry(
+                String entryName,
+                byte[] rawName,
+                int flags,
+                int method,
+                long crc32,
+                long compressedSize,
+                long uncompressedSize,
+                long localHeaderOffset,
+                boolean directory
+        ) {
+            this.entryName = Objects.requireNonNull(entryName, "entryName");
+            this.rawName = Objects.requireNonNull(rawName, "rawName");
+            this.flags = flags;
+            this.method = method;
+            this.crc32 = crc32;
+            this.compressedSize = compressedSize;
+            this.uncompressedSize = uncompressedSize;
+            this.localHeaderOffset = localHeaderOffset;
+            this.directory = directory;
         }
     }
 
