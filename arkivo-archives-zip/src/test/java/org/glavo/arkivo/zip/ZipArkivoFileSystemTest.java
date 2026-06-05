@@ -233,7 +233,17 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoFileSystem fileSystem =
-                         ZipArkivoFileSystem.open(archivePath, Map.of(ZipArkivoFileSystem.CREATE.key(), true))) {
+                         ZipArkivoFileSystem.open(
+                                 archivePath,
+                                 Map.of(
+                                         ZipArkivoFileSystem.ARCHIVE_OPEN_OPTIONS.key(),
+                                         Set.of(
+                                                 StandardOpenOption.CREATE,
+                                                 StandardOpenOption.TRUNCATE_EXISTING,
+                                                 StandardOpenOption.WRITE
+                                         )
+                                 )
+                         )) {
                 assertEquals(false, fileSystem.isReadOnly());
                 Files.createDirectory(fileSystem.getPath("/dir"));
                 Files.writeString(fileSystem.getPath("/dir/hello.txt"), "hello", StandardCharsets.UTF_8);

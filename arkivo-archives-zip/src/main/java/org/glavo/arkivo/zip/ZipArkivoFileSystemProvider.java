@@ -90,7 +90,7 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
                     fileSystems.remove(parsedUri.archiveUri, fileSystem);
                 }
             };
-            ZipArkivoFileSystem fileSystem = config.create()
+            ZipArkivoFileSystem fileSystem = config.archiveWritable()
                     ? new StreamingZipArkivoFileSystemImpl(this, parsedUri.archivePath, config)
                     : new ZipArkivoFileSystemImpl(this, parsedUri.archivePath, null, config, closeAction);
             holder[0] = fileSystem;
@@ -109,7 +109,7 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     public ZipArkivoFileSystem newFileSystem(Path path, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(path, "path");
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
-        return config.create()
+        return config.archiveWritable()
                 ? new StreamingZipArkivoFileSystemImpl(this, path, config)
                 : new ZipArkivoFileSystemImpl(this, path, null, config);
     }

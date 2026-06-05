@@ -101,9 +101,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         this.lock = ZipLocks.create(config.threadSafety());
         this.output = new CountingOutputStream(Files.newOutputStream(
                 archivePath,
-                StandardOpenOption.CREATE,
-                StandardOpenOption.TRUNCATE_EXISTING,
-                StandardOpenOption.WRITE
+                config.archiveOpenOptions().toArray(OpenOption[]::new)
         ));
         this.rootPath = ZipArkivoPath.root(this);
     }

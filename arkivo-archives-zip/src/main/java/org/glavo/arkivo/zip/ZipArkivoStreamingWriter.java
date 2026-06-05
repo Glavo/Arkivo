@@ -32,7 +32,10 @@ public abstract sealed class ZipArkivoStreamingWriter extends ArkivoStreamingWri
     public static ZipArkivoStreamingWriter create(Path path, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
-        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromWriterEnvironment(environment);
+        if (!config.archiveWritable()) {
+            throw new IllegalArgumentException("ZIP streaming writer archive open options must include WRITE");
+        }
         return ZipArkivoStreamingWriterImpl.create(path, config);
     }
 

@@ -16,7 +16,9 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.util.Collection;
 import java.util.Map;
 import java.util.Objects;
 
@@ -28,9 +30,16 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
     public static final ArkivoFileSystemOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArkivoFileSystemOption.of("arkivo.zip", "passwordProvider", ArkivoPasswordProvider.class);
 
-    /// The environment option for a `Boolean` value that creates a new forward-only ZIP file system.
-    public static final ArkivoFileSystemOption<Boolean> CREATE =
-            ArkivoFileSystemOption.of("arkivo.zip", "create", Boolean.class, ZipArkivoFileSystem::createOptionValue);
+    /// The environment option for archive file `OpenOption` values.
+    ///
+    /// The option accepts an `OpenOption[]`, a single `OpenOption`, or a `Collection` of `OpenOption` values.
+    public static final ArkivoFileSystemOption<OpenOption[]> ARCHIVE_OPEN_OPTIONS =
+            ArkivoFileSystemOption.of(
+                    "arkivo.zip",
+                    "archiveOpenOptions",
+                    OpenOption[].class,
+                    ZipArkivoFileSystem::archiveOpenOptionsValue
+            );
 
     /// The environment option for a fixed `byte[]` password value.
     public static final ArkivoFileSystemOption<byte[]> PASSWORD =
@@ -85,6 +94,9 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
         Objects.requireNonNull(volumes, "volumes");
         Objects.requireNonNull(environment, "environment");
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+        if (config.archiveWritable()) {
+            throw new UnsupportedOperationException("ZIP volume sources cannot be opened with write archive options");
+        }
         return new ZipArkivoFileSystemImpl(ZipArkivoFileSystemProvider.instance(), null, volumes, config);
     }
 
@@ -94,15 +106,31 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
     /// Opens a read-only channel over the bytes stored before the ZIP archive body.
     public abstract SeekableByteChannel openPreambleChannel() throws IOException;
 
-    /// Converts a raw create option value.
-    private static Boolean createOptionValue(Object value) {
-        if (value instanceof Boolean booleanValue) {
-            return booleanValue;
+    /// Converts a raw archive open options value.
+    private static OpenOption[] archiveOpenOptionsValue(Object value) {
+        if (value instanceof OpenOption[] options) {
+            return options.clone();
         }
-        if (value instanceof String stringValue) {
-            return Boolean.parseBoolean(stringValue);
+        if (value instanceof OpenOption option) {
+            return new OpenOption[]{option};
         }
-        throw new IllegalArgumentException("Expected Boolean or String for key: " + CREATE.key());
+        if (value instanceof Collection<?> collection) {
+            OpenOption[] options = new OpenOption[collection.size()];
+            int index = 0;
+            for (Object item : collection) {
+                if (!(item instanceof OpenOption option)) {
+                    throw new IllegalArgumentException(
+                            "Expected OpenOption values for key: " + ARCHIVE_OPEN_OPTIONS.key()
+                    );
+                }
+                options[index++] = option;
+            }
+            return options;
+        }
+        throw new IllegalArgumentException(
+                "Expected OpenOption, OpenOption[], or Collection<? extends OpenOption> for key: "
+                        + ARCHIVE_OPEN_OPTIONS.key()
+        );
     }
 
     /// Converts a raw password option value.
