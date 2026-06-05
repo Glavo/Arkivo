@@ -5,7 +5,6 @@ package org.glavo.arkivo.zip.internal;
 
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
-import org.glavo.arkivo.zip.ZipArkivoEntryStream;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -69,8 +68,11 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
     /// The root path for this ZIP file system.
     private final ZipArkivoPath rootPath;
 
-    /// Whether an entry stream has already been opened.
-    private boolean entryStreamOpened;
+    /// The current local entry, or `null` when no entry is active.
+    private @Nullable LocalEntry currentEntry;
+
+    /// The current entry input stream, or `null` when no entry input stream is active.
+    private @Nullable CurrentEntryInputStream currentInput;
 
     /// The current parsed entry exposed to streaming reader adapters, or `null` when no entry is active.
     private @Nullable LocalEntry currentStreamingEntry;
@@ -189,24 +191,102 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         throw new UnsupportedOperationException("ZIP user principals are not supported");
     }
 
-    /// Opens the single forward-only stream over ZIP entry paths in storage order.
-    @Override
-    public ZipArkivoEntryStream openEntryStream() {
+    /// Advances to the next streaming ZIP entry.
+    boolean nextStreamingEntry() throws IOException {
         lock();
         try {
             checkOpen();
-            if (entryStreamOpened) {
-                throw new IllegalStateException("Streaming ZIP input entry stream has already been opened");
+            closeCurrentEntry();
+
+            int signature = readIntOrEnd(input);
+            if (signature < 0
+                    || signature == CENTRAL_DIRECTORY_HEADER_SIGNATURE
+                    || signature == END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
+                currentEntry = null;
+                currentStreamingEntry = null;
+                return false;
             }
-            entryStreamOpened = true;
-            return new StreamingEntryStream();
+            if (signature != LOCAL_FILE_HEADER_SIGNATURE) {
+                throw new IOException("Unexpected ZIP stream record signature: " + Integer.toHexString(signature));
+            }
+
+            int versionNeededToExtract = readUnsignedShort(input);
+            int flags = readUnsignedShort(input);
+            int method = readUnsignedShort(input);
+            readUnsignedShort(input);
+            readUnsignedShort(input);
+            boolean hasDataDescriptor = (flags & DATA_DESCRIPTOR_FLAG) != 0;
+            long headerCrc32 = Integer.toUnsignedLong(readInt(input));
+            long headerCompressedSize = Integer.toUnsignedLong(readInt(input));
+            long headerUncompressedSize = Integer.toUnsignedLong(readInt(input));
+            long crc32 = hasDataDescriptor ? ZipArkivoEntryAttributes.UNKNOWN_CRC32 : headerCrc32;
+            long compressedSize = hasDataDescriptor ? ZipArkivoEntryAttributes.UNKNOWN_SIZE : headerCompressedSize;
+            long uncompressedSize = hasDataDescriptor ? ZipArkivoEntryAttributes.UNKNOWN_SIZE : headerUncompressedSize;
+            int nameLength = readUnsignedShort(input);
+            int extraLength = readUnsignedShort(input);
+            byte[] rawName = readBytes(nameLength);
+            byte[] extraData = readBytes(extraLength);
+
+            String path = decodePath(rawName, flags);
+            LocalEntry entry = new LocalEntry(
+                    path,
+                    rawName,
+                    flags,
+                    method,
+                    versionNeededToExtract,
+                    crc32,
+                    compressedSize,
+                    uncompressedSize,
+                    extraData,
+                    path.endsWith("/")
+            );
+            currentEntry = entry;
+            currentStreamingEntry = entry;
+            return true;
+        } finally {
+            unlock();
+        }
+    }
+
+    /// Opens a readable channel for the current streaming ZIP entry.
+    ReadableByteChannel openCurrentEntryChannel() throws IOException {
+        lock();
+        try {
+            checkOpen();
+            LocalEntry entry = currentEntry;
+            if (entry == null) {
+                throw new IOException("No current ZIP entry");
+            }
+            if (entry.directory) {
+                throw new IOException("ZIP entry is a directory: " + entry.path);
+            }
+            if ((entry.flags & ENCRYPTED_FLAG) != 0) {
+                throw new IOException("Encrypted ZIP entries are not supported yet: " + entry.path);
+            }
+            if (currentInput != null) {
+                throw new IOException("Current ZIP entry input stream is already open");
+            }
+
+            CurrentEntryInputStream entryInput = new CurrentEntryInputStream(this, entryInputStream(entry));
+            currentInput = entryInput;
+            return Channels.newChannel(entryInput);
+        } finally {
+            unlock();
+        }
+    }
+
+    /// Closes or drains the current streaming ZIP entry.
+    void closeCurrentStreamingEntry() throws IOException {
+        lock();
+        try {
+            closeCurrentEntry();
         } finally {
             unlock();
         }
     }
 
     /// Returns the current ZIP entry attributes, or `null` when no entry is active.
-    public @Nullable ZipArkivoEntryAttributes currentEntryAttributes() {
+    @Nullable ZipArkivoEntryAttributes currentEntryAttributes() {
         lock();
         try {
             LocalEntry entry = currentStreamingEntry;
@@ -292,199 +372,62 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         }
     }
 
-    /// Implements a forward-only ZIP entry stream.
-    @NotNullByDefault
-    private final class StreamingEntryStream implements ZipArkivoEntryStream {
-        /// The current local entry, or `null` when no entry is active.
-        private @Nullable LocalEntry currentEntry;
+    /// Opens an input stream for an entry.
+    private InputStream entryInputStream(LocalEntry entry) throws IOException {
+        boolean hasDataDescriptor = (entry.flags & DATA_DESCRIPTOR_FLAG) != 0;
+        if (entry.method == STORED_METHOD) {
+            if (hasDataDescriptor) {
+                return new StoredDataDescriptorInputStream(input);
+            }
+            return new BoundedInputStream(input, entry.compressedSize);
+        }
+        if (entry.method == DEFLATED_METHOD) {
+            Inflater inflater = new Inflater(true);
+            InputStream compressed = hasDataDescriptor
+                    ? input
+                    : new BoundedInputStream(input, entry.compressedSize);
+            return new EntryInflaterInputStream(compressed, inflater, hasDataDescriptor ? input : null);
+        }
+        throw new IOException("Unsupported ZIP compression method: " + entry.method);
+    }
 
-        /// The current entry input stream, or `null` when no entry input stream is active.
-        private @Nullable CurrentEntryInputStream currentInput;
-
-        /// Whether this stream is open.
-        private boolean streamOpen = true;
-
-        /// Creates a streaming entry stream.
-        private StreamingEntryStream() {
+    /// Closes or drains the current entry.
+    private void closeCurrentEntry() throws IOException {
+        CurrentEntryInputStream entryInput = currentInput;
+        if (entryInput != null) {
+            entryInput.close();
+            return;
         }
 
-        /// Returns the next path or `null` when traversal is complete.
-        @Override
-        public @Nullable Path next() throws IOException {
-            lock();
-            try {
-                ensureStreamOpen();
-                closeCurrentEntry();
-
-                int signature = readIntOrEnd(input);
-                if (signature < 0
-                        || signature == CENTRAL_DIRECTORY_HEADER_SIGNATURE
-                        || signature == END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
-                    currentEntry = null;
-                    currentStreamingEntry = null;
-                    return null;
-                }
-                if (signature != LOCAL_FILE_HEADER_SIGNATURE) {
-                    throw new IOException("Unexpected ZIP stream record signature: " + Integer.toHexString(signature));
-                }
-
-                int versionNeededToExtract = readUnsignedShort(input);
-                int flags = readUnsignedShort(input);
-                int method = readUnsignedShort(input);
-                readUnsignedShort(input);
-                readUnsignedShort(input);
-                boolean hasDataDescriptor = (flags & DATA_DESCRIPTOR_FLAG) != 0;
-                long headerCrc32 = Integer.toUnsignedLong(readInt(input));
-                long headerCompressedSize = Integer.toUnsignedLong(readInt(input));
-                long headerUncompressedSize = Integer.toUnsignedLong(readInt(input));
-                long crc32 = hasDataDescriptor ? ZipArkivoEntryAttributes.UNKNOWN_CRC32 : headerCrc32;
-                long compressedSize = hasDataDescriptor ? ZipArkivoEntryAttributes.UNKNOWN_SIZE : headerCompressedSize;
-                long uncompressedSize = hasDataDescriptor ? ZipArkivoEntryAttributes.UNKNOWN_SIZE : headerUncompressedSize;
-                int nameLength = readUnsignedShort(input);
-                int extraLength = readUnsignedShort(input);
-                byte[] rawName = readBytes(nameLength);
-                byte[] extraData = readBytes(extraLength);
-
-                String path = decodePath(rawName, flags);
-                boolean directory = path.endsWith("/");
-                LocalEntry entry = new LocalEntry(
-                        path,
-                        rawName,
-                        flags,
-                        method,
-                        versionNeededToExtract,
-                        crc32,
-                        compressedSize,
-                        uncompressedSize,
-                        extraData,
-                        directory
-                );
-                currentEntry = entry;
-                currentStreamingEntry = entry;
-                return getPath("/" + path);
-            } finally {
-                unlock();
+        LocalEntry entry = currentEntry;
+        if (entry != null && !entry.directory) {
+            try (InputStream ignored = entryInputStream(entry)) {
+                ignored.transferTo(OutputStream.nullOutputStream());
             }
         }
+        currentEntry = null;
+        currentStreamingEntry = null;
+    }
 
-        /// Opens a readable channel for the current entry.
-        @Override
-        public ReadableByteChannel openChannel() throws IOException {
-            lock();
-            try {
-                ensureStreamOpen();
-                LocalEntry entry = currentEntry;
-                if (entry == null) {
-                    throw new IOException("No current ZIP entry");
-                }
-                if (entry.directory) {
-                    throw new IOException("ZIP entry is a directory: " + entry.path);
-                }
-                if ((entry.flags & ENCRYPTED_FLAG) != 0) {
-                    throw new IOException("Encrypted ZIP entries are not supported yet: " + entry.path);
-                }
-                if (currentInput != null) {
-                    throw new IOException("Current ZIP entry input stream is already open");
-                }
-
-                CurrentEntryInputStream entryInput = new CurrentEntryInputStream(this, entryInputStream(entry));
-                currentInput = entryInput;
-                return Channels.newChannel(entryInput);
-            } finally {
-                unlock();
+    /// Marks the current input stream as closed.
+    private void closeCurrentInput(CurrentEntryInputStream inputStream) {
+        lock();
+        try {
+            if (currentInput == inputStream) {
+                currentInput = null;
+                currentEntry = null;
+                currentStreamingEntry = null;
             }
-        }
-
-        /// Closes this entry stream.
-        @Override
-        public void close() throws IOException {
-            lock();
-            try {
-                if (!streamOpen) {
-                    return;
-                }
-                streamOpen = false;
-                closeCurrentEntry();
-            } finally {
-                unlock();
-            }
-        }
-
-        /// Opens an input stream for an entry.
-        private InputStream entryInputStream(LocalEntry entry) throws IOException {
-            boolean hasDataDescriptor = (entry.flags & DATA_DESCRIPTOR_FLAG) != 0;
-            if (entry.method == STORED_METHOD) {
-                if (hasDataDescriptor) {
-                    return new StoredDataDescriptorInputStream(input);
-                }
-                return new BoundedInputStream(input, entry.compressedSize);
-            }
-            if (entry.method == DEFLATED_METHOD) {
-                Inflater inflater = new Inflater(true);
-                InputStream compressed = hasDataDescriptor
-                        ? input
-                        : new BoundedInputStream(input, entry.compressedSize);
-                return new EntryInflaterInputStream(compressed, inflater, hasDataDescriptor ? input : null);
-            }
-            throw new IOException("Unsupported ZIP compression method: " + entry.method);
-        }
-
-        /// Closes or drains the current entry.
-        private void closeCurrentEntry() throws IOException {
-            CurrentEntryInputStream entryInput = currentInput;
-            if (entryInput != null) {
-                entryInput.close();
-                return;
-            }
-
-            LocalEntry entry = currentEntry;
-            if (entry != null && !entry.directory) {
-                try (InputStream ignored = entryInputStream(entry)) {
-                    ignored.transferTo(OutputStream.nullOutputStream());
-                }
-            }
-            currentEntry = null;
-            currentStreamingEntry = null;
-        }
-
-        /// Marks the current input stream as closed.
-        private void closeCurrentInput(CurrentEntryInputStream inputStream) {
-            lock();
-            try {
-                if (currentInput == inputStream) {
-                    currentInput = null;
-                    currentEntry = null;
-                    currentStreamingEntry = null;
-                }
-            } finally {
-                unlock();
-            }
-        }
-
-        /// Requires this entry stream to be open.
-        private void ensureStreamOpen() throws IOException {
-            checkOpen();
-            if (!streamOpen) {
-                throw new IOException("Entry stream is closed");
-            }
-        }
-
-        /// Acquires the owner file system state lock when it is present.
-        private void lock() {
-            StreamingZipArkivoReadFileSystemImpl.this.lock();
-        }
-
-        /// Releases the owner file system state lock when it is present.
-        private void unlock() {
-            StreamingZipArkivoReadFileSystemImpl.this.unlock();
+        } finally {
+            unlock();
         }
     }
 
     /// Reads bytes from the current ZIP entry.
     @NotNullByDefault
     private static final class CurrentEntryInputStream extends InputStream {
-        /// The owner entry stream.
-        private final StreamingEntryStream owner;
+        /// The owner file system.
+        private final StreamingZipArkivoReadFileSystemImpl owner;
 
         /// The delegate entry input stream.
         private final InputStream input;
@@ -493,7 +436,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         private boolean inputOpen = true;
 
         /// Creates a current entry input stream.
-        private CurrentEntryInputStream(StreamingEntryStream owner, InputStream input) {
+        private CurrentEntryInputStream(StreamingZipArkivoReadFileSystemImpl owner, InputStream input) {
             this.owner = Objects.requireNonNull(owner, "owner");
             this.input = Objects.requireNonNull(input, "input");
         }

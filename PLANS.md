@@ -224,8 +224,6 @@ SevenZipArkivoFileSystem.open(path)
 Concrete archive file systems should extend `ArkivoFileSystem`.
 Public archive file system classes may be sealed abstract API types, with concrete implementations kept in the
 format module's internal package so implementation state and helper methods are not exposed as public API.
-`ZipArkivoFileSystem.openEntryStream()` should provide ZIP-specific forward-only entry traversal for implementations
-that support streaming reads.
 
 Formats may also register JDK `FileSystemProvider` implementations when the integration is useful:
 

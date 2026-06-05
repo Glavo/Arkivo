@@ -7,7 +7,6 @@ import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
-import org.glavo.arkivo.zip.ZipArkivoEntryStream;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
 import org.glavo.arkivo.zip.ZipEncryption;
@@ -25,7 +24,6 @@ import java.nio.ByteOrder;
 import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
-import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.Charset;
 import java.nio.file.AccessDeniedException;
@@ -217,13 +215,6 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Returns the archive URI used by ZIP path URI conversion, or `null` for volume-backed file systems.
     @Nullable URI archiveUri() {
         return archivePath != null ? archivePath.toUri().normalize() : null;
-    }
-
-    /// Opens a forward-only stream over ZIP entry paths in storage order.
-    @Override
-    public ZipArkivoEntryStream openEntryStream() throws IOException {
-        checkOpen();
-        return new IndexedEntryStream(this, index().storageEntries);
     }
 
     /// Returns the provider that created this ZIP file system.
@@ -1869,143 +1860,6 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         @Override
         public void setRawComment(byte @Nullable [] rawComment) {
             throw new java.nio.file.ReadOnlyFileSystemException();
-        }
-    }
-
-    /// Implements a forward-only path stream backed by the parsed ZIP entry index.
-    @NotNullByDefault
-    private static final class IndexedEntryStream implements ZipArkivoEntryStream {
-        /// The file system that owns produced paths.
-        private final ZipArkivoFileSystemImpl fileSystem;
-
-        /// The ZIP entries in storage order.
-        private final List<ZipEntryRecord> entries;
-
-        /// The current ZIP entry record, or `null` when no entry is active.
-        private @Nullable ZipEntryRecord currentEntry;
-
-        /// Whether a channel for the current entry is open.
-        private boolean currentChannelOpen;
-
-        /// The next entry index.
-        private int nextIndex;
-
-        /// Whether this stream is open.
-        private boolean open = true;
-
-        /// Creates an indexed ZIP entry stream.
-        private IndexedEntryStream(ZipArkivoFileSystemImpl fileSystem, List<ZipEntryRecord> entries) {
-            this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
-            this.entries = Objects.requireNonNull(entries, "entries");
-        }
-
-        /// Returns the next path or `null` when traversal is complete.
-        @Override
-        public @Nullable Path next() throws IOException {
-            ensureOpen();
-            if (currentChannelOpen) {
-                throw new IOException("Current ZIP entry channel is still open");
-            }
-            if (nextIndex >= entries.size()) {
-                currentEntry = null;
-                return null;
-            }
-
-            ZipEntryRecord entry = entries.get(nextIndex++);
-            currentEntry = entry;
-            return fileSystem.getPath("/" + entry.key);
-        }
-
-        /// Opens a readable channel for the current entry.
-        @Override
-        public ReadableByteChannel openChannel() throws IOException {
-            ensureOpen();
-            ZipEntryRecord entry = currentEntry;
-            if (entry == null) {
-                throw new IOException("No current ZIP entry");
-            }
-            if (entry.directory) {
-                throw new IOException("ZIP entry is a directory: " + entry.path);
-            }
-            if (currentChannelOpen) {
-                throw new IOException("Current ZIP entry channel is already open");
-            }
-
-            currentChannelOpen = true;
-            return Channels.newChannel(new CurrentEntryInputStream(this, fileSystem.newInputStream(fileSystem.getPath("/" + entry.key))));
-        }
-
-        /// Closes this stream.
-        @Override
-        public void close() {
-            open = false;
-            currentChannelOpen = false;
-        }
-
-        /// Requires this entry stream to be open.
-        private void ensureOpen() throws IOException {
-            if (!open) {
-                throw new IOException("Entry stream is closed");
-            }
-        }
-
-        /// Marks the current entry channel as closed.
-        private void closeCurrentChannel() {
-            currentChannelOpen = false;
-        }
-    }
-
-    /// Reads bytes from the current indexed ZIP entry.
-    @NotNullByDefault
-    private static final class CurrentEntryInputStream extends InputStream {
-        /// The owner entry stream.
-        private final IndexedEntryStream owner;
-
-        /// The entry input stream.
-        private final InputStream input;
-
-        /// Whether this current-entry input stream is open.
-        private boolean open = true;
-
-        /// Creates a current-entry input stream.
-        private CurrentEntryInputStream(IndexedEntryStream owner, InputStream input) {
-            this.owner = Objects.requireNonNull(owner, "owner");
-            this.input = Objects.requireNonNull(input, "input");
-        }
-
-        /// Reads one byte from the current entry.
-        @Override
-        public int read() throws IOException {
-            byte[] buffer = new byte[1];
-            int read = read(buffer, 0, 1);
-            return read < 0 ? -1 : Byte.toUnsignedInt(buffer[0]);
-        }
-
-        /// Reads bytes from the current entry.
-        @Override
-        public int read(byte[] bytes, int offset, int length) throws IOException {
-            Objects.checkFromIndexSize(offset, length, bytes.length);
-            if (!open) {
-                throw new IOException("Current ZIP entry stream is closed");
-            }
-            if (length == 0) {
-                return 0;
-            }
-            return input.read(bytes, offset, length);
-        }
-
-        /// Closes the current entry without closing the whole ZIP stream.
-        @Override
-        public void close() throws IOException {
-            if (!open) {
-                return;
-            }
-            open = false;
-            try {
-                input.close();
-            } finally {
-                owner.closeCurrentChannel();
-            }
         }
     }
 

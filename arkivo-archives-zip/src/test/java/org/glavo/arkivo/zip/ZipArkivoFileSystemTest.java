@@ -439,13 +439,7 @@ public final class ZipArkivoFileSystemTest {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
                 assertEquals(preamble.length, fileSystem.preambleSize());
                 assertPreambleContent(preamble, fileSystem);
-                try (var entries = fileSystem.openEntryStream()) {
-                    assertEquals("/a", entries.next().toString());
-                    try (var input = entries.openInputStream()) {
-                        assertArrayEquals(new byte[0], input.readAllBytes());
-                    }
-                    assertNull(entries.next());
-                }
+                assertArrayEquals(new byte[0], Files.readAllBytes(fileSystem.getPath("/a")));
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -493,15 +487,6 @@ public final class ZipArkivoFileSystemTest {
                     }
                 }
                 assertEquals(List.of("/dir/hello.txt"), children);
-
-                try (var entries = fileSystem.openEntryStream()) {
-                    assertEquals("/dir", entries.next().toString());
-                    assertEquals("/dir/hello.txt", entries.next().toString());
-                    try (var input = entries.openInputStream()) {
-                        assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
-                    }
-                    assertNull(entries.next());
-                }
 
                 Files.copy(file, copyTarget);
                 assertEquals("hello", Files.readString(copyTarget, StandardCharsets.UTF_8));

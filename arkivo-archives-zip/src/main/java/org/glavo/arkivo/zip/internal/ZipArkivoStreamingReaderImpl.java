@@ -5,7 +5,6 @@ package org.glavo.arkivo.zip.internal;
 
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
-import org.glavo.arkivo.zip.ZipArkivoEntryStream;
 import org.glavo.arkivo.zip.ZipArkivoStreamingReader;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -26,9 +25,6 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
     /// The optional state lock.
     private final @Nullable ReentrantLock lock;
-
-    /// The internal entry stream, or `null` until iteration starts.
-    private @Nullable ZipArkivoEntryStream entries;
 
     /// The current ZIP entry attributes, or `null` when no entry is active.
     private @Nullable ZipArkivoEntryAttributes currentAttributes;
@@ -63,7 +59,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     public boolean next() throws IOException {
         lock();
         try {
-            if (openedEntryStream().next() == null) {
+            ensureOpen();
+            if (!fileSystem.nextStreamingEntry()) {
                 currentAttributes = null;
                 return false;
             }
@@ -105,7 +102,11 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     public ReadableByteChannel openChannel() throws IOException {
         lock();
         try {
-            return entryStream().openChannel();
+            ensureOpen();
+            if (currentAttributes == null) {
+                throw new IOException("ZIP streaming reader has not advanced to an entry");
+            }
+            return fileSystem.openCurrentEntryChannel();
         } finally {
             unlock();
         }
@@ -121,11 +122,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             }
             open = false;
             currentAttributes = null;
-            ZipArkivoEntryStream entryStream = entries;
             try {
-                if (entryStream != null) {
-                    entryStream.close();
-                }
+                fileSystem.closeCurrentStreamingEntry();
             } finally {
                 fileSystem.close();
             }
@@ -134,29 +132,11 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         }
     }
 
-    /// Returns the opened entry stream.
-    private ZipArkivoEntryStream entryStream() throws IOException {
+    /// Requires this streaming reader to be open.
+    private void ensureOpen() throws IOException {
         if (!open) {
             throw new IOException("ZIP streaming reader is closed");
         }
-        ZipArkivoEntryStream entryStream = entries;
-        if (entryStream == null) {
-            throw new IOException("ZIP streaming reader has not advanced to an entry");
-        }
-        return entryStream;
-    }
-
-    /// Returns the internal entry stream, opening it if needed.
-    private ZipArkivoEntryStream openedEntryStream() throws IOException {
-        if (!open) {
-            throw new IOException("ZIP streaming reader is closed");
-        }
-        ZipArkivoEntryStream entryStream = entries;
-        if (entryStream == null) {
-            entryStream = fileSystem.openEntryStream();
-            entries = entryStream;
-        }
-        return entryStream;
     }
 
     /// Acquires the state lock when it is present.
