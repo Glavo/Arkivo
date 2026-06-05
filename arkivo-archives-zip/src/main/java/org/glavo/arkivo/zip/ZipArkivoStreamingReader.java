@@ -49,8 +49,4 @@ public abstract sealed class ZipArkivoStreamingReader extends ArkivoStreamingRea
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
         return new ZipArkivoStreamingReaderImpl(source, config);
     }
-
-    /// Returns the current ZIP entry attributes.
-    @Override
-    public abstract ZipArkivoEntryAttributes attributes();
 }

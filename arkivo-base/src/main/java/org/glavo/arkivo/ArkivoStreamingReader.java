@@ -22,8 +22,8 @@ public abstract class ArkivoStreamingReader implements Closeable {
     /// Advances to the next archive entry and returns whether an entry is available.
     public abstract boolean next() throws IOException;
 
-    /// Returns the current archive entry attributes.
-    public abstract BasicFileAttributes attributes();
+    /// Reads the current archive entry attributes as the requested attribute type.
+    public abstract <A extends BasicFileAttributes> A readAttributes(Class<A> type) throws IOException;
 
     /// Opens a readable channel for the current file entry.
     public abstract ReadableByteChannel openChannel() throws IOException;

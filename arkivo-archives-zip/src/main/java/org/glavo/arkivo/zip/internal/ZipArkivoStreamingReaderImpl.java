@@ -13,6 +13,7 @@ import org.jetbrains.annotations.Nullable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Objects;
 
 /// Implements the public forward-only ZIP streaming reader API.
@@ -63,14 +64,18 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         return true;
     }
 
-    /// Returns the current ZIP entry attributes.
+    /// Reads the current archive entry attributes as the requested attribute type.
     @Override
-    public synchronized ZipArkivoEntryAttributes attributes() {
+    public synchronized <A extends BasicFileAttributes> A readAttributes(Class<A> type) throws IOException {
+        Objects.requireNonNull(type, "type");
         ZipArkivoEntryAttributes attributes = currentAttributes;
         if (attributes == null) {
             throw new IllegalStateException("ZIP streaming reader is not positioned at an entry");
         }
-        return attributes;
+        if (type == BasicFileAttributes.class || type == ZipArkivoEntryAttributes.class) {
+            return type.cast(attributes);
+        }
+        throw new UnsupportedOperationException("Unsupported ZIP streaming attributes type: " + type.getName());
     }
 
     /// Opens a readable channel for the current file entry.

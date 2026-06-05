@@ -89,7 +89,7 @@ public final class ZipArkivoFileSystemTest {
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
                 ArrayList<String> visited = new ArrayList<>();
                 while (reader.next()) {
-                    ZipArkivoEntryAttributes attributes = reader.attributes();
+                    ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                     visited.add(attributes.path());
                     if (attributes.isDirectory()) {
                         assertEquals("dir/", attributes.path());
