@@ -52,6 +52,7 @@ import java.time.DateTimeException;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.*;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.zip.Inflater;
 import java.util.zip.InflaterInputStream;
 
@@ -127,6 +128,9 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// The cached preamble size, or `-1` when it has not been located yet.
     private volatile long preambleSize = -1;
 
+    /// The optional lock that protects lazy ZIP index initialization.
+    private final @Nullable ReentrantLock indexLock;
+
     /// The parsed ZIP central directory index, or `null` when it has not been loaded yet.
     private volatile @Nullable ZipIndex index;
 
@@ -164,6 +168,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         this.config = Objects.requireNonNull(config, "config");
         this.closeAction = closeAction;
         this.rootPath = ZipArkivoPath.root(this);
+        this.indexLock = ZipLocks.create(config.threadSafety());
     }
 
     /// Returns the number of bytes stored before the ZIP archive body.
@@ -559,13 +564,16 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             return loadedIndex;
         }
 
-        synchronized (this) {
+        ZipLocks.lock(indexLock);
+        try {
             loadedIndex = index;
             if (loadedIndex == null) {
                 loadedIndex = readIndex();
                 index = loadedIndex;
             }
             return loadedIndex;
+        } finally {
+            ZipLocks.unlock(indexLock);
         }
     }
 

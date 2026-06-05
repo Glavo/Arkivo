@@ -31,6 +31,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
@@ -62,6 +63,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// The output stream that receives ZIP bytes.
     private final CountingOutputStream output;
 
+    /// The optional state lock.
+    private final @Nullable ReentrantLock lock;
+
     /// The root path for this ZIP file system.
     private final ZipArkivoPath rootPath;
 
@@ -86,6 +90,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         super(config.threadSafety());
         this.provider = Objects.requireNonNull(provider, "provider");
         this.archivePath = Objects.requireNonNull(archivePath, "archivePath");
+        this.lock = ZipLocks.create(config.threadSafety());
         this.output = new CountingOutputStream(Files.newOutputStream(
                 archivePath,
                 StandardOpenOption.CREATE,
@@ -104,6 +109,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         super(config.threadSafety());
         this.provider = Objects.requireNonNull(provider, "provider");
         this.archivePath = null;
+        this.lock = ZipLocks.create(config.threadSafety());
         this.output = new CountingOutputStream(Objects.requireNonNull(output, "output"));
         this.rootPath = ZipArkivoPath.root(this);
     }
@@ -125,23 +131,33 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Closes this ZIP file system and finishes the output archive.
     @Override
-    public synchronized void close() throws IOException {
-        if (!open) {
-            return;
+    public void close() throws IOException {
+        lock();
+        try {
+            if (!open) {
+                return;
+            }
+            open = false;
+            EntryOutputStream entryOutput = currentEntryOutput;
+            if (entryOutput != null) {
+                entryOutput.close();
+            }
+            writeCentralDirectory();
+            output.close();
+        } finally {
+            unlock();
         }
-        open = false;
-        EntryOutputStream entryOutput = currentEntryOutput;
-        if (entryOutput != null) {
-            entryOutput.close();
-        }
-        writeCentralDirectory();
-        output.close();
     }
 
     /// Returns whether this ZIP file system is open.
     @Override
-    public synchronized boolean isOpen() {
-        return open;
+    public boolean isOpen() {
+        lock();
+        try {
+            return open;
+        } finally {
+            unlock();
+        }
     }
 
     /// Returns whether this ZIP file system rejects write operations.
@@ -201,56 +217,66 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     }
 
     /// Opens an output stream for the next ZIP entry.
-    public synchronized OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
-        checkOpen();
-        requireSupportedOutputOptions(options);
-        String entryName = regularEntryName(path);
-        requireNoActiveEntry();
-        requireNewEntry(entryName);
+    public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
+        lock();
+        try {
+            checkOpen();
+            requireSupportedOutputOptions(options);
+            String entryName = regularEntryName(path);
+            requireNoActiveEntry();
+            requireNewEntry(entryName);
 
-        byte[] rawName = rawEntryName(entryName);
-        long localHeaderOffset = output.position();
-        writeLocalHeader(
-                rawName,
-                DATA_DESCRIPTOR_FLAG | UTF8_FLAG,
-                DEFLATED_METHOD,
-                0,
-                0,
-                0
-        );
-        EntryOutputStream entryOutput = new EntryOutputStream(entryName, rawName, localHeaderOffset, output.position());
-        currentEntryOutput = entryOutput;
-        return entryOutput;
+            byte[] rawName = rawEntryName(entryName);
+            long localHeaderOffset = output.position();
+            writeLocalHeader(
+                    rawName,
+                    DATA_DESCRIPTOR_FLAG | UTF8_FLAG,
+                    DEFLATED_METHOD,
+                    0,
+                    0,
+                    0
+            );
+            EntryOutputStream entryOutput = new EntryOutputStream(entryName, rawName, localHeaderOffset, output.position());
+            currentEntryOutput = entryOutput;
+            return entryOutput;
+        } finally {
+            unlock();
+        }
     }
 
     /// Creates a directory entry.
-    public synchronized void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
-        checkOpen();
-        Objects.requireNonNull(attributes, "attributes");
-        if (attributes.length != 0) {
-            throw new UnsupportedOperationException("ZIP streaming directory attributes are not supported");
-        }
+    public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
+        lock();
+        try {
+            checkOpen();
+            Objects.requireNonNull(attributes, "attributes");
+            if (attributes.length != 0) {
+                throw new UnsupportedOperationException("ZIP streaming directory attributes are not supported");
+            }
 
-        String entryName = directoryEntryName(directory);
-        if (entryName.isEmpty()) {
-            return;
+            String entryName = directoryEntryName(directory);
+            if (entryName.isEmpty()) {
+                return;
+            }
+            requireNoActiveEntry();
+            requireNewEntry(entryName);
+            byte[] rawName = rawEntryName(entryName);
+            long localHeaderOffset = output.position();
+            writeLocalHeader(rawName, UTF8_FLAG, STORED_METHOD, 0, 0, 0);
+            centralEntries.add(new CentralEntry(
+                    entryName,
+                    rawName,
+                    UTF8_FLAG,
+                    STORED_METHOD,
+                    0,
+                    0,
+                    0,
+                    localHeaderOffset,
+                    true
+            ));
+        } finally {
+            unlock();
         }
-        requireNoActiveEntry();
-        requireNewEntry(entryName);
-        byte[] rawName = rawEntryName(entryName);
-        long localHeaderOffset = output.position();
-        writeLocalHeader(rawName, UTF8_FLAG, STORED_METHOD, 0, 0, 0);
-        centralEntries.add(new CentralEntry(
-                entryName,
-                rawName,
-                UTF8_FLAG,
-                STORED_METHOD,
-                0,
-                0,
-                0,
-                localHeaderOffset,
-                true
-        ));
     }
 
     /// Returns the number of bytes stored before the ZIP archive body.
@@ -413,6 +439,16 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         return rawName;
     }
 
+    /// Acquires the state lock when it is present.
+    private void lock() {
+        ZipLocks.lock(lock);
+    }
+
+    /// Releases the state lock when it is present.
+    private void unlock() {
+        ZipLocks.unlock(lock);
+    }
+
     /// Writes bytes to the current ZIP entry.
     private final class EntryOutputStream extends OutputStream {
         /// The entry name.
@@ -453,11 +489,14 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         /// Writes one byte to the current ZIP entry.
         @Override
         public void write(int value) throws IOException {
-            synchronized (StreamingZipArkivoFileSystemImpl.this) {
+            lock();
+            try {
                 ensureEntryOpen();
                 crc32.update(value);
                 uncompressedSize++;
                 deflatedOutput.write(value);
+            } finally {
+                unlock();
             }
         }
 
@@ -465,18 +504,22 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         @Override
         public void write(byte[] bytes, int offset, int length) throws IOException {
             Objects.checkFromIndexSize(offset, length, bytes.length);
-            synchronized (StreamingZipArkivoFileSystemImpl.this) {
+            lock();
+            try {
                 ensureEntryOpen();
                 crc32.update(bytes, offset, length);
                 uncompressedSize += length;
                 deflatedOutput.write(bytes, offset, length);
+            } finally {
+                unlock();
             }
         }
 
         /// Closes the current ZIP entry.
         @Override
         public void close() throws IOException {
-            synchronized (StreamingZipArkivoFileSystemImpl.this) {
+            lock();
+            try {
                 if (!entryOpen) {
                     return;
                 }
@@ -501,6 +544,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     deflater.end();
                 }
                 currentEntryOutput = null;
+            } finally {
+                unlock();
             }
         }
 

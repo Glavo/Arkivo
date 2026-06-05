@@ -6,6 +6,7 @@ package org.glavo.arkivo.zip.internal;
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
 import org.glavo.arkivo.zip.ZipArkivoStreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -13,6 +14,7 @@ import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 import java.util.Objects;
+import java.util.concurrent.locks.ReentrantLock;
 
 /// Implements the public forward-only ZIP streaming writer API.
 @NotNullByDefault
@@ -20,9 +22,13 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
     /// The internal streaming ZIP file system used by the current writer implementation.
     private final StreamingZipArkivoFileSystemImpl fileSystem;
 
+    /// The optional state lock.
+    private final @Nullable ReentrantLock lock;
+
     /// Creates a ZIP streaming writer.
-    private ZipArkivoStreamingWriterImpl(StreamingZipArkivoFileSystemImpl fileSystem) {
+    private ZipArkivoStreamingWriterImpl(StreamingZipArkivoFileSystemImpl fileSystem, ZipArkivoFileSystemConfig config) {
         this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
+        this.lock = ZipLocks.create(Objects.requireNonNull(config, "config").threadSafety());
     }
 
     /// Creates a streaming ZIP writer that writes to an archive path.
@@ -31,7 +37,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
                 ZipArkivoFileSystemProvider.instance(),
                 path,
                 config
-        ));
+        ), config);
     }
 
     /// Opens a streaming ZIP writer over a writable channel.
@@ -45,25 +51,50 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
                 ZipArkivoFileSystemProvider.instance(),
                 Objects.requireNonNull(output, "output"),
                 config
-        ));
+        ), config);
     }
 
     /// Creates a directory entry.
     @Override
-    public synchronized void createDirectory(Path path) throws IOException {
-        fileSystem.createDirectory(fileSystem.getPath("/" + entryPathText(path)));
+    public void createDirectory(Path path) throws IOException {
+        lock();
+        try {
+            fileSystem.createDirectory(fileSystem.getPath("/" + entryPathText(path)));
+        } finally {
+            unlock();
+        }
     }
 
     /// Opens an output stream for the next regular file entry.
     @Override
-    public synchronized OutputStream openOutputStream(Path path) throws IOException {
-        return fileSystem.newOutputStream(fileSystem.getPath("/" + entryPathText(path)));
+    public OutputStream openOutputStream(Path path) throws IOException {
+        lock();
+        try {
+            return fileSystem.newOutputStream(fileSystem.getPath("/" + entryPathText(path)));
+        } finally {
+            unlock();
+        }
     }
 
     /// Closes this streaming writer and finishes the ZIP stream.
     @Override
-    public synchronized void close() throws IOException {
-        fileSystem.close();
+    public void close() throws IOException {
+        lock();
+        try {
+            fileSystem.close();
+        } finally {
+            unlock();
+        }
+    }
+
+    /// Acquires the state lock when it is present.
+    private void lock() {
+        ZipLocks.lock(lock);
+    }
+
+    /// Releases the state lock when it is present.
+    private void unlock() {
+        ZipLocks.unlock(lock);
     }
 
     /// Converts a logical entry path to ZIP path text.
