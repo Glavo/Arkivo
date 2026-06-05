@@ -1693,7 +1693,10 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         /// Returns synthesized POSIX permissions.
         @Override
         public @Unmodifiable Set<PosixFilePermission> permissions() {
-            return ZipPosixSupport.defaultPermissions(isDirectory());
+            ZipEntryRecord record = entry;
+            return record != null
+                    ? ZipPosixSupport.permissions(record.versionMadeBy, record.externalAttributes, record.directory)
+                    : ZipPosixSupport.defaultPermissions(true);
         }
     }
 
@@ -1836,6 +1839,13 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         @Override
         public void setEncryption(ZipEncryption encryption) {
             Objects.requireNonNull(encryption, "encryption");
+            throw new java.nio.file.ReadOnlyFileSystemException();
+        }
+
+        /// Sets POSIX permissions.
+        @Override
+        public void setPermissions(Set<PosixFilePermission> permissions) {
+            Objects.requireNonNull(permissions, "permissions");
             throw new java.nio.file.ReadOnlyFileSystemException();
         }
 

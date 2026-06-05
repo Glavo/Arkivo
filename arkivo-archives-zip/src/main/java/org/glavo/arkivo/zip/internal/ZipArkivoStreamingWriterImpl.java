@@ -147,13 +147,21 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             switch (entry.type) {
                 case FILE -> {
                     entry.attributes.requireSupportedFile();
-                    try (OutputStream ignored = fileSystem.newOutputStream(fileSystem.getPath("/" + entry.entryPath))) {
+                    try (OutputStream ignored = fileSystem.newOutputStream(
+                            fileSystem.getPath("/" + entry.entryPath),
+                            entry.versionMadeBy(),
+                            entry.externalAttributes()
+                    )) {
                         // Closing the entry output stream writes an empty ZIP entry.
                     }
                 }
                 case DIRECTORY -> {
                     entry.attributes.requireSupportedDirectory();
-                    fileSystem.createDirectory(fileSystem.getPath("/" + entry.entryPath));
+                    fileSystem.createDirectory(
+                            fileSystem.getPath("/" + entry.entryPath),
+                            entry.versionMadeBy(),
+                            entry.externalAttributes()
+                    );
                 }
                 case SYMBOLIC_LINK -> {
                     entry.attributes.requireSupportedSymbolicLink();
@@ -184,7 +192,11 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
                 throw new IllegalStateException("Only ZIP file entries can open a body channel");
             }
             entry.attributes.requireSupportedFile();
-            OutputStream output = fileSystem.newOutputStream(fileSystem.getPath("/" + entry.entryPath));
+            OutputStream output = fileSystem.newOutputStream(
+                    fileSystem.getPath("/" + entry.entryPath),
+                    entry.versionMadeBy(),
+                    entry.externalAttributes()
+            );
             entry.submitted = true;
             pendingEntry = null;
             return output;
@@ -304,6 +316,20 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             if (submitted || pendingEntry != this) {
                 throw new IllegalStateException("ZIP streaming entry has already been committed");
             }
+        }
+
+        /// Returns the ZIP version made by field to write for this entry.
+        private int versionMadeBy() {
+            return posixAttributes.permissions != null ? ZipPosixSupport.UNIX_VERSION_MADE_BY : ZipConstants.VERSION_NEEDED;
+        }
+
+        /// Returns the ZIP external file attributes to write for this entry.
+        private long externalAttributes() {
+            Set<PosixFilePermission> permissions = posixAttributes.permissions;
+            if (permissions != null) {
+                return ZipPosixSupport.externalAttributes(permissions, type == EntryType.DIRECTORY);
+            }
+            return type == EntryType.DIRECTORY ? 0x10L : 0L;
         }
     }
 
@@ -566,6 +592,12 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             }
         }
 
+        /// Sets POSIX permissions.
+        @Override
+        public void setPermissions(Set<PosixFilePermission> permissions) {
+            entry.posixAttributes.setPermissions(permissions);
+        }
+
         /// Sets the expected uncompressed size and CRC-32 value for entries that require them before writing.
         @Override
         public void setUncompressedSizeAndCrc32(long uncompressedSize, long crc32) throws IOException {
@@ -698,9 +730,6 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             if (internalAttributes != 0 || externalAttributes != UNKNOWN_EXTERNAL_ATTRIBUTES) {
                 throw new UnsupportedOperationException("ZIP streaming writer does not support custom entry attributes yet");
             }
-            if (entry.posixAttributes.permissions != null) {
-                throw new UnsupportedOperationException("ZIP streaming writer does not support custom POSIX permissions yet");
-            }
             if (localExtraData.length != 0 || centralDirectoryExtraData.length != 0) {
                 throw new UnsupportedOperationException("ZIP streaming writer does not support custom extra data yet");
             }
@@ -749,6 +778,9 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// The requested ZIP external file attributes, or `UNKNOWN_EXTERNAL_ATTRIBUTES` when not configured.
         private final long externalAttributes;
 
+        /// The requested POSIX permissions, or `null` when defaults are used.
+        private final @Nullable Set<PosixFilePermission> permissions;
+
         /// The requested raw local file header extra data bytes.
         private final byte @Unmodifiable [] localExtraData;
 
@@ -775,6 +807,9 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             this.crc32 = view.crc32;
             this.internalAttributes = view.internalAttributes;
             this.externalAttributes = view.externalAttributes;
+            this.permissions = view.entry.posixAttributes.permissions != null
+                    ? Set.copyOf(view.entry.posixAttributes.permissions)
+                    : null;
             this.localExtraData = view.localExtraData.clone();
             this.centralDirectoryExtraData = view.centralDirectoryExtraData.clone();
             this.comment = view.comment;
@@ -814,7 +849,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Returns the ZIP version made by field.
         @Override
         public int versionMadeBy() {
-            return ZipConstants.VERSION_NEEDED;
+            return permissions != null ? ZipPosixSupport.UNIX_VERSION_MADE_BY : ZipConstants.VERSION_NEEDED;
         }
 
         /// Returns the ZIP version needed to extract field.
@@ -832,7 +867,14 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Returns the ZIP external file attributes.
         @Override
         public long externalAttributes() {
-            return externalAttributes != UNKNOWN_EXTERNAL_ATTRIBUTES ? externalAttributes : 0L;
+            Set<PosixFilePermission> configuredPermissions = permissions;
+            if (externalAttributes != UNKNOWN_EXTERNAL_ATTRIBUTES) {
+                return externalAttributes;
+            }
+            if (configuredPermissions != null) {
+                return ZipPosixSupport.externalAttributes(configuredPermissions, type == EntryType.DIRECTORY);
+            }
+            return type == EntryType.DIRECTORY ? 0x10L : 0L;
         }
 
         /// Returns the ZIP compression method.
@@ -943,7 +985,10 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Returns configured or synthesized POSIX permissions.
         @Override
         public @Unmodifiable Set<PosixFilePermission> permissions() {
-            return ZipPosixSupport.defaultPermissions(type == EntryType.DIRECTORY);
+            Set<PosixFilePermission> configuredPermissions = permissions;
+            return configuredPermissions != null
+                    ? configuredPermissions
+                    : ZipPosixSupport.defaultPermissions(type == EntryType.DIRECTORY);
         }
     }
 }

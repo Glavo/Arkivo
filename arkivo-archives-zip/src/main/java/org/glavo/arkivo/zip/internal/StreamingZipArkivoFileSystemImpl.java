@@ -218,9 +218,21 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Opens an output stream for the next ZIP entry.
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
+        return newOutputStream(path, VERSION_NEEDED, 0L, options);
+    }
+
+    /// Opens an output stream for the next ZIP entry with central directory attributes.
+    public OutputStream newOutputStream(
+            Path path,
+            int versionMadeBy,
+            long externalAttributes,
+            OpenOption... options
+    ) throws IOException {
         lock();
         try {
             checkOpen();
+            requireUInt16(versionMadeBy, "version made by");
+            requireUInt32(externalAttributes, "external attributes");
             requireSupportedOutputOptions(options);
             String entryName = regularEntryName(path);
             requireNoActiveEntry();
@@ -236,7 +248,14 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     0,
                     0
             );
-            EntryOutputStream entryOutput = new EntryOutputStream(entryName, rawName, localHeaderOffset, output.position());
+            EntryOutputStream entryOutput = new EntryOutputStream(
+                    entryName,
+                    rawName,
+                    localHeaderOffset,
+                    output.position(),
+                    versionMadeBy,
+                    externalAttributes
+            );
             currentEntryOutput = entryOutput;
             return entryOutput;
         } finally {
@@ -246,9 +265,21 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Creates a directory entry.
     public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
+        createDirectory(directory, VERSION_NEEDED, 0x10L, attributes);
+    }
+
+    /// Creates a directory entry with central directory attributes.
+    public void createDirectory(
+            Path directory,
+            int versionMadeBy,
+            long externalAttributes,
+            FileAttribute<?>... attributes
+    ) throws IOException {
         lock();
         try {
             checkOpen();
+            requireUInt16(versionMadeBy, "version made by");
+            requireUInt32(externalAttributes, "external attributes");
             Objects.requireNonNull(attributes, "attributes");
             if (attributes.length != 0) {
                 throw new UnsupportedOperationException("ZIP streaming directory attributes are not supported");
@@ -272,7 +303,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     0,
                     0,
                     localHeaderOffset,
-                    true
+                    true,
+                    versionMadeBy,
+                    externalAttributes
             ));
         } finally {
             unlock();
@@ -411,9 +444,11 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         requireUInt32(entry.compressedSize, "compressed size");
         requireUInt32(entry.uncompressedSize, "uncompressed size");
         requireUInt32(entry.localHeaderOffset, "local header offset");
+        requireUInt16(entry.versionMadeBy, "version made by");
+        requireUInt32(entry.externalAttributes, "external attributes");
 
         writeInt(output, CENTRAL_DIRECTORY_HEADER_SIGNATURE);
-        writeShort(output, VERSION_NEEDED);
+        writeShort(output, entry.versionMadeBy);
         writeShort(output, VERSION_NEEDED);
         writeShort(output, entry.flags);
         writeShort(output, entry.method);
@@ -427,7 +462,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         writeShort(output, 0);
         writeShort(output, 0);
         writeShort(output, 0);
-        writeInt(output, entry.directory ? 0x10 : 0);
+        writeInt(output, entry.externalAttributes);
         writeInt(output, entry.localHeaderOffset);
         output.write(entry.rawName);
     }
@@ -463,6 +498,12 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         /// The compressed data offset.
         private final long compressedDataOffset;
 
+        /// The ZIP version made by field for the central directory entry.
+        private final int versionMadeBy;
+
+        /// The ZIP external file attributes for the central directory entry.
+        private final long externalAttributes;
+
         /// The CRC-32 of uncompressed entry data.
         private final CRC32 crc32 = new CRC32();
 
@@ -479,11 +520,20 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         private boolean entryOpen = true;
 
         /// Creates an entry output stream.
-        private EntryOutputStream(String entryName, byte[] rawName, long localHeaderOffset, long compressedDataOffset) {
+        private EntryOutputStream(
+                String entryName,
+                byte[] rawName,
+                long localHeaderOffset,
+                long compressedDataOffset,
+                int versionMadeBy,
+                long externalAttributes
+        ) {
             this.entryName = entryName;
             this.rawName = rawName;
             this.localHeaderOffset = localHeaderOffset;
             this.compressedDataOffset = compressedDataOffset;
+            this.versionMadeBy = versionMadeBy;
+            this.externalAttributes = externalAttributes;
         }
 
         /// Writes one byte to the current ZIP entry.
@@ -538,7 +588,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                             compressedSize,
                             uncompressedSize,
                             localHeaderOffset,
-                            false
+                            false,
+                            versionMadeBy,
+                            externalAttributes
                     ));
                 } finally {
                     deflater.end();
@@ -634,6 +686,12 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         /// Whether this entry is a directory.
         private final boolean directory;
 
+        /// The ZIP version made by field.
+        private final int versionMadeBy;
+
+        /// The ZIP external file attributes.
+        private final long externalAttributes;
+
         /// Creates central directory metadata.
         private CentralEntry(
                 String entryName,
@@ -644,7 +702,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 long compressedSize,
                 long uncompressedSize,
                 long localHeaderOffset,
-                boolean directory
+                boolean directory,
+                int versionMadeBy,
+                long externalAttributes
         ) {
             this.entryName = Objects.requireNonNull(entryName, "entryName");
             this.rawName = Objects.requireNonNull(rawName, "rawName");
@@ -655,6 +715,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             this.uncompressedSize = uncompressedSize;
             this.localHeaderOffset = localHeaderOffset;
             this.directory = directory;
+            this.versionMadeBy = versionMadeBy;
+            this.externalAttributes = externalAttributes;
         }
     }
 

@@ -9,10 +9,8 @@ import org.jetbrains.annotations.Nullable;
 import java.io.IOException;
 import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFileAttributeView;
-import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.util.Objects;
-import java.util.Set;
 
 /// Provides ZIP-specific attributes for an archive entry path.
 @NotNullByDefault
@@ -45,13 +43,6 @@ public interface ZipArkivoEntryAttributeView extends PosixFileAttributeView {
     default void setGroup(GroupPrincipal group) {
         Objects.requireNonNull(group, "group");
         throw new UnsupportedOperationException("ZIP entry groups are synthesized and cannot be set through the ZIP view");
-    }
-
-    /// Always rejects setting POSIX permissions through the ZIP view until ZIP permission persistence is implemented.
-    @Override
-    default void setPermissions(Set<PosixFilePermission> permissions) {
-        Objects.requireNonNull(permissions, "permissions");
-        throw new UnsupportedOperationException("ZIP entry permissions cannot be set through the ZIP view yet");
     }
 
     /// Sets the ZIP compression method requested for the entry.

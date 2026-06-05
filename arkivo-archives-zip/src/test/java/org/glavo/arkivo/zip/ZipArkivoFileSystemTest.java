@@ -25,9 +25,11 @@ import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -91,7 +93,7 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals(true, posixAttributes.isRegularFile());
                 assertEquals("owner", posixAttributes.owner().getName());
                 assertEquals("owner", zipAttributes.owner().getName());
-                assertEquals(true, posixAttributes.permissions().contains(java.nio.file.attribute.PosixFilePermission.OWNER_READ));
+                assertEquals(true, posixAttributes.permissions().contains(PosixFilePermission.OWNER_READ));
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -117,9 +119,17 @@ public final class ZipArkivoFileSystemTest {
                 assertThrows(UnsupportedOperationException.class, () -> zipView.setGroup(posixView.readAttributes().group()));
 
                 zipView.setMethod(ZipMethod.deflated());
+                Set<PosixFilePermission> permissions = Set.of(
+                        PosixFilePermission.OWNER_READ,
+                        PosixFilePermission.OWNER_WRITE,
+                        PosixFilePermission.OWNER_EXECUTE,
+                        PosixFilePermission.GROUP_READ
+                );
+                zipView.setPermissions(permissions);
                 ZipArkivoEntryAttributes attributes = zipView.readAttributes();
                 assertEquals("dir/hello.txt", attributes.path());
                 assertEquals(ZipMethod.deflated(), attributes.method());
+                assertEquals(permissions, attributes.permissions());
 
                 try (var output = writer.openOutputStream()) {
                     output.write("hello".getBytes(StandardCharsets.UTF_8));
@@ -129,6 +139,14 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
                 assertEquals("hello", Files.readString(fileSystem.getPath("/dir/hello.txt"), StandardCharsets.UTF_8));
+                PosixFileAttributes attributes =
+                        Files.readAttributes(fileSystem.getPath("/dir/hello.txt"), PosixFileAttributes.class);
+                assertEquals(Set.of(
+                        PosixFilePermission.OWNER_READ,
+                        PosixFilePermission.OWNER_WRITE,
+                        PosixFilePermission.OWNER_EXECUTE,
+                        PosixFilePermission.GROUP_READ
+                ), attributes.permissions());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
