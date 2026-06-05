@@ -7,11 +7,11 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
-import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.PosixFileAttributes;
 
-/// Exposes ZIP-specific file attributes for an archive entry path.
+/// Exposes ZIP-specific and synthesized POSIX file attributes for an archive entry path.
 @NotNullByDefault
-public interface ZipArkivoEntryAttributes extends BasicFileAttributes {
+public interface ZipArkivoEntryAttributes extends PosixFileAttributes {
     /// The numeric value returned when a ZIP entry size is not known.
     long UNKNOWN_SIZE = -1L;
 

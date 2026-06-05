@@ -927,5 +927,23 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         public @Nullable Object fileKey() {
             return null;
         }
+
+        /// Returns the synthesized owner.
+        @Override
+        public UserPrincipal owner() {
+            return ZipPosixSupport.DEFAULT_OWNER;
+        }
+
+        /// Returns the synthesized group.
+        @Override
+        public GroupPrincipal group() {
+            return ZipPosixSupport.DEFAULT_GROUP;
+        }
+
+        /// Returns configured or synthesized POSIX permissions.
+        @Override
+        public @Unmodifiable Set<PosixFilePermission> permissions() {
+            return ZipPosixSupport.defaultPermissions(type == EntryType.DIRECTORY);
+        }
     }
 }

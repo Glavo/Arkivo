@@ -420,7 +420,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             return type.cast(readZipAttributes(path));
         }
         if (type == PosixFileAttributes.class) {
-            return type.cast(new PosixEntryAttributes(readZipAttributes(path)));
+            return type.cast(readZipAttributes(path));
         }
         throw new UnsupportedOperationException("Unsupported ZIP attribute type: " + type.getName());
     }
@@ -455,7 +455,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         }
 
         ZipArkivoEntryAttributes zipAttributes = readZipAttributes(path);
-        PosixEntryAttributes posixAttributes = new PosixEntryAttributes(zipAttributes);
+        PosixFileAttributes posixAttributes = zipAttributes;
         LinkedHashMap<String, Object> values = new LinkedHashMap<>();
         if ("*".equals(names)) {
             if ("owner".equals(view)) {
@@ -1677,71 +1677,6 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             ZipEntryRecord record = entry;
             return record != null ? record.key : syntheticDirectoryKey;
         }
-    }
-
-    /// Exposes synthesized POSIX attributes for a ZIP entry.
-    private static final class PosixEntryAttributes implements PosixFileAttributes {
-        /// The ZIP attributes used as the basic attribute source.
-        private final ZipArkivoEntryAttributes attributes;
-
-        /// Creates synthesized POSIX attributes.
-        private PosixEntryAttributes(ZipArkivoEntryAttributes attributes) {
-            this.attributes = Objects.requireNonNull(attributes, "attributes");
-        }
-
-        /// Returns the last modification time.
-        @Override
-        public FileTime lastModifiedTime() {
-            return attributes.lastModifiedTime();
-        }
-
-        /// Returns the last access time.
-        @Override
-        public FileTime lastAccessTime() {
-            return attributes.lastAccessTime();
-        }
-
-        /// Returns the creation time.
-        @Override
-        public FileTime creationTime() {
-            return attributes.creationTime();
-        }
-
-        /// Returns whether this path is a regular file.
-        @Override
-        public boolean isRegularFile() {
-            return attributes.isRegularFile();
-        }
-
-        /// Returns whether this path is a directory.
-        @Override
-        public boolean isDirectory() {
-            return attributes.isDirectory();
-        }
-
-        /// Returns whether this path is a symbolic link.
-        @Override
-        public boolean isSymbolicLink() {
-            return attributes.isSymbolicLink();
-        }
-
-        /// Returns whether this path is another file type.
-        @Override
-        public boolean isOther() {
-            return attributes.isOther();
-        }
-
-        /// Returns the uncompressed entry size.
-        @Override
-        public long size() {
-            return attributes.size();
-        }
-
-        /// Returns an implementation-specific file key.
-        @Override
-        public @Nullable Object fileKey() {
-            return attributes.fileKey();
-        }
 
         /// Returns the synthesized owner.
         @Override
@@ -1755,10 +1690,10 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             return ZipPosixSupport.DEFAULT_GROUP;
         }
 
-        /// Returns the synthesized POSIX permissions.
+        /// Returns synthesized POSIX permissions.
         @Override
         public @Unmodifiable Set<PosixFilePermission> permissions() {
-            return ZipPosixSupport.defaultPermissions(attributes.isDirectory());
+            return ZipPosixSupport.defaultPermissions(isDirectory());
         }
     }
 
@@ -1785,13 +1720,13 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         /// Reads synthesized POSIX attributes.
         @Override
         public PosixFileAttributes readAttributes() throws IOException {
-            return new PosixEntryAttributes(fileSystem.readZipAttributes(path));
+            return fileSystem.readZipAttributes(path);
         }
 
         /// Returns the synthesized owner.
         @Override
         public UserPrincipal getOwner() throws IOException {
-            return readAttributes().owner();
+            return fileSystem.readZipAttributes(path).owner();
         }
 
         /// Sets entry timestamps.
@@ -1849,7 +1784,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         /// Returns the synthesized owner.
         @Override
         public UserPrincipal getOwner() throws IOException {
-            return new PosixEntryAttributes(fileSystem.readZipAttributes(path)).owner();
+            return fileSystem.readZipAttributes(path).owner();
         }
 
         /// Sets the file owner.

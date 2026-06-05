@@ -11,7 +11,11 @@ import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.GroupPrincipal;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
 import java.util.Objects;
+import java.util.Set;
 
 /// Implements ZIP entry attributes exposed while streaming local file headers.
 @NotNullByDefault
@@ -218,5 +222,23 @@ final class StreamingZipEntryAttributes implements ZipArkivoEntryAttributes {
     @Override
     public @Nullable Object fileKey() {
         return null;
+    }
+
+    /// Returns the synthesized owner.
+    @Override
+    public UserPrincipal owner() {
+        return ZipPosixSupport.DEFAULT_OWNER;
+    }
+
+    /// Returns the synthesized group.
+    @Override
+    public GroupPrincipal group() {
+        return ZipPosixSupport.DEFAULT_GROUP;
+    }
+
+    /// Returns synthesized POSIX permissions.
+    @Override
+    public @Unmodifiable Set<PosixFilePermission> permissions() {
+        return ZipPosixSupport.defaultPermissions(directory);
     }
 }

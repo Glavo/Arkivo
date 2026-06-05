@@ -86,8 +86,11 @@ public final class ZipArkivoFileSystemTest {
                 assertArrayEquals(new byte[0], Files.readAllBytes(fileSystem.getPath("/dir/empty.txt")));
                 PosixFileAttributes posixAttributes =
                         Files.readAttributes(fileSystem.getPath("/dir/hello.txt"), PosixFileAttributes.class);
+                ZipArkivoEntryAttributes zipAttributes =
+                        Files.readAttributes(fileSystem.getPath("/dir/hello.txt"), ZipArkivoEntryAttributes.class);
                 assertEquals(true, posixAttributes.isRegularFile());
                 assertEquals("owner", posixAttributes.owner().getName());
+                assertEquals("owner", zipAttributes.owner().getName());
                 assertEquals(true, posixAttributes.permissions().contains(java.nio.file.attribute.PosixFilePermission.OWNER_READ));
             }
         } finally {
@@ -143,6 +146,7 @@ public final class ZipArkivoFileSystemTest {
                     ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                     PosixFileAttributes posixAttributes = reader.readAttributes(PosixFileAttributes.class);
                     assertEquals(attributes.isDirectory(), posixAttributes.isDirectory());
+                    assertEquals("owner", attributes.owner().getName());
                     assertEquals("owner", posixAttributes.owner().getName());
                     visited.add(attributes.path());
                     if (attributes.isDirectory()) {
