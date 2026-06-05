@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.file.Files;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.AccessMode;
 import java.nio.file.ClosedFileSystemException;
@@ -53,6 +54,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// The parsed file system configuration.
     private final SevenZipArkivoFileSystemConfig config;
 
+    /// The fixed 7z signature header.
+    private final SevenZipSignatureHeader signatureHeader;
+
     /// The action invoked after this file system closes.
     private final @Nullable Runnable closeAction;
 
@@ -68,7 +72,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             @Nullable Path archivePath,
             @Nullable ArkivoVolumeSource volumes,
             SevenZipArkivoFileSystemConfig config
-    ) {
+    ) throws IOException {
         this(provider, archivePath, volumes, config, null);
     }
 
@@ -79,7 +83,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             @Nullable ArkivoVolumeSource volumes,
             SevenZipArkivoFileSystemConfig config,
             @Nullable Runnable closeAction
-    ) {
+    ) throws IOException {
         super(Objects.requireNonNull(config, "config").threadSafety());
         if (archivePath == null && volumes == null) {
             throw new IllegalArgumentException("archivePath or volumes must be provided");
@@ -89,6 +93,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         this.volumes = volumes;
         this.config = config;
         this.closeAction = closeAction;
+        this.signatureHeader = readSignatureHeader();
         this.root = SevenZipArkivoPath.root(this);
     }
 
@@ -100,6 +105,36 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Returns the file store exposed by this file system.
     public FileStore fileStore() {
         return SevenZipFileStore.READ_ONLY;
+    }
+
+    /// Returns the major 7z format version stored in the signature header.
+    @Override
+    public int majorVersion() {
+        return signatureHeader.majorVersion();
+    }
+
+    /// Returns the minor 7z format version stored in the signature header.
+    @Override
+    public int minorVersion() {
+        return signatureHeader.minorVersion();
+    }
+
+    /// Returns the offset of the next header relative to the first byte after the signature header.
+    @Override
+    public long nextHeaderOffset() {
+        return signatureHeader.nextHeaderOffset();
+    }
+
+    /// Returns the size in bytes of the next header.
+    @Override
+    public long nextHeaderSize() {
+        return signatureHeader.nextHeaderSize();
+    }
+
+    /// Returns the expected CRC-32 value of the next header bytes.
+    @Override
+    public long nextHeaderCrc32() {
+        return signatureHeader.nextHeaderCrc32();
     }
 
     /// Returns the provider that created this file system.
@@ -287,6 +322,25 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         if (!"/".equals(sevenZipPath.toAbsolutePath().normalize().toString())) {
             throw new NoSuchFileException(path.toString());
         }
+    }
+
+    /// Reads the fixed 7z signature header from the archive storage.
+    private SevenZipSignatureHeader readSignatureHeader() throws IOException {
+        if (archivePath != null) {
+            try (SeekableByteChannel channel = Files.newByteChannel(archivePath, config.openOptions())) {
+                return SevenZipHeaderReader.readSignatureHeader(channel);
+            }
+        }
+        if (volumes != null) {
+            SeekableByteChannel channel = volumes.openVolume(0);
+            if (channel == null) {
+                throw new IOException("7z volume source did not provide the first volume");
+            }
+            try (channel) {
+                return SevenZipHeaderReader.readSignatureHeader(channel);
+            }
+        }
+        throw new IOException("7z archive storage is not available");
     }
 
     /// Empty directory stream used until 7z entry indexing is implemented.

@@ -84,6 +84,21 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
         return new SevenZipArkivoFileSystemImpl(SevenZipArkivoFileSystemProvider.instance(), null, volumes, config);
     }
 
+    /// Returns the major 7z format version stored in the signature header.
+    public abstract int majorVersion();
+
+    /// Returns the minor 7z format version stored in the signature header.
+    public abstract int minorVersion();
+
+    /// Returns the offset of the next header relative to the first byte after the signature header.
+    public abstract long nextHeaderOffset();
+
+    /// Returns the size in bytes of the next header.
+    public abstract long nextHeaderSize();
+
+    /// Returns the expected CRC-32 value of the next header bytes.
+    public abstract long nextHeaderCrc32();
+
     /// Converts a raw password option value.
     private static byte[] passwordOptionValue(Object value) {
         if (value instanceof byte[] password) {
