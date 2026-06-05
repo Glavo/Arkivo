@@ -236,7 +236,7 @@ public final class ZipArkivoFileSystemTest {
                          ZipArkivoFileSystem.open(
                                  archivePath,
                                  Map.of(
-                                         ZipArkivoFileSystem.ARCHIVE_OPEN_OPTIONS.key(),
+                                         ArkivoFileSystem.OPEN_OPTIONS.key(),
                                          Set.of(
                                                  StandardOpenOption.CREATE,
                                                  StandardOpenOption.TRUNCATE_EXISTING,
@@ -267,9 +267,9 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
-    /// Verifies that archive open options accept array values.
+    /// Verifies that open options accept array values.
     @Test
-    public void fileSystemArchiveOpenOptionsAcceptArrayValues() throws IOException {
+    public void fileSystemOpenOptionsAcceptArrayValues() throws IOException {
         Path archivePath = createTemporaryArchivePath("fs-create-array-");
 
         try {
@@ -277,7 +277,7 @@ public final class ZipArkivoFileSystemTest {
                          ZipArkivoFileSystem.open(
                                  archivePath,
                                  Map.of(
-                                         ZipArkivoFileSystem.ARCHIVE_OPEN_OPTIONS.key(),
+                                         ArkivoFileSystem.OPEN_OPTIONS.key(),
                                          new StandardOpenOption[]{
                                                  StandardOpenOption.CREATE_NEW,
                                                  StandardOpenOption.WRITE
@@ -295,9 +295,9 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
-    /// Verifies that unsafe archive write open options are rejected.
+    /// Verifies that unsafe write open options are rejected.
     @Test
-    public void fileSystemArchiveOpenOptionsRejectUnsafeWriteValues() throws IOException {
+    public void fileSystemOpenOptionsRejectUnsafeWriteValues() throws IOException {
         Path archivePath = createTemporaryArchivePath("fs-create-invalid-");
 
         try {
@@ -306,7 +306,7 @@ public final class ZipArkivoFileSystemTest {
                     () -> ZipArkivoFileSystem.open(
                             archivePath,
                             Map.of(
-                                    ZipArkivoFileSystem.ARCHIVE_OPEN_OPTIONS.key(),
+                                    ArkivoFileSystem.OPEN_OPTIONS.key(),
                                     Set.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE)
                             )
                     )

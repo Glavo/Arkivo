@@ -26,17 +26,17 @@ public final class ZipArkivoFileSystemConfig {
     /// The split size value used when split output is disabled.
     public static final long NO_SPLIT_SIZE = -1L;
 
-    /// The default archive open options used by read-only ZIP file systems.
-    private static final @Unmodifiable Set<OpenOption> DEFAULT_READ_ARCHIVE_OPEN_OPTIONS =
+    /// The default open options used by read-only ZIP file systems.
+    private static final @Unmodifiable Set<OpenOption> DEFAULT_READ_OPEN_OPTIONS =
             Set.of(StandardOpenOption.READ);
 
-    /// The default archive open options used by streaming ZIP writers opened from paths.
-    private static final @Unmodifiable Set<OpenOption> DEFAULT_WRITE_ARCHIVE_OPEN_OPTIONS =
+    /// The default open options used by streaming ZIP writers opened from paths.
+    private static final @Unmodifiable Set<OpenOption> DEFAULT_WRITE_OPEN_OPTIONS =
             Set.of(StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
 
     /// The default parsed ZIP file system configuration.
     public static final ZipArkivoFileSystemConfig DEFAULTS = new ZipArkivoFileSystemConfig(
-            DEFAULT_READ_ARCHIVE_OPEN_OPTIONS,
+            DEFAULT_READ_OPEN_OPTIONS,
             null,
             ZipEncryption.none(),
             NO_SPLIT_SIZE,
@@ -44,8 +44,8 @@ public final class ZipArkivoFileSystemConfig {
             ArkivoFileSystemThreadSafety.CONCURRENT_READ
     );
 
-    /// The open options used to open an archive file by path.
-    private final @Unmodifiable Set<OpenOption> archiveOpenOptions;
+    /// The open options used to open the backing archive path.
+    private final @Unmodifiable Set<OpenOption> openOptions;
 
     /// The provider used to decrypt encrypted ZIP entries.
     private final @Nullable ArkivoPasswordProvider passwordProvider;
@@ -64,7 +64,7 @@ public final class ZipArkivoFileSystemConfig {
 
     /// Creates parsed ZIP file system configuration.
     public ZipArkivoFileSystemConfig(
-            Set<? extends OpenOption> archiveOpenOptions,
+            Set<? extends OpenOption> openOptions,
             @Nullable ArkivoPasswordProvider passwordProvider,
             ZipEncryption defaultEncryption,
             long splitSize,
@@ -74,8 +74,8 @@ public final class ZipArkivoFileSystemConfig {
         if (splitSize != NO_SPLIT_SIZE && splitSize <= 0) {
             throw new IllegalArgumentException("splitSize must be positive or NO_SPLIT_SIZE");
         }
-        this.archiveOpenOptions = normalizeArchiveOpenOptions(
-                Objects.requireNonNull(archiveOpenOptions, "archiveOpenOptions").toArray(OpenOption[]::new)
+        this.openOptions = normalizeOpenOptions(
+                Objects.requireNonNull(openOptions, "openOptions").toArray(OpenOption[]::new)
         );
         this.passwordProvider = passwordProvider;
         this.defaultEncryption = Objects.requireNonNull(defaultEncryption, "defaultEncryption");
@@ -86,27 +86,27 @@ public final class ZipArkivoFileSystemConfig {
 
     /// Parses ZIP file system configuration from an environment map.
     public static ZipArkivoFileSystemConfig fromEnvironment(Map<String, ?> environment) {
-        return fromEnvironment(environment, DEFAULT_READ_ARCHIVE_OPEN_OPTIONS);
+        return fromEnvironment(environment, DEFAULT_READ_OPEN_OPTIONS);
     }
 
     /// Parses ZIP streaming writer configuration from an environment map.
     public static ZipArkivoFileSystemConfig fromWriterEnvironment(Map<String, ?> environment) {
-        return fromEnvironment(environment, DEFAULT_WRITE_ARCHIVE_OPEN_OPTIONS);
+        return fromEnvironment(environment, DEFAULT_WRITE_OPEN_OPTIONS);
     }
 
-    /// Parses ZIP file system configuration from an environment map with archive open option defaults.
+    /// Parses ZIP file system configuration from an environment map with open option defaults.
     private static ZipArkivoFileSystemConfig fromEnvironment(
             Map<String, ?> environment,
-            Set<? extends OpenOption> defaultArchiveOpenOptions
+            Set<? extends OpenOption> defaultOpenOptions
     ) {
         Objects.requireNonNull(environment, "environment");
-        Objects.requireNonNull(defaultArchiveOpenOptions, "defaultArchiveOpenOptions");
-        if (environment.isEmpty() && defaultArchiveOpenOptions.equals(DEFAULT_READ_ARCHIVE_OPEN_OPTIONS)) {
+        Objects.requireNonNull(defaultOpenOptions, "defaultOpenOptions");
+        if (environment.isEmpty() && defaultOpenOptions.equals(DEFAULT_READ_OPEN_OPTIONS)) {
             return DEFAULTS;
         }
 
         ArkivoPasswordProvider passwordProvider = passwordProvider(environment);
-        Set<OpenOption> archiveOpenOptions = archiveOpenOptions(environment, defaultArchiveOpenOptions);
+        Set<OpenOption> openOptions = openOptions(environment, defaultOpenOptions);
         ZipEncryption defaultEncryption =
                 ZipArkivoFileSystem.DEFAULT_ENCRYPTION.readOrDefault(environment, ZipEncryption.none());
         long splitSize = splitSize(environment);
@@ -122,7 +122,7 @@ public final class ZipArkivoFileSystemConfig {
                 );
 
         return new ZipArkivoFileSystemConfig(
-                archiveOpenOptions,
+                openOptions,
                 passwordProvider,
                 defaultEncryption,
                 splitSize,
@@ -131,14 +131,14 @@ public final class ZipArkivoFileSystemConfig {
         );
     }
 
-    /// Returns the open options used to open an archive file by path.
-    public @Unmodifiable Set<OpenOption> archiveOpenOptions() {
-        return archiveOpenOptions;
+    /// Returns the open options used to open the backing archive path.
+    public @Unmodifiable Set<OpenOption> openOptions() {
+        return openOptions;
     }
 
     /// Returns whether the archive file should be opened for forward-only ZIP writes.
     public boolean archiveWritable() {
-        return archiveOpenOptions.contains(StandardOpenOption.WRITE);
+        return openOptions.contains(StandardOpenOption.WRITE);
     }
 
     /// Returns the provider used to decrypt encrypted ZIP entries.
@@ -189,20 +189,20 @@ public final class ZipArkivoFileSystemConfig {
         return splitSize != null ? splitSize : NO_SPLIT_SIZE;
     }
 
-    /// Parses archive file open options from an environment map.
-    private static @Unmodifiable Set<OpenOption> archiveOpenOptions(
+    /// Parses open options from an environment map.
+    private static @Unmodifiable Set<OpenOption> openOptions(
             Map<String, ?> environment,
-            Set<? extends OpenOption> defaultArchiveOpenOptions
+            Set<? extends OpenOption> defaultOpenOptions
     ) {
-        OpenOption[] options = ZipArkivoFileSystem.ARCHIVE_OPEN_OPTIONS.readOrDefault(
+        OpenOption[] options = ArkivoFileSystem.OPEN_OPTIONS.readOrDefault(
                 environment,
-                defaultArchiveOpenOptions.toArray(OpenOption[]::new)
+                defaultOpenOptions.toArray(OpenOption[]::new)
         );
-        return normalizeArchiveOpenOptions(options);
+        return normalizeOpenOptions(options);
     }
 
-    /// Normalizes and validates archive file open options.
-    private static @Unmodifiable Set<OpenOption> normalizeArchiveOpenOptions(OpenOption[] options) {
+    /// Normalizes and validates open options.
+    private static @Unmodifiable Set<OpenOption> normalizeOpenOptions(OpenOption[] options) {
         Objects.requireNonNull(options, "options");
         LinkedHashSet<OpenOption> result = new LinkedHashSet<>();
         for (OpenOption option : options) {

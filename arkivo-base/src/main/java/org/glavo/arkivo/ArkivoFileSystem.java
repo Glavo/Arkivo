@@ -6,6 +6,8 @@ package org.glavo.arkivo;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.nio.file.FileSystem;
+import java.nio.file.OpenOption;
+import java.util.Collection;
 import java.util.Objects;
 
 /// Provides shared behavior for archive-backed file systems.
@@ -18,6 +20,17 @@ public abstract class ArkivoFileSystem extends FileSystem {
                     "threadSafety",
                     ArkivoFileSystemThreadSafety.class,
                     ArkivoFileSystem::threadSafetyOptionValue
+            );
+
+    /// The common environment option that controls how the backing archive path is opened.
+    ///
+    /// The option accepts an `OpenOption[]`, a single `OpenOption`, or a `Collection` of `OpenOption` values.
+    public static final ArkivoFileSystemOption<OpenOption[]> OPEN_OPTIONS =
+            ArkivoFileSystemOption.of(
+                    "arkivo",
+                    "openOptions",
+                    OpenOption[].class,
+                    ArkivoFileSystem::openOptionsValue
             );
 
     /// The requested file system thread-safety strategy.
@@ -48,6 +61,33 @@ public abstract class ArkivoFileSystem extends FileSystem {
         }
         throw new IllegalArgumentException(
                 "Expected ArkivoFileSystemThreadSafety or String for key: " + THREAD_SAFETY.key()
+        );
+    }
+
+    /// Converts a raw open options value.
+    private static OpenOption[] openOptionsValue(Object value) {
+        if (value instanceof OpenOption[] options) {
+            return options.clone();
+        }
+        if (value instanceof OpenOption option) {
+            return new OpenOption[]{option};
+        }
+        if (value instanceof Collection<?> collection) {
+            OpenOption[] options = new OpenOption[collection.size()];
+            int index = 0;
+            for (Object item : collection) {
+                if (!(item instanceof OpenOption option)) {
+                    throw new IllegalArgumentException(
+                            "Expected OpenOption values for key: " + OPEN_OPTIONS.key()
+                    );
+                }
+                options[index++] = option;
+            }
+            return options;
+        }
+        throw new IllegalArgumentException(
+                "Expected OpenOption, OpenOption[], or Collection<? extends OpenOption> for key: "
+                        + OPEN_OPTIONS.key()
         );
     }
 }
