@@ -6,8 +6,11 @@ package org.glavo.arkivo;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.OpenOption;
+import java.nio.file.StandardOpenOption;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -21,6 +24,10 @@ public final class ArkivoFileSystemOptionTest {
         assertEquals("arkivo", ArkivoFileSystem.THREAD_SAFETY.namespace());
         assertEquals("threadSafety", ArkivoFileSystem.THREAD_SAFETY.name());
         assertEquals("arkivo.threadSafety", ArkivoFileSystem.THREAD_SAFETY.key());
+        assertEquals("arkivo", ArkivoFileSystem.OPEN_OPTIONS.namespace());
+        assertEquals("openOptions", ArkivoFileSystem.OPEN_OPTIONS.name());
+        assertEquals("arkivo.openOptions", ArkivoFileSystem.OPEN_OPTIONS.key());
+        assertEquals(Set.class, ArkivoFileSystem.OPEN_OPTIONS.type());
     }
 
     /// Verifies that file system thread-safety values parse stable option strings.
@@ -61,6 +68,36 @@ public final class ArkivoFileSystemOptionTest {
         assertEquals(1L, option.read(Map.of("test.size", (byte) 1)));
         assertEquals(2L, option.read(Map.of("test.size", (short) 2)));
         assertEquals(3L, option.read(Map.of("test.size", 3)));
+    }
+
+    /// Verifies that file system open options are converted to immutable sets.
+    @Test
+    public void openOptionsConversion() {
+        assertEquals(
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                ArkivoFileSystem.OPEN_OPTIONS.convert(Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE))
+        );
+        assertEquals(
+                Set.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE),
+                ArkivoFileSystem.OPEN_OPTIONS.convert(new OpenOption[]{
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.WRITE
+                })
+        );
+        assertEquals(
+                Set.of(StandardOpenOption.READ),
+                ArkivoFileSystem.OPEN_OPTIONS.convert(StandardOpenOption.READ)
+        );
+
+        Set<OpenOption> converted = ArkivoFileSystem.OPEN_OPTIONS.convert(Set.of(StandardOpenOption.READ));
+        assertThrows(UnsupportedOperationException.class, () -> converted.add(StandardOpenOption.WRITE));
+    }
+
+    /// Verifies that invalid file system open option values are rejected.
+    @Test
+    public void rejectInvalidOpenOptionsConversion() {
+        assertThrows(IllegalArgumentException.class, () -> ArkivoFileSystem.OPEN_OPTIONS.convert(Set.of("read")));
+        assertThrows(IllegalArgumentException.class, () -> ArkivoFileSystem.OPEN_OPTIONS.convert("read"));
     }
 
     /// Verifies that floating-point values are not converted to integral option types.
