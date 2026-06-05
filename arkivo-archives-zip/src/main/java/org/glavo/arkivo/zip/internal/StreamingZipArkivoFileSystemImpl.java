@@ -25,7 +25,6 @@ import java.nio.file.PathMatcher;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.WatchService;
 import java.nio.file.attribute.FileAttribute;
-import java.nio.file.attribute.FileStoreAttributeView;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.spi.FileSystemProvider;
 import java.util.HashSet;
@@ -37,45 +36,24 @@ import java.util.zip.CRC32;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 
+import static org.glavo.arkivo.zip.internal.ZipConstants.CENTRAL_DIRECTORY_HEADER_SIGNATURE;
+import static org.glavo.arkivo.zip.internal.ZipConstants.DATA_DESCRIPTOR_FLAG;
+import static org.glavo.arkivo.zip.internal.ZipConstants.DATA_DESCRIPTOR_SIGNATURE;
+import static org.glavo.arkivo.zip.internal.ZipConstants.DEFLATED_METHOD;
+import static org.glavo.arkivo.zip.internal.ZipConstants.DOS_DATE_1980_01_01;
+import static org.glavo.arkivo.zip.internal.ZipConstants.END_OF_CENTRAL_DIRECTORY_SIGNATURE;
+import static org.glavo.arkivo.zip.internal.ZipConstants.LOCAL_FILE_HEADER_SIGNATURE;
+import static org.glavo.arkivo.zip.internal.ZipConstants.STORED_METHOD;
+import static org.glavo.arkivo.zip.internal.ZipConstants.UTF8_FLAG;
+import static org.glavo.arkivo.zip.internal.ZipConstants.VERSION_NEEDED;
+import static org.glavo.arkivo.zip.internal.ZipLittleEndian.requireUInt16;
+import static org.glavo.arkivo.zip.internal.ZipLittleEndian.requireUInt32;
+import static org.glavo.arkivo.zip.internal.ZipLittleEndian.writeInt;
+import static org.glavo.arkivo.zip.internal.ZipLittleEndian.writeShort;
+
 /// Implements a forward-only ZIP archive file system for streaming writes.
 @NotNullByDefault
 public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
-    /// The ZIP local file header signature.
-    private static final int ZIP_LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
-
-    /// The ZIP central directory file header signature.
-    private static final int ZIP_CENTRAL_DIRECTORY_HEADER_SIGNATURE = 0x02014b50;
-
-    /// The ZIP data descriptor signature.
-    private static final int ZIP_DATA_DESCRIPTOR_SIGNATURE = 0x08074b50;
-
-    /// The ZIP end of central directory signature.
-    private static final int ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE = 0x06054b50;
-
-    /// The ZIP version needed to extract entries written by this file system.
-    private static final int ZIP_VERSION_NEEDED = 20;
-
-    /// The ZIP general purpose flag indicating a data descriptor follows entry data.
-    private static final int ZIP_DATA_DESCRIPTOR_FLAG = 1 << 3;
-
-    /// The ZIP general purpose flag indicating UTF-8 entry names.
-    private static final int ZIP_UTF8_FLAG = 1 << 11;
-
-    /// The ZIP stored method identifier.
-    private static final int ZIP_STORED_METHOD = 0;
-
-    /// The ZIP deflated method identifier.
-    private static final int ZIP_DEFLATED_METHOD = 8;
-
-    /// The DOS date for 1980-01-01.
-    private static final int ZIP_DOS_DATE_1980_01_01 = 0x21;
-
-    /// The maximum value stored in an unsigned 16-bit ZIP field.
-    private static final int ZIP_UINT16_MAX = 0xffff;
-
-    /// The maximum value stored in an unsigned 32-bit ZIP field.
-    private static final long ZIP_UINT32_MAX = 0xffff_ffffL;
-
     /// The provider that created this ZIP file system.
     private final ZipArkivoFileSystemProvider provider;
 
@@ -171,7 +149,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// Returns the file stores exposed by this ZIP file system.
     @Override
     public @Unmodifiable Iterable<FileStore> getFileStores() {
-        return List.of(StreamingZipFileStore.INSTANCE);
+        return List.of(StreamingZipFileStore.WRITABLE);
     }
 
     /// Returns the supported file attribute view names.
@@ -218,8 +196,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         long localHeaderOffset = output.position();
         writeLocalHeader(
                 rawName,
-                ZIP_DATA_DESCRIPTOR_FLAG | ZIP_UTF8_FLAG,
-                ZIP_DEFLATED_METHOD,
+                DATA_DESCRIPTOR_FLAG | UTF8_FLAG,
+                DEFLATED_METHOD,
                 0,
                 0,
                 0
@@ -245,12 +223,12 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         requireNewEntry(entryName);
         byte[] rawName = rawEntryName(entryName);
         long localHeaderOffset = output.position();
-        writeLocalHeader(rawName, ZIP_UTF8_FLAG, ZIP_STORED_METHOD, 0, 0, 0);
+        writeLocalHeader(rawName, UTF8_FLAG, STORED_METHOD, 0, 0, 0);
         centralEntries.add(new CentralEntry(
                 entryName,
                 rawName,
-                ZIP_UTF8_FLAG,
-                ZIP_STORED_METHOD,
+                UTF8_FLAG,
+                STORED_METHOD,
                 0,
                 0,
                 0,
@@ -343,26 +321,26 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             long compressedSize,
             long uncompressedSize
     ) throws IOException {
-        writeInt(ZIP_LOCAL_FILE_HEADER_SIGNATURE);
-        writeShort(ZIP_VERSION_NEEDED);
-        writeShort(flags);
-        writeShort(method);
-        writeShort(0);
-        writeShort(ZIP_DOS_DATE_1980_01_01);
-        writeInt(crc32);
-        writeInt(compressedSize);
-        writeInt(uncompressedSize);
-        writeShort(rawName.length);
-        writeShort(0);
+        writeInt(output, LOCAL_FILE_HEADER_SIGNATURE);
+        writeShort(output, VERSION_NEEDED);
+        writeShort(output, flags);
+        writeShort(output, method);
+        writeShort(output, 0);
+        writeShort(output, DOS_DATE_1980_01_01);
+        writeInt(output, crc32);
+        writeInt(output, compressedSize);
+        writeInt(output, uncompressedSize);
+        writeShort(output, rawName.length);
+        writeShort(output, 0);
         output.write(rawName);
     }
 
     /// Writes the data descriptor for a streamed entry.
     private void writeDataDescriptor(long crc32, long compressedSize, long uncompressedSize) throws IOException {
-        writeInt(ZIP_DATA_DESCRIPTOR_SIGNATURE);
-        writeInt(crc32);
-        writeInt(compressedSize);
-        writeInt(uncompressedSize);
+        writeInt(output, DATA_DESCRIPTOR_SIGNATURE);
+        writeInt(output, crc32);
+        writeInt(output, compressedSize);
+        writeInt(output, uncompressedSize);
     }
 
     /// Writes the central directory and end record.
@@ -376,14 +354,14 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         requireUInt32(centralDirectorySize, "central directory size");
         requireUInt32(centralDirectoryOffset, "central directory offset");
 
-        writeInt(ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE);
-        writeShort(0);
-        writeShort(0);
-        writeShort(centralEntries.size());
-        writeShort(centralEntries.size());
-        writeInt(centralDirectorySize);
-        writeInt(centralDirectoryOffset);
-        writeShort(0);
+        writeInt(output, END_OF_CENTRAL_DIRECTORY_SIGNATURE);
+        writeShort(output, 0);
+        writeShort(output, 0);
+        writeShort(output, centralEntries.size());
+        writeShort(output, centralEntries.size());
+        writeInt(output, centralDirectorySize);
+        writeInt(output, centralDirectoryOffset);
+        writeShort(output, 0);
     }
 
     /// Writes one central directory entry.
@@ -392,23 +370,23 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         requireUInt32(entry.uncompressedSize, "uncompressed size");
         requireUInt32(entry.localHeaderOffset, "local header offset");
 
-        writeInt(ZIP_CENTRAL_DIRECTORY_HEADER_SIGNATURE);
-        writeShort(ZIP_VERSION_NEEDED);
-        writeShort(ZIP_VERSION_NEEDED);
-        writeShort(entry.flags);
-        writeShort(entry.method);
-        writeShort(0);
-        writeShort(ZIP_DOS_DATE_1980_01_01);
-        writeInt(entry.crc32);
-        writeInt(entry.compressedSize);
-        writeInt(entry.uncompressedSize);
-        writeShort(entry.rawName.length);
-        writeShort(0);
-        writeShort(0);
-        writeShort(0);
-        writeShort(0);
-        writeInt(entry.directory ? 0x10 : 0);
-        writeInt(entry.localHeaderOffset);
+        writeInt(output, CENTRAL_DIRECTORY_HEADER_SIGNATURE);
+        writeShort(output, VERSION_NEEDED);
+        writeShort(output, VERSION_NEEDED);
+        writeShort(output, entry.flags);
+        writeShort(output, entry.method);
+        writeShort(output, 0);
+        writeShort(output, DOS_DATE_1980_01_01);
+        writeInt(output, entry.crc32);
+        writeInt(output, entry.compressedSize);
+        writeInt(output, entry.uncompressedSize);
+        writeShort(output, entry.rawName.length);
+        writeShort(output, 0);
+        writeShort(output, 0);
+        writeShort(output, 0);
+        writeShort(output, 0);
+        writeInt(output, entry.directory ? 0x10 : 0);
+        writeInt(output, entry.localHeaderOffset);
         output.write(entry.rawName);
     }
 
@@ -417,36 +395,6 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         byte[] rawName = entryName.getBytes(StandardCharsets.UTF_8);
         requireUInt16(rawName.length, "entry name length");
         return rawName;
-    }
-
-    /// Writes a little-endian unsigned 16-bit value.
-    private void writeShort(long value) throws IOException {
-        requireUInt16(value, "short value");
-        output.write((int) (value & 0xff));
-        output.write((int) ((value >>> 8) & 0xff));
-    }
-
-    /// Writes a little-endian unsigned 32-bit value.
-    private void writeInt(long value) throws IOException {
-        requireUInt32(value, "int value");
-        output.write((int) (value & 0xff));
-        output.write((int) ((value >>> 8) & 0xff));
-        output.write((int) ((value >>> 16) & 0xff));
-        output.write((int) ((value >>> 24) & 0xff));
-    }
-
-    /// Requires a value to fit in an unsigned 16-bit ZIP field.
-    private static void requireUInt16(long value, String name) {
-        if (value < 0 || value > ZIP_UINT16_MAX) {
-            throw new IllegalArgumentException(name + " is out of ZIP range");
-        }
-    }
-
-    /// Requires a value to fit in an unsigned 32-bit ZIP field.
-    private static void requireUInt32(long value, String name) {
-        if (value < 0 || value > ZIP_UINT32_MAX) {
-            throw new IllegalArgumentException(name + " is out of ZIP32 range");
-        }
     }
 
     /// Writes bytes to the current ZIP entry.
@@ -525,8 +473,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     centralEntries.add(new CentralEntry(
                             entryName,
                             rawName,
-                            ZIP_DATA_DESCRIPTOR_FLAG | ZIP_UTF8_FLAG,
-                            ZIP_DEFLATED_METHOD,
+                            DATA_DESCRIPTOR_FLAG | UTF8_FLAG,
+                            DEFLATED_METHOD,
                             crcValue,
                             compressedSize,
                             uncompressedSize,
@@ -649,76 +597,4 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
     }
 
-    /// Describes the synthetic file store for streaming ZIP output.
-    @NotNullByDefault
-    private static final class StreamingZipFileStore extends FileStore {
-        /// The shared streaming ZIP file store.
-        private static final StreamingZipFileStore INSTANCE = new StreamingZipFileStore();
-
-        /// Creates a streaming ZIP file store.
-        private StreamingZipFileStore() {
-        }
-
-        /// Returns the file store name.
-        @Override
-        public String name() {
-            return "zip-stream";
-        }
-
-        /// Returns the file store type.
-        @Override
-        public String type() {
-            return "zip";
-        }
-
-        /// Returns whether this file store is read-only.
-        @Override
-        public boolean isReadOnly() {
-            return false;
-        }
-
-        /// Returns an unknown total space value.
-        @Override
-        public long getTotalSpace() {
-            return 0;
-        }
-
-        /// Returns an unknown usable space value.
-        @Override
-        public long getUsableSpace() {
-            return 0;
-        }
-
-        /// Returns an unknown unallocated space value.
-        @Override
-        public long getUnallocatedSpace() {
-            return 0;
-        }
-
-        /// Returns whether this file store supports the given attribute view.
-        @Override
-        public boolean supportsFileAttributeView(Class<? extends java.nio.file.attribute.FileAttributeView> type) {
-            return false;
-        }
-
-        /// Returns whether this file store supports the given attribute view.
-        @Override
-        public boolean supportsFileAttributeView(String name) {
-            return false;
-        }
-
-        /// Returns no file store attribute view.
-        @Override
-        public <V extends FileStoreAttributeView> @Nullable V getFileStoreAttributeView(Class<V> type) {
-            Objects.requireNonNull(type, "type");
-            return null;
-        }
-
-        /// Returns no file store attribute values.
-        @Override
-        public Object getAttribute(String attribute) {
-            Objects.requireNonNull(attribute, "attribute");
-            throw new UnsupportedOperationException("Streaming ZIP file store attributes are not supported");
-        }
-    }
 }

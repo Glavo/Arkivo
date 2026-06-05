@@ -16,11 +16,14 @@ import java.util.Arrays;
 import java.util.Objects;
 import java.util.zip.CRC32;
 
+import static org.glavo.arkivo.zip.internal.ZipLittleEndian.readInt;
+import static org.glavo.arkivo.zip.internal.ZipLittleEndian.readUnsignedShort;
+
 /// Decodes raw ZIP entry name and comment bytes.
 @NotNullByDefault
 public final class ZipEntryNameDecoder {
     /// The general purpose bit flag that marks entry names and comments as UTF-8.
-    public static final int UTF_8_FLAG = 1 << 11;
+    public static final int UTF_8_FLAG = ZipConstants.UTF8_FLAG;
 
     /// The Info-ZIP Unicode Path Extra Field identifier.
     public static final int UNICODE_PATH_EXTRA_FIELD_ID = 0x7075;
@@ -62,8 +65,8 @@ public final class ZipEntryNameDecoder {
     ) throws CharacterCodingException {
         int offset = 0;
         while (offset + 4 <= extraData.length) {
-            int fieldId = unsignedShortLE(extraData, offset);
-            int dataSize = unsignedShortLE(extraData, offset + 2);
+            int fieldId = readUnsignedShort(extraData, offset);
+            int dataSize = readUnsignedShort(extraData, offset + 2);
             int dataOffset = offset + 4;
             int nextOffset = dataOffset + dataSize;
             if (nextOffset > extraData.length) {
@@ -88,7 +91,7 @@ public final class ZipEntryNameDecoder {
             return null;
         }
 
-        int expectedCrc32 = intLE(extraData, dataOffset + 1);
+        int expectedCrc32 = readInt(extraData, dataOffset + 1);
         CRC32 crc32 = new CRC32();
         crc32.update(rawValue);
         if ((int) crc32.getValue() != expectedCrc32) {
@@ -204,16 +207,4 @@ public final class ZipEntryNameDecoder {
         };
     }
 
-    /// Reads an unsigned little-endian short from a byte array.
-    private static int unsignedShortLE(byte[] value, int offset) {
-        return Byte.toUnsignedInt(value[offset]) | (Byte.toUnsignedInt(value[offset + 1]) << 8);
-    }
-
-    /// Reads a little-endian int from a byte array.
-    private static int intLE(byte[] value, int offset) {
-        return Byte.toUnsignedInt(value[offset])
-                | (Byte.toUnsignedInt(value[offset + 1]) << 8)
-                | (Byte.toUnsignedInt(value[offset + 2]) << 16)
-                | (Byte.toUnsignedInt(value[offset + 3]) << 24);
-    }
 }

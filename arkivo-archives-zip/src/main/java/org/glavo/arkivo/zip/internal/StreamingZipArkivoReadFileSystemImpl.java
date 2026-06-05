@@ -17,7 +17,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PushbackInputStream;
-import java.net.URI;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
@@ -27,7 +26,6 @@ import java.nio.file.FileStore;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.nio.file.WatchService;
-import java.nio.file.attribute.FileStoreAttributeView;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.spi.FileSystemProvider;
 import java.util.List;
@@ -36,36 +34,22 @@ import java.util.Set;
 import java.util.zip.Inflater;
 import java.util.zip.InflaterInputStream;
 
+import static org.glavo.arkivo.zip.internal.ZipConstants.CENTRAL_DIRECTORY_HEADER_SIGNATURE;
+import static org.glavo.arkivo.zip.internal.ZipConstants.DATA_DESCRIPTOR_FLAG;
+import static org.glavo.arkivo.zip.internal.ZipConstants.DATA_DESCRIPTOR_SIGNATURE;
+import static org.glavo.arkivo.zip.internal.ZipConstants.DEFLATED_METHOD;
+import static org.glavo.arkivo.zip.internal.ZipConstants.ENCRYPTED_FLAG;
+import static org.glavo.arkivo.zip.internal.ZipConstants.END_OF_CENTRAL_DIRECTORY_SIGNATURE;
+import static org.glavo.arkivo.zip.internal.ZipConstants.LOCAL_FILE_HEADER_SIGNATURE;
+import static org.glavo.arkivo.zip.internal.ZipConstants.STORED_METHOD;
+import static org.glavo.arkivo.zip.internal.ZipConstants.UTF8_FLAG;
+import static org.glavo.arkivo.zip.internal.ZipLittleEndian.readInt;
+import static org.glavo.arkivo.zip.internal.ZipLittleEndian.readIntOrEnd;
+import static org.glavo.arkivo.zip.internal.ZipLittleEndian.readUnsignedShort;
+
 /// Implements a forward-only ZIP archive file system for streaming reads.
 @NotNullByDefault
 public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSystem {
-    /// The ZIP local file header signature.
-    private static final int ZIP_LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
-
-    /// The ZIP central directory file header signature.
-    private static final int ZIP_CENTRAL_DIRECTORY_HEADER_SIGNATURE = 0x02014b50;
-
-    /// The ZIP end of central directory signature.
-    private static final int ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE = 0x06054b50;
-
-    /// The ZIP data descriptor signature.
-    private static final int ZIP_DATA_DESCRIPTOR_SIGNATURE = 0x08074b50;
-
-    /// The ZIP general purpose flag indicating encryption.
-    private static final int ZIP_ENCRYPTED_FLAG = 1;
-
-    /// The ZIP general purpose flag indicating a data descriptor follows entry data.
-    private static final int ZIP_DATA_DESCRIPTOR_FLAG = 1 << 3;
-
-    /// The ZIP general purpose flag indicating UTF-8 entry names.
-    private static final int ZIP_UTF8_FLAG = 1 << 11;
-
-    /// The ZIP stored method identifier.
-    private static final int ZIP_STORED_METHOD = 0;
-
-    /// The ZIP deflated method identifier.
-    private static final int ZIP_DEFLATED_METHOD = 8;
-
     /// The pushback buffer size used to return bytes read past the end of a deflated stream.
     private static final int PUSHBACK_BUFFER_SIZE = 8192;
 
@@ -143,7 +127,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
     /// Returns the file stores exposed by this ZIP file system.
     @Override
     public @Unmodifiable Iterable<FileStore> getFileStores() {
-        return List.of(StreamingZipFileStore.INSTANCE);
+        return List.of(StreamingZipFileStore.READ_ONLY);
     }
 
     /// Returns the supported file attribute view names.
@@ -208,43 +192,6 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         }
     }
 
-    /// Reads a little-endian unsigned 16-bit integer.
-    private int readUnsignedShort() throws IOException {
-        int b0 = input.read();
-        int b1 = input.read();
-        if ((b0 | b1) < 0) {
-            throw new EOFException("Unexpected end of ZIP stream");
-        }
-        return b0 | (b1 << 8);
-    }
-
-    /// Reads a little-endian signed 32-bit integer.
-    private int readInt() throws IOException {
-        int b0 = input.read();
-        if (b0 < 0) {
-            throw new EOFException("Unexpected end of ZIP stream");
-        }
-        return b0 | (readRequiredByte() << 8) | (readRequiredByte() << 16) | (readRequiredByte() << 24);
-    }
-
-    /// Reads a little-endian signed 32-bit integer, or `-1` when no bytes remain.
-    private int readIntOrEnd() throws IOException {
-        int b0 = input.read();
-        if (b0 < 0) {
-            return -1;
-        }
-        return b0 | (readRequiredByte() << 8) | (readRequiredByte() << 16) | (readRequiredByte() << 24);
-    }
-
-    /// Reads one required byte.
-    private int readRequiredByte() throws IOException {
-        int value = input.read();
-        if (value < 0) {
-            throw new EOFException("Unexpected end of ZIP stream");
-        }
-        return value;
-    }
-
     /// Reads exactly `length` bytes.
     private byte[] readBytes(int length) throws IOException {
         byte[] bytes = new byte[length];
@@ -276,21 +223,21 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
 
     /// Reads and validates a ZIP data descriptor.
     private void readDataDescriptor() throws IOException {
-        int first = readInt();
-        if (first != ZIP_DATA_DESCRIPTOR_SIGNATURE) {
+        int first = readInt(input);
+        if (first != DATA_DESCRIPTOR_SIGNATURE) {
             // The first value was CRC-32; the descriptor signature is optional.
-            readInt();
-            readInt();
+            readInt(input);
+            readInt(input);
             return;
         }
-        readInt();
-        readInt();
-        readInt();
+        readInt(input);
+        readInt(input);
+        readInt(input);
     }
 
     /// Decodes an entry path.
     private String decodePath(byte[] rawName, int flags) {
-        if ((flags & ZIP_UTF8_FLAG) != 0) {
+        if ((flags & UTF8_FLAG) != 0) {
             return new String(rawName, StandardCharsets.UTF_8);
         }
         try {
@@ -322,27 +269,27 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             ensureStreamOpen();
             closeCurrentEntry();
 
-            int signature = readIntOrEnd();
+            int signature = readIntOrEnd(input);
             if (signature < 0
-                    || signature == ZIP_CENTRAL_DIRECTORY_HEADER_SIGNATURE
-                    || signature == ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
+                    || signature == CENTRAL_DIRECTORY_HEADER_SIGNATURE
+                    || signature == END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
                 currentEntry = null;
                 return null;
             }
-            if (signature != ZIP_LOCAL_FILE_HEADER_SIGNATURE) {
+            if (signature != LOCAL_FILE_HEADER_SIGNATURE) {
                 throw new IOException("Unexpected ZIP stream record signature: " + Integer.toHexString(signature));
             }
 
-            readUnsignedShort();
-            int flags = readUnsignedShort();
-            int method = readUnsignedShort();
-            readUnsignedShort();
-            readUnsignedShort();
-            long crc32 = Integer.toUnsignedLong(readInt());
-            long compressedSize = Integer.toUnsignedLong(readInt());
-            long uncompressedSize = Integer.toUnsignedLong(readInt());
-            int nameLength = readUnsignedShort();
-            int extraLength = readUnsignedShort();
+            readUnsignedShort(input);
+            int flags = readUnsignedShort(input);
+            int method = readUnsignedShort(input);
+            readUnsignedShort(input);
+            readUnsignedShort(input);
+            long crc32 = Integer.toUnsignedLong(readInt(input));
+            long compressedSize = Integer.toUnsignedLong(readInt(input));
+            long uncompressedSize = Integer.toUnsignedLong(readInt(input));
+            int nameLength = readUnsignedShort(input);
+            int extraLength = readUnsignedShort(input);
             byte[] rawName = readBytes(nameLength);
             skipBytes(extraLength);
 
@@ -364,7 +311,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             if (entry.directory) {
                 throw new IOException("ZIP entry is a directory: " + entry.path);
             }
-            if ((entry.flags & ZIP_ENCRYPTED_FLAG) != 0) {
+            if ((entry.flags & ENCRYPTED_FLAG) != 0) {
                 throw new IOException("Encrypted ZIP entries are not supported yet: " + entry.path);
             }
             if (currentInput != null) {
@@ -388,14 +335,14 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
 
         /// Opens an input stream for an entry.
         private InputStream entryInputStream(LocalEntry entry) throws IOException {
-            boolean hasDataDescriptor = (entry.flags & ZIP_DATA_DESCRIPTOR_FLAG) != 0;
-            if (entry.method == ZIP_STORED_METHOD) {
+            boolean hasDataDescriptor = (entry.flags & DATA_DESCRIPTOR_FLAG) != 0;
+            if (entry.method == STORED_METHOD) {
                 if (hasDataDescriptor) {
                     throw new IOException("Stored ZIP entries with data descriptors are not supported yet");
                 }
                 return new BoundedInputStream(input, entry.compressedSize);
             }
-            if (entry.method == ZIP_DEFLATED_METHOD) {
+            if (entry.method == DEFLATED_METHOD) {
                 Inflater inflater = new Inflater(true);
                 InputStream compressed = hasDataDescriptor
                         ? input
@@ -653,76 +600,4 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         }
     }
 
-    /// Describes the synthetic file store for streaming ZIP input.
-    @NotNullByDefault
-    private static final class StreamingZipFileStore extends FileStore {
-        /// The shared streaming ZIP file store.
-        private static final StreamingZipFileStore INSTANCE = new StreamingZipFileStore();
-
-        /// Creates a streaming ZIP file store.
-        private StreamingZipFileStore() {
-        }
-
-        /// Returns the file store name.
-        @Override
-        public String name() {
-            return "zip-stream";
-        }
-
-        /// Returns the file store type.
-        @Override
-        public String type() {
-            return "zip";
-        }
-
-        /// Returns whether this file store is read-only.
-        @Override
-        public boolean isReadOnly() {
-            return true;
-        }
-
-        /// Returns an unknown total space value.
-        @Override
-        public long getTotalSpace() {
-            return 0;
-        }
-
-        /// Returns an unknown usable space value.
-        @Override
-        public long getUsableSpace() {
-            return 0;
-        }
-
-        /// Returns an unknown unallocated space value.
-        @Override
-        public long getUnallocatedSpace() {
-            return 0;
-        }
-
-        /// Returns whether this file store supports the given attribute view.
-        @Override
-        public boolean supportsFileAttributeView(Class<? extends java.nio.file.attribute.FileAttributeView> type) {
-            return false;
-        }
-
-        /// Returns whether this file store supports the given attribute view.
-        @Override
-        public boolean supportsFileAttributeView(String name) {
-            return false;
-        }
-
-        /// Returns no file store attribute view.
-        @Override
-        public <V extends FileStoreAttributeView> @Nullable V getFileStoreAttributeView(Class<V> type) {
-            Objects.requireNonNull(type, "type");
-            return null;
-        }
-
-        /// Returns no file store attribute values.
-        @Override
-        public Object getAttribute(String attribute) {
-            Objects.requireNonNull(attribute, "attribute");
-            throw new UnsupportedOperationException("Streaming ZIP file store attributes are not supported");
-        }
-    }
 }

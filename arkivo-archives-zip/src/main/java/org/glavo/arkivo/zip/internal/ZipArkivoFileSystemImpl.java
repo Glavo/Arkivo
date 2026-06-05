@@ -55,12 +55,17 @@ import java.util.*;
 import java.util.zip.Inflater;
 import java.util.zip.InflaterInputStream;
 
+import static org.glavo.arkivo.zip.internal.ZipConstants.CENTRAL_DIRECTORY_HEADER_SIGNATURE;
+import static org.glavo.arkivo.zip.internal.ZipConstants.ENCRYPTED_FLAG;
+import static org.glavo.arkivo.zip.internal.ZipConstants.END_OF_CENTRAL_DIRECTORY_SIGNATURE;
+import static org.glavo.arkivo.zip.internal.ZipConstants.LOCAL_FILE_HEADER_SIGNATURE;
+import static org.glavo.arkivo.zip.internal.ZipConstants.UINT32_MAX;
+import static org.glavo.arkivo.zip.internal.ZipConstants.ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIGNATURE;
+import static org.glavo.arkivo.zip.internal.ZipConstants.ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE;
+
 /// Implements ZIP archive file system state and operations.
 @NotNullByDefault
 public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
-    /// The ZIP local file header signature.
-    private static final int ZIP_LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
-
     /// The minimum ZIP local file header size.
     private static final int ZIP_LOCAL_FILE_HEADER_MIN_SIZE = 30;
 
@@ -73,21 +78,6 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// The buffer size used when scanning for the first local file header.
     private static final int ZIP_LOCAL_FILE_HEADER_SCAN_BUFFER_SIZE = 8192;
 
-    /// The marker value used by ZIP records when a 32-bit unsigned field is stored in ZIP64 metadata.
-    private static final long ZIP_UINT32_MAX = 0xffff_ffffL;
-
-    /// The ZIP end of central directory signature.
-    private static final int ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE = 0x06054b50;
-
-    /// The ZIP central directory file header signature.
-    private static final int ZIP_CENTRAL_DIRECTORY_HEADER_SIGNATURE = 0x02014b50;
-
-    /// The ZIP64 end of central directory record signature.
-    private static final int ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE = 0x06064b50;
-
-    /// The ZIP64 end of central directory locator signature.
-    private static final int ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIGNATURE = 0x07064b50;
-
     /// The minimum ZIP end of central directory record size.
     private static final int ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE = 22;
 
@@ -99,9 +89,6 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
 
     /// The minimum ZIP64 end of central directory record size.
     private static final int ZIP64_END_OF_CENTRAL_DIRECTORY_MIN_SIZE = 56;
-
-    /// The general purpose bit flag that marks encrypted entries.
-    private static final int ZIP_ENCRYPTED_FLAG = 1;
 
     /// The largest ZIP comment size stored in the end of central directory record.
     private static final int ZIP_COMMENT_MAX_SIZE = 0xffff;
@@ -351,7 +338,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         if (entry.directory) {
             throw new IOException("ZIP entry is a directory: " + path);
         }
-        if ((entry.generalPurposeFlags & ZIP_ENCRYPTED_FLAG) != 0) {
+        if ((entry.generalPurposeFlags & ENCRYPTED_FLAG) != 0) {
             throw new IOException("Encrypted ZIP entries are not supported yet: " + path);
         }
         return entry;
@@ -605,7 +592,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             while (centralDirectory.hasRemaining()) {
                 int offset = centralDirectory.position();
                 if (centralDirectory.remaining() < ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE
-                        || centralDirectory.getInt(offset) != ZIP_CENTRAL_DIRECTORY_HEADER_SIGNATURE) {
+                        || centralDirectory.getInt(offset) != CENTRAL_DIRECTORY_HEADER_SIGNATURE) {
                     throw new IOException("Invalid ZIP central directory header");
                 }
 
@@ -713,7 +700,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             readFully(channel, entry.localHeaderOffset, header);
         }
         header.flip();
-        if (header.getInt(0) != ZIP_LOCAL_FILE_HEADER_SIGNATURE) {
+        if (header.getInt(0) != LOCAL_FILE_HEADER_SIGNATURE) {
             throw new IOException("Invalid ZIP local file header");
         }
         int nameLength = Short.toUnsignedInt(header.getShort(ZIP_LOCAL_FILE_HEADER_NAME_LENGTH_OFFSET));
@@ -840,7 +827,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         ByteBuffer header = ByteBuffer.allocate(ZIP_LOCAL_FILE_HEADER_MIN_SIZE).order(ByteOrder.LITTLE_ENDIAN);
         readFully(channel, offset, header);
         header.flip();
-        if (header.getInt(0) != ZIP_LOCAL_FILE_HEADER_SIGNATURE) {
+        if (header.getInt(0) != LOCAL_FILE_HEADER_SIGNATURE) {
             throw new IOException("Invalid ZIP local file header");
         }
         int nameLength = Short.toUnsignedInt(header.getShort(ZIP_LOCAL_FILE_HEADER_NAME_LENGTH_OFFSET));
@@ -881,7 +868,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         buffer.flip();
 
         for (int index = searchSize - ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE; index >= 0; index--) {
-            if (buffer.getInt(index) != ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
+            if (buffer.getInt(index) != END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
                 continue;
             }
 
@@ -898,7 +885,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             long centralDirectoryOffset = Integer.toUnsignedLong(
                     buffer.getInt(index + ZIP_END_OF_CENTRAL_DIRECTORY_OFFSET_OFFSET)
             );
-            if (centralDirectorySize == ZIP_UINT32_MAX || centralDirectoryOffset == ZIP_UINT32_MAX) {
+            if (centralDirectorySize == UINT32_MAX || centralDirectoryOffset == UINT32_MAX) {
                 return readZip64EndRecord(channel, searchOffset + index);
             }
 
@@ -1013,7 +1000,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         buffer.flip();
 
         for (int index = searchSize - ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE; index >= 0; index--) {
-            if (buffer.getInt(index) != ZIP_END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
+            if (buffer.getInt(index) != END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
                 continue;
             }
 
@@ -1031,7 +1018,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                     buffer.getInt(index + ZIP_END_OF_CENTRAL_DIRECTORY_OFFSET_OFFSET)
             );
 
-            if (centralDirectorySize == ZIP_UINT32_MAX || centralDirectoryOffset == ZIP_UINT32_MAX) {
+            if (centralDirectorySize == UINT32_MAX || centralDirectoryOffset == UINT32_MAX) {
                 long firstLocalHeaderOffset = locateFirstLocalFileHeaderOffset(channel, size);
                 if (firstLocalHeaderOffset >= 0) {
                     return firstLocalHeaderOffset;
@@ -1082,7 +1069,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             long bufferOffset = offset - carrySize;
 
             for (int index = 0; index <= totalSize - ZIP_LOCAL_FILE_HEADER_MIN_SIZE; index++) {
-                if (buffer.getInt(index) != ZIP_LOCAL_FILE_HEADER_SIGNATURE) {
+                if (buffer.getInt(index) != LOCAL_FILE_HEADER_SIGNATURE) {
                     continue;
                 }
 
@@ -1114,7 +1101,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         ByteBuffer header = ByteBuffer.allocate(ZIP_LOCAL_FILE_HEADER_MIN_SIZE).order(ByteOrder.LITTLE_ENDIAN);
         readFully(channel, offset, header);
         header.flip();
-        if (header.getInt(0) != ZIP_LOCAL_FILE_HEADER_SIGNATURE) {
+        if (header.getInt(0) != LOCAL_FILE_HEADER_SIGNATURE) {
             return false;
         }
 
@@ -1319,9 +1306,9 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 long compressedSize,
                 long localHeaderOffset
         ) throws IOException {
-            boolean needsUncompressedSize = uncompressedSize == ZIP_UINT32_MAX;
-            boolean needsCompressedSize = compressedSize == ZIP_UINT32_MAX;
-            boolean needsLocalHeaderOffset = localHeaderOffset == ZIP_UINT32_MAX;
+            boolean needsUncompressedSize = uncompressedSize == UINT32_MAX;
+            boolean needsCompressedSize = compressedSize == UINT32_MAX;
+            boolean needsLocalHeaderOffset = localHeaderOffset == UINT32_MAX;
             if (!needsUncompressedSize && !needsCompressedSize && !needsLocalHeaderOffset) {
                 return new Zip64Values(uncompressedSize, compressedSize, localHeaderOffset);
             }
@@ -1536,7 +1523,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         @Override
         public ZipEncryption encryption() {
             ZipEntryRecord record = entry;
-            return record != null && (record.generalPurposeFlags & ZIP_ENCRYPTED_FLAG) != 0
+            return record != null && (record.generalPurposeFlags & ENCRYPTED_FLAG) != 0
                     ? ZipEncryption.traditional()
                     : ZipEncryption.none();
         }
