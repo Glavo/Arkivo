@@ -267,6 +267,55 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that archive open options accept array values.
+    @Test
+    public void fileSystemArchiveOpenOptionsAcceptArrayValues() throws IOException {
+        Path archivePath = createTemporaryArchivePath("fs-create-array-");
+
+        try {
+            try (ZipArkivoFileSystem fileSystem =
+                         ZipArkivoFileSystem.open(
+                                 archivePath,
+                                 Map.of(
+                                         ZipArkivoFileSystem.ARCHIVE_OPEN_OPTIONS.key(),
+                                         new StandardOpenOption[]{
+                                                 StandardOpenOption.CREATE_NEW,
+                                                 StandardOpenOption.WRITE
+                                         }
+                                 )
+                         )) {
+                Files.writeString(fileSystem.getPath("/hello.txt"), "hello", StandardCharsets.UTF_8);
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals("hello", Files.readString(fileSystem.getPath("/hello.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that unsafe archive write open options are rejected.
+    @Test
+    public void fileSystemArchiveOpenOptionsRejectUnsafeWriteValues() throws IOException {
+        Path archivePath = createTemporaryArchivePath("fs-create-invalid-");
+
+        try {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> ZipArkivoFileSystem.open(
+                            archivePath,
+                            Map.of(
+                                    ZipArkivoFileSystem.ARCHIVE_OPEN_OPTIONS.key(),
+                                    Set.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+                            )
+                    )
+            );
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that a streaming ZIP reader can read entries from an input stream.
     @Test
     public void streamingReaderFromInputStream() throws IOException {
