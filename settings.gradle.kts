@@ -9,4 +9,5 @@ include(
     "arkivo-codecs-lzma",
     "arkivo-codecs-zstd",
     "arkivo-archives-zip",
+    "arkivo-archives-7z",
 )

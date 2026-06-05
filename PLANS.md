@@ -215,6 +215,11 @@ arkivo-archives-zip
   ZipArkivoEntryAttributeView
   ZipArkivoFileSystemProvider
 
+arkivo-archives-7z
+  SevenZipArkivoFormat
+  SevenZipArkivoFileSystem
+  SevenZipArkivoFileSystemProvider
+
 arkivo-archives-tar
   TarArkivoFileSystem
 ```
@@ -324,7 +329,7 @@ Each archive format should define only the attribute interfaces it needs, such a
 8. Add lower-level reader, writer, or streaming APIs only if FileSystem APIs are not sufficient for a concrete format.
 9. Add xz and zstd codec modules.
 10. Add tar support after deciding whether the public surface should be a filesystem, streaming API, or both.
-11. Add 7z read support and a read-only 7z filesystem.
+11. Complete 7z header parsing, entry indexing, and read-only entry data access.
 12. Add rar read support and a read-only rar filesystem.
 
 ## Compatibility Notes
