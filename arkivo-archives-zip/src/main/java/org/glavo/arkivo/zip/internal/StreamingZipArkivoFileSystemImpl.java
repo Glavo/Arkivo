@@ -14,6 +14,9 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URI;
+import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.NonReadableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessMode;
@@ -238,6 +241,20 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// Opens an output stream for the next ZIP entry.
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
         return newOutputStream(path, EntryMetadata.deflated(), options);
+    }
+
+    /// Opens a forward-only writable byte channel for the next ZIP entry.
+    public SeekableByteChannel newByteChannel(
+            Path path,
+            Set<? extends OpenOption> options,
+            FileAttribute<?>... attributes
+    ) throws IOException {
+        Objects.requireNonNull(options, "options");
+        Objects.requireNonNull(attributes, "attributes");
+        if (attributes.length != 0) {
+            throw new UnsupportedOperationException("ZIP streaming file attributes are not supported");
+        }
+        return new EntryWritableByteChannel(newOutputStream(path, options.toArray(OpenOption[]::new)));
     }
 
     /// Opens an output stream for the next ZIP entry with central directory attributes.
@@ -752,6 +769,110 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 throw new IOException("ZIP entry output stream is closed");
             }
             checkOpen();
+        }
+    }
+
+    /// Adapts an entry output stream to a forward-only seekable byte channel.
+    @NotNullByDefault
+    private static final class EntryWritableByteChannel implements SeekableByteChannel {
+        /// The wrapped entry output stream.
+        private final OutputStream output;
+
+        /// The current forward-only position.
+        private long position;
+
+        /// Whether this channel is open.
+        private boolean open = true;
+
+        /// Creates a writable byte channel.
+        private EntryWritableByteChannel(OutputStream output) {
+            this.output = Objects.requireNonNull(output, "output");
+        }
+
+        /// Reads are never supported by ZIP output entry channels.
+        @Override
+        public int read(ByteBuffer destination) {
+            Objects.requireNonNull(destination, "destination");
+            throw new NonReadableChannelException();
+        }
+
+        /// Writes bytes at the current forward-only position.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            ensureOpen();
+            int length = source.remaining();
+            if (source.hasArray()) {
+                int offset = source.arrayOffset() + source.position();
+                output.write(source.array(), offset, length);
+                source.position(source.limit());
+            } else {
+                byte[] buffer = new byte[Math.min(length, 8192)];
+                while (source.hasRemaining()) {
+                    int count = Math.min(source.remaining(), buffer.length);
+                    source.get(buffer, 0, count);
+                    output.write(buffer, 0, count);
+                }
+            }
+            position += length;
+            return length;
+        }
+
+        /// Returns the current forward-only position.
+        @Override
+        public long position() throws IOException {
+            ensureOpen();
+            return position;
+        }
+
+        /// Accepts only the current position because ZIP output entry channels are forward-only.
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            ensureOpen();
+            if (newPosition != position) {
+                throw new UnsupportedOperationException("ZIP output entry channels are forward-only");
+            }
+            return this;
+        }
+
+        /// Returns the number of bytes written so far.
+        @Override
+        public long size() throws IOException {
+            ensureOpen();
+            return position;
+        }
+
+        /// Truncation is not supported by ZIP output entry channels.
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            ensureOpen();
+            if (size != position) {
+                throw new UnsupportedOperationException("ZIP output entry channels cannot be truncated");
+            }
+            return this;
+        }
+
+        /// Returns whether this channel is open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes the wrapped entry output stream.
+        @Override
+        public void close() throws IOException {
+            if (!open) {
+                return;
+            }
+            open = false;
+            output.close();
+        }
+
+        /// Requires this channel to be open.
+        private void ensureOpen() throws IOException {
+            if (!open) {
+                throw new ClosedChannelException();
+            }
         }
     }
 

@@ -22,6 +22,7 @@ import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFileAttributeView;
@@ -236,11 +237,20 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals(false, fileSystem.isReadOnly());
                 Files.createDirectory(fileSystem.getPath("/dir"));
                 Files.writeString(fileSystem.getPath("/dir/hello.txt"), "hello", StandardCharsets.UTF_8);
+                try (SeekableByteChannel channel = Files.newByteChannel(
+                        fileSystem.getPath("/dir/channel.bin"),
+                        Set.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+                )) {
+                    assertEquals(0, channel.position());
+                    assertEquals(7, channel.write(ByteBuffer.wrap("channel".getBytes(StandardCharsets.UTF_8))));
+                    assertEquals(7, channel.position());
+                }
             }
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
                 assertEquals(true, Files.isDirectory(fileSystem.getPath("/dir")));
                 assertEquals("hello", Files.readString(fileSystem.getPath("/dir/hello.txt"), StandardCharsets.UTF_8));
+                assertEquals("channel", Files.readString(fileSystem.getPath("/dir/channel.bin"), StandardCharsets.UTF_8));
             }
         } finally {
             deleteTemporaryArchive(archivePath);

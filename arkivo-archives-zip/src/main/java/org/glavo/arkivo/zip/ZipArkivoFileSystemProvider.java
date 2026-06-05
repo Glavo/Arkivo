@@ -138,7 +138,10 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
         if (fileSystem instanceof ZipArkivoFileSystemImpl readFileSystem) {
             return readFileSystem.newByteChannel(path, options, attributes);
         }
-        throw new UnsupportedOperationException("Streaming ZIP output does not expose seekable byte channels");
+        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
+            return writeFileSystem.newByteChannel(path, options, attributes);
+        }
+        throw new ProviderMismatchException();
     }
 
     /// Opens an input stream for a path inside a ZIP archive file system.
