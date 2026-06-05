@@ -24,6 +24,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     /// The internal entry stream, or `null` until iteration starts.
     private @Nullable ArkivoFileSystemEntryStream entries;
 
+    /// The current ZIP entry attributes, or `null` when no entry is active.
+    private @Nullable ZipArkivoEntryAttributes currentAttributes;
+
     /// Whether this reader is open.
     private boolean open = true;
 
@@ -45,15 +48,27 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         );
     }
 
-    /// Returns the next ZIP entry attributes, or `null` when no entries remain.
+    /// Advances to the next ZIP entry and returns whether an entry is available.
     @Override
-    public synchronized @Nullable ZipArkivoEntryAttributes next() throws IOException {
+    public synchronized boolean next() throws IOException {
         if (openedEntryStream().next() == null) {
-            return null;
+            currentAttributes = null;
+            return false;
         }
         ZipArkivoEntryAttributes attributes = fileSystem.currentEntryAttributes();
         if (attributes == null) {
             throw new IOException("ZIP streaming reader did not expose the current entry");
+        }
+        currentAttributes = attributes;
+        return true;
+    }
+
+    /// Returns the current ZIP entry attributes.
+    @Override
+    public synchronized ZipArkivoEntryAttributes attributes() {
+        ZipArkivoEntryAttributes attributes = currentAttributes;
+        if (attributes == null) {
+            throw new IllegalStateException("ZIP streaming reader is not positioned at an entry");
         }
         return attributes;
     }
@@ -71,6 +86,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             return;
         }
         open = false;
+        currentAttributes = null;
         ArkivoFileSystemEntryStream entryStream = entries;
         try {
             if (entryStream != null) {
