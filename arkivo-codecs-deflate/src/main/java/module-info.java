@@ -6,7 +6,7 @@ module org.glavo.arkivo.codecs.deflate {
     requires org.glavo.arkivo.base;
     requires static org.jetbrains.annotations;
 
-    exports org.glavo.arkivo.deflate;
+    exports org.glavo.arkivo.compress.deflate;
 
-    provides org.glavo.arkivo.compress.CompressionCodec with org.glavo.arkivo.deflate.DeflateCodec;
+    provides org.glavo.arkivo.compress.CompressionCodec with org.glavo.arkivo.compress.deflate.DeflateCodec;
 }

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.gzip;
+package org.glavo.arkivo.compress.gzip;
 
 import org.glavo.arkivo.compress.CompressionCodec;
 import org.jetbrains.annotations.NotNullByDefault;

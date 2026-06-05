@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.deflate;
+package org.glavo.arkivo.compress.lzma;
 
 import org.glavo.arkivo.compress.CompressionCodec;
 import org.glavo.arkivo.compress.CompressionCodecs;
@@ -19,26 +19,26 @@ import java.util.Objects;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/// Tests raw deflate codec behavior.
+/// Tests LZMA codec behavior.
 @NotNullByDefault
-public final class DeflateCodecTest {
-    /// Verifies that raw deflate compression round-trips bytes.
+public final class LzmaCodecTest {
+    /// Verifies that LZMA compression round-trips bytes.
     @Test
     public void roundTrip() throws IOException {
-        DeflateCodec codec = new DeflateCodec();
-        byte[] input = "hello deflate".getBytes(StandardCharsets.UTF_8);
+        LzmaCodec codec = new LzmaCodec();
+        byte[] input = "hello lzma".getBytes(StandardCharsets.UTF_8);
 
         assertEquals(true, codec instanceof CompressionCodec);
-        assertEquals(DeflateCodec.NAME, codec.name());
+        assertEquals(LzmaCodec.NAME, codec.name());
         assertEquals(true, codec.canCompress());
         assertEquals(true, codec.canDecompress());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
-    /// Verifies that the raw deflate codec can be discovered through service loading.
+    /// Verifies that the LZMA codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(DeflateCodec.class, Objects.requireNonNull(CompressionCodecs.find(DeflateCodec.NAME)).getClass());
+        assertEquals(LzmaCodec.class, Objects.requireNonNull(CompressionCodecs.find(LzmaCodec.NAME)).getClass());
     }
 
     /// Compresses and decompresses the given bytes.

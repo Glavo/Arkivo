@@ -7,7 +7,7 @@ module org.glavo.arkivo.codecs.lzma {
     requires org.tukaani.xz;
     requires static org.jetbrains.annotations;
 
-    exports org.glavo.arkivo.lzma;
+    exports org.glavo.arkivo.compress.lzma;
 
-    provides org.glavo.arkivo.compress.CompressionCodec with org.glavo.arkivo.lzma.LzmaCodec;
+    provides org.glavo.arkivo.compress.CompressionCodec with org.glavo.arkivo.compress.lzma.LzmaCodec;
 }

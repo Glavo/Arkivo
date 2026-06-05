@@ -7,7 +7,7 @@ module org.glavo.arkivo.codecs.zstd {
     requires com.github.luben.zstd_jni;
     requires static org.jetbrains.annotations;
 
-    exports org.glavo.arkivo.zstd;
+    exports org.glavo.arkivo.compress.zstd;
 
-    provides org.glavo.arkivo.compress.CompressionCodec with org.glavo.arkivo.zstd.ZstdCodec;
+    provides org.glavo.arkivo.compress.CompressionCodec with org.glavo.arkivo.compress.zstd.ZstdCodec;
 }

@@ -6,7 +6,7 @@ module org.glavo.arkivo.codecs.zlib {
     requires org.glavo.arkivo.base;
     requires static org.jetbrains.annotations;
 
-    exports org.glavo.arkivo.zlib;
+    exports org.glavo.arkivo.compress.zlib;
 
-    provides org.glavo.arkivo.compress.CompressionCodec with org.glavo.arkivo.zlib.ZlibCodec;
+    provides org.glavo.arkivo.compress.CompressionCodec with org.glavo.arkivo.compress.zlib.ZlibCodec;
 }

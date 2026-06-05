@@ -7,7 +7,7 @@ module org.glavo.arkivo.codecs.xz {
     requires org.tukaani.xz;
     requires static org.jetbrains.annotations;
 
-    exports org.glavo.arkivo.xz;
+    exports org.glavo.arkivo.compress.xz;
 
-    provides org.glavo.arkivo.compress.CompressionCodec with org.glavo.arkivo.xz.XzCodec;
+    provides org.glavo.arkivo.compress.CompressionCodec with org.glavo.arkivo.compress.xz.XzCodec;
 }
