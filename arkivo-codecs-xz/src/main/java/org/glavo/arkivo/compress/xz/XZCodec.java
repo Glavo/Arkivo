@@ -16,12 +16,12 @@ import java.nio.channels.WritableByteChannel;
 
 /// Provides XZ compression and decompression channels.
 @NotNullByDefault
-public final class XzCodec implements CompressionCodec {
+public final class XZCodec implements CompressionCodec {
     /// The stable XZ codec name.
     public static final String NAME = "xz";
 
     /// Creates an XZ codec.
-    public XzCodec() {
+    public XZCodec() {
     }
 
     /// Returns the stable XZ codec name.

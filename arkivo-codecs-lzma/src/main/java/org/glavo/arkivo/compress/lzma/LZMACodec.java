@@ -16,7 +16,7 @@ import java.nio.channels.WritableByteChannel;
 
 /// Provides LZMA compression and decompression channels.
 @NotNullByDefault
-public final class LzmaCodec implements CompressionCodec {
+public final class LZMACodec implements CompressionCodec {
     /// The stable LZMA codec name.
     public static final String NAME = "lzma";
 
@@ -27,7 +27,7 @@ public final class LzmaCodec implements CompressionCodec {
     private static final int DEFAULT_DICTIONARY_SIZE = 1 << 20;
 
     /// Creates an LZMA codec.
-    public LzmaCodec() {
+    public LZMACodec() {
     }
 
     /// Returns the stable LZMA codec name.

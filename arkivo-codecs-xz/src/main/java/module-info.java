@@ -9,5 +9,5 @@ module org.glavo.arkivo.codecs.xz {
 
     exports org.glavo.arkivo.compress.xz;
 
-    provides org.glavo.arkivo.compress.CompressionCodec with org.glavo.arkivo.compress.xz.XzCodec;
+    provides org.glavo.arkivo.compress.CompressionCodec with org.glavo.arkivo.compress.xz.XZCodec;
 }

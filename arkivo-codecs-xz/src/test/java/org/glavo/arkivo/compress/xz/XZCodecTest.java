@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.compress.lzma;
+package org.glavo.arkivo.compress.xz;
 
 import org.glavo.arkivo.compress.CompressionCodec;
 import org.glavo.arkivo.compress.CompressionCodecs;
@@ -19,26 +19,26 @@ import java.util.Objects;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/// Tests LZMA codec behavior.
+/// Tests XZ codec behavior.
 @NotNullByDefault
-public final class LzmaCodecTest {
-    /// Verifies that LZMA compression round-trips bytes.
+public final class XZCodecTest {
+    /// Verifies that XZ compression round-trips bytes.
     @Test
     public void roundTrip() throws IOException {
-        LzmaCodec codec = new LzmaCodec();
-        byte[] input = "hello lzma".getBytes(StandardCharsets.UTF_8);
+        XZCodec codec = new XZCodec();
+        byte[] input = "hello xz".getBytes(StandardCharsets.UTF_8);
 
         assertEquals(true, codec instanceof CompressionCodec);
-        assertEquals(LzmaCodec.NAME, codec.name());
+        assertEquals(XZCodec.NAME, codec.name());
         assertEquals(true, codec.canCompress());
         assertEquals(true, codec.canDecompress());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
-    /// Verifies that the LZMA codec can be discovered through service loading.
+    /// Verifies that the XZ codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(LzmaCodec.class, Objects.requireNonNull(CompressionCodecs.find(LzmaCodec.NAME)).getClass());
+        assertEquals(XZCodec.class, Objects.requireNonNull(CompressionCodecs.find(XZCodec.NAME)).getClass());
     }
 
     /// Compresses and decompresses the given bytes.

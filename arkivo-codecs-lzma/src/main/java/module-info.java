@@ -9,5 +9,5 @@ module org.glavo.arkivo.codecs.lzma {
 
     exports org.glavo.arkivo.compress.lzma;
 
-    provides org.glavo.arkivo.compress.CompressionCodec with org.glavo.arkivo.compress.lzma.LzmaCodec;
+    provides org.glavo.arkivo.compress.CompressionCodec with org.glavo.arkivo.compress.lzma.LZMACodec;
 }
