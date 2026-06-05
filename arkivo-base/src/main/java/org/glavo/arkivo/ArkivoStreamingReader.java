@@ -14,7 +14,7 @@ import java.nio.file.attribute.BasicFileAttributes;
 
 /// Reads archive entries from a forward-only stream.
 @NotNullByDefault
-public abstract class ArkivoStreamingReader<A extends BasicFileAttributes> implements Closeable {
+public abstract class ArkivoStreamingReader implements Closeable {
     /// Creates a streaming archive reader base instance.
     protected ArkivoStreamingReader() {
     }
@@ -23,7 +23,7 @@ public abstract class ArkivoStreamingReader<A extends BasicFileAttributes> imple
     public abstract boolean next() throws IOException;
 
     /// Returns the current archive entry attributes.
-    public abstract A attributes();
+    public abstract BasicFileAttributes attributes();
 
     /// Opens a readable channel for the current file entry.
     public abstract ReadableByteChannel openChannel() throws IOException;

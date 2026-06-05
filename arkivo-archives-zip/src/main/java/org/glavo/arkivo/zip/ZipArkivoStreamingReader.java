@@ -15,7 +15,7 @@ import java.util.Objects;
 
 /// Reads ZIP entries from a forward-only stream.
 @NotNullByDefault
-public abstract sealed class ZipArkivoStreamingReader extends ArkivoStreamingReader<ZipArkivoEntryAttributes>
+public abstract sealed class ZipArkivoStreamingReader extends ArkivoStreamingReader
         permits ZipArkivoStreamingReaderImpl {
     /// Creates a streaming ZIP reader base instance.
     protected ZipArkivoStreamingReader() {
@@ -49,4 +49,8 @@ public abstract sealed class ZipArkivoStreamingReader extends ArkivoStreamingRea
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
         return new ZipArkivoStreamingReaderImpl(source, config);
     }
+
+    /// Returns the current ZIP entry attributes.
+    @Override
+    public abstract ZipArkivoEntryAttributes attributes();
 }
