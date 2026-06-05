@@ -3,14 +3,14 @@
 
 package org.glavo.arkivo.zip;
 
+import org.glavo.arkivo.ArkivoStreamingEntry;
+import org.glavo.arkivo.ArkivoStreamingWriter;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.zip.internal.ZipArkivoStreamingWriterImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 
-import java.io.Closeable;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 import java.util.Map;
@@ -18,7 +18,8 @@ import java.util.Objects;
 
 /// Writes ZIP entries to a forward-only stream.
 @NotNullByDefault
-public abstract sealed class ZipArkivoStreamingWriter implements Closeable permits ZipArkivoStreamingWriterImpl {
+public abstract sealed class ZipArkivoStreamingWriter extends ArkivoStreamingWriter
+        permits ZipArkivoStreamingWriterImpl {
     /// Creates a streaming ZIP writer base instance.
     protected ZipArkivoStreamingWriter() {
     }
@@ -65,16 +66,9 @@ public abstract sealed class ZipArkivoStreamingWriter implements Closeable permi
         return ZipArkivoStreamingWriterImpl.open(output, config);
     }
 
-    /// Creates a directory entry.
-    public abstract void createDirectory(Path path) throws IOException;
-
-    /// Opens an output stream for the next regular file entry.
-    public abstract OutputStream openOutputStream(Path path) throws IOException;
-
-    /// Opens a writable channel for the next regular file entry.
-    public WritableByteChannel openChannel(Path path) throws IOException {
-        return Channels.newChannel(openOutputStream(path));
-    }
+    /// Creates a pending ZIP entry for the given logical archive path.
+    @Override
+    public abstract ArkivoStreamingEntry entry(Path path) throws IOException;
 
     /// Closes this streaming writer and finishes the ZIP stream.
     @Override

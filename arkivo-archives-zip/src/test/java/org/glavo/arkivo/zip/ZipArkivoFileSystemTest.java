@@ -5,6 +5,7 @@ package org.glavo.arkivo.zip;
 
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.ArkivoStreamingEntry;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -22,6 +23,7 @@ import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributeView;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -29,6 +31,7 @@ import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -69,6 +72,38 @@ public final class ZipArkivoFileSystemTest {
                 try (var output = writer.openOutputStream(Path.of("dir", "hello.txt"))) {
                     output.write("hello".getBytes(StandardCharsets.UTF_8));
                 }
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals("hello", Files.readString(fileSystem.getPath("/dir/hello.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a streaming ZIP writer exposes pending entry attribute views.
+    @Test
+    public void streamingWriterEntryAttributeView() throws IOException {
+        Path archivePath = createTemporaryArchivePath("stream-write-attrs-");
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+                ArkivoStreamingEntry entry = writer.entry(Path.of("dir", "hello.txt"));
+                BasicFileAttributeView basicView = entry.attributeView(BasicFileAttributeView.class);
+                ZipArkivoEntryAttributeView zipView = entry.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(basicView);
+                assertNotNull(zipView);
+
+                zipView.setMethod(ZipMethod.deflated());
+                ZipArkivoEntryAttributes attributes = zipView.readAttributes();
+                assertEquals("dir/hello.txt", attributes.path());
+                assertEquals(ZipMethod.deflated(), attributes.method());
+
+                try (var output = entry.openOutputStream()) {
+                    output.write("hello".getBytes(StandardCharsets.UTF_8));
+                }
+                assertThrows(IllegalStateException.class, () -> zipView.setMethod(ZipMethod.stored()));
             }
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
