@@ -3,8 +3,11 @@
 
 package org.glavo.arkivo.zip.internal;
 
+import org.glavo.arkivo.ArkivoCommitTarget;
+import org.glavo.arkivo.ArkivoEditStorage;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.ArkivoSourceMutationPolicy;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipEntryNameEncoding;
 import org.glavo.arkivo.zip.ZipEncryption;
@@ -16,7 +19,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertSame;
 
 /// Tests ZIP file system environment configuration parsing.
 @NotNullByDefault
@@ -38,6 +41,9 @@ public final class ZipArkivoFileSystemConfigTest {
         assertEquals("arkivo.zip.splitSize", ZipArkivoFileSystem.SPLIT_SIZE.key());
         assertEquals("arkivo.zip.entryNameEncoding", ZipArkivoFileSystem.ENTRY_NAME_ENCODING.key());
         assertEquals("arkivo.threadSafety", ArkivoFileSystem.THREAD_SAFETY.key());
+        assertEquals("arkivo.editStorage", ArkivoFileSystem.EDIT_STORAGE.key());
+        assertEquals("arkivo.commitTarget", ArkivoFileSystem.COMMIT_TARGET.key());
+        assertEquals("arkivo.sourceMutationPolicy", ArkivoFileSystem.SOURCE_MUTATION_POLICY.key());
     }
 
     /// Verifies that string environment values are parsed through typed ZIP options.
@@ -75,5 +81,24 @@ public final class ZipArkivoFileSystemConfigTest {
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
 
         assertArrayEquals(new byte[]{1, 2, 3}, config.passwordProvider().passwordForArchive());
+    }
+
+    /// Verifies that ZIP file system configuration accepts common edit strategy options.
+    @Test
+    public void editStrategies() {
+        ArkivoEditStorage storage = ArkivoEditStorage.memory();
+        ArkivoCommitTarget commitTarget = ArkivoCommitTarget.replaceOriginal();
+        ArkivoSourceMutationPolicy sourceMutationPolicy = ArkivoSourceMutationPolicy.patchWhenSafe();
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.EDIT_STORAGE.key(), storage,
+                ArkivoFileSystem.COMMIT_TARGET.key(), commitTarget,
+                ArkivoFileSystem.SOURCE_MUTATION_POLICY.key(), sourceMutationPolicy
+        );
+
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+
+        assertSame(storage, config.editStorage());
+        assertSame(commitTarget, config.commitTarget());
+        assertSame(sourceMutationPolicy, config.sourceMutationPolicy());
     }
 }

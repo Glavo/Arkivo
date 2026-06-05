@@ -37,6 +37,22 @@ public abstract class ArkivoFileSystem extends FileSystem {
                     ArkivoFileSystem::openOptionsValue
             );
 
+    /// The common environment option for staging new and replacement archive entry content.
+    public static final ArkivoFileSystemOption<ArkivoEditStorage> EDIT_STORAGE =
+            ArkivoFileSystemOption.of("arkivo", "editStorage", ArkivoEditStorage.class);
+
+    /// The common environment option for choosing where assembled archive bytes are committed.
+    public static final ArkivoFileSystemOption<ArkivoCommitTarget> COMMIT_TARGET =
+            ArkivoFileSystemOption.of("arkivo", "commitTarget", ArkivoCommitTarget.class);
+
+    /// The common environment option for deciding whether direct source-file mutation may be used.
+    public static final ArkivoFileSystemOption<ArkivoSourceMutationPolicy> SOURCE_MUTATION_POLICY =
+            ArkivoFileSystemOption.of(
+                    "arkivo",
+                    "sourceMutationPolicy",
+                    ArkivoSourceMutationPolicy.class
+            );
+
     /// The requested file system thread-safety strategy.
     private final ArkivoFileSystemThreadSafety threadSafety;
 

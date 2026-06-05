@@ -3,9 +3,12 @@
 
 package org.glavo.arkivo.zip.internal;
 
+import org.glavo.arkivo.ArkivoCommitTarget;
+import org.glavo.arkivo.ArkivoEditStorage;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoPasswordProvider;
+import org.glavo.arkivo.ArkivoSourceMutationPolicy;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipEntryNameEncoding;
 import org.glavo.arkivo.zip.ZipEncryption;
@@ -41,7 +44,10 @@ public final class ZipArkivoFileSystemConfig {
             ZipEncryption.none(),
             NO_SPLIT_SIZE,
             ZipEntryNameEncoding.standard(),
-            ArkivoFileSystemThreadSafety.CONCURRENT_READ
+            ArkivoFileSystemThreadSafety.CONCURRENT_READ,
+            null,
+            null,
+            null
     );
 
     /// The open options used to open the backing archive path.
@@ -62,6 +68,15 @@ public final class ZipArkivoFileSystemConfig {
     /// The requested ZIP file system thread-safety strategy.
     private final ArkivoFileSystemThreadSafety threadSafety;
 
+    /// The configured edit storage override, or `null` when the file system should choose a default.
+    private final @Nullable ArkivoEditStorage editStorage;
+
+    /// The configured commit target override, or `null` when the file system should choose a default.
+    private final @Nullable ArkivoCommitTarget commitTarget;
+
+    /// The configured source mutation policy override, or `null` when the file system should choose a default.
+    private final @Nullable ArkivoSourceMutationPolicy sourceMutationPolicy;
+
     /// Creates parsed ZIP file system configuration.
     public ZipArkivoFileSystemConfig(
             Set<? extends OpenOption> openOptions,
@@ -69,7 +84,10 @@ public final class ZipArkivoFileSystemConfig {
             ZipEncryption defaultEncryption,
             long splitSize,
             ZipEntryNameEncoding entryNameEncoding,
-            ArkivoFileSystemThreadSafety threadSafety
+            ArkivoFileSystemThreadSafety threadSafety,
+            @Nullable ArkivoEditStorage editStorage,
+            @Nullable ArkivoCommitTarget commitTarget,
+            @Nullable ArkivoSourceMutationPolicy sourceMutationPolicy
     ) {
         if (splitSize != NO_SPLIT_SIZE && splitSize <= 0) {
             throw new IllegalArgumentException("splitSize must be positive or NO_SPLIT_SIZE");
@@ -82,6 +100,9 @@ public final class ZipArkivoFileSystemConfig {
         this.splitSize = splitSize;
         this.entryNameEncoding = Objects.requireNonNull(entryNameEncoding, "entryNameEncoding");
         this.threadSafety = Objects.requireNonNull(threadSafety, "threadSafety");
+        this.editStorage = editStorage;
+        this.commitTarget = commitTarget;
+        this.sourceMutationPolicy = sourceMutationPolicy;
     }
 
     /// Parses ZIP file system configuration from an environment map.
@@ -120,6 +141,9 @@ public final class ZipArkivoFileSystemConfig {
                         environment,
                         ArkivoFileSystemThreadSafety.CONCURRENT_READ
                 );
+        ArkivoEditStorage editStorage = ArkivoFileSystem.EDIT_STORAGE.read(environment);
+        ArkivoCommitTarget commitTarget = ArkivoFileSystem.COMMIT_TARGET.read(environment);
+        ArkivoSourceMutationPolicy sourceMutationPolicy = ArkivoFileSystem.SOURCE_MUTATION_POLICY.read(environment);
 
         return new ZipArkivoFileSystemConfig(
                 openOptions,
@@ -127,7 +151,10 @@ public final class ZipArkivoFileSystemConfig {
                 defaultEncryption,
                 splitSize,
                 entryNameEncoding,
-                threadSafety
+                threadSafety,
+                editStorage,
+                commitTarget,
+                sourceMutationPolicy
         );
     }
 
@@ -164,6 +191,21 @@ public final class ZipArkivoFileSystemConfig {
     /// Returns the requested ZIP file system thread-safety strategy.
     public ArkivoFileSystemThreadSafety threadSafety() {
         return threadSafety;
+    }
+
+    /// Returns the configured edit storage override, or `null` when the file system should choose a default.
+    public @Nullable ArkivoEditStorage editStorage() {
+        return editStorage;
+    }
+
+    /// Returns the configured commit target override, or `null` when the file system should choose a default.
+    public @Nullable ArkivoCommitTarget commitTarget() {
+        return commitTarget;
+    }
+
+    /// Returns the configured source mutation policy override, or `null` when the file system should choose a default.
+    public @Nullable ArkivoSourceMutationPolicy sourceMutationPolicy() {
+        return sourceMutationPolicy;
     }
 
     /// Parses the password provider from an environment map.

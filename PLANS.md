@@ -107,7 +107,6 @@ ArkivoVolumeSource
 ArkivoFileSystemOption
 ArkivoFileSystem
 ArkivoStreamingReader
-ArkivoEditor
 ArkivoEditStorage
 ArkivoStoredContent
 ArkivoCommitTarget

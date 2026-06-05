@@ -18,21 +18,21 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-/// Tests built-in archive editor strategies.
+/// Tests built-in archive file system edit strategies.
 @NotNullByDefault
-public final class ArkivoEditorStrategyTest {
-    /// Verifies that common editor option keys use the Arkivo editor namespace.
+public final class ArkivoFileSystemEditStrategyTest {
+    /// Verifies that common file system edit option keys use the Arkivo namespace.
     @Test
-    public void commonEditorOptionKeysUseArkivoEditorNamespace() {
-        assertEquals("arkivo.editor", ArkivoEditor.STORAGE.namespace());
-        assertEquals("storage", ArkivoEditor.STORAGE.name());
-        assertEquals("arkivo.editor.storage", ArkivoEditor.STORAGE.key());
-        assertEquals("arkivo.editor", ArkivoEditor.COMMIT_TARGET.namespace());
-        assertEquals("commitTarget", ArkivoEditor.COMMIT_TARGET.name());
-        assertEquals("arkivo.editor.commitTarget", ArkivoEditor.COMMIT_TARGET.key());
-        assertEquals("arkivo.editor", ArkivoEditor.SOURCE_MUTATION_POLICY.namespace());
-        assertEquals("sourceMutationPolicy", ArkivoEditor.SOURCE_MUTATION_POLICY.name());
-        assertEquals("arkivo.editor.sourceMutationPolicy", ArkivoEditor.SOURCE_MUTATION_POLICY.key());
+    public void commonFileSystemEditOptionKeysUseArkivoNamespace() {
+        assertEquals("arkivo", ArkivoFileSystem.EDIT_STORAGE.namespace());
+        assertEquals("editStorage", ArkivoFileSystem.EDIT_STORAGE.name());
+        assertEquals("arkivo.editStorage", ArkivoFileSystem.EDIT_STORAGE.key());
+        assertEquals("arkivo", ArkivoFileSystem.COMMIT_TARGET.namespace());
+        assertEquals("commitTarget", ArkivoFileSystem.COMMIT_TARGET.name());
+        assertEquals("arkivo.commitTarget", ArkivoFileSystem.COMMIT_TARGET.key());
+        assertEquals("arkivo", ArkivoFileSystem.SOURCE_MUTATION_POLICY.namespace());
+        assertEquals("sourceMutationPolicy", ArkivoFileSystem.SOURCE_MUTATION_POLICY.name());
+        assertEquals("arkivo.sourceMutationPolicy", ArkivoFileSystem.SOURCE_MUTATION_POLICY.key());
     }
 
     /// Verifies that memory edit storage can stage and reopen content.
@@ -62,7 +62,7 @@ public final class ArkivoEditorStrategyTest {
     /// Verifies that a fixed commit target writes assembled archive bytes to its target path.
     @Test
     public void fixedCommitTarget() throws IOException {
-        Path directory = Files.createTempDirectory(Path.of("build", "tmp"), "arkivo-editor-target-");
+        Path directory = Files.createTempDirectory(Path.of("build", "tmp"), "arkivo-fs-target-");
         Path sourcePath = directory.resolve("source.zip");
         Path targetPath = directory.resolve("target.zip");
         byte[] content = "zip".getBytes(StandardCharsets.UTF_8);
