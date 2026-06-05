@@ -273,6 +273,13 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         readInt(input);
     }
 
+    /// Reads a ZIP data descriptor after its signature has already been consumed.
+    private void readDataDescriptorAfterSignature() throws IOException {
+        readInt(input);
+        readInt(input);
+        readInt(input);
+    }
+
     /// Decodes an entry path.
     private String decodePath(byte[] rawName, int flags) {
         if ((flags & UTF8_FLAG) != 0) {
@@ -408,7 +415,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             boolean hasDataDescriptor = (entry.flags & DATA_DESCRIPTOR_FLAG) != 0;
             if (entry.method == STORED_METHOD) {
                 if (hasDataDescriptor) {
-                    throw new IOException("Stored ZIP entries with data descriptors are not supported yet");
+                    return new StoredDataDescriptorInputStream(input);
                 }
                 return new BoundedInputStream(input, entry.compressedSize);
             }
@@ -600,6 +607,104 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
                 }
             } finally {
                 inflater.end();
+            }
+        }
+    }
+
+    /// Reads stored ZIP entry data until a signed data descriptor is found.
+    @NotNullByDefault
+    private final class StoredDataDescriptorInputStream extends InputStream {
+        /// The descriptor signature bytes in stream order.
+        private static final byte[] SIGNATURE = new byte[]{
+                0x50,
+                0x4b,
+                0x07,
+                0x08
+        };
+
+        /// The source stream.
+        private final PushbackInputStream input;
+
+        /// Whether the data descriptor has been consumed.
+        private boolean finishedEntry;
+
+        /// Creates a stored entry input stream.
+        private StoredDataDescriptorInputStream(PushbackInputStream input) {
+            this.input = Objects.requireNonNull(input, "input");
+        }
+
+        /// Reads one stored entry byte.
+        @Override
+        public int read() throws IOException {
+            if (finishedEntry) {
+                return -1;
+            }
+
+            int first = input.read();
+            if (first < 0) {
+                throw new EOFException("Unexpected end of stored ZIP entry before data descriptor");
+            }
+            if (first != Byte.toUnsignedInt(SIGNATURE[0])) {
+                return first;
+            }
+
+            byte[] candidate = new byte[3];
+            int count = 0;
+            while (count < candidate.length) {
+                int value = input.read();
+                if (value < 0) {
+                    unread(candidate, count);
+                    return first;
+                }
+                candidate[count++] = (byte) value;
+                if (value != Byte.toUnsignedInt(SIGNATURE[count])) {
+                    unread(candidate, count);
+                    return first;
+                }
+            }
+
+            finishedEntry = true;
+            readDataDescriptorAfterSignature();
+            return -1;
+        }
+
+        /// Reads stored entry bytes.
+        @Override
+        public int read(byte[] bytes, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, bytes.length);
+            if (length == 0) {
+                return 0;
+            }
+            int first = read();
+            if (first < 0) {
+                return -1;
+            }
+            bytes[offset] = (byte) first;
+            int count = 1;
+            while (count < length) {
+                int value = read();
+                if (value < 0) {
+                    break;
+                }
+                bytes[offset + count] = (byte) value;
+                count++;
+            }
+            return count;
+        }
+
+        /// Drains the stored entry.
+        @Override
+        public void close() throws IOException {
+            byte[] discard = new byte[8192];
+            while (read(discard) >= 0) {
+                // Drain stored data until the signed descriptor has been consumed.
+            }
+        }
+
+        /// Pushes bytes back in reverse read order.
+        private void unread(byte[] bytes, int length) throws IOException {
+            for (int index = length - 1; index >= 0; index--) {
+                input.unread(bytes[index]);
             }
         }
     }

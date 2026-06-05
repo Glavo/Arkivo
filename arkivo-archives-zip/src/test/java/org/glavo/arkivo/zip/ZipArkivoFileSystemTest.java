@@ -289,6 +289,40 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that the streaming ZIP reader can read stored entries written with data descriptors.
+    @Test
+    public void streamingReaderStoredDataDescriptorFromWriter() throws IOException {
+        Path archivePath = createTemporaryArchivePath("stored-descriptor-");
+        byte[] content = "stored descriptor".getBytes(StandardCharsets.UTF_8);
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+                writer.beginFile("stored.txt");
+                ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(view);
+                view.setMethod(ZipMethod.stored());
+                try (var output = writer.openOutputStream()) {
+                    output.write(content);
+                }
+            }
+
+            byte[] archive = Files.readAllBytes(archivePath);
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals("stored.txt", attributes.path());
+                assertEquals(ZipMethod.stored(), attributes.method());
+                assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.compressedSize());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(content, input.readAllBytes());
+                }
+                assertEquals(false, reader.next());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies basic ZIP path operations.
     @Test
     public void paths() throws IOException {
