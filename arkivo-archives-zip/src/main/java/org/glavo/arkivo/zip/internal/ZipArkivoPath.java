@@ -57,7 +57,7 @@ final class ZipArkivoPath implements Path {
         StringBuilder builder = new StringBuilder(first);
         for (String part : more) {
             Objects.requireNonNull(part, "part");
-            if (builder.length() > 0 && builder.charAt(builder.length() - 1) != '/') {
+            if (!builder.isEmpty() && builder.charAt(builder.length() - 1) != '/') {
                 builder.append('/');
             }
             builder.append(part);
@@ -349,6 +349,9 @@ final class ZipArkivoPath implements Path {
             if (archiveUri != null) {
                 return archiveUri;
             }
+        }
+        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl implementation) {
+            return implementation.archiveUri();
         }
         throw new UnsupportedOperationException("ZIP paths backed by volume sources cannot be converted to URIs");
     }

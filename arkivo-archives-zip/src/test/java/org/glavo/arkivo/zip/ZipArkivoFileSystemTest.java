@@ -69,6 +69,28 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that a streaming ZIP file system can write entries in storage order.
+    @Test
+    public void streamingWriteFileSystem() throws IOException {
+        Path archivePath = createTemporaryArchivePath("stream-write-");
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.createStreaming(archivePath)) {
+                assertEquals(ArkivoStorageAccessSet.STREAM_WRITE, fileSystem.storageAccess());
+                assertEquals(false, fileSystem.isReadOnly());
+
+                Files.createDirectory(fileSystem.getPath("/dir"));
+                Files.writeString(fileSystem.getPath("/dir/hello.txt"), "hello", StandardCharsets.UTF_8);
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals("hello", Files.readString(fileSystem.getPath("/dir/hello.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies basic ZIP path operations.
     @Test
     public void paths() throws IOException {
@@ -424,12 +446,17 @@ public final class ZipArkivoFileSystemTest {
 
     /// Creates a temporary archive file with the given content under the module build directory.
     private static Path createTemporaryArchiveContent(byte[] content) throws IOException {
-        Path temporaryRoot = Path.of("build", "tmp", "arkivo-zip-tests");
-        Files.createDirectories(temporaryRoot);
-        Path temporaryDirectory = Files.createTempDirectory(temporaryRoot, "preamble-");
-        Path archivePath = temporaryDirectory.resolve("sfx.zip");
+        Path archivePath = createTemporaryArchivePath("preamble-");
         Files.write(archivePath, content);
         return archivePath;
+    }
+
+    /// Creates a temporary archive path under the module build directory.
+    private static Path createTemporaryArchivePath(String prefix) throws IOException {
+        Path temporaryRoot = Path.of("build", "tmp", "arkivo-zip-tests");
+        Files.createDirectories(temporaryRoot);
+        Path temporaryDirectory = Files.createTempDirectory(temporaryRoot, prefix);
+        return temporaryDirectory.resolve("sfx.zip");
     }
 
     /// Creates a temporary deflated ZIP archive under the module build directory.

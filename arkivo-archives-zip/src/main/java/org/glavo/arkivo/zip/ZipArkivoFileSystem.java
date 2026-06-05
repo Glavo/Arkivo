@@ -9,6 +9,7 @@ import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.ArkivoStorageAccessSet;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoVolumeSource;
+import org.glavo.arkivo.zip.internal.StreamingZipArkivoFileSystemImpl;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -21,7 +22,8 @@ import java.util.Objects;
 
 /// Opens ZIP archives as NIO file systems.
 @NotNullByDefault
-public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem permits ZipArkivoFileSystemImpl {
+public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
+        permits StreamingZipArkivoFileSystemImpl, ZipArkivoFileSystemImpl {
     /// The environment option for an `ArkivoPasswordProvider` value.
     public static final ArkivoFileSystemOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArkivoFileSystemOption.of("arkivo.zip", "passwordProvider", ArkivoPasswordProvider.class);
@@ -83,6 +85,27 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem permit
         Objects.requireNonNull(environment, "environment");
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
         return new ZipArkivoFileSystemImpl(ZipArkivoFileSystemProvider.instance(), null, volumes, config);
+    }
+
+    /// Creates a forward-only streaming ZIP archive file system.
+    public static ZipArkivoFileSystem createStreaming(Path path) throws IOException {
+        return createStreaming(path, Map.of());
+    }
+
+    /// Creates a forward-only streaming ZIP archive file system with environment options.
+    public static ZipArkivoFileSystem createStreaming(Path path, Map<String, ?> environment) throws IOException {
+        Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(environment, "environment");
+        ZipArkivoFileSystemConfig parsedConfig = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+        ZipArkivoFileSystemConfig config = new ZipArkivoFileSystemConfig(
+                parsedConfig.passwordProvider(),
+                parsedConfig.defaultEncryption(),
+                parsedConfig.splitSize(),
+                parsedConfig.entryNameEncoding(),
+                ArkivoStorageAccessSet.STREAM_WRITE,
+                parsedConfig.threadSafety()
+        );
+        return new StreamingZipArkivoFileSystemImpl(ZipArkivoFileSystemProvider.instance(), path, config);
     }
 
     /// Returns the number of bytes stored before the ZIP archive body.
