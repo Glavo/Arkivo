@@ -4,7 +4,6 @@
 package org.glavo.arkivo.zip.internal;
 
 import org.glavo.arkivo.ArkivoFileSystemEntryStream;
-import org.glavo.arkivo.ArkivoStorageAccessSet;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
@@ -90,7 +89,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             InputStream source,
             ZipArkivoFileSystemConfig config
     ) {
-        super(ArkivoStorageAccessSet.STREAM_READ, config.threadSafety());
+        super(config.threadSafety());
         this.provider = Objects.requireNonNull(provider, "provider");
         this.input = new PushbackInputStream(Objects.requireNonNull(source, "source"), PUSHBACK_BUFFER_SIZE);
         this.config = Objects.requireNonNull(config, "config");

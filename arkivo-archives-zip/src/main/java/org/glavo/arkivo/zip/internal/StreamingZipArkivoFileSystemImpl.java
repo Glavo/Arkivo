@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.zip.internal;
 
-import org.glavo.arkivo.ArkivoStorageAccessSet;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
@@ -84,7 +83,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             Path archivePath,
             ZipArkivoFileSystemConfig config
     ) throws IOException {
-        super(ArkivoStorageAccessSet.STREAM_WRITE, config.threadSafety());
+        super(config.threadSafety());
         this.provider = Objects.requireNonNull(provider, "provider");
         this.archivePath = Objects.requireNonNull(archivePath, "archivePath");
         this.output = new CountingOutputStream(Files.newOutputStream(
@@ -102,7 +101,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             OutputStream output,
             ZipArkivoFileSystemConfig config
     ) {
-        super(ArkivoStorageAccessSet.STREAM_WRITE, config.threadSafety());
+        super(config.threadSafety());
         this.provider = Objects.requireNonNull(provider, "provider");
         this.archivePath = null;
         this.output = new CountingOutputStream(Objects.requireNonNull(output, "output"));

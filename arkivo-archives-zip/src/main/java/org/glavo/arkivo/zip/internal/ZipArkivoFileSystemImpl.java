@@ -151,7 +151,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             ZipArkivoFileSystemConfig config,
             @Nullable Runnable closeAction
     ) {
-        super(config.storageAccess(), config.threadSafety());
+        super(config.threadSafety());
         if (archivePath == null && volumes == null) {
             throw new IllegalArgumentException("archivePath or volumes must be set");
         }
@@ -249,7 +249,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Returns whether this ZIP file system rejects write operations.
     @Override
     public boolean isReadOnly() {
-        return !config.storageAccess().writable();
+        return true;
     }
 
     /// Returns the ZIP entry path separator.

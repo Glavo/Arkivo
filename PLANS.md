@@ -80,18 +80,18 @@ ZipArkivoFileSystem.open(path, environment)
 ```
 
 Common file system configuration options should live on `ArkivoFileSystem` as typed `ArkivoFileSystemOption`
-constants, such as `ArkivoFileSystem.STORAGE_ACCESS`.
+constants, such as `ArkivoFileSystem.THREAD_SAFETY`.
 Format-specific file system configuration options should live on the concrete file system utility class as typed
 `ArkivoFileSystemOption` constants.
 Environment option keys should use a compact Arkivo namespace. Common option keys should use `arkivo.<option>`,
-such as `arkivo.storageAccess`, while format-specific option keys should use `arkivo.<format>.<option>`, such as
+such as `arkivo.threadSafety`, while format-specific option keys should use `arkivo.<format>.<option>`, such as
 `arkivo.zip.password`.
 `ArkivoFileSystemOption` should model the namespace and local option name separately, with the environment key derived
 from those parts.
 Standalone string key constants should not be exposed by concrete file system utility classes; callers can use
 `ArkivoFileSystemOption.key()` when they need the stable map key.
 
-Low-level reader, writer, editor, and streaming APIs may be introduced later only when a concrete use case cannot be served well through `FileSystem` and file attribute views.
+Low-level reader, writer, editor, and streaming APIs should be introduced when a concrete use case cannot be served well through `FileSystem` and file attribute views.
 
 ## Core Abstractions
 
@@ -106,8 +106,6 @@ ArkivoPasswordProvider
 ArkivoVolumeSource
 ArkivoFileSystemOption
 ArkivoFileSystem
-ArkivoStorageAccess
-ArkivoStorageAccessSet
 ArkivoFileSystemEntryStream
 CompressionCodec
 CompressionCodecs
@@ -226,8 +224,6 @@ SevenZipArkivoFileSystem.open(path)
 Concrete archive file systems should extend `ArkivoFileSystem`.
 Public archive file system classes may be sealed abstract API types, with concrete implementations kept in the
 format module's internal package so implementation state and helper methods are not exposed as public API.
-The common `ArkivoFileSystem.STORAGE_ACCESS` environment option should select a non-empty set of orthogonal storage
-access values: random read, random write, stream read, and stream write.
 `ArkivoFileSystem.openEntryStream()` should provide forward-only entry traversal for implementations that support
 streaming reads.
 

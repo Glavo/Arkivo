@@ -6,7 +6,6 @@ package org.glavo.arkivo.zip.internal;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoPasswordProvider;
-import org.glavo.arkivo.ArkivoStorageAccessSet;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipEntryNameEncoding;
 import org.glavo.arkivo.zip.ZipEncryption;
@@ -28,7 +27,6 @@ public final class ZipArkivoFileSystemConfig {
             ZipEncryption.none(),
             NO_SPLIT_SIZE,
             ZipEntryNameEncoding.standard(),
-            ArkivoStorageAccessSet.RANDOM_READ,
             ArkivoFileSystemThreadSafety.CONCURRENT_READ
     );
 
@@ -44,9 +42,6 @@ public final class ZipArkivoFileSystemConfig {
     /// The policy used to decode ZIP entry names when no authoritative Unicode name is available.
     private final ZipEntryNameEncoding entryNameEncoding;
 
-    /// The storage access values enabled for ZIP archive storage.
-    private final ArkivoStorageAccessSet storageAccess;
-
     /// The requested ZIP file system thread-safety strategy.
     private final ArkivoFileSystemThreadSafety threadSafety;
 
@@ -56,7 +51,6 @@ public final class ZipArkivoFileSystemConfig {
             ZipEncryption defaultEncryption,
             long splitSize,
             ZipEntryNameEncoding entryNameEncoding,
-            ArkivoStorageAccessSet storageAccess,
             ArkivoFileSystemThreadSafety threadSafety
     ) {
         if (splitSize != NO_SPLIT_SIZE && splitSize <= 0) {
@@ -66,7 +60,6 @@ public final class ZipArkivoFileSystemConfig {
         this.defaultEncryption = Objects.requireNonNull(defaultEncryption, "defaultEncryption");
         this.splitSize = splitSize;
         this.entryNameEncoding = Objects.requireNonNull(entryNameEncoding, "entryNameEncoding");
-        this.storageAccess = Objects.requireNonNull(storageAccess, "storageAccess");
         this.threadSafety = Objects.requireNonNull(threadSafety, "threadSafety");
     }
 
@@ -86,8 +79,6 @@ public final class ZipArkivoFileSystemConfig {
                         environment,
                         ZipEntryNameEncoding.standard()
                 );
-        ArkivoStorageAccessSet storageAccess =
-                ArkivoFileSystem.STORAGE_ACCESS.readOrDefault(environment, ArkivoStorageAccessSet.RANDOM_READ);
         ArkivoFileSystemThreadSafety threadSafety =
                 ArkivoFileSystem.THREAD_SAFETY.readOrDefault(
                         environment,
@@ -99,7 +90,6 @@ public final class ZipArkivoFileSystemConfig {
                 defaultEncryption,
                 splitSize,
                 entryNameEncoding,
-                storageAccess,
                 threadSafety
         );
     }
@@ -122,11 +112,6 @@ public final class ZipArkivoFileSystemConfig {
     /// Returns the policy used to decode ZIP entry names when no authoritative Unicode name is available.
     public ZipEntryNameEncoding entryNameEncoding() {
         return entryNameEncoding;
-    }
-
-    /// Returns the storage access values enabled for ZIP archive storage.
-    public ArkivoStorageAccessSet storageAccess() {
-        return storageAccess;
     }
 
     /// Returns the requested ZIP file system thread-safety strategy.

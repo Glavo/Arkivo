@@ -18,9 +18,17 @@ public final class ArkivoFileSystemOptionTest {
     /// Verifies that common file system option keys use the Arkivo namespace.
     @Test
     public void commonOptionKeysUseArkivoNamespace() {
-        assertEquals("arkivo", ArkivoFileSystem.STORAGE_ACCESS.namespace());
-        assertEquals("storageAccess", ArkivoFileSystem.STORAGE_ACCESS.name());
-        assertEquals("arkivo.storageAccess", ArkivoFileSystem.STORAGE_ACCESS.key());
+        assertEquals("arkivo", ArkivoFileSystem.THREAD_SAFETY.namespace());
+        assertEquals("threadSafety", ArkivoFileSystem.THREAD_SAFETY.name());
+        assertEquals("arkivo.threadSafety", ArkivoFileSystem.THREAD_SAFETY.key());
+    }
+
+    /// Verifies that file system thread-safety values parse stable option strings.
+    @Test
+    public void parseThreadSafety() {
+        assertEquals(ArkivoFileSystemThreadSafety.NONE, ArkivoFileSystemThreadSafety.parse("none"));
+        assertEquals(ArkivoFileSystemThreadSafety.CONCURRENT_READ, ArkivoFileSystemThreadSafety.parse("concurrent_read"));
+        assertEquals(ArkivoFileSystemThreadSafety.STRICT, ArkivoFileSystemThreadSafety.parse("strict"));
     }
 
     /// Verifies that typed values can be written and read.
