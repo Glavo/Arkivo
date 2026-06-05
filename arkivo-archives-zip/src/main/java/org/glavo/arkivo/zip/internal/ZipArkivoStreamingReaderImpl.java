@@ -3,9 +3,9 @@
 
 package org.glavo.arkivo.zip.internal;
 
-import org.glavo.arkivo.ArkivoFileSystemEntryStream;
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
+import org.glavo.arkivo.zip.ZipArkivoEntryStream;
 import org.glavo.arkivo.zip.ZipArkivoStreamingReader;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -28,7 +28,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     private final @Nullable ReentrantLock lock;
 
     /// The internal entry stream, or `null` until iteration starts.
-    private @Nullable ArkivoFileSystemEntryStream entries;
+    private @Nullable ZipArkivoEntryStream entries;
 
     /// The current ZIP entry attributes, or `null` when no entry is active.
     private @Nullable ZipArkivoEntryAttributes currentAttributes;
@@ -121,7 +121,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             }
             open = false;
             currentAttributes = null;
-            ArkivoFileSystemEntryStream entryStream = entries;
+            ZipArkivoEntryStream entryStream = entries;
             try {
                 if (entryStream != null) {
                     entryStream.close();
@@ -135,11 +135,11 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     }
 
     /// Returns the opened entry stream.
-    private ArkivoFileSystemEntryStream entryStream() throws IOException {
+    private ZipArkivoEntryStream entryStream() throws IOException {
         if (!open) {
             throw new IOException("ZIP streaming reader is closed");
         }
-        ArkivoFileSystemEntryStream entryStream = entries;
+        ZipArkivoEntryStream entryStream = entries;
         if (entryStream == null) {
             throw new IOException("ZIP streaming reader has not advanced to an entry");
         }
@@ -147,11 +147,11 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     }
 
     /// Returns the internal entry stream, opening it if needed.
-    private ArkivoFileSystemEntryStream openedEntryStream() throws IOException {
+    private ZipArkivoEntryStream openedEntryStream() throws IOException {
         if (!open) {
             throw new IOException("ZIP streaming reader is closed");
         }
-        ArkivoFileSystemEntryStream entryStream = entries;
+        ZipArkivoEntryStream entryStream = entries;
         if (entryStream == null) {
             entryStream = fileSystem.openEntryStream();
             entries = entryStream;

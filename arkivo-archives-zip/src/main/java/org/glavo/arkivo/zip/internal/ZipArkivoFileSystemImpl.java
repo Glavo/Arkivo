@@ -3,11 +3,11 @@
 
 package org.glavo.arkivo.zip.internal;
 
-import org.glavo.arkivo.ArkivoFileSystemEntryStream;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
+import org.glavo.arkivo.zip.ZipArkivoEntryStream;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
 import org.glavo.arkivo.zip.ZipEncryption;
@@ -221,7 +221,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
 
     /// Opens a forward-only stream over ZIP entry paths in storage order.
     @Override
-    public ArkivoFileSystemEntryStream openEntryStream() throws IOException {
+    public ZipArkivoEntryStream openEntryStream() throws IOException {
         checkOpen();
         return new IndexedEntryStream(this, index().storageEntries);
     }
@@ -1874,7 +1874,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
 
     /// Implements a forward-only path stream backed by the parsed ZIP entry index.
     @NotNullByDefault
-    private static final class IndexedEntryStream implements ArkivoFileSystemEntryStream {
+    private static final class IndexedEntryStream implements ZipArkivoEntryStream {
         /// The file system that owns produced paths.
         private final ZipArkivoFileSystemImpl fileSystem;
 

@@ -106,6 +106,11 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
     /// Opens a read-only channel over the bytes stored before the ZIP archive body.
     public abstract SeekableByteChannel openPreambleChannel() throws IOException;
 
+    /// Opens a forward-only stream over ZIP entry paths in storage order.
+    public ZipArkivoEntryStream openEntryStream() throws IOException {
+        throw new UnsupportedOperationException("Streaming ZIP entry traversal is not supported");
+    }
+
     /// Converts a raw archive open options value.
     private static OpenOption[] archiveOpenOptionsValue(Object value) {
         if (value instanceof OpenOption[] options) {

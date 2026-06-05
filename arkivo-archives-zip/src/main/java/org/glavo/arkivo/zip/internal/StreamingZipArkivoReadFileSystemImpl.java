@@ -3,9 +3,9 @@
 
 package org.glavo.arkivo.zip.internal;
 
-import org.glavo.arkivo.ArkivoFileSystemEntryStream;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
+import org.glavo.arkivo.zip.ZipArkivoEntryStream;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -191,7 +191,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
 
     /// Opens the single forward-only stream over ZIP entry paths in storage order.
     @Override
-    public ArkivoFileSystemEntryStream openEntryStream() {
+    public ZipArkivoEntryStream openEntryStream() {
         lock();
         try {
             checkOpen();
@@ -294,7 +294,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
 
     /// Implements a forward-only ZIP entry stream.
     @NotNullByDefault
-    private final class StreamingEntryStream implements ArkivoFileSystemEntryStream {
+    private final class StreamingEntryStream implements ZipArkivoEntryStream {
         /// The current local entry, or `null` when no entry is active.
         private @Nullable LocalEntry currentEntry;
 

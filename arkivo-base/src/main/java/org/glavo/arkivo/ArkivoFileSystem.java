@@ -5,7 +5,6 @@ package org.glavo.arkivo;
 
 import org.jetbrains.annotations.NotNullByDefault;
 
-import java.io.IOException;
 import java.nio.file.FileSystem;
 import java.util.Objects;
 
@@ -37,11 +36,6 @@ public abstract class ArkivoFileSystem extends FileSystem {
     /// Returns the requested file system thread-safety strategy.
     public final ArkivoFileSystemThreadSafety threadSafety() {
         return threadSafety;
-    }
-
-    /// Opens a forward-only stream over archive entry paths in storage order.
-    public ArkivoFileSystemEntryStream openEntryStream() throws IOException {
-        throw new UnsupportedOperationException("Streaming entry traversal is not supported");
     }
 
     /// Converts a raw thread-safety option value.
