@@ -7,6 +7,7 @@ import org.glavo.arkivo.compress.CompressionCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
@@ -39,6 +40,21 @@ public final class ZlibCodec implements CompressionCodec {
     @Override
     public boolean canDecompress() {
         return true;
+    }
+
+    /// Returns whether the given prefix starts with a valid zlib header.
+    @Override
+    public boolean matches(ByteBuffer prefix) {
+        int position = prefix.position();
+        if (prefix.remaining() < 2) {
+            return false;
+        }
+
+        int compressionMethodAndFlags = Byte.toUnsignedInt(prefix.get(position));
+        int flags = Byte.toUnsignedInt(prefix.get(position + 1));
+        return (compressionMethodAndFlags & 0x0f) == 8
+                && (compressionMethodAndFlags >> 4) <= 7
+                && ((compressionMethodAndFlags << 8) + flags) % 31 == 0;
     }
 
     /// Opens a zlib compressor that writes compressed bytes to the target channel.

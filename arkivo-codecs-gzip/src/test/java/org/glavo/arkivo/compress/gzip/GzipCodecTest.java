@@ -13,6 +13,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
@@ -39,6 +40,15 @@ public final class GzipCodecTest {
     @Test
     public void findInstalledCodec() {
         assertEquals(GzipCodec.class, Objects.requireNonNull(CompressionCodecs.find(GzipCodec.NAME)).getClass());
+    }
+
+    /// Verifies gzip metadata and signature matching.
+    @Test
+    public void metadata() {
+        GzipCodec codec = new GzipCodec();
+        assertEquals(java.util.List.of("gz", "gzip"), codec.fileExtensions());
+        assertEquals(true, codec.matches(ByteBuffer.wrap(new byte[]{0x1f, (byte) 0x8b, 0x08})));
+        assertEquals(false, codec.matches(ByteBuffer.wrap(new byte[]{0x1f})));
     }
 
     /// Compresses and decompresses the given bytes.

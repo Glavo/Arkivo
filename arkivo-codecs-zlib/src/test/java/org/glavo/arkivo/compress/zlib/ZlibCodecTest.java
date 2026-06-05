@@ -13,6 +13,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
@@ -39,6 +40,14 @@ public final class ZlibCodecTest {
     @Test
     public void findInstalledCodec() {
         assertEquals(ZlibCodec.class, Objects.requireNonNull(CompressionCodecs.find(ZlibCodec.NAME)).getClass());
+    }
+
+    /// Verifies zlib header matching.
+    @Test
+    public void metadata() {
+        ZlibCodec codec = new ZlibCodec();
+        assertEquals(true, codec.matches(ByteBuffer.wrap(new byte[]{0x78, (byte) 0x9c})));
+        assertEquals(false, codec.matches(ByteBuffer.wrap(new byte[]{0x78, 0x00})));
     }
 
     /// Compresses and decompresses the given bytes.

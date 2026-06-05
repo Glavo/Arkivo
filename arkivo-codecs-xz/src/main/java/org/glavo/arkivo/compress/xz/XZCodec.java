@@ -10,6 +10,7 @@ import org.tukaani.xz.XZInputStream;
 import org.tukaani.xz.XZOutputStream;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
@@ -19,6 +20,11 @@ import java.nio.channels.WritableByteChannel;
 public final class XZCodec implements CompressionCodec {
     /// The stable XZ codec name.
     public static final String NAME = "xz";
+
+    /// The XZ stream header magic bytes.
+    private static final byte[] HEADER_MAGIC = {
+            (byte) 0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00
+    };
 
     /// Creates an XZ codec.
     public XZCodec() {
@@ -39,6 +45,22 @@ public final class XZCodec implements CompressionCodec {
     /// Returns whether XZ decompression is supported.
     @Override
     public boolean canDecompress() {
+        return true;
+    }
+
+    /// Returns whether the given prefix starts with the XZ stream signature.
+    @Override
+    public boolean matches(ByteBuffer prefix) {
+        int position = prefix.position();
+        if (prefix.remaining() < HEADER_MAGIC.length) {
+            return false;
+        }
+
+        for (int i = 0; i < HEADER_MAGIC.length; i++) {
+            if (prefix.get(position + i) != HEADER_MAGIC[i]) {
+                return false;
+            }
+        }
         return true;
     }
 

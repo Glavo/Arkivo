@@ -13,6 +13,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
@@ -39,6 +40,16 @@ public final class XZCodecTest {
     @Test
     public void findInstalledCodec() {
         assertEquals(XZCodec.class, Objects.requireNonNull(CompressionCodecs.find(XZCodec.NAME)).getClass());
+    }
+
+    /// Verifies XZ signature matching.
+    @Test
+    public void metadata() {
+        XZCodec codec = new XZCodec();
+        assertEquals(true, codec.matches(ByteBuffer.wrap(new byte[]{
+                (byte) 0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00
+        })));
+        assertEquals(false, codec.matches(ByteBuffer.wrap(new byte[]{(byte) 0xfd, 0x37})));
     }
 
     /// Compresses and decompresses the given bytes.

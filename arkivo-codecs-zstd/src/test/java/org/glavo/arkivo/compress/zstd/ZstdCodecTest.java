@@ -5,6 +5,7 @@ package org.glavo.arkivo.compress.zstd;
 
 import org.glavo.arkivo.compress.CompressionCodec;
 import org.glavo.arkivo.compress.CompressionCodecs;
+import org.glavo.arkivo.compress.CompressionParameters;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -13,6 +14,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
@@ -39,6 +41,30 @@ public final class ZstdCodecTest {
     @Test
     public void findInstalledCodec() {
         assertEquals(ZstdCodec.class, Objects.requireNonNull(CompressionCodecs.find(ZstdCodec.NAME)).getClass());
+    }
+
+    /// Verifies Zstandard metadata and ByteBuffer one-shot compression.
+    @Test
+    public void byteBufferRoundTrip() throws IOException {
+        ZstdCodec codec = new ZstdCodec();
+        byte[] input = "hello zstd bytebuffer".getBytes(StandardCharsets.UTF_8);
+        ByteBuffer source = ByteBuffer.allocateDirect(input.length);
+        source.put(input).flip();
+        ByteBuffer compressed = ByteBuffer.allocateDirect((int) codec.maxCompressedSize(input.length));
+
+        assertEquals(true, codec.canCompressBuffers());
+        assertEquals(true, codec.canDecompressBuffers());
+        codec.compress(source, compressed, CompressionParameters.builder().compressionLevel(1).build());
+        compressed.flip();
+        assertEquals(true, codec.matches(compressed.duplicate()));
+
+        ByteBuffer decompressed = ByteBuffer.allocateDirect(input.length);
+        codec.decompress(compressed, decompressed, CompressionParameters.defaults());
+        decompressed.flip();
+
+        byte[] output = new byte[decompressed.remaining()];
+        decompressed.get(output);
+        assertArrayEquals(input, output);
     }
 
     /// Compresses and decompresses the given bytes.

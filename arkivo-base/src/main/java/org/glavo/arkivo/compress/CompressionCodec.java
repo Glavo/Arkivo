@@ -4,19 +4,36 @@
 package org.glavo.arkivo.compress;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
+import java.util.List;
+import java.util.Objects;
 
 /// Describes a compression codec and its supported operations.
 @NotNullByDefault
 public interface CompressionCodec {
+    /// The sentinel returned when a size cannot be calculated or is not known.
+    long UNKNOWN_SIZE = -1L;
+
     /// Returns the stable codec name.
     String name();
+
+    /// Returns alternative stable names accepted for this codec.
+    default @Unmodifiable List<String> aliases() {
+        return List.of();
+    }
+
+    /// Returns common file extensions for streams encoded by this codec, without leading dots.
+    default @Unmodifiable List<String> fileExtensions() {
+        return List.of(name());
+    }
 
     /// Returns whether this codec can compress uncompressed bytes.
     boolean canCompress();
@@ -24,19 +41,103 @@ public interface CompressionCodec {
     /// Returns whether this codec can decompress compressed bytes.
     boolean canDecompress();
 
+    /// Returns whether this codec provides a ByteBuffer one-shot compression path.
+    default boolean canCompressBuffers() {
+        return false;
+    }
+
+    /// Returns whether this codec provides a ByteBuffer one-shot decompression path.
+    default boolean canDecompressBuffers() {
+        return false;
+    }
+
+    /// Returns whether the given byte prefix matches this codec's stream signature.
+    ///
+    /// The returned value is `false` when the codec has no reliable fixed signature or the prefix is too short.
+    default boolean matches(ByteBuffer prefix) {
+        Objects.requireNonNull(prefix, "prefix");
+        return false;
+    }
+
+    /// Returns the maximum compressed size for an input of `sourceSize` bytes, or `UNKNOWN_SIZE` when unknown.
+    default long maxCompressedSize(long sourceSize) {
+        if (sourceSize < 0) {
+            throw new IllegalArgumentException("sourceSize must not be negative");
+        }
+        return UNKNOWN_SIZE;
+    }
+
     /// Opens a channel that accepts uncompressed bytes and writes compressed bytes to the target channel.
     WritableByteChannel compressTo(WritableByteChannel target) throws IOException;
+
+    /// Opens a channel that accepts uncompressed bytes and writes compressed bytes to the target channel.
+    default WritableByteChannel compressTo(
+            WritableByteChannel target,
+            CompressionParameters parameters
+    ) throws IOException {
+        Objects.requireNonNull(parameters, "parameters");
+        return compressTo(target);
+    }
 
     /// Opens a stream that accepts uncompressed bytes and writes compressed bytes to the target stream.
     default OutputStream compressTo(OutputStream target) throws IOException {
         return Channels.newOutputStream(compressTo(Channels.newChannel(target)));
     }
 
+    /// Opens a stream that accepts uncompressed bytes and writes compressed bytes to the target stream.
+    default OutputStream compressTo(OutputStream target, CompressionParameters parameters) throws IOException {
+        return Channels.newOutputStream(compressTo(Channels.newChannel(target), parameters));
+    }
+
     /// Opens a channel that reads compressed bytes from the source channel and exposes uncompressed bytes.
     ReadableByteChannel decompressFrom(ReadableByteChannel source) throws IOException;
+
+    /// Opens a channel that reads compressed bytes from the source channel and exposes uncompressed bytes.
+    default ReadableByteChannel decompressFrom(
+            ReadableByteChannel source,
+            CompressionParameters parameters
+    ) throws IOException {
+        Objects.requireNonNull(parameters, "parameters");
+        return decompressFrom(source);
+    }
 
     /// Opens a stream that reads compressed bytes from the source stream and exposes uncompressed bytes.
     default InputStream decompressFrom(InputStream source) throws IOException {
         return Channels.newInputStream(decompressFrom(Channels.newChannel(source)));
+    }
+
+    /// Opens a stream that reads compressed bytes from the source stream and exposes uncompressed bytes.
+    default InputStream decompressFrom(InputStream source, CompressionParameters parameters) throws IOException {
+        return Channels.newInputStream(decompressFrom(Channels.newChannel(source), parameters));
+    }
+
+    /// Compresses all remaining bytes from `source` into `target`.
+    ///
+    /// Both buffers are advanced by the number of bytes consumed and produced.
+    /// Implementations may require specific buffer forms, such as direct buffers, when backed by native codecs.
+    default void compress(
+            ByteBuffer source,
+            ByteBuffer target,
+            CompressionParameters parameters
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(parameters, "parameters");
+        throw new UnsupportedOperationException("ByteBuffer compression is not supported");
+    }
+
+    /// Decompresses all remaining bytes from `source` into `target`.
+    ///
+    /// Both buffers are advanced by the number of bytes consumed and produced.
+    /// Implementations may require specific buffer forms, such as direct buffers, when backed by native codecs.
+    default void decompress(
+            ByteBuffer source,
+            ByteBuffer target,
+            CompressionParameters parameters
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(parameters, "parameters");
+        throw new UnsupportedOperationException("ByteBuffer decompression is not supported");
     }
 }

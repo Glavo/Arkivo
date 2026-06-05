@@ -7,9 +7,11 @@ import org.glavo.arkivo.compress.CompressionCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
+import java.util.List;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
@@ -29,6 +31,12 @@ public final class GzipCodec implements CompressionCodec {
         return NAME;
     }
 
+    /// Returns common gzip file extensions.
+    @Override
+    public List<String> fileExtensions() {
+        return List.of("gz", "gzip");
+    }
+
     /// Returns whether gzip compression is supported.
     @Override
     public boolean canCompress() {
@@ -39,6 +47,15 @@ public final class GzipCodec implements CompressionCodec {
     @Override
     public boolean canDecompress() {
         return true;
+    }
+
+    /// Returns whether the given prefix starts with the gzip stream signature.
+    @Override
+    public boolean matches(ByteBuffer prefix) {
+        int position = prefix.position();
+        return prefix.remaining() >= 2
+                && Byte.toUnsignedInt(prefix.get(position)) == 0x1f
+                && Byte.toUnsignedInt(prefix.get(position + 1)) == 0x8b;
     }
 
     /// Opens a gzip compressor that writes compressed bytes to the target channel.
