@@ -21,6 +21,20 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /// Tests built-in archive editor strategies.
 @NotNullByDefault
 public final class ArkivoEditorStrategyTest {
+    /// Verifies that common editor option keys use the Arkivo editor namespace.
+    @Test
+    public void commonEditorOptionKeysUseArkivoEditorNamespace() {
+        assertEquals("arkivo.editor", ArkivoEditor.STORAGE.namespace());
+        assertEquals("storage", ArkivoEditor.STORAGE.name());
+        assertEquals("arkivo.editor.storage", ArkivoEditor.STORAGE.key());
+        assertEquals("arkivo.editor", ArkivoEditor.COMMIT_TARGET.namespace());
+        assertEquals("commitTarget", ArkivoEditor.COMMIT_TARGET.name());
+        assertEquals("arkivo.editor.commitTarget", ArkivoEditor.COMMIT_TARGET.key());
+        assertEquals("arkivo.editor", ArkivoEditor.SOURCE_MUTATION_POLICY.namespace());
+        assertEquals("sourceMutationPolicy", ArkivoEditor.SOURCE_MUTATION_POLICY.name());
+        assertEquals("arkivo.editor.sourceMutationPolicy", ArkivoEditor.SOURCE_MUTATION_POLICY.key());
+    }
+
     /// Verifies that memory edit storage can stage and reopen content.
     @Test
     public void memoryEditStorage() throws IOException {
