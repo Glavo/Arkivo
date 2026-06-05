@@ -4,16 +4,17 @@
 package org.glavo.arkivo.zip.internal;
 
 import org.glavo.arkivo.ArkivoFileSystemEntryStream;
+import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
-import org.glavo.arkivo.zip.ZipArkivoStreamingEntry;
 import org.glavo.arkivo.zip.ZipArkivoStreamingReader;
+import org.glavo.arkivo.zip.ZipArkivoStreamingVisitor;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.channels.ReadableByteChannel;
-import java.nio.file.Path;
+import java.nio.file.FileVisitResult;
 import java.util.Objects;
 
 /// Implements the public forward-only ZIP streaming reader API.
@@ -46,22 +47,24 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         );
     }
 
-    /// Returns the next entry, or `null` when the ZIP stream is exhausted.
+    /// Reads remaining entries and calls the visitor for each entry in storage order.
     @Override
-    public synchronized @Nullable ZipArkivoStreamingEntry next() throws IOException {
+    public synchronized void read(ZipArkivoStreamingVisitor visitor) throws IOException {
+        Objects.requireNonNull(visitor, "visitor");
         ArkivoFileSystemEntryStream entryStream = entryStream();
-        Path path = entryStream.next();
-        if (path == null) {
-            return null;
-        }
+        while (entryStream.next() != null) {
+            ZipArkivoEntryAttributes attributes = fileSystem.currentEntryAttributes();
+            if (attributes == null) {
+                throw new IOException("ZIP streaming reader did not expose the current entry");
+            }
 
-        String pathText = fileSystem.currentEntryPathText();
-        if (pathText == null) {
-            throw new IOException("ZIP streaming reader did not expose the current entry");
+            FileVisitResult result = attributes.isDirectory()
+                    ? visitor.preVisitDirectory(attributes.path(), attributes)
+                    : visitor.visitFile(attributes.path(), attributes);
+            if (Objects.requireNonNull(result, "result") == FileVisitResult.TERMINATE) {
+                return;
+            }
         }
-        boolean directory = fileSystem.currentEntryDirectory();
-        String normalizedText = directory ? pathText.substring(0, pathText.length() - 1) : pathText;
-        return new ZipArkivoStreamingEntryImpl(Path.of(normalizedText), pathText, directory);
     }
 
     /// Opens a readable channel for the current entry.

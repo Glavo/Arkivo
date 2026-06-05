@@ -6,6 +6,7 @@ package org.glavo.arkivo.zip.internal;
 import org.glavo.arkivo.ArkivoFileSystemEntryStream;
 import org.glavo.arkivo.ArkivoStorageAccessSet;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
+import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -185,16 +186,10 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         return new StreamingEntryStream();
     }
 
-    /// Returns the current decoded ZIP entry path text, or `null` when no entry is active.
-    public synchronized @Nullable String currentEntryPathText() {
+    /// Returns the current ZIP entry attributes, or `null` when no entry is active.
+    public synchronized @Nullable ZipArkivoEntryAttributes currentEntryAttributes() {
         LocalEntry entry = currentStreamingEntry;
-        return entry != null ? entry.path : null;
-    }
-
-    /// Returns whether the current ZIP entry is a directory.
-    public synchronized boolean currentEntryDirectory() {
-        LocalEntry entry = currentStreamingEntry;
-        return entry != null && entry.directory;
+        return entry != null ? entry.attributes() : null;
     }
 
     /// Returns the number of bytes stored before the ZIP archive body.
@@ -228,21 +223,6 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             offset += read;
         }
         return bytes;
-    }
-
-    /// Skips exactly `length` bytes.
-    private void skipBytes(int length) throws IOException {
-        int remaining = length;
-        while (remaining > 0) {
-            long skipped = input.skip(remaining);
-            if (skipped <= 0) {
-                if (input.read() < 0) {
-                    throw new EOFException("Unexpected end of ZIP stream");
-                }
-                skipped = 1;
-            }
-            remaining -= (int) skipped;
-        }
     }
 
     /// Reads and validates a ZIP data descriptor.
@@ -305,22 +285,37 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
                 throw new IOException("Unexpected ZIP stream record signature: " + Integer.toHexString(signature));
             }
 
-            readUnsignedShort(input);
+            int versionNeededToExtract = readUnsignedShort(input);
             int flags = readUnsignedShort(input);
             int method = readUnsignedShort(input);
             readUnsignedShort(input);
             readUnsignedShort(input);
-            long crc32 = Integer.toUnsignedLong(readInt(input));
-            long compressedSize = Integer.toUnsignedLong(readInt(input));
-            long uncompressedSize = Integer.toUnsignedLong(readInt(input));
+            boolean hasDataDescriptor = (flags & DATA_DESCRIPTOR_FLAG) != 0;
+            long headerCrc32 = Integer.toUnsignedLong(readInt(input));
+            long headerCompressedSize = Integer.toUnsignedLong(readInt(input));
+            long headerUncompressedSize = Integer.toUnsignedLong(readInt(input));
+            long crc32 = hasDataDescriptor ? ZipArkivoEntryAttributes.UNKNOWN_CRC32 : headerCrc32;
+            long compressedSize = hasDataDescriptor ? ZipArkivoEntryAttributes.UNKNOWN_SIZE : headerCompressedSize;
+            long uncompressedSize = hasDataDescriptor ? ZipArkivoEntryAttributes.UNKNOWN_SIZE : headerUncompressedSize;
             int nameLength = readUnsignedShort(input);
             int extraLength = readUnsignedShort(input);
             byte[] rawName = readBytes(nameLength);
-            skipBytes(extraLength);
+            byte[] extraData = readBytes(extraLength);
 
             String path = decodePath(rawName, flags);
             boolean directory = path.endsWith("/");
-            LocalEntry entry = new LocalEntry(path, flags, method, crc32, compressedSize, uncompressedSize, directory);
+            LocalEntry entry = new LocalEntry(
+                    path,
+                    rawName,
+                    flags,
+                    method,
+                    versionNeededToExtract,
+                    crc32,
+                    compressedSize,
+                    uncompressedSize,
+                    extraData,
+                    directory
+            );
             currentEntry = entry;
             currentStreamingEntry = entry;
             return getPath("/" + path);
@@ -590,11 +585,17 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// The decoded entry path.
         private final String path;
 
+        /// The raw entry path bytes.
+        private final byte[] rawPath;
+
         /// The general purpose bit flags.
         private final int flags;
 
         /// The compression method.
         private final int method;
+
+        /// The ZIP version needed to extract field.
+        private final int versionNeededToExtract;
 
         /// The CRC-32 value from the local header.
         private final long crc32;
@@ -605,26 +606,51 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// The uncompressed size from the local header.
         private final long uncompressedSize;
 
+        /// The raw local file header extra data bytes.
+        private final byte[] extraData;
+
         /// Whether this entry is a directory.
         private final boolean directory;
 
         /// Creates a local entry.
         private LocalEntry(
                 String path,
+                byte[] rawPath,
                 int flags,
                 int method,
+                int versionNeededToExtract,
                 long crc32,
                 long compressedSize,
                 long uncompressedSize,
+                byte[] extraData,
                 boolean directory
         ) {
             this.path = Objects.requireNonNull(path, "path");
+            this.rawPath = Objects.requireNonNull(rawPath, "rawPath");
             this.flags = flags;
             this.method = method;
+            this.versionNeededToExtract = versionNeededToExtract;
             this.crc32 = crc32;
             this.compressedSize = compressedSize;
             this.uncompressedSize = uncompressedSize;
+            this.extraData = Objects.requireNonNull(extraData, "extraData");
             this.directory = directory;
+        }
+
+        /// Returns ZIP entry attributes for this local entry.
+        private ZipArkivoEntryAttributes attributes() {
+            return new StreamingZipEntryAttributes(
+                    path,
+                    rawPath,
+                    flags,
+                    method,
+                    versionNeededToExtract,
+                    crc32,
+                    compressedSize,
+                    uncompressedSize,
+                    extraData,
+                    directory
+            );
         }
     }
 

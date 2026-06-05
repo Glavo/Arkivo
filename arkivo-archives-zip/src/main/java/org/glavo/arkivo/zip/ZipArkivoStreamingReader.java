@@ -6,7 +6,6 @@ package org.glavo.arkivo.zip;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.zip.internal.ZipArkivoStreamingReaderImpl;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -52,8 +51,8 @@ public abstract sealed class ZipArkivoStreamingReader implements Closeable permi
         return new ZipArkivoStreamingReaderImpl(source, config);
     }
 
-    /// Returns the next entry, or `null` when the ZIP stream is exhausted.
-    public abstract @Nullable ZipArkivoStreamingEntry next() throws IOException;
+    /// Reads remaining entries and calls the visitor for each entry in storage order.
+    public abstract void read(ZipArkivoStreamingVisitor visitor) throws IOException;
 
     /// Opens a readable channel for the current entry.
     public abstract ReadableByteChannel openChannel() throws IOException;
