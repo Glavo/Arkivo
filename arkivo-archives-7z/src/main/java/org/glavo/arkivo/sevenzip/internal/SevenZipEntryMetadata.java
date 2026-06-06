@@ -4,8 +4,10 @@
 package org.glavo.arkivo.sevenzip.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
+import java.nio.file.attribute.FileTime;
 import java.util.Arrays;
 import java.util.Objects;
 
@@ -36,6 +38,18 @@ public final class SevenZipEntryMetadata {
     /// The 7z coder properties used to store this entry.
     private final byte @Unmodifiable [] coderProperties;
 
+    /// The creation time, or `null` when not present.
+    private final @Nullable FileTime creationTime;
+
+    /// The last access time, or `null` when not present.
+    private final @Nullable FileTime lastAccessTime;
+
+    /// The last modified time, or `null` when not present.
+    private final @Nullable FileTime lastModifiedTime;
+
+    /// The Windows file attributes, or `-1` when not present.
+    private final int windowsAttributes;
+
     /// Creates parsed 7z entry metadata.
     public SevenZipEntryMetadata(
             String path,
@@ -44,7 +58,11 @@ public final class SevenZipEntryMetadata {
             long dataOffset,
             long packedSize,
             byte[] methodId,
-            byte[] coderProperties
+            byte[] coderProperties,
+            @Nullable FileTime creationTime,
+            @Nullable FileTime lastAccessTime,
+            @Nullable FileTime lastModifiedTime,
+            int windowsAttributes
     ) {
         if (size < 0) {
             throw new IllegalArgumentException("size must be non-negative");
@@ -62,6 +80,10 @@ public final class SevenZipEntryMetadata {
         this.packedSize = packedSize;
         this.methodId = Objects.requireNonNull(methodId, "methodId").clone();
         this.coderProperties = Objects.requireNonNull(coderProperties, "coderProperties").clone();
+        this.creationTime = creationTime;
+        this.lastAccessTime = lastAccessTime;
+        this.lastModifiedTime = lastModifiedTime;
+        this.windowsAttributes = windowsAttributes;
     }
 
     /// Returns the decoded entry path.
@@ -102,5 +124,25 @@ public final class SevenZipEntryMetadata {
     /// Returns the 7z coder properties used to store this entry.
     public byte @Unmodifiable [] coderProperties() {
         return coderProperties.clone();
+    }
+
+    /// Returns the creation time, or `null` when not present.
+    public @Nullable FileTime creationTime() {
+        return creationTime;
+    }
+
+    /// Returns the last access time, or `null` when not present.
+    public @Nullable FileTime lastAccessTime() {
+        return lastAccessTime;
+    }
+
+    /// Returns the last modified time, or `null` when not present.
+    public @Nullable FileTime lastModifiedTime() {
+        return lastModifiedTime;
+    }
+
+    /// Returns the Windows file attributes, or `-1` when not present.
+    public int windowsAttributes() {
+        return windowsAttributes;
     }
 }

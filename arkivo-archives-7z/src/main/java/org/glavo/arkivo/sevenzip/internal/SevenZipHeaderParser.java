@@ -7,6 +7,8 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.attribute.FileTime;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -60,8 +62,23 @@ public final class SevenZipHeaderParser {
     /// The `kName` property ID.
     private static final int K_NAME = 0x11;
 
+    /// The `kCreationTime` property ID.
+    private static final int K_CREATION_TIME = 0x12;
+
+    /// The `kLastAccessTime` property ID.
+    private static final int K_LAST_ACCESS_TIME = 0x13;
+
+    /// The `kLastWriteTime` property ID.
+    private static final int K_LAST_WRITE_TIME = 0x14;
+
+    /// The `kWinAttributes` property ID.
+    private static final int K_WIN_ATTRIBUTES = 0x15;
+
     /// The `kEncodedHeader` property ID.
     private static final int K_ENCODED_HEADER = 0x17;
+
+    /// The number of 100-nanosecond ticks between 1601-01-01T00:00:00Z and 1970-01-01T00:00:00Z.
+    private static final long WINDOWS_EPOCH_OFFSET_TICKS = 116_444_736_000_000_000L;
 
     /// The 7z Copy method ID.
     private static final byte[] COPY_METHOD_ID = new byte[]{0x00};
@@ -281,11 +298,25 @@ public final class SevenZipHeaderParser {
         String[] names = new String[fileCount];
         boolean[] emptyStreams = new boolean[fileCount];
         boolean[] emptyFiles = new boolean[fileCount];
+        FileTime[] creationTimes = new FileTime[fileCount];
+        FileTime[] lastAccessTimes = new FileTime[fileCount];
+        FileTime[] lastModifiedTimes = new FileTime[fileCount];
+        int[] windowsAttributes = new int[fileCount];
+        Arrays.fill(windowsAttributes, -1);
 
         while (true) {
             int property = input.readId();
             if (property == K_END) {
-                return buildEntries(names, emptyStreams, emptyFiles, streamsInfo);
+                return buildEntries(
+                        names,
+                        emptyStreams,
+                        emptyFiles,
+                        creationTimes,
+                        lastAccessTimes,
+                        lastModifiedTimes,
+                        windowsAttributes,
+                        streamsInfo
+                );
             }
 
             int size = input.readIntNumber("file property size");
@@ -294,6 +325,10 @@ public final class SevenZipHeaderParser {
                 case K_EMPTY_STREAM -> readBooleanVector(input, emptyStreams);
                 case K_EMPTY_FILE -> readEmptyFileVector(input, emptyStreams, emptyFiles);
                 case K_NAME -> readNames(input, end, names);
+                case K_CREATION_TIME -> readFileTimes(input, creationTimes);
+                case K_LAST_ACCESS_TIME -> readFileTimes(input, lastAccessTimes);
+                case K_LAST_WRITE_TIME -> readFileTimes(input, lastModifiedTimes);
+                case K_WIN_ATTRIBUTES -> readWindowsAttributes(input, windowsAttributes);
                 default -> input.position(end);
             }
             input.requirePosition(end);
@@ -305,6 +340,10 @@ public final class SevenZipHeaderParser {
             String[] names,
             boolean[] emptyStreams,
             boolean[] emptyFiles,
+            FileTime[] creationTimes,
+            FileTime[] lastAccessTimes,
+            FileTime[] lastModifiedTimes,
+            int[] windowsAttributes,
             StreamsInfo streamsInfo
     ) throws IOException {
         ArrayList<SevenZipEntryMetadata> entries = new ArrayList<>(names.length);
@@ -323,7 +362,11 @@ public final class SevenZipHeaderParser {
                         SevenZipEntryMetadata.NO_DATA_OFFSET,
                         0L,
                         new byte[0],
-                        new byte[0]
+                        new byte[0],
+                        creationTimes[index],
+                        lastAccessTimes[index],
+                        lastModifiedTimes[index],
+                        windowsAttributes[index]
                 ));
             } else {
                 entries.add(new SevenZipEntryMetadata(
@@ -333,7 +376,11 @@ public final class SevenZipHeaderParser {
                         streamsInfo.dataOffset(streamIndex),
                         streamsInfo.packedSize(streamIndex),
                         streamsInfo.methodId(streamIndex),
-                        streamsInfo.properties(streamIndex)
+                        streamsInfo.properties(streamIndex),
+                        creationTimes[index],
+                        lastAccessTimes[index],
+                        lastModifiedTimes[index],
+                        windowsAttributes[index]
                 ));
                 streamIndex++;
             }
@@ -393,6 +440,54 @@ public final class SevenZipHeaderParser {
                 }
             }
         }
+    }
+
+    /// Reads a per-file time property.
+    private static void readFileTimes(HeaderInput input, FileTime[] target) throws IOException {
+        boolean[] defined = readDefinedVector(input, target.length);
+        int external = input.readUnsignedByte();
+        if (external != 0) {
+            throw new UnsupportedOperationException("7z external timestamp storage is not implemented yet");
+        }
+        for (int index = 0; index < target.length; index++) {
+            if (defined[index]) {
+                target[index] = fileTimeFromWindowsTicks(input.readLongLE());
+            }
+        }
+    }
+
+    /// Reads per-file Windows attributes.
+    private static void readWindowsAttributes(HeaderInput input, int[] target) throws IOException {
+        boolean[] defined = readDefinedVector(input, target.length);
+        int external = input.readUnsignedByte();
+        if (external != 0) {
+            throw new UnsupportedOperationException("7z external Windows attribute storage is not implemented yet");
+        }
+        for (int index = 0; index < target.length; index++) {
+            if (defined[index]) {
+                target[index] = input.readIntLE();
+            }
+        }
+    }
+
+    /// Reads a defined vector.
+    private static boolean[] readDefinedVector(HeaderInput input, int count) throws IOException {
+        boolean[] defined = new boolean[count];
+        int allAreDefined = input.readUnsignedByte();
+        if (allAreDefined != 0) {
+            Arrays.fill(defined, true);
+        } else {
+            readBooleanVector(input, defined);
+        }
+        return defined;
+    }
+
+    /// Converts Windows FILETIME ticks into Java file time.
+    private static FileTime fileTimeFromWindowsTicks(long windowsTicks) {
+        long unixTicks = windowsTicks - WINDOWS_EPOCH_OFFSET_TICKS;
+        long seconds = Math.floorDiv(unixTicks, 10_000_000L);
+        long nanos = Math.floorMod(unixTicks, 10_000_000L) * 100L;
+        return FileTime.from(Instant.ofEpochSecond(seconds, nanos));
     }
 
     /// Returns the number of `true` values in the given vector.
@@ -636,6 +731,22 @@ public final class SevenZipHeaderParser {
             byte[] result = Arrays.copyOfRange(bytes, position, end);
             position = end;
             return result;
+        }
+
+        /// Reads a little-endian `int`.
+        private int readIntLE() throws IOException {
+            int b0 = readUnsignedByte();
+            int b1 = readUnsignedByte();
+            int b2 = readUnsignedByte();
+            int b3 = readUnsignedByte();
+            return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+        }
+
+        /// Reads a little-endian `long`.
+        private long readLongLE() throws IOException {
+            long low = Integer.toUnsignedLong(readIntLE());
+            long high = Integer.toUnsignedLong(readIntLE());
+            return low | (high << 32);
         }
 
         /// Skips raw bytes.

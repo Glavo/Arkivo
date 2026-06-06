@@ -5,6 +5,7 @@ package org.glavo.arkivo.sevenzip.internal;
 
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
+import org.glavo.arkivo.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoFileSystemProvider;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -211,7 +212,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     @Override
     public @Unmodifiable Set<String> supportedFileAttributeViews() {
         ensureOpen();
-        return Set.of("basic");
+        return Set.of("basic", "7z");
     }
 
     /// Returns a path in this file system.
@@ -341,8 +342,11 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type) throws IOException {
         Objects.requireNonNull(type, "type");
         String pathText = requireExistingPath(path);
-        if (type == BasicFileAttributes.class) {
+        if (type == BasicFileAttributes.class || type == SevenZipArkivoEntryAttributes.class) {
             SevenZipEntryMetadata metadata = entries.get(pathText);
+            if (metadata == null && type == SevenZipArkivoEntryAttributes.class) {
+                throw new UnsupportedOperationException("The synthetic 7z root has no 7z entry attributes");
+            }
             return type.cast(metadata != null
                     ? new SevenZipEntryAttributes(metadata)
                     : SevenZipRootAttributes.INSTANCE);
@@ -354,17 +358,36 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     public Map<String, Object> readAttributes(Path path, String attributes) throws IOException {
         Objects.requireNonNull(attributes, "attributes");
         String pathText = requireExistingPath(path);
-        if (!attributes.startsWith("basic:")) {
+        if (!attributes.startsWith("basic:") && !attributes.startsWith("7z:")) {
             throw new UnsupportedOperationException("Unsupported 7z attribute view: " + attributes);
         }
         SevenZipEntryMetadata metadata = entries.get(pathText);
         boolean directory = metadata == null || metadata.directory();
+        BasicFileAttributes basicAttributes = metadata != null
+                ? new SevenZipEntryAttributes(metadata)
+                : SevenZipRootAttributes.INSTANCE;
+        if (attributes.startsWith("7z:")) {
+            if (metadata == null) {
+                throw new UnsupportedOperationException("The synthetic 7z root has no 7z entry attributes");
+            }
+            return Map.of(
+                    "path", metadata.path(),
+                    "windowsAttributes", metadata.windowsAttributes(),
+                    "creationTime", basicAttributes.creationTime(),
+                    "lastAccessTime", basicAttributes.lastAccessTime(),
+                    "lastModifiedTime", basicAttributes.lastModifiedTime(),
+                    "size", metadata.size()
+            );
+        }
         return Map.of(
                 "isDirectory", directory,
                 "isRegularFile", !directory,
                 "isSymbolicLink", false,
                 "isOther", false,
-                "size", metadata != null ? metadata.size() : 0L
+                "size", metadata != null ? metadata.size() : 0L,
+                "creationTime", basicAttributes.creationTime(),
+                "lastAccessTime", basicAttributes.lastAccessTime(),
+                "lastModifiedTime", basicAttributes.lastModifiedTime()
         );
     }
 

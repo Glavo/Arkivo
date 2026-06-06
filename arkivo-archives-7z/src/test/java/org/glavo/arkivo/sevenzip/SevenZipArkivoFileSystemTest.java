@@ -7,6 +7,7 @@ import java.io.ByteArrayOutputStream;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.tukaani.xz.ArrayCache;
 import org.tukaani.xz.FinishableOutputStream;
@@ -25,6 +26,8 @@ import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -175,6 +178,54 @@ public final class SevenZipArkivoFileSystemTest {
             deleteTemporaryArchive(archivePath);
         }
     }
+
+    /// Verifies that 7z file time metadata is exposed through basic file attributes.
+    @Test
+    public void fileTimes() throws IOException {
+        byte[] content = "metadata".getBytes(StandardCharsets.UTF_8);
+        FileTime creationTime = FileTime.from(Instant.parse("2026-01-02T03:04:05Z"));
+        FileTime lastAccessTime = FileTime.from(Instant.parse("2026-01-03T03:04:05Z"));
+        FileTime lastModifiedTime = FileTime.from(Instant.parse("2026-01-04T03:04:05Z"));
+        Path archivePath = createTemporaryArchivePath("file-times-");
+        Files.write(archivePath, archiveWithCopyFile(
+                content,
+                creationTime,
+                lastAccessTime,
+                lastModifiedTime,
+                0x20
+        ));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+                SevenZipArkivoEntryAttributes sevenZipAttributes =
+                        Files.readAttributes(file, SevenZipArkivoEntryAttributes.class);
+                Map<String, Object> namedAttributes = Files.readAttributes(
+                        file,
+                        "basic:creationTime,lastAccessTime,lastModifiedTime"
+                );
+                Map<String, Object> namedSevenZipAttributes = Files.readAttributes(
+                        file,
+                        "7z:path,windowsAttributes"
+                );
+
+                assertEquals(creationTime, attributes.creationTime());
+                assertEquals(lastAccessTime, attributes.lastAccessTime());
+                assertEquals(lastModifiedTime, attributes.lastModifiedTime());
+                assertEquals("hello.txt", sevenZipAttributes.path());
+                assertEquals(0x20, sevenZipAttributes.windowsAttributes());
+                assertEquals(creationTime, namedAttributes.get("creationTime"));
+                assertEquals(lastAccessTime, namedAttributes.get("lastAccessTime"));
+                assertEquals(lastModifiedTime, namedAttributes.get("lastModifiedTime"));
+                assertEquals("hello.txt", namedSevenZipAttributes.get("path"));
+                assertEquals(0x20, namedSevenZipAttributes.get("windowsAttributes"));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
 
     /// Verifies that a non-empty file stored with the 7z LZMA method can be read.
     @Test
@@ -341,6 +392,27 @@ public final class SevenZipArkivoFileSystemTest {
         return archive(content, header, crc32(header));
     }
 
+    /// Returns a 7z archive with one Copy-method file and metadata.
+    private static byte[] archiveWithCopyFile(
+            byte[] content,
+            FileTime creationTime,
+            FileTime lastAccessTime,
+            FileTime lastModifiedTime,
+            int windowsAttributes
+    ) throws IOException {
+        byte[] header = fileHeader(
+                content.length,
+                content.length,
+                new byte[]{0x00},
+                new byte[0],
+                creationTime,
+                lastAccessTime,
+                lastModifiedTime,
+                windowsAttributes
+        );
+        return archive(content, header, crc32(header));
+    }
+
     /// Returns a 7z archive with one file stored through the LZMA method.
     private static byte[] archiveWithLZMAFile(CoderPayload payload, int uncompressedSize) throws IOException {
         byte[] header = fileHeader(
@@ -422,6 +494,20 @@ public final class SevenZipArkivoFileSystemTest {
             byte[] methodId,
             byte[] properties
     ) throws IOException {
+        return fileHeader(packedSize, uncompressedSize, methodId, properties, null, null, null, -1);
+    }
+
+    /// Returns a plain 7z header with one file using the given coder and metadata.
+    private static byte[] fileHeader(
+            int packedSize,
+            int uncompressedSize,
+            byte[] methodId,
+            byte[] properties,
+            @Nullable FileTime creationTime,
+            @Nullable FileTime lastAccessTime,
+            @Nullable FileTime lastModifiedTime,
+            int windowsAttributes
+    ) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         output.write(0x01);
 
@@ -455,10 +541,44 @@ public final class SevenZipArkivoFileSystemTest {
         output.write(0x11);
         writeNumber(output, names.length);
         output.write(names);
+        if (creationTime != null) {
+            writeTimeProperty(output, 0x12, creationTime);
+        }
+        if (lastAccessTime != null) {
+            writeTimeProperty(output, 0x13, lastAccessTime);
+        }
+        if (lastModifiedTime != null) {
+            writeTimeProperty(output, 0x14, lastModifiedTime);
+        }
+        if (windowsAttributes >= 0) {
+            writeWindowsAttributesProperty(output, windowsAttributes);
+        }
         output.write(0x00);
 
         output.write(0x00);
         return output.toByteArray();
+    }
+
+    /// Writes a one-file 7z time property.
+    private static void writeTimeProperty(ByteArrayOutputStream output, int property, FileTime time) throws IOException {
+        ByteArrayOutputStream data = new ByteArrayOutputStream();
+        data.write(1);
+        data.write(0);
+        writeLongLE(data, windowsTicks(time));
+        output.write(property);
+        writeNumber(output, data.size());
+        output.write(data.toByteArray());
+    }
+
+    /// Writes a one-file 7z Windows attributes property.
+    private static void writeWindowsAttributesProperty(ByteArrayOutputStream output, int attributes) throws IOException {
+        ByteArrayOutputStream data = new ByteArrayOutputStream();
+        data.write(1);
+        data.write(0);
+        writeIntLE(data, attributes);
+        output.write(0x15);
+        writeNumber(output, data.size());
+        output.write(data.toByteArray());
     }
 
     /// Returns a raw LZMA payload and its 7z coder properties.
@@ -572,6 +692,28 @@ public final class SevenZipArkivoFileSystemTest {
             throw new IllegalArgumentException("test value is out of range");
         }
         output.write(value);
+    }
+
+    /// Writes a little-endian `int`.
+    private static void writeIntLE(ByteArrayOutputStream output, int value) {
+        output.write(value);
+        output.write(value >>> 8);
+        output.write(value >>> 16);
+        output.write(value >>> 24);
+    }
+
+    /// Writes a little-endian `long`.
+    private static void writeLongLE(ByteArrayOutputStream output, long value) {
+        writeIntLE(output, (int) value);
+        writeIntLE(output, (int) (value >>> 32));
+    }
+
+    /// Converts a file time to Windows FILETIME ticks.
+    private static long windowsTicks(FileTime time) {
+        Instant instant = time.toInstant();
+        return 116_444_736_000_000_000L
+                + instant.getEpochSecond() * 10_000_000L
+                + instant.getNano() / 100L;
     }
 
     /// Returns the unsigned CRC-32 value of the given content.

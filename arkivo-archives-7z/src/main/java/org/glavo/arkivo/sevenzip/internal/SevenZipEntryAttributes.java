@@ -3,15 +3,15 @@
 
 package org.glavo.arkivo.sevenzip.internal;
 
+import org.glavo.arkivo.sevenzip.SevenZipArkivoEntryAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
-import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 
 /// Provides basic attributes for a parsed 7z entry.
 @NotNullByDefault
-final class SevenZipEntryAttributes implements BasicFileAttributes {
+final class SevenZipEntryAttributes implements SevenZipArkivoEntryAttributes {
     /// The epoch file time used until timestamp metadata parsing is implemented.
     private static final FileTime EPOCH = FileTime.fromMillis(0);
 
@@ -23,22 +23,37 @@ final class SevenZipEntryAttributes implements BasicFileAttributes {
         this.metadata = metadata;
     }
 
+    /// Returns the decoded entry path stored in the 7z header.
+    @Override
+    public String path() {
+        return metadata.path();
+    }
+
+    /// Returns the Windows file attributes, or `UNKNOWN_WINDOWS_ATTRIBUTES` when not present.
+    @Override
+    public int windowsAttributes() {
+        return metadata.windowsAttributes();
+    }
+
     /// Returns the last modified time.
     @Override
     public FileTime lastModifiedTime() {
-        return EPOCH;
+        FileTime time = metadata.lastModifiedTime();
+        return time != null ? time : EPOCH;
     }
 
     /// Returns the last access time.
     @Override
     public FileTime lastAccessTime() {
-        return EPOCH;
+        FileTime time = metadata.lastAccessTime();
+        return time != null ? time : EPOCH;
     }
 
     /// Returns the creation time.
     @Override
     public FileTime creationTime() {
-        return EPOCH;
+        FileTime time = metadata.creationTime();
+        return time != null ? time : EPOCH;
     }
 
     /// Returns whether this entry is a regular file.
