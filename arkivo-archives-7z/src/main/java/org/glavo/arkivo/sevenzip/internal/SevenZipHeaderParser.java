@@ -4,6 +4,7 @@
 package org.glavo.arkivo.sevenzip.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -52,6 +53,9 @@ public final class SevenZipHeaderParser {
 
     /// The `kCodersUnPackSize` property ID.
     private static final int K_CODERS_UNPACK_SIZE = 0x0c;
+
+    /// The `kNumUnPackStream` property ID.
+    private static final int K_NUM_UNPACK_STREAM = 0x0d;
 
     /// The `kEmptyStream` property ID.
     private static final int K_EMPTY_STREAM = 0x0e;
@@ -149,20 +153,109 @@ public final class SevenZipHeaderParser {
     private static StreamsInfo readStreamsInfo(HeaderInput input) throws IOException {
         PackInfo packInfo = PackInfo.EMPTY;
         FolderInfo[] folders = new FolderInfo[0];
+        SubStreamsInfo subStreamsInfo = null;
         while (true) {
             int property = input.readId();
             switch (property) {
                 case K_END -> {
-                    return new StreamsInfo(packInfo.packPosition, packInfo.packSizes, folders);
+                    return new StreamsInfo(packInfo.packPosition, packInfo.packSizes, folders, subStreamsInfo);
                 }
                 case K_PACK_INFO -> packInfo = readPackInfo(input);
                 case K_UNPACK_INFO -> folders = readUnPackInfo(input);
-                case K_SUBSTREAMS_INFO -> skipStreamsInfo(input);
+                case K_SUBSTREAMS_INFO -> {
+                    if (folders.length == 0) {
+                        throw new IOException("7z substreams appeared before folders");
+                    }
+                    subStreamsInfo = readSubStreamsInfo(input, folders);
+                }
                 default -> throw new UnsupportedOperationException(
                         "Unsupported 7z streams info property: 0x" + Integer.toHexString(property)
                 );
             }
         }
+    }
+
+    /// Reads `SubStreamsInfo` for folders.
+    private static SubStreamsInfo readSubStreamsInfo(HeaderInput input, FolderInfo[] folders) throws IOException {
+        int[] counts = new int[folders.length];
+        Arrays.fill(counts, 1);
+        long[][] sizes = null;
+        while (true) {
+            int property = input.readId();
+            switch (property) {
+                case K_END -> {
+                    return buildSubStreamsInfo(folders, counts, sizes);
+                }
+                case K_NUM_UNPACK_STREAM -> {
+                    for (int index = 0; index < counts.length; index++) {
+                        counts[index] = input.readIntNumber("substream count");
+                        if (counts[index] <= 0) {
+                            throw new UnsupportedOperationException("7z folders with no substreams are not implemented yet");
+                        }
+                    }
+                }
+                case K_SIZE -> sizes = readSubStreamSizes(input, folders, counts);
+                case K_CRC -> skipDigests(input, sum(counts));
+                default -> throw new UnsupportedOperationException(
+                        "Unsupported 7z substreams info property: 0x" + Integer.toHexString(property)
+                );
+            }
+        }
+    }
+
+    /// Reads substream sizes.
+    private static long[][] readSubStreamSizes(
+            HeaderInput input,
+            FolderInfo[] folders,
+            int[] counts
+    ) throws IOException {
+        long[][] sizes = new long[folders.length][];
+        for (int folderIndex = 0; folderIndex < folders.length; folderIndex++) {
+            int count = counts[folderIndex];
+            sizes[folderIndex] = new long[count];
+            long sum = 0;
+            for (int index = 0; index < count - 1; index++) {
+                long size = input.readNumber();
+                if (size < 0) {
+                    throw new IOException("7z substream size is too large");
+                }
+                sizes[folderIndex][index] = size;
+                sum = checkedAdd(sum, size, "7z substream sizes are too large");
+            }
+            long lastSize = folders[folderIndex].unpackSize() - sum;
+            if (lastSize < 0) {
+                throw new IOException("7z substream sizes exceed folder size");
+            }
+            sizes[folderIndex][count - 1] = lastSize;
+        }
+        return sizes;
+    }
+
+    /// Builds substream metadata from optional `SubStreamsInfo`.
+    private static SubStreamsInfo buildSubStreamsInfo(
+            FolderInfo[] folders,
+            int[] counts,
+            long[][] sizes
+    ) throws IOException {
+        long[][] resolvedSizes = sizes;
+        if (resolvedSizes == null) {
+            resolvedSizes = new long[folders.length][];
+            for (int folderIndex = 0; folderIndex < folders.length; folderIndex++) {
+                if (counts[folderIndex] != 1) {
+                    throw new IOException("7z substream sizes are missing");
+                }
+                resolvedSizes[folderIndex] = new long[]{folders[folderIndex].unpackSize()};
+            }
+        }
+        ArrayList<SubStreamInfo> streams = new ArrayList<>();
+        for (int folderIndex = 0; folderIndex < folders.length; folderIndex++) {
+            long decodedOffset = 0;
+            for (long size : resolvedSizes[folderIndex]) {
+                streams.add(new SubStreamInfo(folderIndex, decodedOffset, size));
+                decodedOffset = checkedAdd(decodedOffset, size, "7z folder unpack size is too large");
+            }
+        }
+        return new SubStreamsInfo(streams.toArray(SubStreamInfo[]::new));
     }
 
     /// Reads a `PackInfo` block.
@@ -361,6 +454,7 @@ public final class SevenZipHeaderParser {
                         0L,
                         SevenZipEntryMetadata.NO_DATA_OFFSET,
                         0L,
+                        0L,
                         new byte[0],
                         new byte[0],
                         creationTimes[index],
@@ -374,6 +468,7 @@ public final class SevenZipHeaderParser {
                         false,
                         streamsInfo.unpackSize(streamIndex),
                         streamsInfo.dataOffset(streamIndex),
+                        streamsInfo.decodedOffset(streamIndex),
                         streamsInfo.packedSize(streamIndex),
                         streamsInfo.methodId(streamIndex),
                         streamsInfo.properties(streamIndex),
@@ -501,6 +596,31 @@ public final class SevenZipHeaderParser {
         return count;
     }
 
+    /// Returns the sum of the given non-negative values.
+    private static int sum(int[] values) throws IOException {
+        int result = 0;
+        for (int value : values) {
+            if (value < 0) {
+                throw new IOException("7z substream count is negative");
+            }
+            try {
+                result = Math.addExact(result, value);
+            } catch (ArithmeticException exception) {
+                throw new IOException("7z substream count is too large", exception);
+            }
+        }
+        return result;
+    }
+
+    /// Returns the checked sum of two non-negative `long` values.
+    private static long checkedAdd(long left, long right, String message) throws IOException {
+        try {
+            return Math.addExact(left, right);
+        } catch (ArithmeticException exception) {
+            throw new IOException(message, exception);
+        }
+    }
+
     /// Skips CRC digest definitions.
     private static void skipDigests(HeaderInput input, int count) throws IOException {
         boolean[] defined = new boolean[count];
@@ -540,7 +660,7 @@ public final class SevenZipHeaderParser {
     @NotNullByDefault
     private static final class StreamsInfo {
         /// The empty streams information value.
-        private static final StreamsInfo EMPTY = new StreamsInfo(0L, new long[0], new FolderInfo[0]);
+        private static final StreamsInfo EMPTY = new StreamsInfo(0L, new long[0], new FolderInfo[0], null);
 
         /// The first pack stream position relative to the first byte after the signature header.
         private final long packPosition;
@@ -551,60 +671,160 @@ public final class SevenZipHeaderParser {
         /// The parsed folders.
         private final FolderInfo[] folders;
 
+        /// The flattened substreams addressable by file entries.
+        private final SubStreamsInfo subStreamsInfo;
+
         /// Creates stream information.
-        private StreamsInfo(long packPosition, long[] packSizes, FolderInfo[] folders) {
+        private StreamsInfo(
+                long packPosition,
+                long[] packSizes,
+                FolderInfo[] folders,
+                @Nullable SubStreamsInfo subStreamsInfo
+        ) {
             if (packSizes.length != folders.length) {
                 throw new IllegalArgumentException("packSizes and folders must have the same length");
             }
             this.packPosition = packPosition;
             this.packSizes = packSizes.clone();
             this.folders = folders.clone();
+            this.subStreamsInfo = subStreamsInfo != null ? subStreamsInfo : SubStreamsInfo.fromFolders(folders);
         }
 
         /// Returns the number of unpack streams.
         private int streamCount() {
-            return folders.length;
+            return subStreamsInfo.size();
         }
 
         /// Returns the unpack size for a stream.
         private long unpackSize(int index) throws IOException {
             requireStreamIndex(index);
-            return folders[index].unpackSize();
+            return subStreamsInfo.stream(index).size();
+        }
+
+        /// Returns the decoded offset inside the folder output for a stream.
+        private long decodedOffset(int index) throws IOException {
+            requireStreamIndex(index);
+            return subStreamsInfo.stream(index).decodedOffset();
         }
 
         /// Returns the packed size for a stream.
         private long packedSize(int index) throws IOException {
             requireStreamIndex(index);
-            return packSizes[index];
+            SubStreamInfo stream = subStreamsInfo.stream(index);
+            FolderInfo folder = folders[stream.folderIndex()];
+            return folder.isCopy() ? stream.size() : packSizes[stream.folderIndex()];
         }
 
         /// Returns the method ID for a stream.
         private byte[] methodId(int index) throws IOException {
             requireStreamIndex(index);
-            return folders[index].methodId();
+            return folders[subStreamsInfo.stream(index).folderIndex()].methodId();
         }
 
         /// Returns the coder properties for a stream.
         private byte[] properties(int index) throws IOException {
             requireStreamIndex(index);
-            return folders[index].properties();
+            return folders[subStreamsInfo.stream(index).folderIndex()].properties();
         }
 
         /// Returns the absolute archive data offset for a stream.
         private long dataOffset(int index) throws IOException {
             requireStreamIndex(index);
+            SubStreamInfo stream = subStreamsInfo.stream(index);
             long offset = SevenZipSignatureHeader.SIZE + packPosition;
-            for (int i = 0; i < index; i++) {
+            for (int i = 0; i < stream.folderIndex(); i++) {
                 offset = Math.addExact(offset, packSizes[i]);
+            }
+            if (folders[stream.folderIndex()].isCopy()) {
+                offset = Math.addExact(offset, stream.decodedOffset());
             }
             return offset;
         }
 
         /// Requires a stream index to be valid and supported.
         private void requireStreamIndex(int index) throws IOException {
-            if (index < 0 || index >= folders.length) {
+            if (index < 0 || index >= subStreamsInfo.size()) {
                 throw new IOException("7z file entry references a missing stream");
             }
+        }
+    }
+
+    /// Stores flattened 7z substream information.
+    @NotNullByDefault
+    private static final class SubStreamsInfo {
+        /// The flattened substreams.
+        private final SubStreamInfo[] streams;
+
+        /// Creates substreams information.
+        private SubStreamsInfo(SubStreamInfo[] streams) {
+            this.streams = streams.clone();
+        }
+
+        /// Creates default substream information with one stream per folder.
+        private static SubStreamsInfo fromFolders(FolderInfo[] folders) {
+            SubStreamInfo[] streams = new SubStreamInfo[folders.length];
+            for (int index = 0; index < folders.length; index++) {
+                try {
+                    streams[index] = new SubStreamInfo(index, 0L, folders[index].unpackSize());
+                } catch (IOException exception) {
+                    throw new IllegalStateException("folder unpack size should already be validated", exception);
+                }
+            }
+            return new SubStreamsInfo(streams);
+        }
+
+        /// Returns the number of flattened substreams.
+        private int size() {
+            return streams.length;
+        }
+
+        /// Returns one flattened substream.
+        private SubStreamInfo stream(int index) {
+            return streams[index];
+        }
+    }
+
+    /// Stores one file-addressable output stream inside a 7z folder.
+    @NotNullByDefault
+    private static final class SubStreamInfo {
+        /// The folder index that contains this stream.
+        private final int folderIndex;
+
+        /// The decoded offset inside the folder output.
+        private final long decodedOffset;
+
+        /// The decoded stream size.
+        private final long size;
+
+        /// Creates substream information.
+        private SubStreamInfo(int folderIndex, long decodedOffset, long size) {
+            if (folderIndex < 0) {
+                throw new IllegalArgumentException("folderIndex must be non-negative");
+            }
+            if (decodedOffset < 0) {
+                throw new IllegalArgumentException("decodedOffset must be non-negative");
+            }
+            if (size < 0) {
+                throw new IllegalArgumentException("size must be non-negative");
+            }
+            this.folderIndex = folderIndex;
+            this.decodedOffset = decodedOffset;
+            this.size = size;
+        }
+
+        /// Returns the folder index that contains this stream.
+        private int folderIndex() {
+            return folderIndex;
+        }
+
+        /// Returns the decoded offset inside the folder output.
+        private long decodedOffset() {
+            return decodedOffset;
+        }
+
+        /// Returns the decoded stream size.
+        private long size() {
+            return size;
         }
     }
 
@@ -650,6 +870,11 @@ public final class SevenZipHeaderParser {
         /// Returns the coder properties.
         private byte[] properties() {
             return properties.clone();
+        }
+
+        /// Returns whether this folder uses the 7z Copy method.
+        private boolean isCopy() {
+            return Arrays.equals(methodId, COPY_METHOD_ID);
         }
     }
 

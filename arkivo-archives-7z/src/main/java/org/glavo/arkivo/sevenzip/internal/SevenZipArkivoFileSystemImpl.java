@@ -283,16 +283,24 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 metadata.dataOffset(),
                 metadata.packedSize()
         ));
+        InputStream decoded;
+        boolean skipDecodedOffset;
         if (SevenZipLZMADecoder.isCopy(metadata.methodId())) {
-            return input;
+            decoded = input;
+            skipDecodedOffset = false;
+        } else if (SevenZipLZMADecoder.isLZMA(metadata.methodId())) {
+            decoded = SevenZipLZMADecoder.openLZMA(input, metadata.decodedOffset() + metadata.size(), metadata.coderProperties());
+            skipDecodedOffset = true;
+        } else if (SevenZipLZMADecoder.isLZMA2(metadata.methodId())) {
+            decoded = SevenZipLZMADecoder.openLZMA2(input, metadata.coderProperties());
+            skipDecodedOffset = true;
+        } else {
+            throw new UnsupportedOperationException("Unsupported 7z entry method");
         }
-        if (SevenZipLZMADecoder.isLZMA(metadata.methodId())) {
-            return SevenZipLZMADecoder.openLZMA(input, metadata.size(), metadata.coderProperties());
+        if (skipDecodedOffset && metadata.decodedOffset() > 0) {
+            decoded.skipNBytes(metadata.decodedOffset());
         }
-        if (SevenZipLZMADecoder.isLZMA2(metadata.methodId())) {
-            return SevenZipLZMADecoder.openLZMA2(input, metadata.coderProperties());
-        }
-        throw new UnsupportedOperationException("Unsupported 7z entry method");
+        return new SevenZipBoundedInputStream(decoded, metadata.size());
     }
 
     /// Opens a directory stream.

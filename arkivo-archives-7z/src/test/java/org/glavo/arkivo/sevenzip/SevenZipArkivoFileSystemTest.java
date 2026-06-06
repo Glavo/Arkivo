@@ -179,6 +179,47 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that multiple file entries can share one Copy-method 7z folder output.
+    @Test
+    public void copySubStreamEntries() throws IOException {
+        byte[] first = "one".getBytes(StandardCharsets.UTF_8);
+        byte[] second = "two!".getBytes(StandardCharsets.UTF_8);
+        byte[] content = new byte[first.length + second.length];
+        System.arraycopy(first, 0, content, 0, first.length);
+        System.arraycopy(second, 0, content, first.length, second.length);
+        Path archivePath = createTemporaryArchivePath("copy-substreams-");
+        Files.write(archivePath, archiveWithCopySubStreams(content, first.length));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path firstFile = fileSystem.getPath("/one.txt");
+                Path secondFile = fileSystem.getPath("/two.txt");
+                ArrayList<String> rootChildren = new ArrayList<>();
+
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(fileSystem.getPath("/"))) {
+                    for (Path child : stream) {
+                        rootChildren.add(child.toString());
+                    }
+                }
+
+                assertEquals(List.of("/one.txt", "/two.txt"), rootChildren);
+                assertArrayEquals(first, Files.readAllBytes(firstFile));
+                assertArrayEquals(second, Files.readAllBytes(secondFile));
+                try (var input = Files.newInputStream(secondFile)) {
+                    assertArrayEquals(second, input.readAllBytes());
+                }
+                try (SeekableByteChannel channel = Files.newByteChannel(secondFile)) {
+                    assertEquals(second.length, channel.size());
+                    ByteBuffer buffer = ByteBuffer.allocate(second.length);
+                    assertEquals(second.length, channel.read(buffer));
+                    assertArrayEquals(second, buffer.array());
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that 7z file time metadata is exposed through basic file attributes.
     @Test
     public void fileTimes() throws IOException {
@@ -392,6 +433,12 @@ public final class SevenZipArkivoFileSystemTest {
         return archive(content, header, crc32(header));
     }
 
+    /// Returns a 7z archive with two files stored as substreams of one Copy-method folder.
+    private static byte[] archiveWithCopySubStreams(byte[] content, int firstSize) throws IOException {
+        byte[] header = copySubStreamsHeader(firstSize, content.length);
+        return archive(content, header, crc32(header));
+    }
+
     /// Returns a 7z archive with one Copy-method file and metadata.
     private static byte[] archiveWithCopyFile(
             byte[] content,
@@ -553,6 +600,50 @@ public final class SevenZipArkivoFileSystemTest {
         if (windowsAttributes >= 0) {
             writeWindowsAttributesProperty(output, windowsAttributes);
         }
+        output.write(0x00);
+
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header with two Copy-method file substreams.
+    private static byte[] copySubStreamsHeader(int firstSize, int totalSize) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+
+        output.write(0x04);
+        output.write(0x06);
+        writeNumber(output, 0);
+        writeNumber(output, 1);
+        output.write(0x09);
+        writeNumber(output, totalSize);
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(0);
+        writeNumber(output, 1);
+        output.write(1);
+        output.write(0);
+        output.write(0x0c);
+        writeNumber(output, totalSize);
+        output.write(0x00);
+
+        output.write(0x08);
+        output.write(0x0d);
+        writeNumber(output, 2);
+        output.write(0x09);
+        writeNumber(output, firstSize);
+        output.write(0x00);
+        output.write(0x00);
+
+        output.write(0x05);
+        writeNumber(output, 2);
+        byte[] names = namesProperty("one.txt", "two.txt");
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
         output.write(0x00);
 
         output.write(0x00);

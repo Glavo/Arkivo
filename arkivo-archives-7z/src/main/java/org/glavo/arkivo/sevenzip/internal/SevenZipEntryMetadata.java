@@ -29,6 +29,9 @@ public final class SevenZipEntryMetadata {
     /// The absolute archive data offset, or `NO_DATA_OFFSET` when this entry has no stored body.
     private final long dataOffset;
 
+    /// The decoded stream offset inside the folder output.
+    private final long decodedOffset;
+
     /// The packed entry size.
     private final long packedSize;
 
@@ -56,6 +59,7 @@ public final class SevenZipEntryMetadata {
             boolean directory,
             long size,
             long dataOffset,
+            long decodedOffset,
             long packedSize,
             byte[] methodId,
             byte[] coderProperties,
@@ -70,6 +74,9 @@ public final class SevenZipEntryMetadata {
         if (dataOffset < NO_DATA_OFFSET) {
             throw new IllegalArgumentException("dataOffset must be non-negative or NO_DATA_OFFSET");
         }
+        if (decodedOffset < 0) {
+            throw new IllegalArgumentException("decodedOffset must be non-negative");
+        }
         if (packedSize < 0) {
             throw new IllegalArgumentException("packedSize must be non-negative");
         }
@@ -77,6 +84,7 @@ public final class SevenZipEntryMetadata {
         this.directory = directory;
         this.size = size;
         this.dataOffset = dataOffset;
+        this.decodedOffset = decodedOffset;
         this.packedSize = packedSize;
         this.methodId = Objects.requireNonNull(methodId, "methodId").clone();
         this.coderProperties = Objects.requireNonNull(coderProperties, "coderProperties").clone();
@@ -104,6 +112,11 @@ public final class SevenZipEntryMetadata {
     /// Returns the absolute archive data offset, or `NO_DATA_OFFSET` when this entry has no stored body.
     public long dataOffset() {
         return dataOffset;
+    }
+
+    /// Returns the decoded stream offset inside the folder output.
+    public long decodedOffset() {
+        return decodedOffset;
     }
 
     /// Returns the packed entry size.
