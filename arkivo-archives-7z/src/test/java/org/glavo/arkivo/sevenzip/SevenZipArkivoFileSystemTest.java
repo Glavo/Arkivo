@@ -8,6 +8,8 @@ import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
+import org.tukaani.xz.ArrayCache;
+import org.tukaani.xz.FinishableOutputStream;
 import org.tukaani.xz.LZMA2Options;
 import org.tukaani.xz.LZMAOutputStream;
 
@@ -178,9 +180,36 @@ public final class SevenZipArkivoFileSystemTest {
     @Test
     public void lzmaFileEntry() throws IOException {
         byte[] content = "hello lzma".getBytes(StandardCharsets.UTF_8);
-        LZMAPayload payload = lzmaPayload(content);
+        CoderPayload payload = lzmaPayload(content);
         Path archivePath = createTemporaryArchivePath("lzma-file-");
         Files.write(archivePath, archiveWithLZMAFile(payload, content.length));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+                try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                    assertEquals(content.length, channel.size());
+                    ByteBuffer buffer = ByteBuffer.allocate(content.length);
+                    assertEquals(content.length, channel.read(buffer));
+                    assertArrayEquals(content, buffer.array());
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a non-empty file stored with the 7z LZMA2 method can be read.
+    @Test
+    public void lzma2FileEntry() throws IOException {
+        byte[] content = "hello lzma2".getBytes(StandardCharsets.UTF_8);
+        CoderPayload payload = lzma2Payload(content);
+        Path archivePath = createTemporaryArchivePath("lzma2-file-");
+        Files.write(archivePath, archiveWithLZMA2File(payload, content.length));
 
         try {
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
@@ -313,11 +342,22 @@ public final class SevenZipArkivoFileSystemTest {
     }
 
     /// Returns a 7z archive with one file stored through the LZMA method.
-    private static byte[] archiveWithLZMAFile(LZMAPayload payload, int uncompressedSize) throws IOException {
+    private static byte[] archiveWithLZMAFile(CoderPayload payload, int uncompressedSize) throws IOException {
         byte[] header = fileHeader(
                 payload.content().length,
                 uncompressedSize,
                 new byte[]{0x03, 0x01, 0x01},
+                payload.properties()
+        );
+        return archive(payload.content(), header, crc32(header));
+    }
+
+    /// Returns a 7z archive with one file stored through the LZMA2 method.
+    private static byte[] archiveWithLZMA2File(CoderPayload payload, int uncompressedSize) throws IOException {
+        byte[] header = fileHeader(
+                payload.content().length,
+                uncompressedSize,
+                new byte[]{0x21},
                 payload.properties()
         );
         return archive(payload.content(), header, crc32(header));
@@ -422,7 +462,7 @@ public final class SevenZipArkivoFileSystemTest {
     }
 
     /// Returns a raw LZMA payload and its 7z coder properties.
-    private static LZMAPayload lzmaPayload(byte[] content) throws IOException {
+    private static CoderPayload lzmaPayload(byte[] content) throws IOException {
         LZMA2Options options = new LZMA2Options();
         options.setDictSize(1 << 20);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -433,32 +473,84 @@ public final class SevenZipArkivoFileSystemTest {
         byte[] properties = new byte[5];
         properties[0] = (byte) ((options.getPb() * 5 + options.getLp()) * 9 + options.getLc());
         ByteBuffer.wrap(properties, 1, 4).order(ByteOrder.LITTLE_ENDIAN).putInt(options.getDictSize());
-        return new LZMAPayload(output.toByteArray(), properties);
+        return new CoderPayload(output.toByteArray(), properties);
     }
 
-    /// Stores generated raw LZMA payload bytes and 7z coder properties.
+    /// Returns a raw LZMA2 payload and its 7z coder properties.
+    private static CoderPayload lzma2Payload(byte[] content) throws IOException {
+        LZMA2Options options = new LZMA2Options();
+        options.setDictSize(1 << 20);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        FinishableByteArrayOutputStream target = new FinishableByteArrayOutputStream(output);
+        try (FinishableOutputStream lzma2 = options.getOutputStream(target, ArrayCache.getDummyCache())) {
+            lzma2.write(content);
+        }
+        return new CoderPayload(output.toByteArray(), new byte[]{lzma2Property(options.getDictSize())});
+    }
+
+    /// Returns the 7z LZMA2 dictionary property for an exact dictionary size.
+    private static byte lzma2Property(int dictionarySize) {
+        for (int property = 0; property <= 37; property++) {
+            int value = (2 | (property & 1)) << ((property >>> 1) + 11);
+            if (value == dictionarySize) {
+                return (byte) property;
+            }
+        }
+        throw new IllegalArgumentException("dictionarySize cannot be represented exactly");
+    }
+
+    /// Stores generated coder payload bytes and 7z coder properties.
     @NotNullByDefault
-    private static final class LZMAPayload {
-        /// The raw LZMA payload bytes.
+    private static final class CoderPayload {
+        /// The raw coder payload bytes.
         private final byte[] content;
 
-        /// The five-byte 7z LZMA properties.
+        /// The 7z coder properties.
         private final byte[] properties;
 
-        /// Creates a generated LZMA payload.
-        private LZMAPayload(byte[] content, byte[] properties) {
+        /// Creates a generated coder payload.
+        private CoderPayload(byte[] content, byte[] properties) {
             this.content = content;
             this.properties = properties;
         }
 
-        /// Returns the raw LZMA payload bytes.
+        /// Returns the raw coder payload bytes.
         private byte[] content() {
             return content;
         }
 
-        /// Returns the five-byte 7z LZMA properties.
+        /// Returns the 7z coder properties.
         private byte[] properties() {
             return properties;
+        }
+    }
+
+    /// Adapts a byte array output stream to XZ for Java's finishable output API.
+    @NotNullByDefault
+    private static final class FinishableByteArrayOutputStream extends FinishableOutputStream {
+        /// The target output stream.
+        private final ByteArrayOutputStream target;
+
+        /// Creates a finishable output stream adapter.
+        private FinishableByteArrayOutputStream(ByteArrayOutputStream target) {
+            this.target = target;
+        }
+
+        /// Writes one byte.
+        @Override
+        public void write(int value) {
+            target.write(value);
+        }
+
+        /// Writes bytes.
+        @Override
+        public void write(byte[] buffer, int offset, int length) {
+            target.write(buffer, offset, length);
+        }
+
+        /// Finishes this stream.
+        @Override
+        public void finish() {
         }
     }
 

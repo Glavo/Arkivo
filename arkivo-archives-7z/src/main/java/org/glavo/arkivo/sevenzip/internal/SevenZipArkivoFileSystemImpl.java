@@ -261,6 +261,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         if (SevenZipLZMADecoder.isLZMA(metadata.methodId())) {
             return new SevenZipByteChannel(readDecodedEntry(metadata));
         }
+        if (SevenZipLZMADecoder.isLZMA2(metadata.methodId())) {
+            return new SevenZipByteChannel(readDecodedEntry(metadata));
+        }
         throw new UnsupportedOperationException("Unsupported 7z entry method");
     }
 
@@ -283,7 +286,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             return input;
         }
         if (SevenZipLZMADecoder.isLZMA(metadata.methodId())) {
-            return SevenZipLZMADecoder.open(input, metadata.size(), metadata.coderProperties());
+            return SevenZipLZMADecoder.openLZMA(input, metadata.size(), metadata.coderProperties());
+        }
+        if (SevenZipLZMADecoder.isLZMA2(metadata.methodId())) {
+            return SevenZipLZMADecoder.openLZMA2(input, metadata.coderProperties());
         }
         throw new UnsupportedOperationException("Unsupported 7z entry method");
     }

@@ -69,6 +69,9 @@ public final class SevenZipHeaderParser {
     /// The 7z LZMA method ID.
     private static final byte[] LZMA_METHOD_ID = new byte[]{0x03, 0x01, 0x01};
 
+    /// The 7z LZMA2 method ID.
+    private static final byte[] LZMA2_METHOD_ID = new byte[]{0x21};
+
     /// Creates no instances.
     private SevenZipHeaderParser() {
     }
@@ -261,7 +264,9 @@ public final class SevenZipHeaderParser {
         if (inputStreamCount != 1 || outputStreamCount != 1) {
             throw new UnsupportedOperationException("7z multi-stream coders are not implemented yet");
         }
-        if (!Arrays.equals(methodId, COPY_METHOD_ID) && !Arrays.equals(methodId, LZMA_METHOD_ID)) {
+        if (!Arrays.equals(methodId, COPY_METHOD_ID)
+                && !Arrays.equals(methodId, LZMA_METHOD_ID)
+                && !Arrays.equals(methodId, LZMA2_METHOD_ID)) {
             throw new UnsupportedOperationException("Unsupported 7z coder method: " + Arrays.toString(methodId));
         }
         return new FolderInfo(methodId, properties);
