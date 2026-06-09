@@ -220,6 +220,55 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that a 7z folder with no file-addressable substreams is ignored safely.
+    @Test
+    public void folderWithNoSubStreams() throws IOException {
+        Path archivePath = createTemporaryArchivePath("no-substreams-");
+        Files.write(archivePath, archiveWithFolderWithoutSubStreams());
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path emptyFile = fileSystem.getPath("/empty.txt");
+                BasicFileAttributes attributes = Files.readAttributes(emptyFile, BasicFileAttributes.class);
+                ArrayList<String> rootChildren = new ArrayList<>();
+
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(fileSystem.getPath("/"))) {
+                    for (Path child : stream) {
+                        rootChildren.add(child.toString());
+                    }
+                }
+
+                assertEquals(List.of("/empty.txt"), rootChildren);
+                assertEquals(true, attributes.isRegularFile());
+                assertEquals(0L, attributes.size());
+                assertArrayEquals(new byte[0], Files.readAllBytes(emptyFile));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that additional stream metadata can be parsed and skipped.
+    @Test
+    public void additionalStreamsInfo() throws IOException {
+        byte[] content = "main stream".getBytes(StandardCharsets.UTF_8);
+        byte[] additional = "unused".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("additional-streams-");
+        Files.write(archivePath, archiveWithAdditionalStreamsInfo(additional, content));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that 7z file time metadata is exposed through basic file attributes.
     @Test
     public void fileTimes() throws IOException {
@@ -316,6 +365,46 @@ public final class SevenZipArkivoFileSystemTest {
                     assertEquals(content.length, channel.read(buffer));
                     assertArrayEquals(content, buffer.array());
                 }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a 7z archive with an LZMA2-compressed header can be opened.
+    @Test
+    public void encodedHeader() throws IOException {
+        byte[] content = "encoded header body".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("encoded-header-");
+        Files.write(archivePath, archiveWithEncodedHeader(content));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a 7z archive with a multi-substream encoded header can be opened.
+    @Test
+    public void encodedHeaderSubStreams() throws IOException {
+        byte[] content = "encoded header substream body".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("encoded-header-substreams-");
+        Files.write(archivePath, archiveWithEncodedHeaderSubStreams(content));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -439,6 +528,19 @@ public final class SevenZipArkivoFileSystemTest {
         return archive(content, header, crc32(header));
     }
 
+    /// Returns a 7z archive with an unused folder that has no substreams and one empty file entry.
+    private static byte[] archiveWithFolderWithoutSubStreams() throws IOException {
+        byte[] header = folderWithoutSubStreamsHeader();
+        return archive(new byte[0], header, crc32(header));
+    }
+
+    /// Returns a 7z archive with an unused additional stream before the main file stream.
+    private static byte[] archiveWithAdditionalStreamsInfo(byte[] additional, byte[] content) throws IOException {
+        byte[] packedData = concatenate(additional, content);
+        byte[] header = additionalStreamsInfoHeader(additional.length, content.length);
+        return archive(packedData, header, crc32(header));
+    }
+
     /// Returns a 7z archive with one Copy-method file and metadata.
     private static byte[] archiveWithCopyFile(
             byte[] content,
@@ -480,6 +582,35 @@ public final class SevenZipArkivoFileSystemTest {
                 payload.properties()
         );
         return archive(payload.content(), header, crc32(header));
+    }
+
+    /// Returns a 7z archive with one Copy-method file and an LZMA2-compressed header.
+    private static byte[] archiveWithEncodedHeader(byte[] content) throws IOException {
+        byte[] plainHeader = fileHeader(content.length, content.length, new byte[]{0x00}, new byte[0]);
+        CoderPayload encodedHeaderPayload = lzma2Payload(plainHeader);
+        byte[] nextHeader = encodedHeader(
+                content.length,
+                encodedHeaderPayload.content().length,
+                plainHeader.length,
+                new byte[]{0x21},
+                encodedHeaderPayload.properties()
+        );
+        return archive(concatenate(content, encodedHeaderPayload.content()), nextHeader, crc32(nextHeader));
+    }
+
+    /// Returns a 7z archive whose encoded header is split across two LZMA2 substreams.
+    private static byte[] archiveWithEncodedHeaderSubStreams(byte[] content) throws IOException {
+        byte[] plainHeader = fileHeader(content.length, content.length, new byte[]{0x00}, new byte[0]);
+        CoderPayload encodedHeaderPayload = lzma2Payload(plainHeader);
+        byte[] nextHeader = encodedHeaderSubStreams(
+                content.length,
+                encodedHeaderPayload.content().length,
+                plainHeader.length,
+                plainHeader.length / 2,
+                new byte[]{0x21},
+                encodedHeaderPayload.properties()
+        );
+        return archive(concatenate(content, encodedHeaderPayload.content()), nextHeader, crc32(nextHeader));
     }
 
     /// Returns a 7z archive with the given next header and expected next header CRC-32.
@@ -650,6 +781,174 @@ public final class SevenZipArkivoFileSystemTest {
         return output.toByteArray();
     }
 
+    /// Returns a plain 7z header with a zero-substream Copy folder and one empty file.
+    private static byte[] folderWithoutSubStreamsHeader() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+
+        output.write(0x04);
+        output.write(0x06);
+        writeNumber(output, 0);
+        writeNumber(output, 1);
+        output.write(0x09);
+        writeNumber(output, 0);
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(0);
+        writeNumber(output, 1);
+        output.write(1);
+        output.write(0);
+        output.write(0x0c);
+        writeNumber(output, 0);
+        output.write(0x00);
+
+        output.write(0x08);
+        output.write(0x0d);
+        writeNumber(output, 0);
+        output.write(0x00);
+        output.write(0x00);
+
+        output.write(0x05);
+        writeNumber(output, 1);
+
+        byte[] emptyStreamBits = new byte[]{(byte) 0x80};
+        output.write(0x0e);
+        writeNumber(output, emptyStreamBits.length);
+        output.write(emptyStreamBits);
+
+        byte[] emptyFileBits = new byte[]{(byte) 0x80};
+        output.write(0x0f);
+        writeNumber(output, emptyFileBits.length);
+        output.write(emptyFileBits);
+
+        byte[] names = namesProperty("empty.txt");
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
+
+        output.write(0x00);
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header with an ignored additional stream and one main Copy-method file stream.
+    private static byte[] additionalStreamsInfoHeader(int additionalSize, int contentSize) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+
+        output.write(0x03);
+        writeSingleFolderStreamsInfo(output, 0, additionalSize, additionalSize, new byte[]{0x00}, new byte[0]);
+
+        output.write(0x04);
+        writeSingleFolderStreamsInfo(output, additionalSize, contentSize, contentSize, new byte[]{0x00}, new byte[0]);
+
+        output.write(0x05);
+        writeNumber(output, 1);
+        byte[] names = namesProperty("hello.txt");
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
+        output.write(0x00);
+
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns an encoded-header descriptor that points to one packed header stream.
+    private static byte[] encodedHeader(
+            int packPosition,
+            int packedSize,
+            int uncompressedSize,
+            byte[] methodId,
+            byte[] properties
+    ) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x17);
+        writeSingleFolderStreamsInfo(output, packPosition, packedSize, uncompressedSize, methodId, properties);
+        return output.toByteArray();
+    }
+
+    /// Returns an encoded-header descriptor with one packed folder exposed as two substreams.
+    private static byte[] encodedHeaderSubStreams(
+            int packPosition,
+            int packedSize,
+            int uncompressedSize,
+            int firstSubStreamSize,
+            byte[] methodId,
+            byte[] properties
+    ) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x17);
+
+        output.write(0x06);
+        writeNumber(output, packPosition);
+        writeNumber(output, 1);
+        output.write(0x09);
+        writeNumber(output, packedSize);
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(0);
+        writeNumber(output, 1);
+        output.write(methodId.length | (properties.length != 0 ? 0x20 : 0));
+        output.write(methodId);
+        if (properties.length != 0) {
+            writeNumber(output, properties.length);
+            output.write(properties);
+        }
+        output.write(0x0c);
+        writeNumber(output, uncompressedSize);
+        output.write(0x00);
+
+        output.write(0x08);
+        output.write(0x0d);
+        writeNumber(output, 2);
+        output.write(0x09);
+        writeNumber(output, firstSubStreamSize);
+        output.write(0x00);
+
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Writes a `StreamsInfo` block with one folder and one unpack stream.
+    private static void writeSingleFolderStreamsInfo(
+            ByteArrayOutputStream output,
+            int packPosition,
+            int packedSize,
+            int uncompressedSize,
+            byte[] methodId,
+            byte[] properties
+    ) throws IOException {
+        output.write(0x06);
+        writeNumber(output, packPosition);
+        writeNumber(output, 1);
+        output.write(0x09);
+        writeNumber(output, packedSize);
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(0);
+        writeNumber(output, 1);
+        output.write(methodId.length | (properties.length != 0 ? 0x20 : 0));
+        output.write(methodId);
+        if (properties.length != 0) {
+            writeNumber(output, properties.length);
+            output.write(properties);
+        }
+        output.write(0x0c);
+        writeNumber(output, uncompressedSize);
+        output.write(0x00);
+        output.write(0x00);
+    }
+
     /// Writes a one-file 7z time property.
     private static void writeTimeProperty(ByteArrayOutputStream output, int property, FileTime time) throws IOException {
         ByteArrayOutputStream data = new ByteArrayOutputStream();
@@ -708,6 +1007,14 @@ public final class SevenZipArkivoFileSystemTest {
             }
         }
         throw new IllegalArgumentException("dictionarySize cannot be represented exactly");
+    }
+
+    /// Concatenates two byte arrays.
+    private static byte[] concatenate(byte[] first, byte[] second) {
+        byte[] result = new byte[first.length + second.length];
+        System.arraycopy(first, 0, result, 0, first.length);
+        System.arraycopy(second, 0, result, first.length, second.length);
+        return result;
     }
 
     /// Stores generated coder payload bytes and 7z coder properties.
@@ -777,12 +1084,23 @@ public final class SevenZipArkivoFileSystemTest {
         return output.toByteArray();
     }
 
-    /// Writes a small 7z variable-length integer.
+    /// Writes a 7z variable-length integer.
     private static void writeNumber(ByteArrayOutputStream output, int value) {
-        if (value < 0 || value > 0x7f) {
+        if (value < 0) {
             throw new IllegalArgumentException("test value is out of range");
         }
-        output.write(value);
+        if (value < 0x80) {
+            output.write(value);
+        } else if (value < 0x4000) {
+            output.write(0x80 | (value >>> 8));
+            output.write(value);
+        } else if (value < 0x20_0000) {
+            output.write(0xc0 | (value >>> 16));
+            output.write(value);
+            output.write(value >>> 8);
+        } else {
+            throw new IllegalArgumentException("test value is out of range");
+        }
     }
 
     /// Writes a little-endian `int`.

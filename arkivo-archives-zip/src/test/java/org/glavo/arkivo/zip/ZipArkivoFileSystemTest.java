@@ -27,9 +27,13 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
+import java.nio.file.attribute.UserPrincipalLookupService;
+import java.nio.file.attribute.UserPrincipalNotFoundException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -67,6 +71,27 @@ public final class ZipArkivoFileSystemTest {
     public void zipFileSystemIsReadOnly() throws IOException {
         try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(Path.of("sample.zip"))) {
             assertEquals(true, fileSystem.isReadOnly());
+        }
+    }
+
+    /// Verifies that ZIP file systems expose synthesized owner and group principal lookup.
+    @Test
+    public void userPrincipalLookupService() throws IOException {
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(Path.of("sample.zip"))) {
+            UserPrincipalLookupService lookupService = fileSystem.getUserPrincipalLookupService();
+            UserPrincipal owner = lookupService.lookupPrincipalByName("owner");
+            GroupPrincipal group = lookupService.lookupPrincipalByGroupName("group");
+
+            assertEquals("owner", owner.getName());
+            assertEquals("group", group.getName());
+            assertThrows(
+                    UserPrincipalNotFoundException.class,
+                    () -> lookupService.lookupPrincipalByName("missing")
+            );
+            assertThrows(
+                    UserPrincipalNotFoundException.class,
+                    () -> lookupService.lookupPrincipalByGroupName("missing")
+            );
         }
     }
 
@@ -528,6 +553,38 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that a split ZIP archive can be indexed and read through a volume source.
+    @Test
+    public void readSplitZipFromVolumeSource() throws IOException {
+        Path firstVolume = createTemporaryArchivePath("split-zip-");
+        Path secondVolume = firstVolume.getParent().resolve("sample.z02");
+        byte[][] volumes = splitZipArchive();
+        Files.write(firstVolume, volumes[0]);
+        Files.write(secondVolume, volumes[1]);
+
+        try {
+            try (ZipArkivoFileSystem fileSystem =
+                         ZipArkivoFileSystem.open(ArkivoVolumeSource.of(List.of(firstVolume, secondVolume)))) {
+                Path file = fileSystem.getPath("/hello.txt");
+                ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
+                ArrayList<String> rootChildren = new ArrayList<>();
+
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(fileSystem.getPath("/"))) {
+                    for (Path child : stream) {
+                        rootChildren.add(child.toString());
+                    }
+                }
+
+                assertEquals(List.of("/hello.txt"), rootChildren);
+                assertEquals(ZipMethod.stored(), attributes.method());
+                assertEquals("split", Files.readString(file, StandardCharsets.UTF_8));
+            }
+        } finally {
+            Files.deleteIfExists(secondVolume);
+            deleteTemporaryArchive(firstVolume);
+        }
+    }
+
     /// Verifies that a ZIP file system can be opened and resolved through provider URIs.
     @Test
     public void openUri() throws IOException {
@@ -727,6 +784,62 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0xffffffff);
         buffer.putShort((short) 0);
         return buffer.array();
+    }
+
+    /// Returns a two-volume ZIP archive with one stored file.
+    private static byte[][] splitZipArchive() {
+        byte[] name = "hello.txt".getBytes(StandardCharsets.UTF_8);
+        byte[] content = "split".getBytes(StandardCharsets.UTF_8);
+        CRC32 crc32 = new CRC32();
+        crc32.update(content);
+
+        int localHeaderSize = 30 + name.length;
+        ByteBuffer firstVolume = ByteBuffer.allocate(localHeaderSize + content.length).order(ByteOrder.LITTLE_ENDIAN);
+        firstVolume.putInt(0x04034b50);
+        firstVolume.putShort((short) 20);
+        firstVolume.putShort((short) 0);
+        firstVolume.putShort((short) 0);
+        firstVolume.putShort((short) 0);
+        firstVolume.putShort((short) 0);
+        firstVolume.putInt((int) crc32.getValue());
+        firstVolume.putInt(content.length);
+        firstVolume.putInt(content.length);
+        firstVolume.putShort((short) name.length);
+        firstVolume.putShort((short) 0);
+        firstVolume.put(name);
+        firstVolume.put(content);
+
+        int centralDirectorySize = 46 + name.length;
+        ByteBuffer secondVolume = ByteBuffer.allocate(centralDirectorySize + 22).order(ByteOrder.LITTLE_ENDIAN);
+        secondVolume.putInt(0x02014b50);
+        secondVolume.putShort((short) 20);
+        secondVolume.putShort((short) 20);
+        secondVolume.putShort((short) 0);
+        secondVolume.putShort((short) 0);
+        secondVolume.putShort((short) 0);
+        secondVolume.putShort((short) 0);
+        secondVolume.putInt((int) crc32.getValue());
+        secondVolume.putInt(content.length);
+        secondVolume.putInt(content.length);
+        secondVolume.putShort((short) name.length);
+        secondVolume.putShort((short) 0);
+        secondVolume.putShort((short) 0);
+        secondVolume.putShort((short) 0);
+        secondVolume.putShort((short) 0);
+        secondVolume.putInt(0);
+        secondVolume.putInt(0);
+        secondVolume.put(name);
+
+        secondVolume.putInt(0x06054b50);
+        secondVolume.putShort((short) 1);
+        secondVolume.putShort((short) 1);
+        secondVolume.putShort((short) 1);
+        secondVolume.putShort((short) 1);
+        secondVolume.putInt(centralDirectorySize);
+        secondVolume.putInt(0);
+        secondVolume.putShort((short) 0);
+
+        return new byte[][]{firstVolume.array(), secondVolume.array()};
     }
 
     /// Returns the unsigned ZIP CRC-32 value of the given content.

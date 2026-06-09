@@ -5,6 +5,7 @@ package org.glavo.arkivo.sevenzip.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
 
+import java.io.ByteArrayInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -68,7 +69,10 @@ public final class SevenZipHeaderReader {
         byte[] nextHeader = readNextHeader(channel, signatureHeader);
         return new SevenZipArchiveMetadata(
                 signatureHeader,
-                SevenZipHeaderParser.parseEntries(nextHeader)
+                SevenZipHeaderParser.parseEntries(
+                        nextHeader,
+                        (offset, size) -> openPackedStream(channel, offset, size)
+                )
         );
     }
 
@@ -133,6 +137,29 @@ public final class SevenZipHeaderReader {
         channel.position(SevenZipSignatureHeader.SIZE + signatureHeader.nextHeaderOffset());
         readFully(channel, buffer);
         return bytes;
+    }
+
+    /// Reads a packed header stream and exposes it as an input stream.
+    private static ByteArrayInputStream openPackedStream(
+            SeekableByteChannel channel,
+            long offset,
+            long size
+    ) throws IOException {
+        if (offset < 0) {
+            throw new IOException("Invalid 7z packed stream offset");
+        }
+        if (size < 0 || size > Integer.MAX_VALUE) {
+            throw new IOException("7z packed stream is too large to index");
+        }
+        long end = checkedAdd(offset, size, "Invalid 7z packed stream size");
+        if (end > channel.size()) {
+            throw new EOFException("Unexpected end of 7z packed stream");
+        }
+
+        byte[] bytes = new byte[(int) size];
+        channel.position(offset);
+        readFully(channel, ByteBuffer.wrap(bytes));
+        return new ByteArrayInputStream(bytes);
     }
 
     /// Adds two non-negative 7z size values and reports overflow as an I/O failure.

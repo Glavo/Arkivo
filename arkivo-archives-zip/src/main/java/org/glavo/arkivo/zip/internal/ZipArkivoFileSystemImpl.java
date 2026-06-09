@@ -584,7 +584,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Returns a user principal lookup service for this ZIP file system.
     @Override
     public UserPrincipalLookupService getUserPrincipalLookupService() {
-        throw new UnsupportedOperationException("ZIP user principals are not implemented yet");
+        return ZipPosixSupport.userPrincipalLookupService();
     }
 
     /// Opens a watch service for this ZIP file system.
@@ -623,11 +623,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
 
     /// Reads the ZIP central directory index from archive storage.
     private ZipIndex readIndex() throws IOException {
-        if (archivePath == null) {
-            throw new IOException("Split ZIP archive indexing is not implemented yet");
-        }
-
-        try (SeekableByteChannel channel = openArchiveChannel()) {
+        try (ArchiveChannel channel = openArchiveChannel()) {
             ZipEndRecord endRecord = readEndRecord(channel);
             ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(config.entryNameEncoding());
             HashMap<String, ZipEntryRecord> entries = new HashMap<>();
@@ -663,6 +659,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 int internalAttributes = Short.toUnsignedInt(centralDirectory.getShort(offset + 36));
                 long externalAttributes = Integer.toUnsignedLong(centralDirectory.getInt(offset + 38));
                 long localHeaderOffset = Integer.toUnsignedLong(centralDirectory.getInt(offset + 42));
+                int localHeaderDiskNumber = Short.toUnsignedInt(centralDirectory.getShort(offset + 34));
                 int variableOffset = offset + ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE;
                 int nextOffset = variableOffset + nameLength + extraLength + commentLength;
                 if (nextOffset > centralDirectory.limit()) {
@@ -692,7 +689,9 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 String key = entryKey(decodedPath);
                 if (!key.isEmpty()) {
                     boolean directory = decodedPath.endsWith("/");
-                    long actualLocalHeaderOffset = localHeaderOffset + endRecord.offsetAdjustment;
+                    long actualLocalHeaderOffset = channel.volumeStartOffset(localHeaderDiskNumber)
+                            + localHeaderOffset
+                            + endRecord.offsetAdjustment;
                     byte[] localExtraData = readLocalExtraData(channel, actualLocalHeaderOffset);
                     ZipEntryRecord entry = new ZipEntryRecord(
                             key,
@@ -902,7 +901,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     }
 
     /// Reads the ZIP end of central directory record needed for central directory indexing.
-    private static ZipEndRecord readEndRecord(SeekableByteChannel channel) throws IOException {
+    private static ZipEndRecord readEndRecord(ArchiveChannel channel) throws IOException {
         long size = channel.size();
         if (size < ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE) {
             throw new IOException("ZIP end of central directory record not found");
@@ -936,15 +935,18 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 return readZip64EndRecord(channel, searchOffset + index);
             }
 
+            int centralDirectoryDiskNumber = Short.toUnsignedInt(buffer.getShort(index + 6));
             long actualCentralDirectoryOffset = searchOffset + index - centralDirectorySize;
-            if (actualCentralDirectoryOffset < centralDirectoryOffset) {
+            long storedCentralDirectoryOffset = channel.volumeStartOffset(centralDirectoryDiskNumber)
+                    + centralDirectoryOffset;
+            if (actualCentralDirectoryOffset < storedCentralDirectoryOffset) {
                 throw new IOException("ZIP central directory offset is inconsistent");
             }
             return new ZipEndRecord(
                     centralDirectorySize,
                     centralDirectoryOffset,
                     actualCentralDirectoryOffset,
-                    actualCentralDirectoryOffset - centralDirectoryOffset
+                    actualCentralDirectoryOffset - storedCentralDirectoryOffset
             );
         }
 
@@ -952,7 +954,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     }
 
     /// Reads ZIP64 central directory location from the ZIP64 end records.
-    private static ZipEndRecord readZip64EndRecord(SeekableByteChannel channel, long eocdOffset) throws IOException {
+    private static ZipEndRecord readZip64EndRecord(ArchiveChannel channel, long eocdOffset) throws IOException {
         long locatorOffset = eocdOffset - ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE;
         if (locatorOffset < 0) {
             throw new IOException("ZIP64 end of central directory locator not found");
@@ -966,8 +968,14 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             throw new IOException("ZIP64 end of central directory locator not found");
         }
 
+        long zip64EndDiskNumber = Integer.toUnsignedLong(locator.getInt(4));
         long storedZip64EndOffset = locator.getLong(8);
-        long actualZip64EndOffset = locateZip64EndRecord(channel, locatorOffset, storedZip64EndOffset);
+        long actualZip64EndOffset = locateZip64EndRecord(
+                channel,
+                locatorOffset,
+                zip64EndDiskNumber,
+                storedZip64EndOffset
+        );
         ByteBuffer fixedRecord = ByteBuffer.allocate(ZIP64_END_OF_CENTRAL_DIRECTORY_MIN_SIZE)
                 .order(ByteOrder.LITTLE_ENDIAN);
         readFully(channel, actualZip64EndOffset, fixedRecord);
@@ -978,30 +986,37 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
 
         long centralDirectorySize = fixedRecord.getLong(40);
         long centralDirectoryOffset = fixedRecord.getLong(48);
+        long centralDirectoryDiskNumber = Integer.toUnsignedLong(fixedRecord.getInt(20));
         long actualCentralDirectoryOffset = actualZip64EndOffset - centralDirectorySize;
-        if (actualCentralDirectoryOffset < centralDirectoryOffset) {
+        long storedCentralDirectoryOffset = channel.volumeStartOffset(centralDirectoryDiskNumber)
+                + centralDirectoryOffset;
+        if (actualCentralDirectoryOffset < storedCentralDirectoryOffset) {
             throw new IOException("ZIP64 central directory offset is inconsistent");
         }
         return new ZipEndRecord(
                 centralDirectorySize,
                 centralDirectoryOffset,
                 actualCentralDirectoryOffset,
-                actualCentralDirectoryOffset - centralDirectoryOffset
+                actualCentralDirectoryOffset - storedCentralDirectoryOffset
         );
     }
 
     /// Locates the actual ZIP64 end record offset in physical storage.
     private static long locateZip64EndRecord(
-            SeekableByteChannel channel,
+            ArchiveChannel channel,
             long locatorOffset,
+            long storedZip64EndDiskNumber,
             long storedZip64EndOffset
     ) throws IOException {
-        if (storedZip64EndOffset >= 0 && storedZip64EndOffset + ZIP64_END_OF_CENTRAL_DIRECTORY_MIN_SIZE <= locatorOffset) {
+        long storedZip64EndVolumeOffset = channel.volumeStartOffset(storedZip64EndDiskNumber);
+        long storedZip64EndAbsoluteOffset = storedZip64EndVolumeOffset + storedZip64EndOffset;
+        if (storedZip64EndOffset >= 0
+                && storedZip64EndAbsoluteOffset + ZIP64_END_OF_CENTRAL_DIRECTORY_MIN_SIZE <= locatorOffset) {
             ByteBuffer signature = ByteBuffer.allocate(Integer.BYTES).order(ByteOrder.LITTLE_ENDIAN);
-            readFully(channel, storedZip64EndOffset, signature);
+            readFully(channel, storedZip64EndAbsoluteOffset, signature);
             signature.flip();
             if (signature.getInt(0) == ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
-                return storedZip64EndOffset;
+                return storedZip64EndAbsoluteOffset;
             }
         }
 
@@ -1020,17 +1035,13 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     }
 
     /// Opens a channel for the physical storage that contains the beginning of this ZIP archive.
-    private SeekableByteChannel openArchiveChannel() throws IOException {
+    private ArchiveChannel openArchiveChannel() throws IOException {
         if (archivePath != null) {
-            return Files.newByteChannel(archivePath, config.openOptions());
+            return new SingleArchiveChannel(Files.newByteChannel(archivePath, config.openOptions()));
         }
 
         assert volumes != null;
-        SeekableByteChannel channel = volumes.openVolume(0);
-        if (channel == null) {
-            throw new IOException("ZIP first volume is not available");
-        }
-        return channel;
+        return ConcatenatedArchiveChannel.open(volumes);
     }
 
     /// Locates the number of bytes before the ZIP archive body.
@@ -1156,6 +1167,283 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         int extraLength = Short.toUnsignedInt(header.getShort(ZIP_LOCAL_FILE_HEADER_EXTRA_LENGTH_OFFSET));
         return nameLength > 0
                 && offset + ZIP_LOCAL_FILE_HEADER_MIN_SIZE + (long) nameLength + extraLength <= storageSize;
+    }
+
+    /// Exposes ZIP archive bytes together with logical volume start offsets.
+    private interface ArchiveChannel extends SeekableByteChannel {
+        /// Returns the absolute logical stream offset where a ZIP volume starts.
+        long volumeStartOffset(long volumeIndex) throws IOException;
+    }
+
+    /// Adapts a single physical archive channel to the archive channel contract.
+    @NotNullByDefault
+    private static final class SingleArchiveChannel implements ArchiveChannel {
+        /// The wrapped archive channel.
+        private final SeekableByteChannel channel;
+
+        /// Creates a single-volume archive channel.
+        private SingleArchiveChannel(SeekableByteChannel channel) {
+            this.channel = Objects.requireNonNull(channel, "channel");
+        }
+
+        /// Reads bytes from the wrapped channel.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            return channel.read(destination);
+        }
+
+        /// Writes bytes to the wrapped channel.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            return channel.write(source);
+        }
+
+        /// Returns the current channel position.
+        @Override
+        public long position() throws IOException {
+            return channel.position();
+        }
+
+        /// Sets the current channel position.
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            channel.position(newPosition);
+            return this;
+        }
+
+        /// Returns the wrapped channel size.
+        @Override
+        public long size() throws IOException {
+            return channel.size();
+        }
+
+        /// Truncates the wrapped channel.
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            channel.truncate(size);
+            return this;
+        }
+
+        /// Returns whether the wrapped channel is open.
+        @Override
+        public boolean isOpen() {
+            return channel.isOpen();
+        }
+
+        /// Closes the wrapped channel.
+        @Override
+        public void close() throws IOException {
+            channel.close();
+        }
+
+        /// Returns the start offset of the only physical volume.
+        @Override
+        public long volumeStartOffset(long volumeIndex) throws IOException {
+            if (volumeIndex != 0) {
+                throw new IOException("ZIP volume is not available: " + volumeIndex);
+            }
+            return 0L;
+        }
+    }
+
+    /// Presents finite ZIP volumes as one read-only logical seekable channel.
+    @NotNullByDefault
+    private static final class ConcatenatedArchiveChannel implements ArchiveChannel {
+        /// The opened volume channels.
+        private final SeekableByteChannel[] channels;
+
+        /// The logical start offset of each volume.
+        private final long[] starts;
+
+        /// The total logical archive size.
+        private final long size;
+
+        /// The current logical channel position.
+        private long position;
+
+        /// Whether this channel is open.
+        private boolean open = true;
+
+        /// Opens all available volumes from the source.
+        private static ConcatenatedArchiveChannel open(ArkivoVolumeSource volumes) throws IOException {
+            ArrayList<SeekableByteChannel> channels = new ArrayList<>();
+            ArrayList<Long> starts = new ArrayList<>();
+            long offset = 0L;
+            for (long index = 0; ; index++) {
+                SeekableByteChannel channel = volumes.openVolume(index);
+                if (channel == null) {
+                    break;
+                }
+                channels.add(channel);
+                starts.add(offset);
+                try {
+                    offset = Math.addExact(offset, channel.size());
+                } catch (ArithmeticException exception) {
+                    closeAll(channels);
+                    throw new IOException("ZIP volumes are too large", exception);
+                }
+            }
+            if (channels.isEmpty()) {
+                throw new IOException("ZIP first volume is not available");
+            }
+            long[] startOffsets = new long[starts.size()];
+            for (int index = 0; index < starts.size(); index++) {
+                startOffsets[index] = starts.get(index);
+            }
+            return new ConcatenatedArchiveChannel(channels.toArray(SeekableByteChannel[]::new), startOffsets, offset);
+        }
+
+        /// Creates a concatenated archive channel.
+        private ConcatenatedArchiveChannel(SeekableByteChannel[] channels, long[] starts, long size) {
+            this.channels = channels.clone();
+            this.starts = starts.clone();
+            this.size = size;
+        }
+
+        /// Reads bytes from the current logical channel position.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            ensureOpen();
+            Objects.requireNonNull(destination, "destination");
+            if (!destination.hasRemaining()) {
+                return 0;
+            }
+            if (position >= size) {
+                return -1;
+            }
+
+            int total = 0;
+            while (destination.hasRemaining() && position < size) {
+                int volumeIndex = volumeIndex(position);
+                SeekableByteChannel channel = channels[volumeIndex];
+                long localPosition = position - starts[volumeIndex];
+                long volumeEnd = volumeIndex + 1 < starts.length ? starts[volumeIndex + 1] : size;
+                long availableInVolume = volumeEnd - position;
+                int originalLimit = destination.limit();
+                if (destination.remaining() > availableInVolume) {
+                    destination.limit(destination.position() + (int) availableInVolume);
+                }
+
+                int read;
+                try {
+                    channel.position(localPosition);
+                    read = channel.read(destination);
+                } finally {
+                    destination.limit(originalLimit);
+                }
+                if (read < 0) {
+                    break;
+                }
+                if (read == 0) {
+                    return total > 0 ? total : 0;
+                }
+                position += read;
+                total += read;
+            }
+            return total > 0 ? total : -1;
+        }
+
+        /// Always rejects writes because split ZIP archive views are read-only.
+        @Override
+        public int write(ByteBuffer source) {
+            Objects.requireNonNull(source, "source");
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns the current logical position.
+        @Override
+        public long position() throws IOException {
+            ensureOpen();
+            return position;
+        }
+
+        /// Sets the current logical position.
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            ensureOpen();
+            if (newPosition < 0) {
+                throw new IllegalArgumentException("newPosition must not be negative");
+            }
+            position = newPosition;
+            return this;
+        }
+
+        /// Returns the total logical size.
+        @Override
+        public long size() throws IOException {
+            ensureOpen();
+            return size;
+        }
+
+        /// Always rejects truncation because split ZIP archive views are read-only.
+        @Override
+        public SeekableByteChannel truncate(long newSize) {
+            if (newSize < 0) {
+                throw new IllegalArgumentException("newSize must not be negative");
+            }
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns whether this channel is open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes all opened volume channels.
+        @Override
+        public void close() throws IOException {
+            if (!open) {
+                return;
+            }
+            open = false;
+            closeAll(List.of(channels));
+        }
+
+        /// Returns the start offset of a logical ZIP volume.
+        @Override
+        public long volumeStartOffset(long volumeIndex) throws IOException {
+            ensureOpen();
+            if (volumeIndex < 0 || volumeIndex >= starts.length) {
+                throw new IOException("ZIP volume is not available: " + volumeIndex);
+            }
+            return starts[(int) volumeIndex];
+        }
+
+        /// Returns the volume index that contains the given logical position.
+        private int volumeIndex(long logicalPosition) {
+            int index = Arrays.binarySearch(starts, logicalPosition);
+            if (index >= 0) {
+                return index;
+            }
+            return -index - 2;
+        }
+
+        /// Requires this channel to be open.
+        private void ensureOpen() throws IOException {
+            if (!open) {
+                throw new ClosedChannelException();
+            }
+        }
+
+        /// Closes all channels and preserves suppressed close failures.
+        private static void closeAll(List<SeekableByteChannel> channels) throws IOException {
+            IOException failure = null;
+            for (SeekableByteChannel channel : channels) {
+                try {
+                    channel.close();
+                } catch (IOException exception) {
+                    if (failure == null) {
+                        failure = exception;
+                    } else {
+                        failure.addSuppressed(exception);
+                    }
+                }
+            }
+            if (failure != null) {
+                throw failure;
+            }
+        }
     }
 
     /// Reads bytes from a channel until the destination buffer is full.

@@ -10,6 +10,8 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
+import java.nio.file.attribute.UserPrincipalLookupService;
+import java.nio.file.attribute.UserPrincipalNotFoundException;
 import java.util.EnumSet;
 import java.util.Set;
 
@@ -31,6 +33,10 @@ final class ZipPosixSupport {
     /// The default synthesized group principal.
     static final GroupPrincipal DEFAULT_GROUP = new NamedGroupPrincipal("group");
 
+    /// The user principal lookup service for synthesized ZIP principals.
+    private static final UserPrincipalLookupService USER_PRINCIPAL_LOOKUP_SERVICE =
+            new SyntheticUserPrincipalLookupService();
+
     /// The ZIP version made by value used for Unix external attributes.
     static final int UNIX_VERSION_MADE_BY = (3 << 8) | VERSION_NEEDED;
 
@@ -49,6 +55,11 @@ final class ZipPosixSupport {
     /// Returns synthesized permissions for the given entry type.
     static @Unmodifiable Set<PosixFilePermission> defaultPermissions(boolean directory) {
         return directory ? DEFAULT_DIRECTORY_PERMISSIONS : DEFAULT_FILE_PERMISSIONS;
+    }
+
+    /// Returns the lookup service for synthesized ZIP owner and group principals.
+    static UserPrincipalLookupService userPrincipalLookupService() {
+        return USER_PRINCIPAL_LOOKUP_SERVICE;
     }
 
     /// Returns decoded POSIX permissions from ZIP metadata, or synthesized permissions when none are present.
@@ -185,6 +196,28 @@ final class ZipPosixSupport {
         @Override
         public String getName() {
             return name;
+        }
+    }
+
+    /// Resolves the stable synthesized ZIP owner and group principals.
+    @NotNullByDefault
+    private static final class SyntheticUserPrincipalLookupService extends UserPrincipalLookupService {
+        /// Looks up the synthesized ZIP owner principal.
+        @Override
+        public UserPrincipal lookupPrincipalByName(String name) throws UserPrincipalNotFoundException {
+            if (DEFAULT_OWNER.getName().equals(name)) {
+                return DEFAULT_OWNER;
+            }
+            throw new UserPrincipalNotFoundException(name);
+        }
+
+        /// Looks up the synthesized ZIP group principal.
+        @Override
+        public GroupPrincipal lookupPrincipalByGroupName(String group) throws UserPrincipalNotFoundException {
+            if (DEFAULT_GROUP.getName().equals(group)) {
+                return DEFAULT_GROUP;
+            }
+            throw new UserPrincipalNotFoundException(group);
         }
     }
 }

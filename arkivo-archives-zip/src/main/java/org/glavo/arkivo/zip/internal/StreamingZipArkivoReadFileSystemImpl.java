@@ -185,10 +185,10 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         throw new UnsupportedOperationException("ZIP watch services are not supported");
     }
 
-    /// Always rejects user principal lookups because ZIP does not expose principals.
+    /// Returns a user principal lookup service for synthesized ZIP principals.
     @Override
     public UserPrincipalLookupService getUserPrincipalLookupService() {
-        throw new UnsupportedOperationException("ZIP user principals are not supported");
+        return ZipPosixSupport.userPrincipalLookupService();
     }
 
     /// Advances to the next streaming ZIP entry.

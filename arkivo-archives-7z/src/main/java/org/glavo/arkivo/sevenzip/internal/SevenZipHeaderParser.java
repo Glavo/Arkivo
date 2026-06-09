@@ -6,7 +6,10 @@ package org.glavo.arkivo.sevenzip.internal;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
@@ -99,6 +102,14 @@ public final class SevenZipHeaderParser {
 
     /// Parses entries from a validated 7z next header.
     public static List<SevenZipEntryMetadata> parseEntries(byte[] header) throws IOException {
+        return parseEntries(header, null);
+    }
+
+    /// Parses entries from a validated 7z next header, reading packed encoded header streams when needed.
+    static List<SevenZipEntryMetadata> parseEntries(
+            byte[] header,
+            @Nullable PackedStreamOpener packedStreamOpener
+    ) throws IOException {
         Objects.requireNonNull(header, "header");
         if (header.length == 0) {
             return List.of();
@@ -111,7 +122,7 @@ public final class SevenZipHeaderParser {
             return List.of();
         }
         if (type == K_ENCODED_HEADER) {
-            throw new UnsupportedOperationException("7z encoded headers are not implemented yet");
+            return parseEncodedHeader(input, packedStreamOpener);
         }
         if (type != K_HEADER) {
             throw new IOException("Unexpected 7z next header type: " + type);
@@ -126,7 +137,7 @@ public final class SevenZipHeaderParser {
                 return List.copyOf(entries);
             }
             switch (property) {
-                case K_ADDITIONAL_STREAMS_INFO -> skipStreamsInfo(input);
+                case K_ADDITIONAL_STREAMS_INFO -> readStreamsInfo(input);
                 case K_MAIN_STREAMS_INFO -> streamsInfo = readStreamsInfo(input);
                 case K_FILES_INFO -> entries.addAll(readFilesInfo(input, streamsInfo));
                 default -> throw new UnsupportedOperationException(
@@ -136,16 +147,64 @@ public final class SevenZipHeaderParser {
         }
     }
 
-    /// Skips an empty streams info block.
-    private static void skipStreamsInfo(HeaderInput input) throws IOException {
-        while (true) {
-            int property = input.readId();
-            if (property == K_END) {
-                return;
+    /// Decodes a compressed 7z header and parses the resulting plain header.
+    private static List<SevenZipEntryMetadata> parseEncodedHeader(
+            HeaderInput input,
+            @Nullable PackedStreamOpener packedStreamOpener
+    ) throws IOException {
+        if (packedStreamOpener == null) {
+            throw new UnsupportedOperationException("7z encoded headers require archive stream access");
+        }
+
+        StreamsInfo streamsInfo = readStreamsInfo(input);
+        input.requireFullyConsumed();
+
+        ByteArrayOutputStream decodedHeader = new ByteArrayOutputStream();
+        for (int index = 0; index < streamsInfo.streamCount(); index++) {
+            decodedHeader.writeBytes(decodeEncodedHeaderStream(streamsInfo, index, packedStreamOpener));
+        }
+        return parseEntries(decodedHeader.toByteArray(), packedStreamOpener);
+    }
+
+    /// Decodes one encoded header substream.
+    private static byte[] decodeEncodedHeaderStream(
+            StreamsInfo streamsInfo,
+            int index,
+            PackedStreamOpener packedStreamOpener
+    ) throws IOException {
+        long unpackSize = streamsInfo.unpackSize(index);
+        long decodedOffset = streamsInfo.decodedOffset(index);
+        if (unpackSize > Integer.MAX_VALUE) {
+            throw new IOException("7z encoded header is too large to index");
+        }
+
+        try (InputStream packed = packedStreamOpener.open(streamsInfo.dataOffset(index), streamsInfo.packedSize(index))) {
+            InputStream decoded;
+            boolean skipDecodedOffset;
+            byte[] methodId = streamsInfo.methodId(index);
+            byte[] properties = streamsInfo.properties(index);
+            if (SevenZipLZMADecoder.isCopy(methodId)) {
+                decoded = packed;
+                skipDecodedOffset = false;
+            } else if (SevenZipLZMADecoder.isLZMA(methodId)) {
+                long decodedLimit = checkedAdd(decodedOffset, unpackSize, "7z encoded header size is too large");
+                decoded = SevenZipLZMADecoder.openLZMA(packed, decodedLimit, properties);
+                skipDecodedOffset = true;
+            } else if (SevenZipLZMADecoder.isLZMA2(methodId)) {
+                decoded = SevenZipLZMADecoder.openLZMA2(packed, properties);
+                skipDecodedOffset = true;
+            } else {
+                throw new UnsupportedOperationException("Unsupported 7z encoded header method");
             }
-            throw new UnsupportedOperationException(
-                    "7z packed streams are not implemented yet: 0x" + Integer.toHexString(property)
-            );
+
+            if (skipDecodedOffset && decodedOffset > 0) {
+                decoded.skipNBytes(decodedOffset);
+            }
+            byte[] bytes = decoded.readNBytes((int) unpackSize);
+            if (bytes.length != unpackSize) {
+                throw new EOFException("Unexpected end of 7z encoded header");
+            }
+            return bytes;
         }
     }
 
@@ -189,8 +248,8 @@ public final class SevenZipHeaderParser {
                 case K_NUM_UNPACK_STREAM -> {
                     for (int index = 0; index < counts.length; index++) {
                         counts[index] = input.readIntNumber("substream count");
-                        if (counts[index] <= 0) {
-                            throw new UnsupportedOperationException("7z folders with no substreams are not implemented yet");
+                        if (counts[index] < 0) {
+                            throw new IOException("7z substream count is negative");
                         }
                     }
                 }
@@ -213,6 +272,9 @@ public final class SevenZipHeaderParser {
         for (int folderIndex = 0; folderIndex < folders.length; folderIndex++) {
             int count = counts[folderIndex];
             sizes[folderIndex] = new long[count];
+            if (count == 0) {
+                continue;
+            }
             long sum = 0;
             for (int index = 0; index < count - 1; index++) {
                 long size = input.readNumber();
@@ -241,6 +303,10 @@ public final class SevenZipHeaderParser {
         if (resolvedSizes == null) {
             resolvedSizes = new long[folders.length][];
             for (int folderIndex = 0; folderIndex < folders.length; folderIndex++) {
+                if (counts[folderIndex] == 0) {
+                    resolvedSizes[folderIndex] = new long[0];
+                    continue;
+                }
                 if (counts[folderIndex] != 1) {
                     throw new IOException("7z substream sizes are missing");
                 }
@@ -1003,5 +1069,12 @@ public final class SevenZipHeaderParser {
                 throw new IOException("7z property parser stopped at an unexpected position");
             }
         }
+    }
+
+    /// Opens packed 7z streams by absolute archive offset.
+    @FunctionalInterface
+    interface PackedStreamOpener {
+        /// Opens a packed stream with the given absolute archive offset and byte size.
+        InputStream open(long offset, long size) throws IOException;
     }
 }
