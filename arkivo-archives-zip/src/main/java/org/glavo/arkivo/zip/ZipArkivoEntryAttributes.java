@@ -5,7 +5,6 @@ package org.glavo.arkivo.zip;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
-import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.attribute.PosixFileAttributes;
 
@@ -18,8 +17,8 @@ public interface ZipArkivoEntryAttributes extends PosixFileAttributes {
     /// The numeric value returned when a ZIP entry CRC-32 value is not known.
     long UNKNOWN_CRC32 = -1L;
 
-    /// Returns the raw encoded ZIP entry path bytes.
-    byte @Unmodifiable [] rawPath();
+    /// Returns a copy of the raw encoded ZIP entry path bytes.
+    byte[] rawPath();
 
     /// Returns the decoded ZIP entry path text.
     String path();
@@ -51,12 +50,12 @@ public interface ZipArkivoEntryAttributes extends PosixFileAttributes {
     /// Returns the ZIP encryption method.
     ZipEncryption encryption();
 
-    /// Returns the raw local file header extra data bytes.
-    byte @Unmodifiable [] localExtraData();
+    /// Returns a copy of the raw local file header extra data bytes.
+    byte[] localExtraData();
 
-    /// Returns the raw central directory extra data bytes.
-    byte @Unmodifiable [] centralDirectoryExtraData();
+    /// Returns a copy of the raw central directory extra data bytes.
+    byte[] centralDirectoryExtraData();
 
-    /// Returns the raw ZIP entry comment bytes, or `null` when no comment is present.
-    byte @Nullable @Unmodifiable [] rawComment();
+    /// Returns a copy of the raw ZIP entry comment bytes, or `null` when no comment is present.
+    byte @Nullable [] rawComment();
 }

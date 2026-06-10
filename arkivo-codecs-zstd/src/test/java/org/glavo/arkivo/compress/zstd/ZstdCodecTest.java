@@ -20,6 +20,7 @@ import java.util.Objects;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests Zstandard codec behavior.
 @NotNullByDefault
@@ -65,6 +66,101 @@ public final class ZstdCodecTest {
         byte[] output = new byte[decompressed.remaining()];
         decompressed.get(output);
         assertArrayEquals(input, output);
+    }
+
+    /// Verifies ByteBuffer one-shot operations honor non-zero positions and limits.
+    @Test
+    public void byteBufferRoundTripWithSlicedRanges() throws IOException {
+        ZstdCodec codec = new ZstdCodec();
+        byte[] input = "hello zstd bytebuffer slice".getBytes(StandardCharsets.UTF_8);
+
+        int sourceStart = 3;
+        ByteBuffer source = ByteBuffer.allocateDirect(sourceStart + input.length + 4);
+        source.position(sourceStart);
+        source.put(input);
+        int sourceLimit = source.position();
+        source.limit(sourceLimit);
+        source.position(sourceStart);
+
+        int compressedStart = 5;
+        ByteBuffer compressed =
+                ByteBuffer.allocateDirect(compressedStart + (int) codec.maxCompressedSize(input.length) + 3);
+        compressed.position(compressedStart);
+        compressed.limit(compressed.capacity() - 3);
+
+        codec.compress(source, compressed);
+        assertEquals(sourceLimit, source.position());
+        int compressedEnd = compressed.position();
+        assertEquals(true, compressedEnd > compressedStart);
+
+        ByteBuffer compressedRange = compressed.duplicate();
+        compressedRange.position(compressedStart);
+        compressedRange.limit(compressedEnd);
+
+        int decompressedStart = 4;
+        ByteBuffer decompressed = ByteBuffer.allocateDirect(decompressedStart + input.length + 2);
+        decompressed.position(decompressedStart);
+        decompressed.limit(decompressedStart + input.length);
+
+        codec.decompress(compressedRange, decompressed);
+        assertEquals(compressedEnd, compressedRange.position());
+        assertEquals(decompressedStart + input.length, decompressed.position());
+
+        ByteBuffer outputRange = decompressed.duplicate();
+        outputRange.position(decompressedStart);
+        outputRange.limit(decompressed.position());
+        byte[] output = new byte[outputRange.remaining()];
+        outputRange.get(output);
+        assertArrayEquals(input, output);
+    }
+
+    /// Verifies Zstandard ByteBuffer one-shot compression with dictionary bytes.
+    @Test
+    public void byteBufferDictionaryRoundTrip() throws IOException {
+        byte[] dictionary = "hello zstd dictionary".getBytes(StandardCharsets.UTF_8);
+        ZstdCodec codec = new ZstdCodec()
+                .withCompressionLevel(1)
+                .withDictionary(dictionary);
+        byte[] input = "hello zstd dictionary bytebuffer".getBytes(StandardCharsets.UTF_8);
+        ByteBuffer source = ByteBuffer.allocateDirect(input.length);
+        source.put(input).flip();
+        ByteBuffer compressed = ByteBuffer.allocateDirect((int) codec.maxCompressedSize(input.length));
+
+        codec.compress(source, compressed);
+        compressed.flip();
+
+        ByteBuffer decompressed = ByteBuffer.allocateDirect(input.length);
+        codec.decompress(compressed, decompressed);
+        decompressed.flip();
+
+        byte[] output = new byte[decompressed.remaining()];
+        decompressed.get(output);
+        assertArrayEquals(input, output);
+    }
+
+    /// Verifies that ByteBuffer operations reject read-only target buffers with `IOException`.
+    @Test
+    public void byteBufferReadOnlyTarget() throws IOException {
+        ZstdCodec codec = new ZstdCodec();
+        byte[] input = "hello zstd readonly target".getBytes(StandardCharsets.UTF_8);
+        ByteBuffer source = ByteBuffer.allocateDirect(input.length);
+        source.put(input).flip();
+
+        ByteBuffer readOnlyCompressed = ByteBuffer
+                .allocateDirect((int) codec.maxCompressedSize(input.length))
+                .asReadOnlyBuffer();
+        IOException compressionException =
+                assertThrows(IOException.class, () -> codec.compress(source, readOnlyCompressed));
+        assertEquals(true, compressionException.getMessage().contains("target buffer must be writable"));
+
+        ByteBuffer compressed = ByteBuffer.allocateDirect((int) codec.maxCompressedSize(input.length));
+        codec.compress(source.rewind(), compressed);
+        compressed.flip();
+
+        ByteBuffer readOnlyDecompressed = ByteBuffer.allocateDirect(input.length).asReadOnlyBuffer();
+        IOException decompressionException =
+                assertThrows(IOException.class, () -> codec.decompress(compressed, readOnlyDecompressed));
+        assertEquals(true, decompressionException.getMessage().contains("target buffer must be writable"));
     }
 
     /// Verifies configured Zstandard codec instances are immutable.

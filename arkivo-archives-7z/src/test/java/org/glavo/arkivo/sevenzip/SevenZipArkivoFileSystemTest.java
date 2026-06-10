@@ -10,9 +10,17 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.tukaani.xz.ArrayCache;
+import org.tukaani.xz.ARMOptions;
+import org.tukaani.xz.ARMThumbOptions;
+import org.tukaani.xz.DeltaOptions;
+import org.tukaani.xz.FilterOptions;
 import org.tukaani.xz.FinishableOutputStream;
+import org.tukaani.xz.IA64Options;
 import org.tukaani.xz.LZMA2Options;
 import org.tukaani.xz.LZMAOutputStream;
+import org.tukaani.xz.PowerPCOptions;
+import org.tukaani.xz.SPARCOptions;
+import org.tukaani.xz.X86Options;
 
 import java.io.IOException;
 import java.net.URI;
@@ -27,6 +35,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.GroupPrincipal;
+import java.nio.file.attribute.UserPrincipal;
+import java.nio.file.attribute.UserPrincipalLookupService;
+import java.nio.file.attribute.UserPrincipalNotFoundException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -59,6 +71,33 @@ public final class SevenZipArkivoFileSystemTest {
                 assertEquals(0L, fileSystem.nextHeaderCrc32());
                 assertEquals(true, fileSystem.supportedFileAttributeViews().contains("basic"));
                 assertEquals("7z", Files.getFileStore(fileSystem.getPath("/")).type());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that 7z file systems expose synthesized owner and group principal lookup.
+    @Test
+    public void userPrincipalLookupService() throws IOException {
+        Path archivePath = createMinimalArchive();
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                UserPrincipalLookupService lookupService = fileSystem.getUserPrincipalLookupService();
+                UserPrincipal owner = lookupService.lookupPrincipalByName("owner");
+                GroupPrincipal group = lookupService.lookupPrincipalByGroupName("group");
+
+                assertEquals("owner", owner.getName());
+                assertEquals("group", group.getName());
+                assertThrows(
+                        UserPrincipalNotFoundException.class,
+                        () -> lookupService.lookupPrincipalByName("missing")
+                );
+                assertThrows(
+                        UserPrincipalNotFoundException.class,
+                        () -> lookupService.lookupPrincipalByGroupName("missing")
+                );
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -248,6 +287,171 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that 7z entry paths ignore `.` and repeated separators.
+    @Test
+    public void normalizesEntryName() throws IOException {
+        Path archivePath = createTemporaryArchivePath("normalized-entry-name-");
+        Files.write(archivePath, archiveWithEmptyFileName("dir//./hello.txt"));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/dir/hello.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+                SevenZipArkivoEntryAttributes sevenZipAttributes =
+                        Files.readAttributes(file, SevenZipArkivoEntryAttributes.class);
+
+                assertEquals(0L, attributes.size());
+                assertEquals("dir//./hello.txt", sevenZipAttributes.path());
+                assertArrayEquals(new byte[0], Files.readAllBytes(file));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that 7z entry paths cannot contain parent-directory segments.
+    @Test
+    public void rejectsParentSegmentEntryName() throws IOException {
+        Path archivePath = createTemporaryArchivePath("parent-segment-entry-name-");
+        Files.write(archivePath, archiveWithEmptyFileName("../evil.txt"));
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            assertEquals(true, exception.getMessage().contains("7z entry path must not contain .."));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that 7z entry paths must be relative.
+    @Test
+    public void rejectsAbsoluteEntryName() throws IOException {
+        Path archivePath = createTemporaryArchivePath("absolute-entry-name-");
+        Files.write(archivePath, archiveWithEmptyFileName("/evil.txt"));
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            assertEquals(true, exception.getMessage().contains("7z entry path must be relative"));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that 7z entry paths cannot contain drive roots.
+    @Test
+    public void rejectsDriveRootEntryName() throws IOException {
+        Path archivePath = createTemporaryArchivePath("drive-root-entry-name-");
+        Files.write(archivePath, archiveWithEmptyFileName("C:/evil.txt"));
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            assertEquals(true, exception.getMessage().contains("7z entry path must be relative"));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that backslash-separated parent-directory segments are rejected.
+    @Test
+    public void rejectsBackslashParentSegmentEntryName() throws IOException {
+        Path archivePath = createTemporaryArchivePath("backslash-parent-segment-entry-name-");
+        Files.write(archivePath, archiveWithEmptyFileName("..\\evil.txt"));
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            assertEquals(true, exception.getMessage().contains("7z entry path must not contain .."));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that substream counts cannot appear after metadata that depends on those counts.
+    @Test
+    public void rejectsSubStreamCountsAfterDependentMetadata() throws IOException {
+        Path archivePath = createTemporaryArchivePath("bad-substream-order-");
+        Files.write(archivePath, archiveWithSubStreamCountsAfterDependentMetadata());
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            assertEquals(
+                    true,
+                    exception.getMessage().contains("substream counts appeared after dependent substream metadata")
+            );
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that oversized unsigned 7z counts are rejected as I/O errors.
+    @Test
+    public void rejectsOversizedFolderCount() throws IOException {
+        Path archivePath = createTemporaryArchivePath("bad-folder-count-");
+        Files.write(archivePath, archiveWithOversizedFolderCount());
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            assertEquals(true, exception.getMessage().contains("number is too large"));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that packed streams must declare their packed sizes.
+    @Test
+    public void rejectsMissingPackSizes() throws IOException {
+        Path archivePath = createTemporaryArchivePath("missing-pack-sizes-");
+        Files.write(archivePath, archiveWithMissingPackSizes());
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            assertEquals(true, exception.getMessage().contains("pack sizes are missing"));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that packed stream and folder counts must match.
+    @Test
+    public void rejectsPackStreamFolderCountMismatch() throws IOException {
+        Path archivePath = createTemporaryArchivePath("bad-pack-folder-count-");
+        Files.write(archivePath, archiveWithPackStreamFolderCountMismatch());
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            assertEquals(true, exception.getMessage().contains("pack stream count does not match folder count"));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that external file properties must reference declared additional streams.
+    @Test
+    public void rejectsMissingExternalFilePropertyStream() throws IOException {
+        Path archivePath = createTemporaryArchivePath("missing-external-property-stream-");
+        Files.write(archivePath, archiveWithMissingExternalFilePropertyStream());
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            assertEquals(true, exception.getMessage().contains("external file names reference a missing stream"));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that overflowing packed stream offsets are rejected as I/O errors.
+    @Test
+    public void rejectsOverflowingPackPosition() throws IOException {
+        Path archivePath = createTemporaryArchivePath("bad-pack-position-");
+        Files.write(archivePath, archiveWithOverflowingPackPosition());
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            assertEquals(true, exception.getMessage().contains("packed stream offset is too large"));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that additional stream metadata can be parsed and skipped.
     @Test
     public void additionalStreamsInfo() throws IOException {
@@ -316,6 +520,73 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that 7z file properties stored in additional streams are exposed.
+    @Test
+    public void externalFileProperties() throws IOException {
+        byte[] content = "external metadata".getBytes(StandardCharsets.UTF_8);
+        FileTime lastModifiedTime = FileTime.from(Instant.parse("2026-02-03T04:05:06Z"));
+        Path archivePath = createTemporaryArchivePath("external-file-properties-");
+        Files.write(archivePath, archiveWithExternalFileProperties(content, lastModifiedTime, 0x20));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/external.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+                SevenZipArkivoEntryAttributes sevenZipAttributes =
+                        Files.readAttributes(file, SevenZipArkivoEntryAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertEquals(lastModifiedTime, attributes.lastModifiedTime());
+                assertEquals("external.txt", sevenZipAttributes.path());
+                assertEquals(0x20, sevenZipAttributes.windowsAttributes());
+                assertArrayEquals(content, Files.readAllBytes(file));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that FILETIME metadata is interpreted as an unsigned 64-bit tick value.
+    @Test
+    public void readsUnsignedFileTimeMetadata() throws IOException {
+        byte[] content = "unsigned file time".getBytes(StandardCharsets.UTF_8);
+        long windowsTicks = -1L;
+        FileTime expectedTime = fileTimeFromUnsignedWindowsTicks(windowsTicks);
+        Path archivePath = createTemporaryArchivePath("unsigned-file-time-");
+        Files.write(archivePath, archiveWithExternalFileProperties(content, windowsTicks, 0x20));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/external.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(expectedTime, attributes.lastModifiedTime());
+                assertArrayEquals(content, Files.readAllBytes(file));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that folder definitions stored in additional streams can describe main streams.
+    @Test
+    public void externalFolderDefinitions() throws IOException {
+        byte[] content = "external folder".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("external-folder-definitions-");
+        Files.write(archivePath, archiveWithExternalFolderDefinitions(content));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/external-folder.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
 
     /// Verifies that a non-empty file stored with the 7z LZMA method can be read.
     @Test
@@ -344,6 +615,33 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that a file stored in a linear multi-coder folder can be read.
+    @Test
+    public void linearMultiCoderFileEntry() throws IOException {
+        byte[] content = "hello lzma copy pipeline".getBytes(StandardCharsets.UTF_8);
+        CoderPayload payload = lzmaPayload(content);
+        Path archivePath = createTemporaryArchivePath("linear-multi-coder-file-");
+        Files.write(archivePath, archiveWithLZMAMultiCoderFile(payload, content.length));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/multi-coder.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+                try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                    assertEquals(content.length, channel.size());
+                    ByteBuffer buffer = ByteBuffer.allocate(content.length);
+                    assertEquals(content.length, channel.read(buffer));
+                    assertArrayEquals(content, buffer.array());
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that a non-empty file stored with the 7z LZMA2 method can be read.
     @Test
     public void lzma2FileEntry() throws IOException {
@@ -355,6 +653,131 @@ public final class SevenZipArkivoFileSystemTest {
         try {
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
                 Path file = fileSystem.getPath("/hello.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+                try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                    assertEquals(content.length, channel.size());
+                    ByteBuffer buffer = ByteBuffer.allocate(content.length);
+                    assertEquals(content.length, channel.read(buffer));
+                    assertArrayEquals(content, buffer.array());
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a file stored with a Delta-to-LZMA2 7z coder pipeline can be read.
+    @Test
+    public void deltaLzma2FileEntry() throws IOException {
+        byte[] content = "abcabcabc-delta-filtered-content".getBytes(StandardCharsets.UTF_8);
+        int deltaDistance = 3;
+        CoderPayload payload = deltaLzma2Payload(content, deltaDistance);
+        Path archivePath = createTemporaryArchivePath("delta-lzma2-file-");
+        Files.write(archivePath, archiveWithDeltaLZMA2File(payload, content.length, deltaDistance));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/delta-lzma2.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+                try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                    assertEquals(content.length, channel.size());
+                    ByteBuffer buffer = ByteBuffer.allocate(content.length);
+                    assertEquals(content.length, channel.read(buffer));
+                    assertArrayEquals(content, buffer.array());
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a file stored with an x86 BCJ-to-LZMA2 7z coder pipeline can be read.
+    @Test
+    public void x86BcjLzma2FileEntry() throws IOException {
+        byte[] content = new byte[]{
+                0x55, (byte) 0x8b, (byte) 0xec,
+                (byte) 0xe8, 0x01, 0x00, 0x00, 0x00,
+                (byte) 0xe9, (byte) 0xf4, (byte) 0xff, (byte) 0xff, (byte) 0xff,
+                0x5d, (byte) 0xc3
+        };
+        CoderPayload payload = x86BcjLzma2Payload(content);
+        Path archivePath = createTemporaryArchivePath("x86-bcj-lzma2-file-");
+        Files.write(archivePath, archiveWithX86BcjLZMA2File(payload, content.length));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/x86-bcj-lzma2.bin");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+                try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                    assertEquals(content.length, channel.size());
+                    ByteBuffer buffer = ByteBuffer.allocate(content.length);
+                    assertEquals(content.length, channel.read(buffer));
+                    assertArrayEquals(content, buffer.array());
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that additional 7z BCJ filter pipelines can be read.
+    @Test
+    public void additionalBcjLzma2FileEntries() throws IOException {
+        assertBcjLzma2FileEntry(
+                "powerpc-bcj-lzma2.bin",
+                new byte[]{0x48, 0x00, 0x00, 0x01, 0x4e, (byte) 0x80, 0x00, 0x20},
+                new PowerPCOptions(),
+                new byte[]{0x03, 0x03, 0x02, 0x05}
+        );
+        assertBcjLzma2FileEntry(
+                "ia64-bcj-lzma2.bin",
+                "ia64 branch conversion sample".getBytes(StandardCharsets.UTF_8),
+                new IA64Options(),
+                new byte[]{0x03, 0x03, 0x04, 0x01}
+        );
+        assertBcjLzma2FileEntry(
+                "arm-bcj-lzma2.bin",
+                new byte[]{0x00, 0x00, 0x00, (byte) 0xeb, 0x04, 0x00, 0x00, (byte) 0xeb},
+                new ARMOptions(),
+                new byte[]{0x03, 0x03, 0x05, 0x01}
+        );
+        assertBcjLzma2FileEntry(
+                "arm-thumb-bcj-lzma2.bin",
+                new byte[]{0x00, (byte) 0xf0, 0x00, (byte) 0xf8, 0x02, (byte) 0xf0, 0x04, (byte) 0xf8},
+                new ARMThumbOptions(),
+                new byte[]{0x03, 0x03, 0x07, 0x01}
+        );
+        assertBcjLzma2FileEntry(
+                "sparc-bcj-lzma2.bin",
+                new byte[]{0x40, 0x00, 0x00, 0x00, 0x7f, (byte) 0xff, (byte) 0xff, (byte) 0xff},
+                new SPARCOptions(),
+                new byte[]{0x03, 0x03, 0x08, 0x05}
+        );
+    }
+
+    /// Verifies a BCJ-to-LZMA2 archive round trip for one file.
+    private static void assertBcjLzma2FileEntry(
+            String fileName,
+            byte[] content,
+            FilterOptions bcjOptions,
+            byte[] bcjMethodId
+    ) throws IOException {
+        CoderPayload payload = bcjLzma2Payload(content, bcjOptions);
+        Path archivePath = createTemporaryArchivePath(fileName + "-");
+        Files.write(archivePath, archiveWithBcjLZMA2File(fileName, payload, content.length, bcjMethodId));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/" + fileName);
                 BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
 
                 assertEquals(content.length, attributes.size());
@@ -484,6 +907,34 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that oversized unsigned next-header offsets are rejected as I/O errors.
+    @Test
+    public void rejectsOversizedNextHeaderOffset() throws IOException {
+        Path archivePath = createTemporaryArchivePath("bad-next-header-offset-");
+        Files.write(archivePath, archiveWithRawStartHeader(Long.MIN_VALUE, 0L, 0L));
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            assertEquals(true, exception.getMessage().contains("next header offset is too large"));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that oversized unsigned next-header sizes are rejected as I/O errors.
+    @Test
+    public void rejectsOversizedNextHeaderSize() throws IOException {
+        Path archivePath = createTemporaryArchivePath("bad-next-header-size-");
+        Files.write(archivePath, archiveWithRawStartHeader(0L, Long.MIN_VALUE, 0L));
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            assertEquals(true, exception.getMessage().contains("next header size is too large"));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Creates a temporary minimal 7z archive under the module build directory.
     private static Path createMinimalArchive() throws IOException {
         Path archivePath = createTemporaryArchivePath("minimal-");
@@ -534,6 +985,53 @@ public final class SevenZipArkivoFileSystemTest {
         return archive(new byte[0], header, crc32(header));
     }
 
+    /// Returns a 7z archive with one empty file using the given name.
+    private static byte[] archiveWithEmptyFileName(String name) throws IOException {
+        byte[] header = emptyFileNameHeader(name);
+        return archive(header, crc32(header));
+    }
+
+    /// Returns a malformed 7z archive with late substream counts.
+    private static byte[] archiveWithSubStreamCountsAfterDependentMetadata() throws IOException {
+        byte[] content = "xy".getBytes(StandardCharsets.UTF_8);
+        byte[] header = subStreamCountsAfterDependentMetadataHeader(content.length);
+        return archive(content, header, crc32(header));
+    }
+
+    /// Returns a malformed 7z archive with an unsupported unsigned folder count.
+    private static byte[] archiveWithOversizedFolderCount() throws IOException {
+        byte[] header = oversizedFolderCountHeader();
+        return archive(header, crc32(header));
+    }
+
+    /// Returns a malformed 7z archive whose PackInfo omits packed stream sizes.
+    private static byte[] archiveWithMissingPackSizes() throws IOException {
+        byte[] content = "x".getBytes(StandardCharsets.UTF_8);
+        byte[] header = missingPackSizesHeader(content.length);
+        return archive(content, header, crc32(header));
+    }
+
+    /// Returns a malformed 7z archive whose PackInfo stream count does not match the folder count.
+    private static byte[] archiveWithPackStreamFolderCountMismatch() throws IOException {
+        byte[] content = "x".getBytes(StandardCharsets.UTF_8);
+        byte[] header = packStreamFolderCountMismatchHeader(content.length);
+        return archive(content, header, crc32(header));
+    }
+
+    /// Returns a malformed 7z archive whose external file property references a missing additional stream.
+    private static byte[] archiveWithMissingExternalFilePropertyStream() throws IOException {
+        byte[] content = "x".getBytes(StandardCharsets.UTF_8);
+        byte[] header = missingExternalFilePropertyStreamHeader(content.length);
+        return archive(content, header, crc32(header));
+    }
+
+    /// Returns a malformed 7z archive whose pack position overflows an absolute archive offset.
+    private static byte[] archiveWithOverflowingPackPosition() throws IOException {
+        byte[] content = "x".getBytes(StandardCharsets.UTF_8);
+        byte[] header = overflowingPackPositionHeader(content.length);
+        return archive(content, header, crc32(header));
+    }
+
     /// Returns a 7z archive with an unused additional stream before the main file stream.
     private static byte[] archiveWithAdditionalStreamsInfo(byte[] additional, byte[] content) throws IOException {
         byte[] packedData = concatenate(additional, content);
@@ -562,6 +1060,47 @@ public final class SevenZipArkivoFileSystemTest {
         return archive(content, header, crc32(header));
     }
 
+    /// Returns a 7z archive with file properties stored in additional streams.
+    private static byte[] archiveWithExternalFileProperties(
+            byte[] content,
+            FileTime lastModifiedTime,
+            int windowsAttributes
+    ) throws IOException {
+        return archiveWithExternalFileProperties(content, windowsTicks(lastModifiedTime), windowsAttributes);
+    }
+
+    /// Returns a 7z archive with raw file properties stored in additional streams.
+    private static byte[] archiveWithExternalFileProperties(
+            byte[] content,
+            long lastModifiedWindowsTicks,
+            int windowsAttributes
+    ) throws IOException {
+        byte[] names = namesPayload("external.txt");
+        ByteArrayOutputStream times = new ByteArrayOutputStream();
+        writeLongLE(times, lastModifiedWindowsTicks);
+        ByteArrayOutputStream attributes = new ByteArrayOutputStream();
+        writeIntLE(attributes, windowsAttributes);
+
+        byte[] timesBytes = times.toByteArray();
+        byte[] attributesBytes = attributes.toByteArray();
+        byte[] packedData = concatenateAll(names, timesBytes, attributesBytes, content);
+        byte[] header = externalFilePropertiesHeader(
+                names.length,
+                timesBytes.length,
+                attributesBytes.length,
+                content.length
+        );
+        return archive(packedData, header, crc32(header));
+    }
+
+    /// Returns a 7z archive whose main stream folder definition is stored externally.
+    private static byte[] archiveWithExternalFolderDefinitions(byte[] content) throws IOException {
+        byte[] folder = copyFolderPayload();
+        byte[] packedData = concatenate(folder, content);
+        byte[] header = externalFolderDefinitionsHeader(folder.length, content.length);
+        return archive(packedData, header, crc32(header));
+    }
+
     /// Returns a 7z archive with one file stored through the LZMA method.
     private static byte[] archiveWithLZMAFile(CoderPayload payload, int uncompressedSize) throws IOException {
         byte[] header = fileHeader(
@@ -573,6 +1112,12 @@ public final class SevenZipArkivoFileSystemTest {
         return archive(payload.content(), header, crc32(header));
     }
 
+    /// Returns a 7z archive with one file stored through an LZMA-to-Copy coder pipeline.
+    private static byte[] archiveWithLZMAMultiCoderFile(CoderPayload payload, int uncompressedSize) throws IOException {
+        byte[] header = lzmaCopyPipelineFileHeader(payload.content().length, uncompressedSize, payload.properties());
+        return archive(payload.content(), header, crc32(header));
+    }
+
     /// Returns a 7z archive with one file stored through the LZMA2 method.
     private static byte[] archiveWithLZMA2File(CoderPayload payload, int uncompressedSize) throws IOException {
         byte[] header = fileHeader(
@@ -580,6 +1125,49 @@ public final class SevenZipArkivoFileSystemTest {
                 uncompressedSize,
                 new byte[]{0x21},
                 payload.properties()
+        );
+        return archive(payload.content(), header, crc32(header));
+    }
+
+    /// Returns a 7z archive with one file stored through a Delta-to-LZMA2 coder pipeline.
+    private static byte[] archiveWithDeltaLZMA2File(
+            CoderPayload payload,
+            int uncompressedSize,
+            int deltaDistance
+    ) throws IOException {
+        byte[] header = lzma2DeltaPipelineFileHeader(
+                payload.content().length,
+                uncompressedSize,
+                payload.properties(),
+                deltaDistance
+        );
+        return archive(payload.content(), header, crc32(header));
+    }
+
+    /// Returns a 7z archive with one file stored through an x86 BCJ-to-LZMA2 coder pipeline.
+    private static byte[] archiveWithX86BcjLZMA2File(CoderPayload payload, int uncompressedSize) throws IOException {
+        byte[] header = lzma2X86BcjPipelineFileHeader(
+                payload.content().length,
+                uncompressedSize,
+                payload.properties()
+        );
+        return archive(payload.content(), header, crc32(header));
+    }
+
+    /// Returns a 7z archive with one file stored through a BCJ-to-LZMA2 coder pipeline.
+    private static byte[] archiveWithBcjLZMA2File(
+            String fileName,
+            CoderPayload payload,
+            int uncompressedSize,
+            byte[] bcjMethodId
+    ) throws IOException {
+        byte[] header = lzma2BcjPipelineFileHeader(
+                payload.content().length,
+                uncompressedSize,
+                payload.properties(),
+                bcjMethodId,
+                new byte[0],
+                fileName
         );
         return archive(payload.content(), header, crc32(header));
     }
@@ -616,6 +1204,23 @@ public final class SevenZipArkivoFileSystemTest {
     /// Returns a 7z archive with the given next header and expected next header CRC-32.
     private static byte[] archive(byte[] nextHeader, long nextHeaderCrc32) {
         return archive(new byte[0], nextHeader, nextHeaderCrc32);
+    }
+
+    /// Returns a 7z archive containing only a fixed start header with raw next-header fields.
+    private static byte[] archiveWithRawStartHeader(long nextHeaderOffset, long nextHeaderSize, long nextHeaderCrc32) {
+        ByteBuffer buffer = ByteBuffer.allocate(32).order(ByteOrder.LITTLE_ENDIAN);
+        buffer.put(new byte[]{'7', 'z', (byte) 0xbc, (byte) 0xaf, 0x27, 0x1c});
+        buffer.put((byte) 0);
+        buffer.put((byte) 4);
+        buffer.putInt(0);
+        buffer.putLong(nextHeaderOffset);
+        buffer.putLong(nextHeaderSize);
+        buffer.putInt((int) nextHeaderCrc32);
+
+        CRC32 crc32 = new CRC32();
+        crc32.update(buffer.array(), 12, 20);
+        buffer.putInt(8, (int) crc32.getValue());
+        return buffer.array();
     }
 
     /// Returns a 7z archive with packed data followed by the given next header.
@@ -656,6 +1261,33 @@ public final class SevenZipArkivoFileSystemTest {
         output.write(emptyFileBits);
 
         byte[] names = namesProperty("dir", "empty.txt");
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
+
+        output.write(0x00);
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header with one empty file using the given name.
+    private static byte[] emptyFileNameHeader(String name) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+        output.write(0x05);
+        writeNumber(output, 1);
+
+        byte[] emptyStreamBits = new byte[]{(byte) 0x80};
+        output.write(0x0e);
+        writeNumber(output, emptyStreamBits.length);
+        output.write(emptyStreamBits);
+
+        byte[] emptyFileBits = new byte[]{(byte) 0x80};
+        output.write(0x0f);
+        writeNumber(output, emptyFileBits.length);
+        output.write(emptyFileBits);
+
+        byte[] names = namesProperty(name);
         output.write(0x11);
         writeNumber(output, names.length);
         output.write(names);
@@ -731,6 +1363,176 @@ public final class SevenZipArkivoFileSystemTest {
         if (windowsAttributes >= 0) {
             writeWindowsAttributesProperty(output, windowsAttributes);
         }
+        output.write(0x00);
+
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header with one file using an LZMA-to-Copy coder pipeline.
+    private static byte[] lzmaCopyPipelineFileHeader(
+            int packedSize,
+            int uncompressedSize,
+            byte[] lzmaProperties
+    ) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+
+        output.write(0x04);
+        output.write(0x06);
+        writeNumber(output, 0);
+        writeNumber(output, 1);
+        output.write(0x09);
+        writeNumber(output, packedSize);
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(0);
+        writeNumber(output, 2);
+        output.write(0x23);
+        output.write(new byte[]{0x03, 0x01, 0x01});
+        writeNumber(output, lzmaProperties.length);
+        output.write(lzmaProperties);
+        output.write(0x01);
+        output.write(0x00);
+        writeNumber(output, 1);
+        writeNumber(output, 0);
+        output.write(0x0c);
+        writeNumber(output, uncompressedSize);
+        writeNumber(output, uncompressedSize);
+        output.write(0x00);
+        output.write(0x00);
+
+        output.write(0x05);
+        writeNumber(output, 1);
+        byte[] names = namesProperty("multi-coder.txt");
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
+        output.write(0x00);
+
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header with one file using an LZMA2-to-Delta coder pipeline.
+    private static byte[] lzma2DeltaPipelineFileHeader(
+            int packedSize,
+            int uncompressedSize,
+            byte[] lzma2Properties,
+            int deltaDistance
+    ) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+
+        output.write(0x04);
+        output.write(0x06);
+        writeNumber(output, 0);
+        writeNumber(output, 1);
+        output.write(0x09);
+        writeNumber(output, packedSize);
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(0);
+        writeNumber(output, 2);
+        output.write(0x21);
+        output.write(0x21);
+        writeNumber(output, lzma2Properties.length);
+        output.write(lzma2Properties);
+        output.write(0x21);
+        output.write(0x03);
+        writeNumber(output, 1);
+        output.write(deltaDistance - 1);
+        writeNumber(output, 1);
+        writeNumber(output, 0);
+        output.write(0x0c);
+        writeNumber(output, uncompressedSize);
+        writeNumber(output, uncompressedSize);
+        output.write(0x00);
+        output.write(0x00);
+
+        output.write(0x05);
+        writeNumber(output, 1);
+        byte[] names = namesProperty("delta-lzma2.txt");
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
+        output.write(0x00);
+
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header with one file using an LZMA2-to-x86 BCJ coder pipeline.
+    private static byte[] lzma2X86BcjPipelineFileHeader(
+            int packedSize,
+            int uncompressedSize,
+            byte[] lzma2Properties
+    ) throws IOException {
+        return lzma2BcjPipelineFileHeader(
+                packedSize,
+                uncompressedSize,
+                lzma2Properties,
+                new byte[]{0x03, 0x03, 0x01, 0x03},
+                new byte[0],
+                "x86-bcj-lzma2.bin"
+        );
+    }
+
+    /// Returns a plain 7z header with one file using an LZMA2-to-BCJ coder pipeline.
+    private static byte[] lzma2BcjPipelineFileHeader(
+            int packedSize,
+            int uncompressedSize,
+            byte[] lzma2Properties,
+            byte[] bcjMethodId,
+            byte[] bcjProperties,
+            String fileName
+    ) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+
+        output.write(0x04);
+        output.write(0x06);
+        writeNumber(output, 0);
+        writeNumber(output, 1);
+        output.write(0x09);
+        writeNumber(output, packedSize);
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(0);
+        writeNumber(output, 2);
+        output.write(0x21);
+        output.write(0x21);
+        writeNumber(output, lzma2Properties.length);
+        output.write(lzma2Properties);
+        output.write(bcjMethodId.length | (bcjProperties.length != 0 ? 0x20 : 0));
+        output.write(bcjMethodId);
+        if (bcjProperties.length != 0) {
+            writeNumber(output, bcjProperties.length);
+            output.write(bcjProperties);
+        }
+        writeNumber(output, 1);
+        writeNumber(output, 0);
+        output.write(0x0c);
+        writeNumber(output, uncompressedSize);
+        writeNumber(output, uncompressedSize);
+        output.write(0x00);
+        output.write(0x00);
+
+        output.write(0x05);
+        writeNumber(output, 1);
+        byte[] names = namesProperty(fileName);
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
         output.write(0x00);
 
         output.write(0x00);
@@ -834,6 +1636,180 @@ public final class SevenZipArkivoFileSystemTest {
         return output.toByteArray();
     }
 
+    /// Returns a plain 7z header whose substream counts appear after size metadata.
+    private static byte[] subStreamCountsAfterDependentMetadataHeader(int totalSize) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+
+        output.write(0x04);
+        output.write(0x06);
+        writeNumber(output, 0);
+        writeNumber(output, 1);
+        output.write(0x09);
+        writeNumber(output, totalSize);
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(0);
+        writeNumber(output, 1);
+        output.write(1);
+        output.write(0);
+        output.write(0x0c);
+        writeNumber(output, totalSize);
+        output.write(0x00);
+
+        output.write(0x08);
+        output.write(0x09);
+        output.write(0x0d);
+        writeNumber(output, 2);
+        output.write(0x00);
+        output.write(0x00);
+
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header whose folder count is too large to represent.
+    private static byte[] oversizedFolderCountHeader() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+
+        output.write(0x04);
+        output.write(0x07);
+        output.write(0x0b);
+        writeTooLargeNumber(output);
+        output.write(0);
+        output.write(0x00);
+        output.write(0x00);
+
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header whose PackInfo has streams but no size property.
+    private static byte[] missingPackSizesHeader(int contentSize) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+
+        output.write(0x04);
+        output.write(0x06);
+        writeNumber(output, 0);
+        writeNumber(output, 1);
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(0);
+        writeNumber(output, 1);
+        output.write(1);
+        output.write(0);
+        output.write(0x0c);
+        writeNumber(output, contentSize);
+        output.write(0x00);
+        output.write(0x00);
+
+        output.write(0x05);
+        writeNumber(output, 1);
+        byte[] names = namesProperty("missing-pack-size.txt");
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
+        output.write(0x00);
+
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header whose PackInfo declares more packed streams than folders.
+    private static byte[] packStreamFolderCountMismatchHeader(int contentSize) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+
+        output.write(0x04);
+        output.write(0x06);
+        writeNumber(output, 0);
+        writeNumber(output, 2);
+        output.write(0x09);
+        writeNumber(output, contentSize);
+        writeNumber(output, 0);
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(0);
+        writeNumber(output, 1);
+        output.write(1);
+        output.write(0);
+        output.write(0x0c);
+        writeNumber(output, contentSize);
+        output.write(0x00);
+        output.write(0x00);
+
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header whose external file-name property has no additional stream.
+    private static byte[] missingExternalFilePropertyStreamHeader(int contentSize) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+
+        output.write(0x04);
+        writeSingleFolderStreamsInfo(output, 0, contentSize, contentSize, new byte[]{0x00}, new byte[0]);
+
+        output.write(0x05);
+        writeNumber(output, 1);
+        output.write(0x11);
+        writeNumber(output, 2);
+        output.write(1);
+        writeNumber(output, 0);
+        output.write(0x00);
+
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header whose pack position overflows the absolute stream offset.
+    private static byte[] overflowingPackPositionHeader(int contentSize) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+
+        output.write(0x04);
+        output.write(0x06);
+        writeLongNumber(output, Long.MAX_VALUE);
+        writeNumber(output, 1);
+        output.write(0x09);
+        writeNumber(output, contentSize);
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(0);
+        writeNumber(output, 1);
+        output.write(1);
+        output.write(0);
+        output.write(0x0c);
+        writeNumber(output, contentSize);
+        output.write(0x00);
+        output.write(0x00);
+
+        output.write(0x05);
+        writeNumber(output, 1);
+        byte[] names = namesProperty("overflow.txt");
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
+        output.write(0x00);
+
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
     /// Returns a plain 7z header with an ignored additional stream and one main Copy-method file stream.
     private static byte[] additionalStreamsInfoHeader(int additionalSize, int contentSize) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -848,6 +1824,86 @@ public final class SevenZipArkivoFileSystemTest {
         output.write(0x05);
         writeNumber(output, 1);
         byte[] names = namesProperty("hello.txt");
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
+        output.write(0x00);
+
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header with external file property streams and one Copy-method file stream.
+    private static byte[] externalFilePropertiesHeader(
+            int namesSize,
+            int timeSize,
+            int attributesSize,
+            int contentSize
+    ) throws IOException {
+        int additionalSize = namesSize + timeSize + attributesSize;
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+
+        output.write(0x03);
+        writeCopyStreamsInfo(output, 0, namesSize, timeSize, attributesSize);
+
+        output.write(0x04);
+        writeSingleFolderStreamsInfo(output, additionalSize, contentSize, contentSize, new byte[]{0x00}, new byte[0]);
+
+        output.write(0x05);
+        writeNumber(output, 1);
+
+        output.write(0x11);
+        writeNumber(output, 2);
+        output.write(1);
+        writeNumber(output, 0);
+
+        output.write(0x14);
+        writeNumber(output, 3);
+        output.write(1);
+        output.write(1);
+        writeNumber(output, 1);
+
+        output.write(0x15);
+        writeNumber(output, 3);
+        output.write(1);
+        output.write(1);
+        writeNumber(output, 2);
+
+        output.write(0x00);
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header with external folder definitions and one Copy-method file stream.
+    private static byte[] externalFolderDefinitionsHeader(int folderSize, int contentSize) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+
+        output.write(0x03);
+        writeSingleFolderStreamsInfo(output, 0, folderSize, folderSize, new byte[]{0x00}, new byte[0]);
+
+        output.write(0x04);
+        output.write(0x06);
+        writeNumber(output, folderSize);
+        writeNumber(output, 1);
+        output.write(0x09);
+        writeNumber(output, contentSize);
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(1);
+        writeNumber(output, 0);
+        output.write(0x0c);
+        writeNumber(output, contentSize);
+        output.write(0x00);
+        output.write(0x00);
+
+        output.write(0x05);
+        writeNumber(output, 1);
+        byte[] names = namesProperty("external-folder.txt");
         output.write(0x11);
         writeNumber(output, names.length);
         output.write(names);
@@ -949,6 +2005,47 @@ public final class SevenZipArkivoFileSystemTest {
         output.write(0x00);
     }
 
+    /// Writes a `StreamsInfo` block with Copy folders for each given packed size.
+    private static void writeCopyStreamsInfo(
+            ByteArrayOutputStream output,
+            int packPosition,
+            int... sizes
+    ) throws IOException {
+        output.write(0x06);
+        writeNumber(output, packPosition);
+        writeNumber(output, sizes.length);
+        output.write(0x09);
+        for (int size : sizes) {
+            writeNumber(output, size);
+        }
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, sizes.length);
+        output.write(0);
+        for (int ignored : sizes) {
+            writeNumber(output, 1);
+            output.write(1);
+            output.write(0);
+        }
+        output.write(0x0c);
+        for (int size : sizes) {
+            writeNumber(output, size);
+        }
+        output.write(0x00);
+        output.write(0x00);
+    }
+
+    /// Returns a serialized Copy folder definition.
+    private static byte[] copyFolderPayload() {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeNumber(output, 1);
+        output.write(1);
+        output.write(0);
+        return output.toByteArray();
+    }
+
     /// Writes a one-file 7z time property.
     private static void writeTimeProperty(ByteArrayOutputStream output, int property, FileTime time) throws IOException {
         ByteArrayOutputStream data = new ByteArrayOutputStream();
@@ -998,6 +2095,52 @@ public final class SevenZipArkivoFileSystemTest {
         return new CoderPayload(output.toByteArray(), new byte[]{lzma2Property(options.getDictSize())});
     }
 
+    /// Returns an LZMA2-compressed Delta-filtered payload and its LZMA2 coder properties.
+    private static CoderPayload deltaLzma2Payload(byte[] content, int deltaDistance) throws IOException {
+        LZMA2Options options = new LZMA2Options();
+        options.setDictSize(1 << 20);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        FinishableByteArrayOutputStream target = new FinishableByteArrayOutputStream(output);
+        try (
+                FinishableOutputStream lzma2 = options.getOutputStream(target, ArrayCache.getDummyCache());
+                FinishableOutputStream delta = new DeltaOptions(deltaDistance)
+                        .getOutputStream(lzma2, ArrayCache.getDummyCache())
+        ) {
+            delta.write(content);
+        }
+        return new CoderPayload(output.toByteArray(), new byte[]{lzma2Property(options.getDictSize())});
+    }
+
+    /// Returns an LZMA2-compressed x86 BCJ-filtered payload and its LZMA2 coder properties.
+    private static CoderPayload x86BcjLzma2Payload(byte[] content) throws IOException {
+        LZMA2Options options = new LZMA2Options();
+        options.setDictSize(1 << 20);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        FinishableByteArrayOutputStream target = new FinishableByteArrayOutputStream(output);
+        try (
+                FinishableOutputStream lzma2 = options.getOutputStream(target, ArrayCache.getDummyCache());
+                FinishableOutputStream x86 = new X86Options().getOutputStream(lzma2, ArrayCache.getDummyCache())
+        ) {
+            x86.write(content);
+        }
+        return new CoderPayload(output.toByteArray(), new byte[]{lzma2Property(options.getDictSize())});
+    }
+
+    /// Returns an LZMA2-compressed BCJ-filtered payload and its LZMA2 coder properties.
+    private static CoderPayload bcjLzma2Payload(byte[] content, FilterOptions bcjOptions) throws IOException {
+        LZMA2Options options = new LZMA2Options();
+        options.setDictSize(1 << 20);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        FinishableByteArrayOutputStream target = new FinishableByteArrayOutputStream(output);
+        try (
+                FinishableOutputStream lzma2 = options.getOutputStream(target, ArrayCache.getDummyCache());
+                FinishableOutputStream bcj = bcjOptions.getOutputStream(lzma2, ArrayCache.getDummyCache())
+        ) {
+            bcj.write(content);
+        }
+        return new CoderPayload(output.toByteArray(), new byte[]{lzma2Property(options.getDictSize())});
+    }
+
     /// Returns the 7z LZMA2 dictionary property for an exact dictionary size.
     private static byte lzma2Property(int dictionarySize) {
         for (int property = 0; property <= 37; property++) {
@@ -1014,6 +2157,21 @@ public final class SevenZipArkivoFileSystemTest {
         byte[] result = new byte[first.length + second.length];
         System.arraycopy(first, 0, result, 0, first.length);
         System.arraycopy(second, 0, result, first.length, second.length);
+        return result;
+    }
+
+    /// Concatenates byte arrays.
+    private static byte[] concatenateAll(byte[]... parts) {
+        int length = 0;
+        for (byte[] part : parts) {
+            length += part.length;
+        }
+        byte[] result = new byte[length];
+        int position = 0;
+        for (byte[] part : parts) {
+            System.arraycopy(part, 0, result, position, part.length);
+            position += part.length;
+        }
         return result;
     }
 
@@ -1076,6 +2234,13 @@ public final class SevenZipArkivoFileSystemTest {
     private static byte[] namesProperty(String... names) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         output.write(0);
+        output.write(namesPayload(names));
+        return output.toByteArray();
+    }
+
+    /// Returns a 7z names payload without the inline/external storage flag.
+    private static byte[] namesPayload(String... names) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
         for (String name : names) {
             output.write(name.getBytes(StandardCharsets.UTF_16LE));
             output.write(0);
@@ -1103,6 +2268,27 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Writes a 7z variable-length integer that may exceed the smaller test helper range.
+    private static void writeLongNumber(ByteArrayOutputStream output, long value) {
+        if (value < 0) {
+            throw new IllegalArgumentException("test value is out of range");
+        }
+        if (value < 0x20_0000L) {
+            writeNumber(output, (int) value);
+            return;
+        }
+        output.write(0xff);
+        writeLongLE(output, value);
+    }
+
+    /// Writes a 7z variable-length integer larger than signed `long`.
+    private static void writeTooLargeNumber(ByteArrayOutputStream output) {
+        output.write(0xff);
+        for (int index = 0; index < Long.BYTES; index++) {
+            output.write(0xff);
+        }
+    }
+
     /// Writes a little-endian `int`.
     private static void writeIntLE(ByteArrayOutputStream output, int value) {
         output.write(value);
@@ -1123,6 +2309,14 @@ public final class SevenZipArkivoFileSystemTest {
         return 116_444_736_000_000_000L
                 + instant.getEpochSecond() * 10_000_000L
                 + instant.getNano() / 100L;
+    }
+
+    /// Converts unsigned Windows FILETIME ticks to a Java file time.
+    private static FileTime fileTimeFromUnsignedWindowsTicks(long windowsTicks) {
+        long unixTicks = windowsTicks - 116_444_736_000_000_000L;
+        long seconds = Long.divideUnsigned(unixTicks, 10_000_000L);
+        long nanos = Long.remainderUnsigned(unixTicks, 10_000_000L) * 100L;
+        return FileTime.from(Instant.ofEpochSecond(seconds, nanos));
     }
 
     /// Returns the unsigned CRC-32 value of the given content.

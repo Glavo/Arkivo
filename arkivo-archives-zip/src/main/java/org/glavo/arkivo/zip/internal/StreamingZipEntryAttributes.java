@@ -78,9 +78,9 @@ final class StreamingZipEntryAttributes implements ZipArkivoEntryAttributes {
         this.directory = directory;
     }
 
-    /// Returns the raw encoded ZIP entry path bytes.
+    /// Returns a copy of the raw encoded ZIP entry path bytes.
     @Override
-    public byte @Unmodifiable [] rawPath() {
+    public byte[] rawPath() {
         return rawPath.clone();
     }
 
@@ -135,32 +135,30 @@ final class StreamingZipEntryAttributes implements ZipArkivoEntryAttributes {
     /// Returns the ZIP compression method.
     @Override
     public ZipMethod method() {
-        return ZipMethod.of(method);
+        return ZipMethod.of(ZipAesExtraField.compressionMethod(generalPurposeFlags, method, localExtraData));
     }
 
     /// Returns the ZIP encryption method.
     @Override
     public ZipEncryption encryption() {
-        return (generalPurposeFlags & ZipConstants.ENCRYPTED_FLAG) != 0
-                ? ZipEncryption.traditional()
-                : ZipEncryption.none();
+        return ZipAesExtraField.encryption(generalPurposeFlags, method, localExtraData);
     }
 
-    /// Returns the raw local file header extra data bytes.
+    /// Returns a copy of the raw local file header extra data bytes.
     @Override
-    public byte @Unmodifiable [] localExtraData() {
+    public byte[] localExtraData() {
         return localExtraData.clone();
     }
 
-    /// Returns the raw central directory extra data bytes.
+    /// Returns a copy of the raw central directory extra data bytes.
     @Override
-    public byte @Unmodifiable [] centralDirectoryExtraData() {
+    public byte[] centralDirectoryExtraData() {
         return new byte[0];
     }
 
-    /// Returns the raw ZIP entry comment bytes, or `null` when no comment is present.
+    /// Returns a copy of the raw ZIP entry comment bytes, or `null` when no comment is present.
     @Override
-    public byte @Nullable @Unmodifiable [] rawComment() {
+    public byte @Nullable [] rawComment() {
         return null;
     }
 

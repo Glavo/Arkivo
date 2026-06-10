@@ -229,10 +229,11 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         return ArkivoPathMatchers.create(syntaxAndPattern);
     }
 
-    /// Returns no user principal lookup service.
+    /// Returns the user principal lookup service for synthesized 7z principals.
     @Override
     public UserPrincipalLookupService getUserPrincipalLookupService() {
-        throw new UnsupportedOperationException("7z user principal lookup is not supported");
+        ensureOpen();
+        return SevenZipPrincipalSupport.userPrincipalLookupService();
     }
 
     /// Returns no watch service.
@@ -256,16 +257,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         if (metadata.dataOffset() == SevenZipEntryMetadata.NO_DATA_OFFSET) {
             return new SevenZipByteChannel(new byte[0]);
         }
-        if (SevenZipLZMADecoder.isCopy(metadata.methodId())) {
+        if (metadata.method().isCopyOnly()) {
             return new SevenZipFileSliceChannel(openArchiveChannel(), metadata.dataOffset(), metadata.size());
         }
-        if (SevenZipLZMADecoder.isLZMA(metadata.methodId())) {
-            return new SevenZipByteChannel(readDecodedEntry(metadata));
-        }
-        if (SevenZipLZMADecoder.isLZMA2(metadata.methodId())) {
-            return new SevenZipByteChannel(readDecodedEntry(metadata));
-        }
-        throw new UnsupportedOperationException("Unsupported 7z entry method");
+        return new SevenZipByteChannel(readDecodedEntry(metadata));
     }
 
     /// Opens an input stream for an entry.
@@ -285,17 +280,16 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         ));
         InputStream decoded;
         boolean skipDecodedOffset;
-        if (SevenZipLZMADecoder.isCopy(metadata.methodId())) {
+        if (metadata.method().isCopyOnly()) {
             decoded = input;
             skipDecodedOffset = false;
-        } else if (SevenZipLZMADecoder.isLZMA(metadata.methodId())) {
-            decoded = SevenZipLZMADecoder.openLZMA(input, metadata.decodedOffset() + metadata.size(), metadata.coderProperties());
-            skipDecodedOffset = true;
-        } else if (SevenZipLZMADecoder.isLZMA2(metadata.methodId())) {
-            decoded = SevenZipLZMADecoder.openLZMA2(input, metadata.coderProperties());
-            skipDecodedOffset = true;
         } else {
-            throw new UnsupportedOperationException("Unsupported 7z entry method");
+            decoded = SevenZipLZMADecoder.openFolder(
+                    input,
+                    metadata.method(),
+                    metadata.decodedOffset() + metadata.size()
+            );
+            skipDecodedOffset = true;
         }
         if (skipDecodedOffset && metadata.decodedOffset() > 0) {
             decoded.skipNBytes(metadata.decodedOffset());
@@ -462,18 +456,55 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Returns parsed entries keyed by normalized absolute path text.
-    private Map<String, SevenZipEntryMetadata> entriesByPath(List<SevenZipEntryMetadata> parsedEntries) {
+    private Map<String, SevenZipEntryMetadata> entriesByPath(List<SevenZipEntryMetadata> parsedEntries)
+            throws IOException {
         LinkedHashMap<String, SevenZipEntryMetadata> result = new LinkedHashMap<>();
         for (SevenZipEntryMetadata metadata : parsedEntries) {
-            String pathText = getPath(metadata.path()).toAbsolutePath().normalize().toString();
-            if ("/".equals(pathText)) {
-                throw new IllegalArgumentException("7z entries cannot use the root path as a file name");
-            }
+            String pathText = entryPathText(metadata.path());
             if (result.put(pathText, metadata) != null) {
-                throw new IllegalArgumentException("Duplicate 7z entry path: " + metadata.path());
+                throw new IOException("Duplicate 7z entry path: " + metadata.path());
             }
         }
         return Collections.unmodifiableMap(new LinkedHashMap<>(result));
+    }
+
+    /// Returns the normalized absolute file system path text for a decoded 7z entry path.
+    private static String entryPathText(String path) throws IOException {
+        if (path.startsWith("/") || path.startsWith("\\")
+                || path.length() >= 2 && path.charAt(1) == ':') {
+            throw new IOException("7z entry path must be relative");
+        }
+        ArrayList<String> names = new ArrayList<>();
+        int start = 0;
+        while (start <= path.length()) {
+            int end = nextEntryPathSeparator(path, start);
+
+            String name = path.substring(start, end);
+            if (!name.isEmpty() && !".".equals(name)) {
+                if ("..".equals(name)) {
+                    throw new IOException("7z entry path must not contain ..");
+                }
+                names.add(name);
+            }
+            start = end + 1;
+        }
+        if (names.isEmpty()) {
+            throw new IOException("7z entry is missing a path");
+        }
+        return "/" + String.join("/", names);
+    }
+
+    /// Returns the index of the next entry path separator, or the path length.
+    private static int nextEntryPathSeparator(String path, int start) {
+        int forwardSlash = path.indexOf('/', start);
+        int backslash = path.indexOf('\\', start);
+        if (forwardSlash < 0) {
+            return backslash >= 0 ? backslash : path.length();
+        }
+        if (backslash < 0) {
+            return forwardSlash;
+        }
+        return Math.min(forwardSlash, backslash);
     }
 
     /// Returns directory children keyed by normalized absolute parent path text.

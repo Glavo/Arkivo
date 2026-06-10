@@ -5,10 +5,8 @@ package org.glavo.arkivo.sevenzip.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
-import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.attribute.FileTime;
-import java.util.Arrays;
 import java.util.Objects;
 
 /// Stores parsed metadata for one 7z entry.
@@ -35,11 +33,8 @@ public final class SevenZipEntryMetadata {
     /// The packed entry size.
     private final long packedSize;
 
-    /// The 7z method ID used to store this entry.
-    private final byte @Unmodifiable [] methodId;
-
-    /// The 7z coder properties used to store this entry.
-    private final byte @Unmodifiable [] coderProperties;
+    /// The 7z folder method used to store this entry.
+    private final SevenZipFolderMethod method;
 
     /// The creation time, or `null` when not present.
     private final @Nullable FileTime creationTime;
@@ -68,6 +63,35 @@ public final class SevenZipEntryMetadata {
             @Nullable FileTime lastModifiedTime,
             int windowsAttributes
     ) {
+        this(
+                path,
+                directory,
+                size,
+                dataOffset,
+                decodedOffset,
+                packedSize,
+                SevenZipFolderMethod.single(methodId, coderProperties, size),
+                creationTime,
+                lastAccessTime,
+                lastModifiedTime,
+                windowsAttributes
+        );
+    }
+
+    /// Creates parsed 7z entry metadata.
+    SevenZipEntryMetadata(
+            String path,
+            boolean directory,
+            long size,
+            long dataOffset,
+            long decodedOffset,
+            long packedSize,
+            SevenZipFolderMethod method,
+            @Nullable FileTime creationTime,
+            @Nullable FileTime lastAccessTime,
+            @Nullable FileTime lastModifiedTime,
+            int windowsAttributes
+    ) {
         if (size < 0) {
             throw new IllegalArgumentException("size must be non-negative");
         }
@@ -86,8 +110,7 @@ public final class SevenZipEntryMetadata {
         this.dataOffset = dataOffset;
         this.decodedOffset = decodedOffset;
         this.packedSize = packedSize;
-        this.methodId = Objects.requireNonNull(methodId, "methodId").clone();
-        this.coderProperties = Objects.requireNonNull(coderProperties, "coderProperties").clone();
+        this.method = Objects.requireNonNull(method, "method");
         this.creationTime = creationTime;
         this.lastAccessTime = lastAccessTime;
         this.lastModifiedTime = lastModifiedTime;
@@ -124,19 +147,24 @@ public final class SevenZipEntryMetadata {
         return packedSize;
     }
 
-    /// Returns the 7z method ID used to store this entry.
-    public byte @Unmodifiable [] methodId() {
-        return methodId.clone();
+    /// Returns a copy of the 7z method ID used to store this entry.
+    public byte[] methodId() {
+        return method.firstMethodId();
     }
 
     /// Returns whether this entry is stored with the given 7z method ID.
     public boolean hasMethod(byte[] expectedMethodId) {
-        return Arrays.equals(methodId, expectedMethodId);
+        return method.containsMethod(expectedMethodId);
     }
 
-    /// Returns the 7z coder properties used to store this entry.
-    public byte @Unmodifiable [] coderProperties() {
-        return coderProperties.clone();
+    /// Returns a copy of the 7z coder properties used to store this entry.
+    public byte[] coderProperties() {
+        return method.firstProperties();
+    }
+
+    /// Returns the 7z folder method used to store this entry.
+    SevenZipFolderMethod method() {
+        return method;
     }
 
     /// Returns the creation time, or `null` when not present.

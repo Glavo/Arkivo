@@ -32,6 +32,9 @@ final class ZipConstants {
     /// The ZIP general purpose flag indicating encryption.
     static final int ENCRYPTED_FLAG = 1;
 
+    /// The ZIP general purpose flag indicating strong encryption.
+    static final int STRONG_ENCRYPTION_FLAG = 1 << 6;
+
     /// The ZIP general purpose flag indicating a data descriptor follows entry data.
     static final int DATA_DESCRIPTOR_FLAG = 1 << 3;
 
@@ -43,6 +46,15 @@ final class ZipConstants {
 
     /// The ZIP deflated method identifier.
     static final int DEFLATED_METHOD = 8;
+
+    /// The WinZip AES placeholder method identifier.
+    static final int WINZIP_AES_METHOD = 99;
+
+    /// The WinZip AES extra field identifier.
+    static final int WINZIP_AES_EXTRA_FIELD_ID = 0x9901;
+
+    /// The ZIP64 extended information extra field identifier.
+    static final int ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID = 0x0001;
 
     /// The DOS date field value for 1980-01-01.
     static final int DOS_DATE_1980_01_01 = 0x21;

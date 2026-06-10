@@ -11,11 +11,13 @@ import org.jetbrains.annotations.Nullable;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigInteger;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Objects;
@@ -185,33 +187,42 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         }
 
         byte typeFlag = header[156];
-        long size = parseOctal(header, 124, 12, "entry size");
+        long size = parseNonNegativeNumeric(header, 124, 12, "entry size");
+        FileTime lastModifiedTime = fileTimeFromEpochSecond(
+                parseNumeric(header, 136, 12, "modification time"),
+                "modification time"
+        );
         return new TarEntryAttributes(
                 path,
                 typeFlag,
-                Math.toIntExact(parseOctal(header, 100, 8, "entry mode")),
-                parseOctal(header, 108, 8, "user id"),
-                parseOctal(header, 116, 8, "group id"),
+                parseIntNumeric(header, 100, 8, "entry mode"),
+                parseNonNegativeNumeric(header, 108, 8, "user id"),
+                parseNonNegativeNumeric(header, 116, 8, "group id"),
                 emptyToNull(readString(header, 265, 32)),
                 emptyToNull(readString(header, 297, 32)),
                 emptyToNull(readString(header, 157, 100)),
                 size,
-                FileTime.from(Instant.ofEpochSecond(parseOctal(header, 136, 12, "modification time")))
+                lastModifiedTime,
+                lastModifiedTime,
+                lastModifiedTime
         );
     }
 
     /// Validates the TAR header checksum.
     private static void validateChecksum(byte[] header) throws IOException {
         long expected = parseOctal(header, 148, 8, "header checksum");
-        long actual = 0;
+        long unsignedActual = 0;
+        long signedActual = 0;
         for (int index = 0; index < header.length; index++) {
             if (index >= 148 && index < 156) {
-                actual += ' ';
+                unsignedActual += ' ';
+                signedActual += ' ';
             } else {
-                actual += Byte.toUnsignedInt(header[index]);
+                unsignedActual += Byte.toUnsignedInt(header[index]);
+                signedActual += header[index];
             }
         }
-        if (expected != actual) {
+        if (expected != unsignedActual && expected != signedActual) {
             throw new IOException("Invalid TAR header checksum");
         }
     }
@@ -223,7 +234,38 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         while (end < limit && header[end] != 0) {
             end++;
         }
-        return new String(header, offset, end - offset, StandardCharsets.UTF_8).trim();
+        return new String(header, offset, end - offset, StandardCharsets.UTF_8);
+    }
+
+    /// Parses an octal or base-256 TAR numeric field.
+    private static long parseNumeric(byte[] header, int offset, int length, String description) throws IOException {
+        if ((header[offset] & 0x80) == 0) {
+            return parseOctal(header, offset, length, description);
+        }
+        return parseBase256(header, offset, length, description);
+    }
+
+    /// Parses a non-negative octal or base-256 TAR numeric field.
+    private static long parseNonNegativeNumeric(
+            byte[] header,
+            int offset,
+            int length,
+            String description
+    ) throws IOException {
+        long value = parseNumeric(header, offset, length, description);
+        if (value < 0) {
+            throw new IOException("TAR " + description + " must not be negative");
+        }
+        return value;
+    }
+
+    /// Parses an octal or base-256 TAR numeric field that must fit in an `int`.
+    private static int parseIntNumeric(byte[] header, int offset, int length, String description) throws IOException {
+        long value = parseNonNegativeNumeric(header, offset, length, description);
+        if (value > Integer.MAX_VALUE) {
+            throw new IOException("TAR " + description + " is too large");
+        }
+        return (int) value;
     }
 
     /// Parses an octal TAR numeric field.
@@ -245,6 +287,20 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             throw new IOException("Invalid TAR " + description);
         }
         return value;
+    }
+
+    /// Parses a base-256 TAR numeric field.
+    private static long parseBase256(byte[] header, int offset, int length, String description) throws IOException {
+        byte[] valueBytes = new byte[length];
+        System.arraycopy(header, offset, valueBytes, 0, length);
+        if (valueBytes[0] != (byte) 0xff) {
+            valueBytes[0] &= 0x7f;
+        }
+        try {
+            return new BigInteger(valueBytes).longValueExact();
+        } catch (ArithmeticException exception) {
+            throw new IOException("TAR " + description + " is too large", exception);
+        }
     }
 
     /// Returns `null` when the value is empty.
@@ -269,8 +325,12 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             if (space == index || space >= body.length || body[space] != ' ') {
                 throw new IOException("Invalid TAR PAX record length");
             }
+            int remaining = body.length - index;
+            if (recordLength <= 0 || recordLength > remaining) {
+                throw new IOException("Invalid TAR PAX record boundary");
+            }
             int end = index + (int) recordLength;
-            if (recordLength <= 0 || end > body.length || body[end - 1] != '\n') {
+            if (body[end - 1] != '\n') {
                 throw new IOException("Invalid TAR PAX record boundary");
             }
 
@@ -316,7 +376,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     private static FileTime parsePaxFileTime(String value, String key) throws IOException {
         int dot = value.indexOf('.');
         if (dot < 0) {
-            return FileTime.from(Instant.ofEpochSecond(parsePaxLong(value, key)));
+            return fileTimeFromEpochSecond(parsePaxLong(value, key), "PAX " + key);
         }
         if (dot + 1 == value.length()) {
             throw new IOException("Invalid TAR PAX " + key + " value");
@@ -347,7 +407,21 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             nanos *= 10L;
             parsedDigits++;
         }
-        return FileTime.from(Instant.ofEpochSecond(seconds, negative ? -nanos : nanos));
+        return fileTimeFromEpochSecond(seconds, negative ? -nanos : nanos, "PAX " + key);
+    }
+
+    /// Converts epoch seconds to a file time.
+    private static FileTime fileTimeFromEpochSecond(long seconds, String description) throws IOException {
+        return fileTimeFromEpochSecond(seconds, 0L, description);
+    }
+
+    /// Converts epoch seconds and nanoseconds to a file time.
+    private static FileTime fileTimeFromEpochSecond(long seconds, long nanos, String description) throws IOException {
+        try {
+            return FileTime.from(Instant.ofEpochSecond(seconds, nanos));
+        } catch (DateTimeException exception) {
+            throw new IOException("TAR " + description + " is out of range", exception);
+        }
     }
 
     /// Returns whether a block contains only zero bytes.
@@ -411,26 +485,28 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             @Nullable String groupName = attributes.groupName();
             long size = attributes.bodySize();
             FileTime lastModifiedTime = attributes.lastModifiedTime();
+            FileTime lastAccessTime = attributes.lastAccessTime();
+            FileTime creationTime = attributes.creationTime();
 
-            @Nullable String paxPath = paxValue("path");
+            @Nullable String paxPath = pendingPaxValue("path");
             if (paxPath != null) {
                 path = paxPath;
             }
-            @Nullable String paxLinkPath = paxValue("linkpath");
+            @Nullable String paxLinkPath = pendingPaxValue("linkpath");
             if (paxLinkPath != null) {
                 linkName = paxLinkPath;
             }
-            @Nullable String paxSize = paxValue("size");
+            @Nullable String paxSize = pendingPaxValue("size");
             if (paxSize != null) {
                 size = parsePaxNonNegativeLong(paxSize, "size");
             }
             @Nullable String paxUserId = paxValue("uid");
             if (paxUserId != null) {
-                userId = parsePaxLong(paxUserId, "uid");
+                userId = parsePaxNonNegativeLong(paxUserId, "uid");
             }
             @Nullable String paxGroupId = paxValue("gid");
             if (paxGroupId != null) {
-                groupId = parsePaxLong(paxGroupId, "gid");
+                groupId = parsePaxNonNegativeLong(paxGroupId, "gid");
             }
             @Nullable String paxUserName = paxValue("uname");
             if (paxUserName != null) {
@@ -444,9 +520,15 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             if (paxModifiedTime != null) {
                 lastModifiedTime = parsePaxFileTime(paxModifiedTime, "mtime");
             }
-            if (path.isEmpty()) {
-                throw new IOException("TAR entry is missing a path");
+            @Nullable String paxAccessTime = paxValue("atime");
+            if (paxAccessTime != null) {
+                lastAccessTime = parsePaxFileTime(paxAccessTime, "atime");
             }
+            @Nullable String paxCreationTime = paxValue("ctime");
+            if (paxCreationTime != null) {
+                creationTime = parsePaxFileTime(paxCreationTime, "ctime");
+            }
+            requireValidEntryPath(path);
 
             return new TarEntryAttributes(
                     path,
@@ -458,11 +540,57 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                     groupName,
                     linkName,
                     size,
-                    lastModifiedTime
+                    lastModifiedTime,
+                    lastAccessTime,
+                    creationTime
             );
         } finally {
             clearPendingEntryMetadata();
         }
+    }
+
+    /// Requires a decoded TAR entry path to contain a usable archive-local path.
+    private static void requireValidEntryPath(String path) throws IOException {
+        if (path.startsWith("/") || path.startsWith("\\")
+                || path.length() >= 2 && path.charAt(1) == ':') {
+            throw new IOException("TAR entry path must be relative");
+        }
+        boolean hasName = false;
+        int start = 0;
+        while (start <= path.length()) {
+            int end = nextPathSeparator(path, start);
+
+            String name = path.substring(start, end);
+            if (!name.isEmpty() && !".".equals(name)) {
+                if ("..".equals(name)) {
+                    throw new IOException("TAR entry path must not contain ..");
+                }
+                hasName = true;
+            }
+            start = end + 1;
+        }
+        if (!hasName) {
+            throw new IOException("TAR entry is missing a path");
+        }
+    }
+
+    /// Returns the index of the next archive path separator, or the path length.
+    private static int nextPathSeparator(String path, int start) {
+        int forwardSlash = path.indexOf('/', start);
+        int backslash = path.indexOf('\\', start);
+        if (forwardSlash < 0) {
+            return backslash >= 0 ? backslash : path.length();
+        }
+        if (backslash < 0) {
+            return forwardSlash;
+        }
+        return Math.min(forwardSlash, backslash);
+    }
+
+    /// Returns the pending per-entry PAX value for a key.
+    private @Nullable String pendingPaxValue(String key) {
+        HashMap<String, String> pending = pendingPaxHeaders;
+        return pending == null ? null : pending.get(key);
     }
 
     /// Returns the active PAX value for a key, preferring per-entry records.
@@ -486,7 +614,16 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
 
     /// Skips unread current entry body and padding bytes.
     private void skipCurrentEntryBody() throws IOException {
-        long remaining = currentBodyRemaining + currentPaddingRemaining;
+        skipFully(currentBodyRemaining);
+        skipFully(currentPaddingRemaining);
+        currentBodyRemaining = 0L;
+        currentPaddingRemaining = 0L;
+        currentBodyOpened = false;
+    }
+
+    /// Skips the requested number of bytes from the archive source.
+    private void skipFully(long count) throws IOException {
+        long remaining = count;
         while (remaining > 0) {
             long skipped = source.skip(remaining);
             if (skipped == 0) {
@@ -497,9 +634,6 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             }
             remaining -= skipped;
         }
-        currentBodyRemaining = 0L;
-        currentPaddingRemaining = 0L;
-        currentBodyOpened = false;
     }
 
     /// Requires this reader to be open.

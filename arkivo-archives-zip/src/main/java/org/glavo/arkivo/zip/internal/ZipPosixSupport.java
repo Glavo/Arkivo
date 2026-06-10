@@ -62,6 +62,20 @@ final class ZipPosixSupport {
         return USER_PRINCIPAL_LOOKUP_SERVICE;
     }
 
+    /// Requires the given owner principal to match the synthesized ZIP owner.
+    static void requireDefaultOwner(UserPrincipal owner) throws UserPrincipalNotFoundException {
+        if (!DEFAULT_OWNER.getName().equals(owner.getName())) {
+            throw new UserPrincipalNotFoundException(owner.getName());
+        }
+    }
+
+    /// Requires the given group principal to match the synthesized ZIP group.
+    static void requireDefaultGroup(GroupPrincipal group) throws UserPrincipalNotFoundException {
+        if (!DEFAULT_GROUP.getName().equals(group.getName())) {
+            throw new UserPrincipalNotFoundException(group.getName());
+        }
+    }
+
     /// Returns decoded POSIX permissions from ZIP metadata, or synthesized permissions when none are present.
     static @Unmodifiable Set<PosixFilePermission> permissions(
             int versionMadeBy,

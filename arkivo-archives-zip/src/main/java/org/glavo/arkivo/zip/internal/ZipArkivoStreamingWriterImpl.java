@@ -27,6 +27,7 @@ import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
+import java.nio.file.attribute.UserPrincipalNotFoundException;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
@@ -52,6 +53,9 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
     /// The internal streaming ZIP file system used by the current writer implementation.
     private final StreamingZipArkivoFileSystemImpl fileSystem;
 
+    /// The parsed ZIP streaming writer configuration.
+    private final ZipArkivoFileSystemConfig config;
+
     /// The optional state lock.
     private final @Nullable ReentrantLock lock;
 
@@ -61,6 +65,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
     /// Creates a ZIP streaming writer.
     private ZipArkivoStreamingWriterImpl(StreamingZipArkivoFileSystemImpl fileSystem, ZipArkivoFileSystemConfig config) {
         this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
+        this.config = Objects.requireNonNull(config, "config");
         this.lock = ZipLocks.create(Objects.requireNonNull(config, "config").threadSafety());
     }
 
@@ -362,18 +367,20 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             entry.attributes.setTimes(lastModifiedTime, lastAccessTime, createTime);
         }
 
-        /// Sets the file owner.
+        /// Accepts the synthesized file owner.
         @Override
-        public void setOwner(UserPrincipal owner) {
+        public void setOwner(UserPrincipal owner) throws UserPrincipalNotFoundException {
             Objects.requireNonNull(owner, "owner");
-            throw new UnsupportedOperationException("ZIP streaming writer does not support persisting entry owners yet");
+            entry.ensurePending();
+            ZipPosixSupport.requireDefaultOwner(owner);
         }
 
-        /// Sets the file group.
+        /// Accepts the synthesized file group.
         @Override
-        public void setGroup(GroupPrincipal group) {
+        public void setGroup(GroupPrincipal group) throws UserPrincipalNotFoundException {
             Objects.requireNonNull(group, "group");
-            throw new UnsupportedOperationException("ZIP streaming writer does not support persisting entry groups yet");
+            entry.ensurePending();
+            ZipPosixSupport.requireDefaultGroup(group);
         }
 
         /// Sets POSIX permissions.
@@ -495,7 +502,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         private @Nullable ZipMethod method;
 
         /// The requested ZIP encryption method.
-        private ZipEncryption encryption = ZipEncryption.none();
+        private ZipEncryption encryption = config.defaultEncryption();
 
         /// The expected uncompressed size, or `UNKNOWN_SIZE` when not configured.
         private long uncompressedSize = ZipArkivoEntryAttributes.UNKNOWN_SIZE;
@@ -687,8 +694,11 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
 
         /// Requires the configured metadata to be supported by the current streaming ZIP implementation.
         private void requireCommonSupportedMetadata() {
-            if (!encryption.equals(ZipEncryption.none())) {
-                throw new UnsupportedOperationException("ZIP streaming writer does not support encrypted entries yet");
+            ZipEncryption effectiveEncryption = encryption();
+            if (!effectiveEncryption.equals(ZipEncryption.none())
+                    && !effectiveEncryption.equals(ZipEncryption.traditional())
+                    && !ZipAesExtraField.isAesEncryption(effectiveEncryption)) {
+                throw new UnsupportedOperationException("Unsupported ZIP encryption method: " + effectiveEncryption);
             }
         }
 
@@ -701,9 +711,15 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             return entry.type == EntryType.FILE ? ZipMethod.deflated() : ZipMethod.stored();
         }
 
+        /// Returns the effective ZIP encryption method.
+        private ZipEncryption encryption() {
+            return entry.type == EntryType.DIRECTORY ? ZipEncryption.none() : encryption;
+        }
+
         /// Returns write metadata for the pending entry.
         private StreamingZipArkivoFileSystemImpl.EntryMetadata metadata(ZipStreamingEntry entry, boolean emptyFile) {
             ZipMethod effectiveMethod = method();
+            ZipEncryption effectiveEncryption = encryption();
             long expectedSize = uncompressedSize;
             long expectedCrc32 = crc32;
             if (emptyFile && effectiveMethod.equals(ZipMethod.stored())) {
@@ -712,6 +728,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             }
             return new StreamingZipArkivoFileSystemImpl.EntryMetadata(
                     effectiveMethod.id(),
+                    effectiveEncryption,
                     lastModifiedTime,
                     versionMadeBy(entry),
                     internalAttributes,
@@ -810,7 +827,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             this.lastAccessTime = view.lastAccessTime;
             this.creationTime = view.creationTime;
             this.method = view.method();
-            this.encryption = view.encryption;
+            this.encryption = view.encryption();
             this.uncompressedSize = view.uncompressedSize;
             this.crc32 = view.crc32;
             this.internalAttributes = view.internalAttributes;
@@ -823,9 +840,9 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             this.rawComment = view.rawComment != null ? view.rawComment.clone() : null;
         }
 
-        /// Returns the raw encoded ZIP entry path bytes.
+        /// Returns a copy of the raw encoded ZIP entry path bytes.
         @Override
-        public byte @Unmodifiable [] rawPath() {
+        public byte[] rawPath() {
             return rawPath.clone();
         }
 
@@ -850,7 +867,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Returns the general purpose bit flags stored for the ZIP entry.
         @Override
         public int generalPurposeFlags() {
-            return 0;
+            return encryption.equals(ZipEncryption.none()) ? 0 : ZipConstants.ENCRYPTED_FLAG;
         }
 
         /// Returns the ZIP version made by field.
@@ -896,21 +913,21 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             return encryption;
         }
 
-        /// Returns the raw local file header extra data bytes.
+        /// Returns a copy of the raw local file header extra data bytes.
         @Override
-        public byte @Unmodifiable [] localExtraData() {
+        public byte[] localExtraData() {
             return localExtraData.clone();
         }
 
-        /// Returns the raw central directory extra data bytes.
+        /// Returns a copy of the raw central directory extra data bytes.
         @Override
-        public byte @Unmodifiable [] centralDirectoryExtraData() {
+        public byte[] centralDirectoryExtraData() {
             return centralDirectoryExtraData.clone();
         }
 
-        /// Returns the raw ZIP entry comment bytes, or `null` when no comment is present.
+        /// Returns a copy of the raw ZIP entry comment bytes, or `null` when no comment is present.
         @Override
-        public byte @Nullable @Unmodifiable [] rawComment() {
+        public byte @Nullable [] rawComment() {
             return rawComment != null ? rawComment.clone() : null;
         }
 

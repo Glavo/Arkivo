@@ -67,6 +67,12 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes {
     /// The last modified time.
     private final FileTime lastModifiedTime;
 
+    /// The last access time.
+    private final FileTime lastAccessTime;
+
+    /// The creation time.
+    private final FileTime creationTime;
+
     /// Creates parsed TAR entry attributes.
     TarEntryAttributes(
             String path,
@@ -78,7 +84,9 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes {
             @Nullable String groupName,
             @Nullable String linkName,
             long size,
-            FileTime lastModifiedTime
+            FileTime lastModifiedTime,
+            FileTime lastAccessTime,
+            FileTime creationTime
     ) {
         if (size < 0) {
             throw new IllegalArgumentException("size must not be negative");
@@ -93,6 +101,8 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes {
         this.linkName = linkName;
         this.size = size;
         this.lastModifiedTime = Objects.requireNonNull(lastModifiedTime, "lastModifiedTime");
+        this.lastAccessTime = Objects.requireNonNull(lastAccessTime, "lastAccessTime");
+        this.creationTime = Objects.requireNonNull(creationTime, "creationTime");
     }
 
     /// Returns the decoded TAR entry path.
@@ -152,13 +162,13 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes {
     /// Returns the last access time.
     @Override
     public FileTime lastAccessTime() {
-        return lastModifiedTime;
+        return lastAccessTime;
     }
 
     /// Returns the creation time.
     @Override
     public FileTime creationTime() {
-        return lastModifiedTime;
+        return creationTime;
     }
 
     /// Returns whether this entry is a regular file.

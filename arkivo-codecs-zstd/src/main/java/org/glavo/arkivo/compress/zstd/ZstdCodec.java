@@ -155,25 +155,40 @@ public final class ZstdCodec implements CompressionCodec {
     /// Compresses all remaining source bytes into the target buffer.
     @Override
     public void compress(ByteBuffer source, ByteBuffer target) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(target, "target");
         if (!source.isDirect() || !target.isDirect()) {
             throw new IOException("Zstandard ByteBuffer compression requires direct buffers");
         }
-        if (dictionary != null) {
-            throw new IOException("Zstandard ByteBuffer compression with dictionaries is not supported yet");
+        if (target.isReadOnly()) {
+            throw new IOException("Zstandard ByteBuffer compression target buffer must be writable");
         }
-
         int level = compressionLevel != DEFAULT_COMPRESSION_LEVEL
                 ? compressionLevel
                 : Zstd.defaultCompressionLevel();
-        long result = Zstd.compressDirectByteBuffer(
-                target,
-                target.position(),
-                target.remaining(),
-                source,
-                source.position(),
-                source.remaining(),
-                level
-        );
+        long result;
+        if (dictionary != null) {
+            result = Zstd.compressDirectByteBufferUsingDict(
+                    target,
+                    target.position(),
+                    target.remaining(),
+                    source,
+                    source.position(),
+                    source.remaining(),
+                    dictionary,
+                    level
+            );
+        } else {
+            result = Zstd.compressDirectByteBuffer(
+                    target,
+                    target.position(),
+                    target.remaining(),
+                    source,
+                    source.position(),
+                    source.remaining(),
+                    level
+            );
+        }
         if (Zstd.isError(result)) {
             throw new IOException("Zstandard ByteBuffer compression failed: " + Zstd.getErrorName(result));
         }
@@ -185,21 +200,35 @@ public final class ZstdCodec implements CompressionCodec {
     /// Decompresses all remaining source bytes into the target buffer.
     @Override
     public void decompress(ByteBuffer source, ByteBuffer target) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(target, "target");
         if (!source.isDirect() || !target.isDirect()) {
             throw new IOException("Zstandard ByteBuffer decompression requires direct buffers");
         }
-        if (dictionary != null) {
-            throw new IOException("Zstandard ByteBuffer decompression with dictionaries is not supported yet");
+        if (target.isReadOnly()) {
+            throw new IOException("Zstandard ByteBuffer decompression target buffer must be writable");
         }
-
-        long result = Zstd.decompressDirectByteBuffer(
-                target,
-                target.position(),
-                target.remaining(),
-                source,
-                source.position(),
-                source.remaining()
-        );
+        long result;
+        if (dictionary != null) {
+            result = Zstd.decompressDirectByteBufferUsingDict(
+                    target,
+                    target.position(),
+                    target.remaining(),
+                    source,
+                    source.position(),
+                    source.remaining(),
+                    dictionary
+            );
+        } else {
+            result = Zstd.decompressDirectByteBuffer(
+                    target,
+                    target.position(),
+                    target.remaining(),
+                    source,
+                    source.position(),
+                    source.remaining()
+            );
+        }
         if (Zstd.isError(result)) {
             throw new IOException("Zstandard ByteBuffer decompression failed: " + Zstd.getErrorName(result));
         }

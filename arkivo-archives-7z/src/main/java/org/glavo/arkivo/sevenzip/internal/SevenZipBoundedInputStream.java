@@ -5,6 +5,7 @@ package org.glavo.arkivo.sevenzip.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
 
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Objects;
@@ -34,9 +35,10 @@ final class SevenZipBoundedInputStream extends InputStream {
             return -1;
         }
         int value = input.read();
-        if (value >= 0) {
-            remaining--;
+        if (value < 0) {
+            throw new EOFException("Unexpected end of 7z entry body");
         }
+        remaining--;
         return value;
     }
 
@@ -44,10 +46,16 @@ final class SevenZipBoundedInputStream extends InputStream {
     @Override
     public int read(byte[] buffer, int offset, int length) throws IOException {
         Objects.checkFromIndexSize(offset, length, buffer.length);
+        if (length == 0) {
+            return 0;
+        }
         if (remaining == 0) {
             return -1;
         }
         int count = input.read(buffer, offset, (int) Math.min(length, remaining));
+        if (count < 0) {
+            throw new EOFException("Unexpected end of 7z entry body");
+        }
         if (count > 0) {
             remaining -= count;
         }

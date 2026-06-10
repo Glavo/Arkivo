@@ -3,10 +3,12 @@
 
 package org.glavo.arkivo.zip.internal;
 
+import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
+import org.glavo.arkivo.zip.ZipEncryption;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -49,11 +51,13 @@ import static org.glavo.arkivo.zip.internal.ZipConstants.CENTRAL_DIRECTORY_HEADE
 import static org.glavo.arkivo.zip.internal.ZipConstants.DATA_DESCRIPTOR_FLAG;
 import static org.glavo.arkivo.zip.internal.ZipConstants.DATA_DESCRIPTOR_SIGNATURE;
 import static org.glavo.arkivo.zip.internal.ZipConstants.DEFLATED_METHOD;
+import static org.glavo.arkivo.zip.internal.ZipConstants.ENCRYPTED_FLAG;
 import static org.glavo.arkivo.zip.internal.ZipConstants.END_OF_CENTRAL_DIRECTORY_SIGNATURE;
 import static org.glavo.arkivo.zip.internal.ZipConstants.LOCAL_FILE_HEADER_SIGNATURE;
 import static org.glavo.arkivo.zip.internal.ZipConstants.STORED_METHOD;
 import static org.glavo.arkivo.zip.internal.ZipConstants.UTF8_FLAG;
 import static org.glavo.arkivo.zip.internal.ZipConstants.VERSION_NEEDED;
+import static org.glavo.arkivo.zip.internal.ZipConstants.WINZIP_AES_METHOD;
 import static org.glavo.arkivo.zip.internal.ZipLittleEndian.requireUInt16;
 import static org.glavo.arkivo.zip.internal.ZipLittleEndian.requireUInt32;
 import static org.glavo.arkivo.zip.internal.ZipLittleEndian.writeInt;
@@ -67,6 +71,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// The archive path backing this file system, or `null` when writing to an output stream.
     private final @Nullable Path archivePath;
+
+    /// The parsed ZIP file system configuration.
+    private final ZipArkivoFileSystemConfig config;
 
     /// The output stream that receives ZIP bytes.
     private final CountingOutputStream output;
@@ -98,6 +105,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         super(config.threadSafety());
         this.provider = Objects.requireNonNull(provider, "provider");
         this.archivePath = Objects.requireNonNull(archivePath, "archivePath");
+        this.config = Objects.requireNonNull(config, "config");
         this.lock = ZipLocks.create(config.threadSafety());
         this.output = new CountingOutputStream(Files.newOutputStream(
                 archivePath,
@@ -115,6 +123,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         super(config.threadSafety());
         this.provider = Objects.requireNonNull(provider, "provider");
         this.archivePath = null;
+        this.config = Objects.requireNonNull(config, "config");
         this.lock = ZipLocks.create(config.threadSafety());
         this.output = new CountingOutputStream(Objects.requireNonNull(output, "output"));
         this.rootPath = ZipArkivoPath.root(this);
@@ -238,7 +247,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Opens an output stream for the next ZIP entry.
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
-        return newOutputStream(path, EntryMetadata.deflated(), options);
+        return newOutputStream(path, EntryMetadata.deflated(config.defaultEncryption()), options);
     }
 
     /// Opens a forward-only writable byte channel for the next ZIP entry.
@@ -268,12 +277,12 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
             byte[] rawName = rawEntryName(entryName);
             long localHeaderOffset = output.position();
-            int flags = UTF8_FLAG | (metadata.requiresDataDescriptor() ? DATA_DESCRIPTOR_FLAG : 0);
+            int flags = metadata.generalPurposeFlags();
             writeLocalHeader(
                     rawName,
-                    metadata.localExtraData,
+                    metadata.localHeaderExtraData(),
                     flags,
-                    metadata.method,
+                    metadata.headerMethod(),
                     metadata.dosTime,
                     metadata.dosDate,
                     metadata.localHeaderCrc32(),
@@ -309,6 +318,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             if (metadata.method != STORED_METHOD) {
                 throw new UnsupportedOperationException("ZIP directory entries must use the stored method");
             }
+            if (metadata.encrypted()) {
+                throw new UnsupportedOperationException("ZIP directory entries cannot be encrypted");
+            }
             Objects.requireNonNull(attributes, "attributes");
             if (attributes.length != 0) {
                 throw new UnsupportedOperationException("ZIP streaming directory attributes are not supported");
@@ -325,7 +337,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             writeLocalHeader(
                     rawName,
                     metadata.localExtraData,
-                    UTF8_FLAG,
+                    metadata.generalPurposeFlags(),
                     STORED_METHOD,
                     metadata.dosTime,
                     metadata.dosDate,
@@ -336,7 +348,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             centralEntries.add(new CentralEntry(
                     entryName,
                     rawName,
-                    UTF8_FLAG,
+                    metadata.generalPurposeFlags(),
                     STORED_METHOD,
                     metadata.dosTime,
                     metadata.dosDate,
@@ -379,27 +391,47 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
             byte[] rawName = rawEntryName(entryName);
             long localHeaderOffset = output.position();
+            int flags = metadata.generalPurposeFlags();
+            long compressedSize = metadata.encryptedCompressedSize(size);
             writeLocalHeader(
                     rawName,
-                    metadata.localExtraData,
-                    UTF8_FLAG,
-                    STORED_METHOD,
+                    metadata.localHeaderExtraData(),
+                    flags,
+                    metadata.headerMethod(),
                     metadata.dosTime,
                     metadata.dosDate,
                     crcValue,
-                    size,
+                    compressedSize,
                     size
             );
-            output.write(content);
+            if (metadata.traditionalEncrypted()) {
+                OutputStream encrypted = ZipTraditionalCrypto.openEncryptingStream(
+                        output,
+                        passwordForEntry(entryName),
+                        metadata.encryptionVerificationByte(crcValue)
+                );
+                encrypted.write(content);
+                encrypted.flush();
+            } else if (metadata.aesEncrypted()) {
+                ZipAesCrypto.EncryptingOutputStream encrypted = ZipAesCrypto.openEncryptingStream(
+                        output,
+                        metadata.aesExtraField(),
+                        passwordForEntry(entryName)
+                );
+                encrypted.write(content);
+                encrypted.finish();
+            } else {
+                output.write(content);
+            }
             centralEntries.add(new CentralEntry(
                     entryName,
                     rawName,
-                    UTF8_FLAG,
-                    STORED_METHOD,
+                    flags,
+                    metadata.headerMethod(),
                     metadata.dosTime,
                     metadata.dosDate,
                     crcValue,
-                    size,
+                    compressedSize,
                     size,
                     localHeaderOffset,
                     metadata
@@ -482,6 +514,19 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             }
             throw new UnsupportedOperationException("Unsupported ZIP streaming output option: " + option);
         }
+    }
+
+    /// Returns the password for an encrypted entry path.
+    private byte[] passwordForEntry(String entryName) throws IOException {
+        ArkivoPasswordProvider passwordProvider = config.passwordProvider();
+        if (passwordProvider == null) {
+            throw new IOException("ZIP encrypted entry requires a password: " + entryName);
+        }
+        byte[] password = passwordProvider.passwordForEntry(getPath("/" + entryName));
+        if (password == null) {
+            throw new IOException("ZIP encrypted entry requires a password: " + entryName);
+        }
+        return password;
     }
 
     /// Writes the local file header for an entry.
@@ -650,6 +695,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         /// The stream that receives uncompressed bytes from the caller.
         private final OutputStream entryOutput;
 
+        /// The WinZip AES output stream, or `null` when this entry does not use WinZip AES.
+        private final @Nullable ZipAesCrypto.EncryptingOutputStream aesOutput;
+
         /// The uncompressed entry size.
         private long uncompressedSize;
 
@@ -664,20 +712,37 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 long compressedDataOffset,
                 int flags,
                 EntryMetadata metadata
-        ) {
+        ) throws IOException {
             this.entryName = entryName;
             this.rawName = rawName;
             this.localHeaderOffset = localHeaderOffset;
             this.compressedDataOffset = compressedDataOffset;
             this.flags = flags;
             this.metadata = Objects.requireNonNull(metadata, "metadata");
+            OutputStream dataOutput = output;
+            ZipAesCrypto.EncryptingOutputStream entryAesOutput = null;
+            if (metadata.traditionalEncrypted()) {
+                dataOutput = ZipTraditionalCrypto.openEncryptingStream(
+                        output,
+                        passwordForEntry(entryName),
+                        metadata.encryptionVerificationByte()
+                );
+            } else if (metadata.aesEncrypted()) {
+                entryAesOutput = ZipAesCrypto.openEncryptingStream(
+                        output,
+                        metadata.aesExtraField(),
+                        passwordForEntry(entryName)
+                );
+                dataOutput = entryAesOutput;
+            }
+            this.aesOutput = entryAesOutput;
             if (metadata.method == DEFLATED_METHOD) {
                 Deflater entryDeflater = new Deflater(Deflater.DEFAULT_COMPRESSION, true);
                 this.deflater = entryDeflater;
-                this.entryOutput = new DeflaterOutputStream(output, entryDeflater);
+                this.entryOutput = new DeflaterOutputStream(dataOutput, entryDeflater);
             } else {
                 this.deflater = null;
-                this.entryOutput = output;
+                this.entryOutput = dataOutput;
             }
         }
 
@@ -723,6 +788,10 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     if (entryOutput instanceof DeflaterOutputStream deflatedOutput) {
                         deflatedOutput.finish();
                     }
+                    ZipAesCrypto.EncryptingOutputStream entryAesOutput = aesOutput;
+                    if (entryAesOutput != null) {
+                        entryAesOutput.finish();
+                    }
                     long compressedSize = output.position() - compressedDataOffset;
                     long crcValue = crc32.getValue();
                     if (metadata.expectedUncompressedSize != ZipArkivoEntryAttributes.UNKNOWN_SIZE
@@ -740,7 +809,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                             entryName,
                             rawName,
                             flags,
-                            metadata.method,
+                            metadata.headerMethod(),
                             metadata.dosTime,
                             metadata.dosDate,
                             crcValue,
@@ -926,6 +995,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         /// The ZIP compression method.
         private final int method;
 
+        /// The ZIP encryption method.
+        private final ZipEncryption encryption;
+
         /// The DOS time field.
         private final int dosTime;
 
@@ -959,6 +1031,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         /// Creates write metadata.
         EntryMetadata(
                 int method,
+                ZipEncryption encryption,
                 @Nullable FileTime lastModifiedTime,
                 int versionMadeBy,
                 int internalAttributes,
@@ -970,6 +1043,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 byte @Nullable [] rawComment
         ) {
             this.method = method;
+            this.encryption = Objects.requireNonNull(encryption, "encryption");
             this.dosTime = dosTime(lastModifiedTime);
             this.dosDate = dosDate(lastModifiedTime);
             this.versionMadeBy = versionMadeBy;
@@ -977,16 +1051,25 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             this.externalAttributes = externalAttributes;
             this.expectedUncompressedSize = expectedUncompressedSize;
             this.expectedCrc32 = expectedCrc32;
-            this.localExtraData = Objects.requireNonNull(localExtraData, "localExtraData").clone();
-            this.centralDirectoryExtraData =
+            byte[] requestedLocalExtraData = Objects.requireNonNull(localExtraData, "localExtraData").clone();
+            byte[] requestedCentralDirectoryExtraData =
                     Objects.requireNonNull(centralDirectoryExtraData, "centralDirectoryExtraData").clone();
+            if (ZipAesExtraField.isAesEncryption(this.encryption)) {
+                ZipAesExtraField aes = ZipAesExtraField.forEncryption(this.encryption, method);
+                this.localExtraData = aes.appendTo(requestedLocalExtraData);
+                this.centralDirectoryExtraData = aes.appendTo(requestedCentralDirectoryExtraData);
+            } else {
+                this.localExtraData = requestedLocalExtraData;
+                this.centralDirectoryExtraData = requestedCentralDirectoryExtraData;
+            }
             this.rawComment = rawComment != null ? rawComment.clone() : new byte[0];
         }
 
         /// Returns default deflated file metadata.
-        private static EntryMetadata deflated() {
+        private static EntryMetadata deflated(ZipEncryption encryption) {
             return new EntryMetadata(
                     DEFLATED_METHOD,
+                    encryption,
                     null,
                     VERSION_NEEDED,
                     0,
@@ -1003,6 +1086,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         private static EntryMetadata directory() {
             return new EntryMetadata(
                     STORED_METHOD,
+                    ZipEncryption.none(),
                     null,
                     VERSION_NEEDED,
                     0,
@@ -1022,6 +1106,43 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     || expectedCrc32 == ZipArkivoEntryAttributes.UNKNOWN_CRC32;
         }
 
+        /// Returns whether this entry is encrypted.
+        private boolean encrypted() {
+            return !encryption.equals(ZipEncryption.none());
+        }
+
+        /// Returns whether this entry uses traditional ZIP encryption.
+        private boolean traditionalEncrypted() {
+            return encryption.equals(ZipEncryption.traditional());
+        }
+
+        /// Returns whether this entry uses WinZip AES encryption.
+        private boolean aesEncrypted() {
+            return ZipAesExtraField.isAesEncryption(encryption);
+        }
+
+        /// Returns the WinZip AES extra field for this entry.
+        private ZipAesExtraField aesExtraField() {
+            return ZipAesExtraField.forEncryption(encryption, method);
+        }
+
+        /// Returns the compression method identifier to store in ZIP headers.
+        private int headerMethod() {
+            return aesEncrypted() ? WINZIP_AES_METHOD : method;
+        }
+
+        /// Returns the ZIP general purpose flags for this entry.
+        private int generalPurposeFlags() {
+            int flags = UTF8_FLAG;
+            if (requiresDataDescriptor()) {
+                flags |= DATA_DESCRIPTOR_FLAG;
+            }
+            if (encrypted()) {
+                flags |= ENCRYPTED_FLAG;
+            }
+            return flags;
+        }
+
         /// Returns the CRC-32 value to store in the local header.
         private long localHeaderCrc32() {
             return requiresDataDescriptor() ? 0 : expectedCrc32;
@@ -1029,7 +1150,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
         /// Returns the compressed size to store in the local header.
         private long localHeaderCompressedSize() {
-            return requiresDataDescriptor() ? 0 : expectedUncompressedSize;
+            return requiresDataDescriptor() ? 0 : encryptedCompressedSize(expectedUncompressedSize);
         }
 
         /// Returns the uncompressed size to store in the local header.
@@ -1037,10 +1158,36 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             return requiresDataDescriptor() ? 0 : expectedUncompressedSize;
         }
 
+        /// Returns the compressed size with the encryption header included when needed.
+        private long encryptedCompressedSize(long compressedSize) {
+            if (traditionalEncrypted()) {
+                return compressedSize + ZipTraditionalCrypto.HEADER_SIZE;
+            }
+            if (aesEncrypted()) {
+                return compressedSize + aesExtraField().overheadSize();
+            }
+            return compressedSize;
+        }
+
+        /// Returns the traditional ZIP verification byte when CRC-32 is not known before entry data.
+        private int encryptionVerificationByte() {
+            return requiresDataDescriptor() ? dosTime >>> 8 : (int) (expectedCrc32 >>> 24);
+        }
+
+        /// Returns the traditional ZIP verification byte when CRC-32 is already known.
+        private int encryptionVerificationByte(long crc32) {
+            return requiresDataDescriptor() ? encryptionVerificationByte() : (int) (crc32 >>> 24);
+        }
+
         /// Validates that this metadata can be stored in ZIP32 records.
         private void validate() {
             if (method != STORED_METHOD && method != DEFLATED_METHOD) {
                 throw new UnsupportedOperationException("Unsupported ZIP compression method: " + method);
+            }
+            if (!encryption.equals(ZipEncryption.none())
+                    && !encryption.equals(ZipEncryption.traditional())
+                    && !ZipAesExtraField.isAesEncryption(encryption)) {
+                throw new UnsupportedOperationException("Unsupported ZIP encryption method: " + encryption);
             }
             requireUInt16(versionMadeBy, "version made by");
             requireUInt16(internalAttributes, "internal attributes");
@@ -1050,10 +1197,16 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             requireUInt16(rawComment.length, "comment length");
             if (expectedUncompressedSize != ZipArkivoEntryAttributes.UNKNOWN_SIZE) {
                 requireUInt32(expectedUncompressedSize, "uncompressed size");
+                requireUInt32(encryptedCompressedSize(expectedUncompressedSize), "compressed size");
             }
             if (expectedCrc32 != ZipArkivoEntryAttributes.UNKNOWN_CRC32) {
                 requireUInt32(expectedCrc32, "CRC-32");
             }
+        }
+
+        /// Returns the local header extra data bytes to write.
+        private byte[] localHeaderExtraData() {
+            return localExtraData;
         }
     }
 

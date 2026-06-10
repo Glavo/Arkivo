@@ -55,8 +55,8 @@ public final class SevenZipHeaderReader {
             throw new IOException("Invalid 7z start header CRC-32");
         }
 
-        long nextHeaderOffset = buffer.getLong();
-        long nextHeaderSize = buffer.getLong();
+        long nextHeaderOffset = readUnsignedLong(buffer, "next header offset");
+        long nextHeaderSize = readUnsignedLong(buffer, "next header size");
         long nextHeaderCrc32 = Integer.toUnsignedLong(buffer.getInt());
         SevenZipSignatureHeader signatureHeader = new SevenZipSignatureHeader(
                 majorVersion,
@@ -74,6 +74,15 @@ public final class SevenZipHeaderReader {
                         (offset, size) -> openPackedStream(channel, offset, size)
                 )
         );
+    }
+
+    /// Reads an unsigned 64-bit 7z field that must fit in a Java `long`.
+    private static long readUnsignedLong(ByteBuffer buffer, String description) throws IOException {
+        long value = buffer.getLong();
+        if (value < 0) {
+            throw new IOException("7z " + description + " is too large");
+        }
+        return value;
     }
 
     /// Reads bytes until the destination buffer is full.

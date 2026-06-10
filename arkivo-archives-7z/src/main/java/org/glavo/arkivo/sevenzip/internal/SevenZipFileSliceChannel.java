@@ -57,7 +57,7 @@ final class SevenZipFileSliceChannel implements SeekableByteChannel {
             destination.limit(destination.position() + (int) remaining);
         }
         try {
-            channel.position(start + position);
+            channel.position(absolutePosition(start, position));
             int read = channel.read(destination);
             if (read > 0) {
                 position += read;
@@ -125,6 +125,15 @@ final class SevenZipFileSliceChannel implements SeekableByteChannel {
     private void ensureOpen() throws ClosedChannelException {
         if (!open) {
             throw new ClosedChannelException();
+        }
+    }
+
+    /// Adds a slice-relative position to an archive offset.
+    private static long absolutePosition(long start, long position) throws IOException {
+        try {
+            return Math.addExact(start, position);
+        } catch (ArithmeticException exception) {
+            throw new IOException("7z slice offset is too large", exception);
         }
     }
 }
