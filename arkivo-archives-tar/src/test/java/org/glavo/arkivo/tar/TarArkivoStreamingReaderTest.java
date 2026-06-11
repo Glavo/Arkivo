@@ -9,6 +9,9 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.time.Instant;
@@ -18,6 +21,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests TAR streaming reader behavior.
@@ -57,6 +61,61 @@ public final class TarArkivoStreamingReaderTest {
         }
 
         assertEquals(List.of("dir/", "dir/hello.txt", "link"), paths);
+    }
+
+    /// Verifies that streaming reader operations fail as closed after the reader is closed.
+    @Test
+    public void readerOperationsAfterCloseAreRejectedAsClosed() throws IOException {
+        TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(tarArchive()));
+        assertEquals(true, reader.next());
+
+        reader.close();
+
+        IOException nextException = assertThrows(IOException.class, reader::next);
+        assertEquals(true, nextException.getMessage().contains("closed"));
+        IOException attributesException = assertThrows(
+                IOException.class,
+                () -> reader.readAttributes(TarArkivoEntryAttributes.class)
+        );
+        assertEquals(true, attributesException.getMessage().contains("closed"));
+        IOException openException = assertThrows(IOException.class, reader::openChannel);
+        assertEquals(true, openException.getMessage().contains("closed"));
+    }
+
+    /// Verifies that source cleanup can be retried after a close failure.
+    @Test
+    public void readerCloseRetriesSourceCleanupAfterFailure() throws IOException {
+        CloseFailingOnceInputStream source = new CloseFailingOnceInputStream(tarArchive());
+        TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(source);
+        assertEquals(true, reader.next());
+
+        IOException exception = assertThrows(IOException.class, reader::close);
+        assertEquals("close failed", exception.getMessage());
+        IOException nextException = assertThrows(IOException.class, reader::next);
+        assertEquals(true, nextException.getMessage().contains("closed"));
+        assertEquals(1, source.closeCount());
+
+        reader.close();
+        reader.close();
+
+        assertEquals(2, source.closeCount());
+    }
+
+    /// Verifies that a closed entry channel rejects reads and leaves the reader able to advance.
+    @Test
+    public void entryChannelOperationsAfterCloseAreRejectedAsClosed() throws IOException {
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(tarArchive()))) {
+            assertEquals(true, reader.next());
+            assertEquals(true, reader.next());
+
+            ReadableByteChannel channel = reader.openChannel();
+            channel.close();
+
+            assertEquals(false, channel.isOpen());
+            assertThrows(ClosedChannelException.class, () -> channel.read(ByteBuffer.allocate(1)));
+            assertEquals(true, reader.next());
+            assertEquals("link", reader.readAttributes(TarArkivoEntryAttributes.class).path());
+        }
     }
 
     /// Verifies that per-entry PAX metadata overrides fixed-width USTAR header fields.
@@ -203,6 +262,122 @@ public final class TarArkivoStreamingReaderTest {
             try (var input = reader.openInputStream()) {
                 assertArrayEquals(secondContent, input.readAllBytes());
             }
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that global PAX paths and sizes apply to subsequent entries.
+    @Test
+    public void readsGlobalPaxPathAndSize() throws IOException {
+        byte[] content = "global size".getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeGlobalPaxHeader(output, Map.of(
+                "path", "global-path.txt",
+                "size", Integer.toString(content.length)
+        ));
+        writeHeader(output, "fallback-path.txt", 0644, 1000, 1000, 0, '0', "", "user", "group");
+        writeBody(output, content);
+        output.write(new byte[1024]);
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertEquals(true, reader.next());
+            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("global-path.txt", file.path());
+            assertEquals(content.length, file.size());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that global PAX link paths apply to subsequent symbolic links.
+    @Test
+    public void readsGlobalPaxLinkPath() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeGlobalPaxHeader(output, Map.of("linkpath", "global-target.txt"));
+        writeHeader(output, "link", 0777, 0, 0, 0, '2', "fallback-target.txt", "user", "group");
+        output.write(new byte[1024]);
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertEquals(true, reader.next());
+            TarArkivoEntryAttributes link = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals(true, link.isSymbolicLink());
+            assertEquals("global-target.txt", link.linkName());
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that empty global PAX values remove previously active global values.
+    @Test
+    public void removesGlobalPaxRecordWithEmptyValue() throws IOException {
+        byte[] content = "content".getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeGlobalPaxHeader(output, Map.of("uname", "global-user"));
+        writeGlobalPaxHeader(output, Map.of("uname", ""));
+        writeEntry(output, "file.txt", content);
+        output.write(new byte[1024]);
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertEquals(true, reader.next());
+            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("file.txt", file.path());
+            assertEquals("user", file.userName());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that empty per-entry PAX user and group names delete string metadata.
+    @Test
+    public void deletesPaxUserAndGroupNamesWithEmptyValues() throws IOException {
+        byte[] content = "content".getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeGlobalPaxHeader(output, Map.of(
+                "gname", "global-group",
+                "uname", "global-user"
+        ));
+        writePaxHeader(output, Map.of(
+                "gname", "",
+                "uname", ""
+        ));
+        writeEntry(output, "file.txt", content);
+        output.write(new byte[1024]);
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertEquals(true, reader.next());
+            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("file.txt", file.path());
+            assertNull(file.userName());
+            assertNull(file.groupName());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that an empty per-entry PAX link path deletes the active link target.
+    @Test
+    public void deletesPaxLinkPathWithEmptyValue() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeGlobalPaxHeader(output, Map.of("linkpath", "global-target.txt"));
+        writePaxHeader(output, Map.of("linkpath", ""));
+        writeHeader(output, "link", 0777, 0, 0, 0, '2', "fallback-target.txt", "user", "group");
+        output.write(new byte[1024]);
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertEquals(true, reader.next());
+            TarArkivoEntryAttributes link = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals(true, link.isSymbolicLink());
+            assertNull(link.linkName());
             assertEquals(false, reader.next());
         }
     }
@@ -688,5 +863,32 @@ public final class TarArkivoStreamingReaderTest {
         System.arraycopy(bytes, 0, header, 148, bytes.length);
         header[154] = 0;
         header[155] = (byte) ' ';
+    }
+
+    /// Input stream that fails its first close call.
+    @NotNullByDefault
+    private static final class CloseFailingOnceInputStream extends ByteArrayInputStream {
+        /// The number of close calls.
+        private int closeCount;
+
+        /// Creates a close-failing input stream over the given bytes.
+        private CloseFailingOnceInputStream(byte[] bytes) {
+            super(bytes);
+        }
+
+        /// Fails on the first close call and records all close attempts.
+        @Override
+        public void close() throws IOException {
+            closeCount++;
+            if (closeCount == 1) {
+                throw new IOException("close failed");
+            }
+            super.close();
+        }
+
+        /// Returns the number of close calls.
+        private int closeCount() {
+            return closeCount;
+        }
     }
 }

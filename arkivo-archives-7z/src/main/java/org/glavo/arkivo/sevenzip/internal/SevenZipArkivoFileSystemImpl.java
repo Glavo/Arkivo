@@ -29,6 +29,7 @@ import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.nio.file.ReadOnlyFileSystemException;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.WatchService;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -78,6 +79,12 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Whether this file system is open.
     private boolean open = true;
 
+    /// Whether the owned volume source has been closed.
+    private boolean volumesClosed;
+
+    /// Whether the close action has completed.
+    private boolean closeActionCompleted;
+
     /// Creates a 7z file system implementation.
     public SevenZipArkivoFileSystemImpl(
             SevenZipArkivoFileSystemProvider provider,
@@ -106,10 +113,34 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         this.config = config;
         this.closeAction = closeAction;
         this.root = SevenZipArkivoPath.root(this);
-        SevenZipArchiveMetadata archiveMetadata = readArchiveMetadata();
+        SevenZipArchiveMetadata archiveMetadata;
+        try {
+            archiveMetadata = readArchiveMetadata();
+        } catch (IOException | RuntimeException | Error exception) {
+            closeAfterConstructionFailure(exception);
+            throw exception;
+        }
         this.signatureHeader = archiveMetadata.signatureHeader();
         this.entries = entriesByPath(archiveMetadata.entries());
         this.children = childrenByPath(this.entries);
+    }
+
+    /// Releases constructor-owned resources after archive metadata loading fails.
+    private void closeAfterConstructionFailure(Throwable failure) {
+        if (volumes != null) {
+            try {
+                volumes.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure.addSuppressed(exception);
+            }
+        }
+        if (closeAction != null) {
+            try {
+                closeAction.run();
+            } catch (RuntimeException | Error exception) {
+                failure.addSuppressed(exception);
+            }
+        }
     }
 
     /// Returns the archive URI, or `null` when this file system is backed by explicit volumes.
@@ -161,18 +192,43 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Closes this file system.
     @Override
     public void close() throws IOException {
-        if (!open) {
+        if (!open && volumesClosed && closeActionCompleted) {
             return;
         }
         open = false;
-        try {
-            if (volumes != null) {
-                volumes.close();
+        Throwable failure = null;
+        if (!volumesClosed) {
+            try {
+                if (volumes != null) {
+                    volumes.close();
+                }
+                volumesClosed = true;
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
             }
-        } finally {
-            if (closeAction != null) {
-                closeAction.run();
+        }
+        if (!closeActionCompleted) {
+            try {
+                if (closeAction != null) {
+                    closeAction.run();
+                }
+                closeActionCompleted = true;
+            } catch (RuntimeException | Error exception) {
+                if (failure != null) {
+                    failure.addSuppressed(exception);
+                } else {
+                    failure = exception;
+                }
             }
+        }
+        if (failure instanceof IOException exception) {
+            throw exception;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure instanceof Error exception) {
+            throw exception;
         }
     }
 
@@ -248,7 +304,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             Set<? extends OpenOption> options,
             FileAttribute<?>... attributes
     ) throws IOException {
-        Objects.requireNonNull(options, "options");
+        requireReadOnlyOptions(options);
         Objects.requireNonNull(attributes, "attributes");
         SevenZipEntryMetadata metadata = requireEntry(path);
         if (metadata.directory()) {
@@ -258,14 +314,27 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             return new SevenZipByteChannel(new byte[0]);
         }
         if (metadata.method().isCopyOnly()) {
-            return new SevenZipFileSliceChannel(openArchiveChannel(), metadata.dataOffset(), metadata.size());
+            SeekableByteChannel channel =
+                    new SevenZipFileSliceChannel(openArchiveChannel(), metadata.dataOffset(), metadata.size());
+            if (metadata.crc32() != SevenZipEntryMetadata.UNKNOWN_CRC32) {
+                return new SevenZipCrc32ByteChannel(channel, metadata.size(), metadata.crc32());
+            }
+            if (metadata.packedCrc32() != SevenZipEntryMetadata.UNKNOWN_CRC32) {
+                return new SevenZipCrc32ByteChannel(
+                        channel,
+                        metadata.size(),
+                        metadata.packedCrc32(),
+                        "7z packed stream data does not match CRC-32"
+                );
+            }
+            return channel;
         }
         return new SevenZipByteChannel(readDecodedEntry(metadata));
     }
 
     /// Opens an input stream for an entry.
     public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
-        Objects.requireNonNull(options, "options");
+        requireReadOnlyOptions(options);
         SevenZipEntryMetadata metadata = requireEntry(path);
         if (metadata.directory()) {
             throw new java.nio.file.FileSystemException(path.toString(), null, "Is a directory");
@@ -273,28 +342,57 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         if (metadata.dataOffset() == SevenZipEntryMetadata.NO_DATA_OFFSET) {
             return new ByteArrayInputStream(new byte[0]);
         }
-        InputStream input = Channels.newInputStream(new SevenZipFileSliceChannel(
+        SeekableByteChannel packedChannel = new SevenZipFileSliceChannel(
                 openArchiveChannel(),
                 metadata.dataOffset(),
                 metadata.packedSize()
-        ));
-        InputStream decoded;
-        boolean skipDecodedOffset;
-        if (metadata.method().isCopyOnly()) {
-            decoded = input;
-            skipDecodedOffset = false;
-        } else {
-            decoded = SevenZipLZMADecoder.openFolder(
-                    input,
-                    metadata.method(),
-                    metadata.decodedOffset() + metadata.size()
+        );
+        if (metadata.packedCrc32() != SevenZipEntryMetadata.UNKNOWN_CRC32) {
+            packedChannel = new SevenZipCrc32ByteChannel(
+                    packedChannel,
+                    metadata.packedSize(),
+                    metadata.packedCrc32(),
+                    "7z packed stream data does not match CRC-32"
             );
-            skipDecodedOffset = true;
         }
-        if (skipDecodedOffset && metadata.decodedOffset() > 0) {
-            decoded.skipNBytes(metadata.decodedOffset());
+        InputStream input = Channels.newInputStream(packedChannel);
+        InputStream decoded = input;
+        boolean completed = false;
+        Throwable failure = null;
+        try {
+            boolean skipDecodedOffset;
+            if (metadata.method().isCopyOnly()) {
+                decoded = input;
+                skipDecodedOffset = false;
+            } else {
+                decoded = SevenZipLZMADecoder.openFolder(
+                        input,
+                        metadata.method(),
+                        checkedDecodedLimit(metadata)
+                );
+                skipDecodedOffset = true;
+            }
+            if (skipDecodedOffset && metadata.decodedOffset() > 0) {
+                decoded.skipNBytes(metadata.decodedOffset());
+            }
+            completed = true;
+            return new SevenZipBoundedInputStream(decoded, metadata.size(), metadata.crc32());
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            if (!completed) {
+                try {
+                    decoded.close();
+                } catch (IOException | RuntimeException | Error exception) {
+                    if (failure != null) {
+                        failure.addSuppressed(exception);
+                    } else {
+                        throw exception;
+                    }
+                }
+            }
         }
-        return new SevenZipBoundedInputStream(decoded, metadata.size());
     }
 
     /// Opens a directory stream.
@@ -400,6 +498,28 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
+    /// Requires byte channel options to describe a read-only open.
+    private static void requireReadOnlyOptions(Set<? extends OpenOption> options) {
+        Objects.requireNonNull(options, "options");
+        for (OpenOption option : options) {
+            Objects.requireNonNull(option, "option");
+            if (option != StandardOpenOption.READ) {
+                throw new UnsupportedOperationException("7z entry channels are read-only");
+            }
+        }
+    }
+
+    /// Requires input stream options to describe a read-only open.
+    private static void requireReadOnlyOptions(OpenOption... options) {
+        Objects.requireNonNull(options, "options");
+        for (OpenOption option : options) {
+            Objects.requireNonNull(option, "option");
+            if (option != StandardOpenOption.READ) {
+                throw new UnsupportedOperationException("7z entry streams are read-only");
+            }
+        }
+    }
+
     /// Requires a path to exist in this file system and returns its absolute path text.
     private String requireExistingPath(Path path) throws IOException {
         ensureOpen();
@@ -452,6 +572,15 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
         try (InputStream input = newInputStream(getPath(metadata.path()))) {
             return input.readAllBytes();
+        }
+    }
+
+    /// Returns the decoded byte limit needed to reach the end of an entry inside a folder output.
+    private static long checkedDecodedLimit(SevenZipEntryMetadata metadata) throws IOException {
+        try {
+            return Math.addExact(metadata.decodedOffset(), metadata.size());
+        } catch (ArithmeticException exception) {
+            throw new IOException("7z decoded entry limit is too large", exception);
         }
     }
 
@@ -508,13 +637,17 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Returns directory children keyed by normalized absolute parent path text.
-    private Map<String, List<Path>> childrenByPath(Map<String, SevenZipEntryMetadata> entries) {
+    private Map<String, List<Path>> childrenByPath(Map<String, SevenZipEntryMetadata> entries) throws IOException {
         LinkedHashMap<String, ArrayList<Path>> result = new LinkedHashMap<>();
         result.put("/", new ArrayList<>());
         for (String pathText : entries.keySet()) {
             Path path = getPath(pathText);
             Path parent = path.getParent();
             String parentText = parent != null ? parent.toString() : "/";
+            SevenZipEntryMetadata parentMetadata = entries.get(parentText);
+            if (parentMetadata != null && !parentMetadata.directory()) {
+                throw new IOException("7z entry path conflicts with directory: " + parentMetadata.path());
+            }
             result.computeIfAbsent(parentText, ignored -> new ArrayList<>()).add(path);
         }
 

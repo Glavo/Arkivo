@@ -329,6 +329,9 @@ public final class ArkivoEditStorageSupport {
         /// Whether this content object is open.
         private boolean open = true;
 
+        /// Whether the temporary file has been deleted.
+        private boolean deleted;
+
         /// Creates temporary-file stored content.
         private TemporaryFileStoredContent(Path path) {
             this.path = Objects.requireNonNull(path, "path");
@@ -352,11 +355,12 @@ public final class ArkivoEditStorageSupport {
         /// Closes this content and deletes its temporary file.
         @Override
         public void close() throws IOException {
-            if (!open) {
+            if (deleted) {
                 return;
             }
             open = false;
             Files.deleteIfExists(path);
+            deleted = true;
         }
 
         /// Requires this content object to be open.

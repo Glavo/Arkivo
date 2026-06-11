@@ -60,10 +60,10 @@ public interface ZipArkivoEntryAttributeView extends PosixFileAttributeView {
     /// Sets the ZIP external file attributes.
     void setExternalAttributes(long externalAttributes) throws IOException;
 
-    /// Sets the raw local file header extra data bytes.
+    /// Sets raw local file header extra data bytes containing complete ZIP extra field records.
     void setLocalExtraData(byte[] extraData) throws IOException;
 
-    /// Sets the raw central directory extra data bytes.
+    /// Sets raw central directory extra data bytes containing complete ZIP extra field records.
     void setCentralDirectoryExtraData(byte[] extraData) throws IOException;
 
     /// Sets the raw ZIP entry comment bytes.

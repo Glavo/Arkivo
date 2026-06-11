@@ -80,6 +80,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     public <A extends BasicFileAttributes> A readAttributes(Class<A> type) throws IOException {
         lock();
         try {
+            ensureOpen();
             Objects.requireNonNull(type, "type");
             ZipArkivoEntryAttributes attributes = currentAttributes;
             if (attributes == null) {
@@ -122,10 +123,29 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             }
             open = false;
             currentAttributes = null;
+            Throwable failure = null;
             try {
                 fileSystem.closeCurrentStreamingEntry();
-            } finally {
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+            }
+            try {
                 fileSystem.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                if (failure != null) {
+                    failure.addSuppressed(exception);
+                } else {
+                    failure = exception;
+                }
+            }
+            if (failure instanceof IOException exception) {
+                throw exception;
+            }
+            if (failure instanceof RuntimeException exception) {
+                throw exception;
+            }
+            if (failure instanceof Error exception) {
+                throw exception;
             }
         } finally {
             unlock();

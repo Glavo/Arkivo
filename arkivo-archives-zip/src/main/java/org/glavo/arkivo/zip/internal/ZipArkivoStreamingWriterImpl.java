@@ -635,25 +635,29 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             }
         }
 
-        /// Sets the raw local file header extra data bytes.
+        /// Sets raw local file header extra data bytes containing complete ZIP extra field records.
         @Override
         public void setLocalExtraData(byte[] extraData) throws IOException {
+            byte[] copy = Objects.requireNonNull(extraData, "extraData").clone();
             lock();
             try {
                 entry.ensurePending();
-                this.localExtraData = Objects.requireNonNull(extraData, "extraData").clone();
+                ZipExtraFields.validate(copy);
+                this.localExtraData = copy;
             } finally {
                 unlock();
             }
         }
 
-        /// Sets the raw central directory extra data bytes.
+        /// Sets raw central directory extra data bytes containing complete ZIP extra field records.
         @Override
         public void setCentralDirectoryExtraData(byte[] extraData) throws IOException {
+            byte[] copy = Objects.requireNonNull(extraData, "extraData").clone();
             lock();
             try {
                 entry.ensurePending();
-                this.centralDirectoryExtraData = Objects.requireNonNull(extraData, "extraData").clone();
+                ZipExtraFields.validate(copy);
+                this.centralDirectoryExtraData = copy;
             } finally {
                 unlock();
             }

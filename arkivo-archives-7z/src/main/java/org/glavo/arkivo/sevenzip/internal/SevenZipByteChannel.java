@@ -33,6 +33,9 @@ final class SevenZipByteChannel implements SeekableByteChannel {
     public int read(ByteBuffer destination) throws IOException {
         ensureOpen();
         Objects.requireNonNull(destination, "destination");
+        if (!destination.hasRemaining()) {
+            return 0;
+        }
         if (position >= content.length) {
             return -1;
         }

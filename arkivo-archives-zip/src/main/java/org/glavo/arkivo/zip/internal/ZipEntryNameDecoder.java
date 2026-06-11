@@ -7,6 +7,7 @@ import org.glavo.arkivo.zip.ZipEntryNameEncoding;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
@@ -17,7 +18,6 @@ import java.util.Objects;
 import java.util.zip.CRC32;
 
 import static org.glavo.arkivo.zip.internal.ZipLittleEndian.readInt;
-import static org.glavo.arkivo.zip.internal.ZipLittleEndian.readUnsignedShort;
 
 /// Decodes raw ZIP entry name bytes.
 @NotNullByDefault
@@ -37,7 +37,7 @@ public final class ZipEntryNameDecoder {
     }
 
     /// Decodes a raw ZIP entry path.
-    public String decodePath(byte[] rawPath, int generalPurposeFlags, byte[] extraData) throws CharacterCodingException {
+    public String decodePath(byte[] rawPath, int generalPurposeFlags, byte[] extraData) throws IOException {
         String unicodePath = decodeUnicodeExtraField(rawPath, extraData, UNICODE_PATH_EXTRA_FIELD_ID);
         if (unicodePath != null) {
             return unicodePath;
@@ -50,20 +50,17 @@ public final class ZipEntryNameDecoder {
             byte[] rawValue,
             byte[] extraData,
             int expectedFieldId
-    ) throws CharacterCodingException {
+    ) throws IOException {
         int offset = 0;
-        while (offset + 4 <= extraData.length) {
-            int fieldId = readUnsignedShort(extraData, offset);
-            int dataSize = readUnsignedShort(extraData, offset + 2);
-            int dataOffset = offset + 4;
-            int nextOffset = dataOffset + dataSize;
-            if (nextOffset > extraData.length) {
-                return null;
+        while (offset < extraData.length) {
+            ZipExtraFields.Field field = ZipExtraFields.read(extraData, offset);
+            if (field.id() == expectedFieldId) {
+                String value = decodeUnicodeExtraFieldData(rawValue, extraData, field.dataOffset(), field.dataSize());
+                if (value != null) {
+                    return value;
+                }
             }
-            if (fieldId == expectedFieldId) {
-                return decodeUnicodeExtraFieldData(rawValue, extraData, dataOffset, dataSize);
-            }
-            offset = nextOffset;
+            offset = field.nextOffset();
         }
         return null;
     }

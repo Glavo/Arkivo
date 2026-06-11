@@ -133,26 +133,46 @@ final class SevenZipLZMADecoder {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(method, "method");
         InputStream current = input;
-        for (int index = 0; index < method.coderCount(); index++) {
-            byte[] methodId = method.methodId(index);
-            byte[] properties = method.properties(index);
-            long outputLimit = index + 1 == method.coderCount() ? finalOutputLimit : method.unpackSize(index);
-            if (isCopy(methodId)) {
-                continue;
+        boolean completed = false;
+        Throwable failure = null;
+        try {
+            for (int index = 0; index < method.coderCount(); index++) {
+                byte[] methodId = method.methodId(index);
+                byte[] properties = method.properties(index);
+                long outputLimit = index + 1 == method.coderCount() ? finalOutputLimit : method.unpackSize(index);
+                if (isCopy(methodId)) {
+                    continue;
+                }
+                if (isLZMA(methodId)) {
+                    current = openLZMA(current, outputLimit, properties);
+                } else if (isLZMA2(methodId)) {
+                    current = openLZMA2(current, properties);
+                } else if (isDelta(methodId)) {
+                    current = openDelta(current, properties);
+                } else if (isBcjFilter(methodId)) {
+                    current = openBcjFilter(current, methodId, properties);
+                } else {
+                    throw new UnsupportedOperationException("Unsupported 7z coder method: " + Arrays.toString(methodId));
+                }
             }
-            if (isLZMA(methodId)) {
-                current = openLZMA(current, outputLimit, properties);
-            } else if (isLZMA2(methodId)) {
-                current = openLZMA2(current, properties);
-            } else if (isDelta(methodId)) {
-                current = openDelta(current, properties);
-            } else if (isBcjFilter(methodId)) {
-                current = openBcjFilter(current, methodId, properties);
-            } else {
-                throw new UnsupportedOperationException("Unsupported 7z coder method: " + Arrays.toString(methodId));
+            completed = true;
+            return current;
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            if (!completed) {
+                try {
+                    current.close();
+                } catch (IOException | RuntimeException | Error exception) {
+                    if (failure != null) {
+                        failure.addSuppressed(exception);
+                    } else {
+                        throw exception;
+                    }
+                }
             }
         }
-        return current;
     }
 
     /// Opens a raw LZMA decoder for 7z coder properties.

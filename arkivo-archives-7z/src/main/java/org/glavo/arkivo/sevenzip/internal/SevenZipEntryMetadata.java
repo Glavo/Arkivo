@@ -15,6 +15,9 @@ public final class SevenZipEntryMetadata {
     /// The data offset value used when an entry has no stored body.
     public static final long NO_DATA_OFFSET = -1L;
 
+    /// The CRC-32 value used when an entry does not declare an expected digest.
+    public static final long UNKNOWN_CRC32 = -1L;
+
     /// The decoded entry path.
     private final String path;
 
@@ -32,6 +35,12 @@ public final class SevenZipEntryMetadata {
 
     /// The packed entry size.
     private final long packedSize;
+
+    /// The expected packed stream CRC-32, or `UNKNOWN_CRC32` when not present or not entry-addressable.
+    private final long packedCrc32;
+
+    /// The expected uncompressed entry CRC-32, or `UNKNOWN_CRC32` when not present.
+    private final long crc32;
 
     /// The 7z folder method used to store this entry.
     private final SevenZipFolderMethod method;
@@ -70,6 +79,8 @@ public final class SevenZipEntryMetadata {
                 dataOffset,
                 decodedOffset,
                 packedSize,
+                UNKNOWN_CRC32,
+                UNKNOWN_CRC32,
                 SevenZipFolderMethod.single(methodId, coderProperties, size),
                 creationTime,
                 lastAccessTime,
@@ -92,6 +103,71 @@ public final class SevenZipEntryMetadata {
             @Nullable FileTime lastModifiedTime,
             int windowsAttributes
     ) {
+        this(
+                path,
+                directory,
+                size,
+                dataOffset,
+                decodedOffset,
+                packedSize,
+                UNKNOWN_CRC32,
+                UNKNOWN_CRC32,
+                method,
+                creationTime,
+                lastAccessTime,
+                lastModifiedTime,
+                windowsAttributes
+        );
+    }
+
+    /// Creates parsed 7z entry metadata.
+    SevenZipEntryMetadata(
+            String path,
+            boolean directory,
+            long size,
+            long dataOffset,
+            long decodedOffset,
+            long packedSize,
+            long crc32,
+            SevenZipFolderMethod method,
+            @Nullable FileTime creationTime,
+            @Nullable FileTime lastAccessTime,
+            @Nullable FileTime lastModifiedTime,
+            int windowsAttributes
+    ) {
+        this(
+                path,
+                directory,
+                size,
+                dataOffset,
+                decodedOffset,
+                packedSize,
+                UNKNOWN_CRC32,
+                crc32,
+                method,
+                creationTime,
+                lastAccessTime,
+                lastModifiedTime,
+                windowsAttributes
+        );
+    }
+
+    /// Creates parsed 7z entry metadata.
+    SevenZipEntryMetadata(
+            String path,
+            boolean directory,
+            long size,
+            long dataOffset,
+            long decodedOffset,
+            long packedSize,
+            long packedCrc32,
+            long crc32,
+            SevenZipFolderMethod method,
+            @Nullable FileTime creationTime,
+            @Nullable FileTime lastAccessTime,
+            @Nullable FileTime lastModifiedTime,
+            int windowsAttributes
+    ) {
         if (size < 0) {
             throw new IllegalArgumentException("size must be non-negative");
         }
@@ -104,12 +180,20 @@ public final class SevenZipEntryMetadata {
         if (packedSize < 0) {
             throw new IllegalArgumentException("packedSize must be non-negative");
         }
+        if (packedCrc32 < UNKNOWN_CRC32 || packedCrc32 > 0xffff_ffffL) {
+            throw new IllegalArgumentException("packedCrc32 must be an unsigned 32-bit value or UNKNOWN_CRC32");
+        }
+        if (crc32 < UNKNOWN_CRC32 || crc32 > 0xffff_ffffL) {
+            throw new IllegalArgumentException("crc32 must be an unsigned 32-bit value or UNKNOWN_CRC32");
+        }
         this.path = Objects.requireNonNull(path, "path");
         this.directory = directory;
         this.size = size;
         this.dataOffset = dataOffset;
         this.decodedOffset = decodedOffset;
         this.packedSize = packedSize;
+        this.packedCrc32 = packedCrc32;
+        this.crc32 = crc32;
         this.method = Objects.requireNonNull(method, "method");
         this.creationTime = creationTime;
         this.lastAccessTime = lastAccessTime;
@@ -145,6 +229,16 @@ public final class SevenZipEntryMetadata {
     /// Returns the packed entry size.
     public long packedSize() {
         return packedSize;
+    }
+
+    /// Returns the expected packed stream CRC-32, or `UNKNOWN_CRC32` when not present or not entry-addressable.
+    public long packedCrc32() {
+        return packedCrc32;
+    }
+
+    /// Returns the expected uncompressed entry CRC-32, or `UNKNOWN_CRC32` when not present.
+    public long crc32() {
+        return crc32;
     }
 
     /// Returns a copy of the 7z method ID used to store this entry.

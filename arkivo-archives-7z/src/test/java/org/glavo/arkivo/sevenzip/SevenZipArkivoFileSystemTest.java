@@ -4,10 +4,14 @@
 package org.glavo.arkivo.sevenzip;
 
 import java.io.ByteArrayOutputStream;
+import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.sevenzip.internal.SevenZipArkivoFileSystemConfig;
+import org.glavo.arkivo.sevenzip.internal.SevenZipArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 import org.tukaani.xz.ArrayCache;
 import org.tukaani.xz.ARMOptions;
@@ -26,6 +30,8 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
@@ -33,6 +39,7 @@ import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.GroupPrincipal;
@@ -43,6 +50,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -218,6 +226,113 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that 7z entry channel and stream open options must remain read-only.
+    @Test
+    public void rejectsWritableEntryOpenOptions() throws IOException {
+        byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("writable-entry-options-");
+        Files.write(archivePath, archiveWithCopyFile(content));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+
+                try (SeekableByteChannel channel = Files.newByteChannel(file, StandardOpenOption.READ)) {
+                    ByteBuffer buffer = ByteBuffer.allocate(content.length);
+                    assertEquals(content.length, channel.read(buffer));
+                    assertArrayEquals(content, buffer.array());
+                }
+                try (var input = Files.newInputStream(file, StandardOpenOption.READ)) {
+                    assertArrayEquals(content, input.readAllBytes());
+                }
+
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> Files.newByteChannel(file, StandardOpenOption.WRITE)
+                );
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> Files.newInputStream(file, StandardOpenOption.APPEND)
+                );
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a declared folder CRC-32 mismatch is rejected while reading entry data.
+    @Test
+    public void rejectsMismatchedFolderCrc() throws IOException {
+        byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("bad-folder-crc-");
+        Files.write(archivePath, archiveWithMismatchedFolderCrc(content));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+
+                IOException exception = assertThrows(IOException.class, () -> Files.readAllBytes(file));
+                assertEquals(true, exception.getMessage().contains("7z entry data does not match CRC-32"));
+
+                IOException channelException = assertThrows(IOException.class, () -> {
+                    try (SeekableByteChannel ignored = Files.newByteChannel(file)) {
+                        // Closing an unread channel drains the entry and validates its CRC-32.
+                    }
+                });
+                assertEquals(true, channelException.getMessage().contains("7z entry data does not match CRC-32"));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a declared packed stream CRC-32 mismatch is rejected while reading entry data.
+    @Test
+    public void rejectsMismatchedPackCrc() throws IOException {
+        byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("bad-pack-crc-");
+        Files.write(archivePath, archiveWithMismatchedPackCrc(content));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+
+                IOException exception = assertThrows(IOException.class, () -> Files.readAllBytes(file));
+                assertEquals(true, exception.getMessage().contains("7z packed stream data does not match CRC-32"));
+
+                IOException channelException = assertThrows(IOException.class, () -> {
+                    try (SeekableByteChannel ignored = Files.newByteChannel(file)) {
+                        // Closing an unread channel drains the entry and validates its packed CRC-32.
+                    }
+                });
+                assertEquals(
+                        true,
+                        channelException.getMessage().contains("7z packed stream data does not match CRC-32")
+                );
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that `SubStreamsInfo` can omit a single substream digest when folder CRC-32 is defined.
+    @Test
+    public void singleSubStreamUsesFolderCrc() throws IOException {
+        byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("single-substream-folder-crc-");
+        Files.write(archivePath, archiveWithSingleSubStreamFolderCrc(content));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+
+                assertArrayEquals(content, Files.readAllBytes(file));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that multiple file entries can share one Copy-method 7z folder output.
     @Test
     public void copySubStreamEntries() throws IOException {
@@ -253,6 +368,36 @@ public final class SevenZipArkivoFileSystemTest {
                     assertEquals(second.length, channel.read(buffer));
                     assertArrayEquals(second, buffer.array());
                 }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a declared substream CRC-32 mismatch is rejected while reading entry data.
+    @Test
+    public void rejectsMismatchedSubStreamCrc() throws IOException {
+        byte[] first = "one".getBytes(StandardCharsets.UTF_8);
+        byte[] second = "two!".getBytes(StandardCharsets.UTF_8);
+        byte[] content = new byte[first.length + second.length];
+        System.arraycopy(first, 0, content, 0, first.length);
+        System.arraycopy(second, 0, content, first.length, second.length);
+        Path archivePath = createTemporaryArchivePath("bad-substream-crc-");
+        Files.write(archivePath, archiveWithMismatchedSubStreamCrc(content, first.length));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/two.txt");
+
+                IOException exception = assertThrows(IOException.class, () -> Files.readAllBytes(file));
+                assertEquals(true, exception.getMessage().contains("7z entry data does not match CRC-32"));
+
+                IOException channelException = assertThrows(IOException.class, () -> {
+                    try (SeekableByteChannel ignored = Files.newByteChannel(file)) {
+                        // Closing an unread channel drains the entry and validates its CRC-32.
+                    }
+                });
+                assertEquals(true, channelException.getMessage().contains("7z entry data does not match CRC-32"));
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -304,6 +449,34 @@ public final class SevenZipArkivoFileSystemTest {
                 assertEquals("dir//./hello.txt", sevenZipAttributes.path());
                 assertArrayEquals(new byte[0], Files.readAllBytes(file));
             }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that duplicate 7z entry paths are rejected.
+    @Test
+    public void rejectsDuplicateEntryName() throws IOException {
+        Path archivePath = createTemporaryArchivePath("duplicate-entry-name-");
+        Files.write(archivePath, archiveWithEmptyFileNames("dir/hello.txt", "dir/hello.txt"));
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            assertEquals(true, exception.getMessage().contains("Duplicate 7z entry path"));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that duplicate normalized 7z entry paths are rejected.
+    @Test
+    public void rejectsDuplicateNormalizedEntryName() throws IOException {
+        Path archivePath = createTemporaryArchivePath("duplicate-normalized-entry-name-");
+        Files.write(archivePath, archiveWithEmptyFileNames("dir//hello.txt", "dir/./hello.txt"));
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            assertEquals(true, exception.getMessage().contains("Duplicate 7z entry path"));
         } finally {
             deleteTemporaryArchive(archivePath);
         }
@@ -365,6 +538,34 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that a regular 7z file entry cannot also be an indexed directory parent.
+    @Test
+    public void rejectsFileParentEntryNameConflict() throws IOException {
+        Path archivePath = createTemporaryArchivePath("file-parent-entry-name-conflict-");
+        Files.write(archivePath, archiveWithEmptyFileNames("dir", "dir/file.txt"));
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            assertEquals(true, exception.getMessage().contains("7z entry path conflicts with directory"));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that unsupported 7z anti items are rejected instead of exposed as normal entries.
+    @Test
+    public void rejectsAntiItemEntry() throws IOException {
+        Path archivePath = createTemporaryArchivePath("anti-item-entry-");
+        Files.write(archivePath, archiveWithAntiItemName("deleted.txt"));
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            assertEquals(true, exception.getMessage().contains("Unsupported 7z anti item"));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that substream counts cannot appear after metadata that depends on those counts.
     @Test
     public void rejectsSubStreamCountsAfterDependentMetadata() throws IOException {
@@ -408,6 +609,65 @@ public final class SevenZipArkivoFileSystemTest {
         } finally {
             deleteTemporaryArchive(archivePath);
         }
+    }
+
+    /// Verifies that owned volume sources are closed when 7z file system construction fails.
+    @Test
+    public void failedVolumeBackedOpenClosesVolumeSource() throws IOException {
+        CloseFailingOwnedVolumeSource volumes = new CloseFailingOwnedVolumeSource(archiveWithMissingPackSizes());
+
+        IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(volumes));
+
+        assertEquals(true, exception.getMessage().contains("pack sizes are missing"));
+        assertEquals(1, volumes.closeCount());
+        assertEquals(true, hasSuppressedMessage(exception, "volume source close failed"));
+    }
+
+    /// Verifies that close action failures do not mask owned volume source close failures.
+    @Test
+    public void closeActionFailureIsSuppressedWhenVolumeSourceCloseFails() throws IOException {
+        CloseFailingOwnedVolumeSource volumes = new CloseFailingOwnedVolumeSource(minimalArchive());
+        SevenZipArkivoFileSystemImpl fileSystem = new SevenZipArkivoFileSystemImpl(
+                SevenZipArkivoFileSystemProvider.instance(),
+                null,
+                volumes,
+                SevenZipArkivoFileSystemConfig.DEFAULTS,
+                () -> {
+                    throw new IllegalStateException("close action failed");
+                }
+        );
+
+        IOException exception = assertThrows(IOException.class, fileSystem::close);
+
+        assertEquals("volume source close failed", exception.getMessage());
+        assertEquals(1, volumes.closeCount());
+        assertEquals(true, hasSuppressedMessage(exception, "close action failed"));
+    }
+
+    /// Verifies that 7z file system close retries owned volume source cleanup after failure.
+    @Test
+    public void closeRetriesVolumeSourceCleanupAfterFailure() throws IOException {
+        CloseFailingOwnedVolumeSource volumes = new CloseFailingOwnedVolumeSource(minimalArchive(), 1);
+        int[] closeActionCount = new int[1];
+        SevenZipArkivoFileSystemImpl fileSystem = new SevenZipArkivoFileSystemImpl(
+                SevenZipArkivoFileSystemProvider.instance(),
+                null,
+                volumes,
+                SevenZipArkivoFileSystemConfig.DEFAULTS,
+                () -> closeActionCount[0]++
+        );
+
+        IOException exception = assertThrows(IOException.class, fileSystem::close);
+        assertEquals("volume source close failed", exception.getMessage());
+        assertEquals(false, fileSystem.isOpen());
+        assertEquals(1, volumes.closeCount());
+        assertEquals(1, closeActionCount[0]);
+
+        fileSystem.close();
+        fileSystem.close();
+
+        assertEquals(2, volumes.closeCount());
+        assertEquals(1, closeActionCount[0]);
     }
 
     /// Verifies that packed stream and folder counts must match.
@@ -615,6 +875,59 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that a failed 7z decoder setup closes the opened archive stream.
+    @Test
+    public void failedLzmaDecoderSetupClosesArchiveStream() throws IOException {
+        byte[] content = "bad lzma".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("bad-lzma-properties-");
+        Files.write(archivePath, archiveWithInvalidLZMAProperties(content));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+
+                IOException exception = assertThrows(IOException.class, () -> Files.readAllBytes(file));
+                assertEquals(true, exception.getMessage().contains("7z LZMA coder properties must contain five bytes"));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that decoded stream setup keeps the primary skip failure when cleanup close fails.
+    @Test
+    public void failedDecodedOffsetSkipSuppressesArchiveCloseFailure() throws IOException {
+        byte[] content = "short lzma2".getBytes(StandardCharsets.UTF_8);
+        int firstSize = content.length + 1;
+        byte[] archive = archiveWithTruncatedLZMA2SubStreams(content, firstSize, firstSize + 1);
+
+        try (SevenZipArkivoFileSystem fileSystem =
+                     SevenZipArkivoFileSystem.open(new CloseFailingVolumeSource(archive, 2))) {
+            Path file = fileSystem.getPath("/two.txt");
+
+            IOException exception = assertThrows(IOException.class, () -> Files.readAllBytes(file));
+            assertEquals(false, "close failed".equals(exception.getMessage()));
+            assertEquals(true, hasSuppressedMessage(exception, "close failed"));
+        }
+    }
+
+    /// Verifies that runtime decoded stream cleanup failures do not replace the primary skip failure.
+    @Test
+    public void failedDecodedOffsetSkipSuppressesArchiveRuntimeCloseFailure() throws IOException {
+        byte[] content = "short runtime lzma2".getBytes(StandardCharsets.UTF_8);
+        int firstSize = content.length + 1;
+        byte[] archive = archiveWithTruncatedLZMA2SubStreams(content, firstSize, firstSize + 1);
+
+        try (SevenZipArkivoFileSystem fileSystem =
+                     SevenZipArkivoFileSystem.open(new CloseFailingVolumeSource(archive, 2, true))) {
+            Path file = fileSystem.getPath("/two.txt");
+
+            IOException exception = assertThrows(IOException.class, () -> Files.readAllBytes(file));
+            assertEquals(false, "close failed".equals(exception.getMessage()));
+            assertEquals(true, hasSuppressedMessage(exception, "close failed"));
+        }
+    }
+
     /// Verifies that a file stored in a linear multi-coder folder can be read.
     @Test
     public void linearMultiCoderFileEntry() throws IOException {
@@ -814,6 +1127,25 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that a declared encoded-header packed stream CRC-32 mismatch is rejected while opening the archive.
+    @Test
+    public void rejectsMismatchedEncodedHeaderPackCrc() throws IOException {
+        byte[] content = "bad encoded header pack crc".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("bad-encoded-header-pack-crc-");
+        Files.write(archivePath, archiveWithEncodedHeaderAndMismatchedPackCrc(content));
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> {
+                try (SevenZipArkivoFileSystem ignored = SevenZipArkivoFileSystem.open(archivePath)) {
+                    // Opening the archive parses the encoded header and validates its packed CRC-32.
+                }
+            });
+            assertEquals(true, exception.getMessage().contains("7z packed stream data does not match CRC-32"));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that a 7z archive with a multi-substream encoded header can be opened.
     @Test
     public void encodedHeaderSubStreams() throws IOException {
@@ -973,9 +1305,60 @@ public final class SevenZipArkivoFileSystemTest {
         return archive(content, header, crc32(header));
     }
 
+    /// Returns a 7z archive with one Copy-method file and an incorrect folder CRC-32.
+    private static byte[] archiveWithMismatchedFolderCrc(byte[] content) throws IOException {
+        long wrongCrc32 = crc32(content) ^ 1L;
+        byte[] header = fileHeader(content.length, content.length, new byte[]{0x00}, new byte[0], wrongCrc32);
+        return archive(content, header, crc32(header));
+    }
+
+    /// Returns a 7z archive with one Copy-method file and an incorrect packed stream CRC-32.
+    private static byte[] archiveWithMismatchedPackCrc(byte[] content) throws IOException {
+        long wrongCrc32 = crc32(content) ^ 1L;
+        byte[] header = fileHeader(content.length, content.length, new byte[]{0x00}, new byte[0], -1L, wrongCrc32);
+        return archive(content, header, crc32(header));
+    }
+
+    /// Returns a 7z archive with one Copy-method file, folder CRC-32, and empty substream CRC-32 vector.
+    private static byte[] archiveWithSingleSubStreamFolderCrc(byte[] content) throws IOException {
+        byte[] header = fileHeaderWithSingleSubStreamCrcVector(
+                content.length,
+                content.length,
+                new byte[]{0x00},
+                new byte[0],
+                crc32(content)
+        );
+        return archive(content, header, crc32(header));
+    }
+
     /// Returns a 7z archive with two files stored as substreams of one Copy-method folder.
     private static byte[] archiveWithCopySubStreams(byte[] content, int firstSize) throws IOException {
         byte[] header = copySubStreamsHeader(firstSize, content.length);
+        return archive(content, header, crc32(header));
+    }
+
+    /// Returns a 7z archive whose LZMA2 folder declares more decoded bytes than the payload provides.
+    private static byte[] archiveWithTruncatedLZMA2SubStreams(
+            byte[] content,
+            int firstSize,
+            int declaredTotalSize
+    ) throws IOException {
+        CoderPayload payload = lzma2Payload(content);
+        byte[] header = lzma2SubStreamsHeader(
+                payload.content().length,
+                declaredTotalSize,
+                firstSize,
+                payload.properties()
+        );
+        return archive(payload.content(), header, crc32(header));
+    }
+
+    /// Returns a 7z archive with two Copy-method substreams and an incorrect second substream CRC-32.
+    private static byte[] archiveWithMismatchedSubStreamCrc(byte[] content, int firstSize) throws IOException {
+        int secondSize = content.length - firstSize;
+        long firstCrc32 = crc32(content, 0, firstSize);
+        long wrongSecondCrc32 = crc32(content, firstSize, secondSize) ^ 1L;
+        byte[] header = copySubStreamsHeader(firstSize, content.length, firstCrc32, wrongSecondCrc32);
         return archive(content, header, crc32(header));
     }
 
@@ -988,6 +1371,18 @@ public final class SevenZipArkivoFileSystemTest {
     /// Returns a 7z archive with one empty file using the given name.
     private static byte[] archiveWithEmptyFileName(String name) throws IOException {
         byte[] header = emptyFileNameHeader(name);
+        return archive(header, crc32(header));
+    }
+
+    /// Returns a 7z archive with two empty files using the given names.
+    private static byte[] archiveWithEmptyFileNames(String firstName, String secondName) throws IOException {
+        byte[] header = emptyFileNamesHeader(firstName, secondName);
+        return archive(header, crc32(header));
+    }
+
+    /// Returns a 7z archive with one anti item using the given name.
+    private static byte[] archiveWithAntiItemName(String name) throws IOException {
+        byte[] header = antiItemNameHeader(name);
         return archive(header, crc32(header));
     }
 
@@ -1112,6 +1507,17 @@ public final class SevenZipArkivoFileSystemTest {
         return archive(payload.content(), header, crc32(header));
     }
 
+    /// Returns a 7z archive with one LZMA file whose coder properties are invalid.
+    private static byte[] archiveWithInvalidLZMAProperties(byte[] content) throws IOException {
+        byte[] header = fileHeader(
+                content.length,
+                content.length,
+                new byte[]{0x03, 0x01, 0x01},
+                new byte[0]
+        );
+        return archive(content, header, crc32(header));
+    }
+
     /// Returns a 7z archive with one file stored through an LZMA-to-Copy coder pipeline.
     private static byte[] archiveWithLZMAMultiCoderFile(CoderPayload payload, int uncompressedSize) throws IOException {
         byte[] header = lzmaCopyPipelineFileHeader(payload.content().length, uncompressedSize, payload.properties());
@@ -1182,6 +1588,22 @@ public final class SevenZipArkivoFileSystemTest {
                 plainHeader.length,
                 new byte[]{0x21},
                 encodedHeaderPayload.properties()
+        );
+        return archive(concatenate(content, encodedHeaderPayload.content()), nextHeader, crc32(nextHeader));
+    }
+
+    /// Returns a 7z archive with one Copy-method file and an LZMA2-compressed header with an incorrect pack CRC-32.
+    private static byte[] archiveWithEncodedHeaderAndMismatchedPackCrc(byte[] content) throws IOException {
+        byte[] plainHeader = fileHeader(content.length, content.length, new byte[]{0x00}, new byte[0]);
+        CoderPayload encodedHeaderPayload = lzma2Payload(plainHeader);
+        long wrongPackCrc32 = crc32(encodedHeaderPayload.content()) ^ 1L;
+        byte[] nextHeader = encodedHeader(
+                content.length,
+                encodedHeaderPayload.content().length,
+                plainHeader.length,
+                new byte[]{0x21},
+                encodedHeaderPayload.properties(),
+                wrongPackCrc32
         );
         return archive(concatenate(content, encodedHeaderPayload.content()), nextHeader, crc32(nextHeader));
     }
@@ -1297,6 +1719,65 @@ public final class SevenZipArkivoFileSystemTest {
         return output.toByteArray();
     }
 
+    /// Returns a plain 7z header with two empty files using the given names.
+    private static byte[] emptyFileNamesHeader(String firstName, String secondName) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+        output.write(0x05);
+        writeNumber(output, 2);
+
+        byte[] emptyStreamBits = new byte[]{(byte) 0xc0};
+        output.write(0x0e);
+        writeNumber(output, emptyStreamBits.length);
+        output.write(emptyStreamBits);
+
+        byte[] emptyFileBits = new byte[]{(byte) 0xc0};
+        output.write(0x0f);
+        writeNumber(output, emptyFileBits.length);
+        output.write(emptyFileBits);
+
+        byte[] names = namesProperty(firstName, secondName);
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
+
+        output.write(0x00);
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header with one anti item using the given name.
+    private static byte[] antiItemNameHeader(String name) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+        output.write(0x05);
+        writeNumber(output, 1);
+
+        byte[] emptyStreamBits = new byte[]{(byte) 0x80};
+        output.write(0x0e);
+        writeNumber(output, emptyStreamBits.length);
+        output.write(emptyStreamBits);
+
+        byte[] emptyFileBits = new byte[]{(byte) 0x80};
+        output.write(0x0f);
+        writeNumber(output, emptyFileBits.length);
+        output.write(emptyFileBits);
+
+        byte[] antiBits = new byte[]{(byte) 0x80};
+        output.write(0x10);
+        writeNumber(output, antiBits.length);
+        output.write(antiBits);
+
+        byte[] names = namesProperty(name);
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
+
+        output.write(0x00);
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
     /// Returns a plain 7z header with one file using the given coder.
     private static byte[] fileHeader(
             int packedSize,
@@ -1305,6 +1786,29 @@ public final class SevenZipArkivoFileSystemTest {
             byte[] properties
     ) throws IOException {
         return fileHeader(packedSize, uncompressedSize, methodId, properties, null, null, null, -1);
+    }
+
+    /// Returns a plain 7z header with one file using the given coder and folder CRC-32.
+    private static byte[] fileHeader(
+            int packedSize,
+            int uncompressedSize,
+            byte[] methodId,
+            byte[] properties,
+            long folderCrc32
+    ) throws IOException {
+        return fileHeader(packedSize, uncompressedSize, methodId, properties, folderCrc32, -1L);
+    }
+
+    /// Returns a plain 7z header with one file using the given coder, folder CRC-32, and pack CRC-32.
+    private static byte[] fileHeader(
+            int packedSize,
+            int uncompressedSize,
+            byte[] methodId,
+            byte[] properties,
+            long folderCrc32,
+            long packCrc32
+    ) throws IOException {
+        return fileHeader(packedSize, uncompressedSize, methodId, properties, null, null, null, -1, folderCrc32, packCrc32);
     }
 
     /// Returns a plain 7z header with one file using the given coder and metadata.
@@ -1317,6 +1821,102 @@ public final class SevenZipArkivoFileSystemTest {
             @Nullable FileTime lastAccessTime,
             @Nullable FileTime lastModifiedTime,
             int windowsAttributes
+    ) throws IOException {
+        return fileHeader(
+                packedSize,
+                uncompressedSize,
+                methodId,
+                properties,
+                creationTime,
+                lastAccessTime,
+                lastModifiedTime,
+                windowsAttributes,
+                -1L,
+                -1L
+        );
+    }
+
+    /// Returns a plain 7z header with one file using the given coder, metadata, and optional CRC-32 values.
+    private static byte[] fileHeader(
+            int packedSize,
+            int uncompressedSize,
+            byte[] methodId,
+            byte[] properties,
+            @Nullable FileTime creationTime,
+            @Nullable FileTime lastAccessTime,
+            @Nullable FileTime lastModifiedTime,
+            int windowsAttributes,
+            long folderCrc32,
+            long packCrc32
+    ) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+
+        output.write(0x04);
+        output.write(0x06);
+        writeNumber(output, 0);
+        writeNumber(output, 1);
+        output.write(0x09);
+        writeNumber(output, packedSize);
+        if (packCrc32 >= 0) {
+            output.write(0x0a);
+            output.write(1);
+            writeIntLE(output, (int) packCrc32);
+        }
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(0);
+        writeNumber(output, 1);
+        output.write(methodId.length | (properties.length != 0 ? 0x20 : 0));
+        output.write(methodId);
+        if (properties.length != 0) {
+            writeNumber(output, properties.length);
+            output.write(properties);
+        }
+        output.write(0x0c);
+        writeNumber(output, uncompressedSize);
+        if (folderCrc32 >= 0) {
+            output.write(0x0a);
+            output.write(1);
+            writeIntLE(output, (int) folderCrc32);
+        }
+        output.write(0x00);
+        output.write(0x00);
+
+        output.write(0x05);
+        writeNumber(output, 1);
+        byte[] names = namesProperty("hello.txt");
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
+        if (creationTime != null) {
+            writeTimeProperty(output, 0x12, creationTime);
+        }
+        if (lastAccessTime != null) {
+            writeTimeProperty(output, 0x13, lastAccessTime);
+        }
+        if (lastModifiedTime != null) {
+            writeTimeProperty(output, 0x14, lastModifiedTime);
+        }
+        if (windowsAttributes >= 0) {
+            writeWindowsAttributesProperty(output, windowsAttributes);
+        }
+        output.write(0x00);
+
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header with one file, folder CRC-32, and an empty substream CRC-32 vector.
+    private static byte[] fileHeaderWithSingleSubStreamCrcVector(
+            int packedSize,
+            int uncompressedSize,
+            byte[] methodId,
+            byte[] properties,
+            long folderCrc32
     ) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         output.write(0x01);
@@ -1342,7 +1942,16 @@ public final class SevenZipArkivoFileSystemTest {
         }
         output.write(0x0c);
         writeNumber(output, uncompressedSize);
+        output.write(0x0a);
+        output.write(1);
+        writeIntLE(output, (int) folderCrc32);
         output.write(0x00);
+
+        output.write(0x08);
+        output.write(0x0a);
+        output.write(1);
+        output.write(0x00);
+
         output.write(0x00);
 
         output.write(0x05);
@@ -1351,18 +1960,6 @@ public final class SevenZipArkivoFileSystemTest {
         output.write(0x11);
         writeNumber(output, names.length);
         output.write(names);
-        if (creationTime != null) {
-            writeTimeProperty(output, 0x12, creationTime);
-        }
-        if (lastAccessTime != null) {
-            writeTimeProperty(output, 0x13, lastAccessTime);
-        }
-        if (lastModifiedTime != null) {
-            writeTimeProperty(output, 0x14, lastModifiedTime);
-        }
-        if (windowsAttributes >= 0) {
-            writeWindowsAttributesProperty(output, windowsAttributes);
-        }
         output.write(0x00);
 
         output.write(0x00);
@@ -1541,6 +2138,67 @@ public final class SevenZipArkivoFileSystemTest {
 
     /// Returns a plain 7z header with two Copy-method file substreams.
     private static byte[] copySubStreamsHeader(int firstSize, int totalSize) throws IOException {
+        return copySubStreamsHeader(firstSize, totalSize, -1L, -1L);
+    }
+
+    /// Returns a plain 7z header with two LZMA2 file substreams.
+    private static byte[] lzma2SubStreamsHeader(
+            int packedSize,
+            int totalSize,
+            int firstSize,
+            byte[] properties
+    ) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+
+        output.write(0x04);
+        output.write(0x06);
+        writeNumber(output, 0);
+        writeNumber(output, 1);
+        output.write(0x09);
+        writeNumber(output, packedSize);
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(0);
+        writeNumber(output, 1);
+        output.write(0x21);
+        output.write(0x21);
+        writeNumber(output, properties.length);
+        output.write(properties);
+        output.write(0x0c);
+        writeNumber(output, totalSize);
+        output.write(0x00);
+
+        output.write(0x08);
+        output.write(0x0d);
+        writeNumber(output, 2);
+        output.write(0x09);
+        writeNumber(output, firstSize);
+        output.write(0x00);
+        output.write(0x00);
+
+        output.write(0x05);
+        writeNumber(output, 2);
+        byte[] names = namesProperty("one.txt", "two.txt");
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
+        output.write(0x00);
+
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header with two Copy-method file substreams and optional CRC-32 values.
+    private static byte[] copySubStreamsHeader(
+            int firstSize,
+            int totalSize,
+            long firstCrc32,
+            long secondCrc32
+    ) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         output.write(0x01);
 
@@ -1568,6 +2226,12 @@ public final class SevenZipArkivoFileSystemTest {
         writeNumber(output, 2);
         output.write(0x09);
         writeNumber(output, firstSize);
+        if (firstCrc32 >= 0 && secondCrc32 >= 0) {
+            output.write(0x0a);
+            output.write(1);
+            writeIntLE(output, (int) firstCrc32);
+            writeIntLE(output, (int) secondCrc32);
+        }
         output.write(0x00);
         output.write(0x00);
 
@@ -1921,9 +2585,21 @@ public final class SevenZipArkivoFileSystemTest {
             byte[] methodId,
             byte[] properties
     ) throws IOException {
+        return encodedHeader(packPosition, packedSize, uncompressedSize, methodId, properties, -1L);
+    }
+
+    /// Returns an encoded-header descriptor that points to one packed header stream and optional pack CRC-32.
+    private static byte[] encodedHeader(
+            int packPosition,
+            int packedSize,
+            int uncompressedSize,
+            byte[] methodId,
+            byte[] properties,
+            long packCrc32
+    ) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         output.write(0x17);
-        writeSingleFolderStreamsInfo(output, packPosition, packedSize, uncompressedSize, methodId, properties);
+        writeSingleFolderStreamsInfo(output, packPosition, packedSize, uncompressedSize, methodId, properties, packCrc32);
         return output.toByteArray();
     }
 
@@ -1981,11 +2657,29 @@ public final class SevenZipArkivoFileSystemTest {
             byte[] methodId,
             byte[] properties
     ) throws IOException {
+        writeSingleFolderStreamsInfo(output, packPosition, packedSize, uncompressedSize, methodId, properties, -1L);
+    }
+
+    /// Writes a `StreamsInfo` block with one folder, one unpack stream, and optional pack CRC-32.
+    private static void writeSingleFolderStreamsInfo(
+            ByteArrayOutputStream output,
+            int packPosition,
+            int packedSize,
+            int uncompressedSize,
+            byte[] methodId,
+            byte[] properties,
+            long packCrc32
+    ) throws IOException {
         output.write(0x06);
         writeNumber(output, packPosition);
         writeNumber(output, 1);
         output.write(0x09);
         writeNumber(output, packedSize);
+        if (packCrc32 >= 0) {
+            output.write(0x0a);
+            output.write(1);
+            writeIntLE(output, (int) packCrc32);
+        }
         output.write(0x00);
 
         output.write(0x07);
@@ -2175,6 +2869,219 @@ public final class SevenZipArkivoFileSystemTest {
         return result;
     }
 
+    /// Returns whether a throwable has a direct suppressed exception with the given message.
+    private static boolean hasSuppressedMessage(Throwable throwable, String message) {
+        for (Throwable suppressed : throwable.getSuppressed()) {
+            if (message.equals(suppressed.getMessage())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Provides archive bytes through a volume source with a selectable close-failing open.
+    @NotNullByDefault
+    private static final class CloseFailingVolumeSource implements ArkivoVolumeSource {
+        /// The archive bytes exposed by this source.
+        private final byte @Unmodifiable [] archive;
+
+        /// The one-based open count whose returned channel fails on close.
+        private final int closeFailingOpen;
+
+        /// Whether close failure should be thrown at runtime.
+        private final boolean failCloseAtRuntime;
+
+        /// The number of opened first-volume channels.
+        private int openCount;
+
+        /// Creates a volume source over the given archive bytes.
+        private CloseFailingVolumeSource(byte[] archive, int closeFailingOpen) {
+            this(archive, closeFailingOpen, false);
+        }
+
+        /// Creates a volume source over the given archive bytes and close failure mode.
+        private CloseFailingVolumeSource(byte[] archive, int closeFailingOpen, boolean failCloseAtRuntime) {
+            this.archive = Objects.requireNonNull(archive, "archive").clone();
+            this.closeFailingOpen = closeFailingOpen;
+            this.failCloseAtRuntime = failCloseAtRuntime;
+        }
+
+        /// Opens the requested volume channel, or returns `null` for missing split volumes.
+        @Override
+        public @Nullable SeekableByteChannel openVolume(long index) {
+            if (index != 0) {
+                return null;
+            }
+            openCount++;
+            return new MemorySeekableByteChannel(archive, openCount == closeFailingOpen, failCloseAtRuntime);
+        }
+    }
+
+    /// Provides archive bytes through a volume source whose own close operation fails.
+    @NotNullByDefault
+    private static final class CloseFailingOwnedVolumeSource implements ArkivoVolumeSource {
+        /// The archive bytes exposed by this source.
+        private final byte @Unmodifiable [] archive;
+
+        /// The number of close calls that should fail.
+        private final int failureCount;
+
+        /// The number of times this source has been closed.
+        private int closeCount;
+
+        /// Creates a close-failing volume source over the given archive bytes.
+        private CloseFailingOwnedVolumeSource(byte[] archive) {
+            this(archive, Integer.MAX_VALUE);
+        }
+
+        /// Creates a volume source that fails the given number of close calls.
+        private CloseFailingOwnedVolumeSource(byte[] archive, int failureCount) {
+            if (failureCount < 0) {
+                throw new IllegalArgumentException("failureCount must not be negative");
+            }
+            this.archive = Objects.requireNonNull(archive, "archive").clone();
+            this.failureCount = failureCount;
+        }
+
+        /// Opens the requested volume channel, or returns `null` for missing split volumes.
+        @Override
+        public @Nullable SeekableByteChannel openVolume(long index) {
+            if (index != 0) {
+                return null;
+            }
+            return new MemorySeekableByteChannel(archive, false);
+        }
+
+        /// Fails while configured close failures remain.
+        @Override
+        public void close() throws IOException {
+            closeCount++;
+            if (closeCount <= failureCount) {
+                throw new IOException("volume source close failed");
+            }
+        }
+
+        /// Returns how many times this source was closed.
+        private int closeCount() {
+            return closeCount;
+        }
+    }
+
+    /// Provides an in-memory read-only seekable byte channel for tests.
+    @NotNullByDefault
+    private static final class MemorySeekableByteChannel implements SeekableByteChannel {
+        /// The channel content.
+        private final byte @Unmodifiable [] content;
+
+        /// The current channel position.
+        private int position;
+
+        /// Whether this channel is open.
+        private boolean open = true;
+
+        /// Whether closing this channel fails without closing it.
+        private final boolean failClose;
+
+        /// Whether close failure should be thrown at runtime.
+        private final boolean failCloseAtRuntime;
+
+        /// Creates an in-memory channel for the given content and close behavior.
+        private MemorySeekableByteChannel(byte[] content, boolean failClose) {
+            this(content, failClose, false);
+        }
+
+        /// Creates an in-memory channel for the given content and close failure mode.
+        private MemorySeekableByteChannel(byte[] content, boolean failClose, boolean failCloseAtRuntime) {
+            this.content = Objects.requireNonNull(content, "content").clone();
+            this.failClose = failClose;
+            this.failCloseAtRuntime = failCloseAtRuntime;
+        }
+
+        /// Reads bytes from the current channel position.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            ensureOpen();
+            Objects.requireNonNull(destination, "destination");
+            if (!destination.hasRemaining()) {
+                return 0;
+            }
+            if (position >= content.length) {
+                return -1;
+            }
+
+            int count = Math.min(destination.remaining(), content.length - position);
+            destination.put(content, position, count);
+            position += count;
+            return count;
+        }
+
+        /// Rejects writes.
+        @Override
+        public int write(ByteBuffer source) {
+            Objects.requireNonNull(source, "source");
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns the current channel position.
+        @Override
+        public long position() throws IOException {
+            ensureOpen();
+            return position;
+        }
+
+        /// Sets the current channel position.
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            ensureOpen();
+            if (newPosition < 0 || newPosition > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("newPosition is out of range");
+            }
+            position = (int) newPosition;
+            return this;
+        }
+
+        /// Returns the number of bytes in this channel.
+        @Override
+        public long size() throws IOException {
+            ensureOpen();
+            return content.length;
+        }
+
+        /// Rejects truncation.
+        @Override
+        public SeekableByteChannel truncate(long size) {
+            if (size < 0) {
+                throw new IllegalArgumentException("size must not be negative");
+            }
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns whether this channel is open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes this channel.
+        @Override
+        public void close() throws IOException {
+            if (failClose) {
+                if (failCloseAtRuntime) {
+                    throw new IllegalStateException("close failed");
+                }
+                throw new IOException("close failed");
+            }
+            open = false;
+        }
+
+        /// Requires this channel to be open.
+        private void ensureOpen() throws IOException {
+            if (!open) {
+                throw new ClosedChannelException();
+            }
+        }
+    }
+
     /// Stores generated coder payload bytes and 7z coder properties.
     @NotNullByDefault
     private static final class CoderPayload {
@@ -2323,6 +3230,13 @@ public final class SevenZipArkivoFileSystemTest {
     private static long crc32(byte[] content) {
         CRC32 crc32 = new CRC32();
         crc32.update(content);
+        return crc32.getValue();
+    }
+
+    /// Returns the unsigned CRC-32 value of the given content range.
+    private static long crc32(byte[] content, int offset, int length) {
+        CRC32 crc32 = new CRC32();
+        crc32.update(content, offset, length);
         return crc32.getValue();
     }
 }

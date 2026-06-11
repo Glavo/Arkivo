@@ -91,7 +91,7 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
                 }
             };
             ZipArkivoFileSystem fileSystem = config.archiveWritable()
-                    ? new StreamingZipArkivoFileSystemImpl(this, parsedUri.archivePath, config)
+                    ? new StreamingZipArkivoFileSystemImpl(this, parsedUri.archivePath, config, closeAction)
                     : new ZipArkivoFileSystemImpl(this, parsedUri.archivePath, null, config, closeAction);
             holder[0] = fileSystem;
 

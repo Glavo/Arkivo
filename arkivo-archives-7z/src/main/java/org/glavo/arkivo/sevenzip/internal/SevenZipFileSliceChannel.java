@@ -29,6 +29,9 @@ final class SevenZipFileSliceChannel implements SeekableByteChannel {
     /// Whether this channel is open.
     private boolean open = true;
 
+    /// Whether the underlying archive channel has been closed.
+    private boolean channelClosed;
+
     /// Creates a channel over a bounded slice of an archive channel.
     SevenZipFileSliceChannel(SeekableByteChannel channel, long start, long size) {
         if (start < 0) {
@@ -47,6 +50,9 @@ final class SevenZipFileSliceChannel implements SeekableByteChannel {
     public int read(ByteBuffer destination) throws IOException {
         ensureOpen();
         Objects.requireNonNull(destination, "destination");
+        if (!destination.hasRemaining()) {
+            return 0;
+        }
         if (position >= size) {
             return -1;
         }
@@ -117,8 +123,12 @@ final class SevenZipFileSliceChannel implements SeekableByteChannel {
     /// Closes this slice channel and the underlying archive channel.
     @Override
     public void close() throws IOException {
+        if (!open && channelClosed) {
+            return;
+        }
         open = false;
         channel.close();
+        channelClosed = true;
     }
 
     /// Requires this channel to be open.

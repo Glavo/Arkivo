@@ -96,17 +96,31 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// Whether this file system is open.
     private boolean open = true;
 
+    /// The action to run after this file system is closed, or `null` when no action is needed.
+    private final @Nullable Runnable closeAction;
+
     /// Creates a streaming ZIP archive file system.
     public StreamingZipArkivoFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             Path archivePath,
             ZipArkivoFileSystemConfig config
     ) throws IOException {
+        this(provider, archivePath, config, null);
+    }
+
+    /// Creates a streaming ZIP archive file system.
+    public StreamingZipArkivoFileSystemImpl(
+            ZipArkivoFileSystemProvider provider,
+            Path archivePath,
+            ZipArkivoFileSystemConfig config,
+            @Nullable Runnable closeAction
+    ) throws IOException {
         super(config.threadSafety());
         this.provider = Objects.requireNonNull(provider, "provider");
         this.archivePath = Objects.requireNonNull(archivePath, "archivePath");
         this.config = Objects.requireNonNull(config, "config");
         this.lock = ZipLocks.create(config.threadSafety());
+        this.closeAction = closeAction;
         this.output = new CountingOutputStream(Files.newOutputStream(
                 archivePath,
                 config.openOptions().toArray(OpenOption[]::new)
@@ -125,6 +139,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         this.archivePath = null;
         this.config = Objects.requireNonNull(config, "config");
         this.lock = ZipLocks.create(config.threadSafety());
+        this.closeAction = null;
         this.output = new CountingOutputStream(Objects.requireNonNull(output, "output"));
         this.rootPath = ZipArkivoPath.root(this);
     }
@@ -153,12 +168,47 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 return;
             }
             open = false;
-            EntryOutputStream entryOutput = currentEntryOutput;
-            if (entryOutput != null) {
-                entryOutput.close();
+            Throwable failure = null;
+            try {
+                EntryOutputStream entryOutput = currentEntryOutput;
+                if (entryOutput != null) {
+                    entryOutput.close();
+                }
+                writeCentralDirectory();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+            } finally {
+                try {
+                    output.close();
+                } catch (IOException | RuntimeException | Error exception) {
+                    if (failure != null) {
+                        failure.addSuppressed(exception);
+                    } else {
+                        failure = exception;
+                    }
+                }
             }
-            writeCentralDirectory();
-            output.close();
+            Runnable action = closeAction;
+            try {
+                if (action != null) {
+                    action.run();
+                }
+            } catch (RuntimeException | Error exception) {
+                if (failure != null) {
+                    failure.addSuppressed(exception);
+                } else {
+                    failure = exception;
+                }
+            }
+            if (failure instanceof IOException exception) {
+                throw exception;
+            }
+            if (failure instanceof RuntimeException exception) {
+                throw exception;
+            }
+            if (failure instanceof Error exception) {
+                throw exception;
+            }
         } finally {
             unlock();
         }
@@ -273,9 +323,11 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             requireSupportedOutputOptions(options);
             String entryName = regularEntryName(path);
             requireNoActiveEntry();
+            checkNewEntry(entryName);
+            byte @Nullable [] password = passwordForMetadata(entryName, metadata);
+            byte[] rawName = rawEntryName(entryName);
             requireNewEntry(entryName);
 
-            byte[] rawName = rawEntryName(entryName);
             long localHeaderOffset = output.position();
             int flags = metadata.generalPurposeFlags();
             writeLocalHeader(
@@ -295,7 +347,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     localHeaderOffset,
                     output.position(),
                     flags,
-                    metadata
+                    metadata,
+                    password
             );
             currentEntryOutput = entryOutput;
             return entryOutput;
@@ -375,7 +428,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             }
             String entryName = regularEntryName(path);
             requireNoActiveEntry();
-            requireNewEntry(entryName);
+            checkNewEntry(entryName);
 
             CRC32 crc32 = new CRC32();
             crc32.update(content);
@@ -389,7 +442,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 throw new IOException("ZIP entry CRC-32 does not match the configured CRC-32: " + entryName);
             }
 
+            byte @Nullable [] password = passwordForMetadata(entryName, metadata);
             byte[] rawName = rawEntryName(entryName);
+            requireNewEntry(entryName);
             long localHeaderOffset = output.position();
             int flags = metadata.generalPurposeFlags();
             long compressedSize = metadata.encryptedCompressedSize(size);
@@ -405,18 +460,20 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     size
             );
             if (metadata.traditionalEncrypted()) {
+                byte[] encryptionPassword = Objects.requireNonNull(password, "password");
                 OutputStream encrypted = ZipTraditionalCrypto.openEncryptingStream(
                         output,
-                        passwordForEntry(entryName),
+                        encryptionPassword,
                         metadata.encryptionVerificationByte(crcValue)
                 );
                 encrypted.write(content);
                 encrypted.flush();
             } else if (metadata.aesEncrypted()) {
+                byte[] encryptionPassword = Objects.requireNonNull(password, "password");
                 ZipAesCrypto.EncryptingOutputStream encrypted = ZipAesCrypto.openEncryptingStream(
                         output,
                         metadata.aesExtraField(),
-                        passwordForEntry(entryName)
+                        encryptionPassword
                 );
                 encrypted.write(content);
                 encrypted.finish();
@@ -467,11 +524,17 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
     }
 
-    /// Requires the entry name to be new.
-    private void requireNewEntry(String entryName) throws IOException {
-        if (!writtenEntries.add(entryName)) {
+    /// Checks that the entry name has not already been written.
+    private void checkNewEntry(String entryName) throws IOException {
+        if (writtenEntries.contains(entryName)) {
             throw new java.nio.file.FileAlreadyExistsException(entryName);
         }
+    }
+
+    /// Requires the entry name to be new.
+    private void requireNewEntry(String entryName) throws IOException {
+        checkNewEntry(entryName);
+        writtenEntries.add(entryName);
     }
 
     /// Returns a regular file entry name for the given path.
@@ -527,6 +590,11 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             throw new IOException("ZIP encrypted entry requires a password: " + entryName);
         }
         return password;
+    }
+
+    /// Returns the password for encrypted metadata, or `null` when the entry is not encrypted.
+    private byte @Nullable [] passwordForMetadata(String entryName, EntryMetadata metadata) throws IOException {
+        return metadata.encrypted() ? passwordForEntry(entryName) : null;
     }
 
     /// Writes the local file header for an entry.
@@ -711,7 +779,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 long localHeaderOffset,
                 long compressedDataOffset,
                 int flags,
-                EntryMetadata metadata
+                EntryMetadata metadata,
+                byte @Nullable [] password
         ) throws IOException {
             this.entryName = entryName;
             this.rawName = rawName;
@@ -722,16 +791,18 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             OutputStream dataOutput = output;
             ZipAesCrypto.EncryptingOutputStream entryAesOutput = null;
             if (metadata.traditionalEncrypted()) {
+                byte[] encryptionPassword = Objects.requireNonNull(password, "password");
                 dataOutput = ZipTraditionalCrypto.openEncryptingStream(
                         output,
-                        passwordForEntry(entryName),
+                        encryptionPassword,
                         metadata.encryptionVerificationByte()
                 );
             } else if (metadata.aesEncrypted()) {
+                byte[] encryptionPassword = Objects.requireNonNull(password, "password");
                 entryAesOutput = ZipAesCrypto.openEncryptingStream(
                         output,
                         metadata.aesExtraField(),
-                        passwordForEntry(entryName)
+                        encryptionPassword
                 );
                 dataOutput = entryAesOutput;
             }
@@ -858,8 +929,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
         /// Reads are never supported by ZIP output entry channels.
         @Override
-        public int read(ByteBuffer destination) {
+        public int read(ByteBuffer destination) throws IOException {
             Objects.requireNonNull(destination, "destination");
+            ensureOpen();
             throw new NonReadableChannelException();
         }
 

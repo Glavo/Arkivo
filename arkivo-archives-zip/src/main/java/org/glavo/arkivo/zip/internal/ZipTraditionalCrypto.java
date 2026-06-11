@@ -4,6 +4,7 @@
 package org.glavo.arkivo.zip.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.EOFException;
 import java.io.FilterInputStream;
@@ -28,6 +29,28 @@ final class ZipTraditionalCrypto {
 
     /// Creates no instances.
     private ZipTraditionalCrypto() {
+    }
+
+    /// Returns the current failure with the given exception added as a suppressed failure when needed.
+    private static Throwable mergeFailure(@Nullable Throwable failure, Throwable exception) {
+        if (failure != null) {
+            failure.addSuppressed(exception);
+            return failure;
+        }
+        return exception;
+    }
+
+    /// Throws the given failure while preserving its original checked or unchecked type.
+    private static void throwFailure(@Nullable Throwable failure) throws IOException {
+        if (failure instanceof IOException exception) {
+            throw exception;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure instanceof Error exception) {
+            throw exception;
+        }
     }
 
     /// Opens a stream that decrypts a traditional ZIP entry body after validating its encryption header.
@@ -171,6 +194,12 @@ final class ZipTraditionalCrypto {
         /// The decryptor used for this entry data.
         private final Decryptor decryptor;
 
+        /// Whether this stream has been closed.
+        private boolean closed;
+
+        /// Whether the wrapped input stream has been closed.
+        private boolean inputClosed;
+
         /// Creates a decrypting input stream.
         private DecryptingInputStream(InputStream input, Decryptor decryptor) {
             super(Objects.requireNonNull(input, "input"));
@@ -180,6 +209,7 @@ final class ZipTraditionalCrypto {
         /// Reads one decrypted byte.
         @Override
         public int read() throws IOException {
+            ensureOpen();
             int encrypted = in.read();
             if (encrypted < 0) {
                 return -1;
@@ -191,12 +221,31 @@ final class ZipTraditionalCrypto {
         @Override
         public int read(byte[] bytes, int offset, int length) throws IOException {
             Objects.checkFromIndexSize(offset, length, bytes.length);
+            ensureOpen();
             int read = in.read(bytes, offset, length);
             for (int index = 0; index < read; index++) {
                 int byteIndex = offset + index;
                 bytes[byteIndex] = (byte) decryptor.decrypt(Byte.toUnsignedInt(bytes[byteIndex]));
             }
             return read;
+        }
+
+        /// Closes this decrypting stream.
+        @Override
+        public void close() throws IOException {
+            if (closed && inputClosed) {
+                return;
+            }
+            closed = true;
+            in.close();
+            inputClosed = true;
+        }
+
+        /// Requires this stream to be open.
+        private void ensureOpen() throws IOException {
+            if (closed) {
+                throw new IOException("ZIP traditional input stream is closed");
+            }
         }
     }
 
@@ -205,6 +254,12 @@ final class ZipTraditionalCrypto {
     private static final class EncryptingOutputStream extends FilterOutputStream {
         /// The mutable key state.
         private final State state;
+
+        /// Whether this stream has been closed.
+        private boolean closed;
+
+        /// Whether the wrapped output stream has been closed.
+        private boolean outputClosed;
 
         /// Creates an encrypting output stream.
         private EncryptingOutputStream(OutputStream output, State state) {
@@ -215,6 +270,7 @@ final class ZipTraditionalCrypto {
         /// Writes one encrypted byte.
         @Override
         public void write(int value) throws IOException {
+            ensureOpen();
             int plain = value & 0xff;
             out.write(plain ^ state.decryptByte());
             state.update(plain);
@@ -224,8 +280,38 @@ final class ZipTraditionalCrypto {
         @Override
         public void write(byte[] bytes, int offset, int length) throws IOException {
             Objects.checkFromIndexSize(offset, length, bytes.length);
+            ensureOpen();
             for (int index = 0; index < length; index++) {
                 write(Byte.toUnsignedInt(bytes[offset + index]));
+            }
+        }
+
+        /// Closes this encrypting stream and its wrapped output stream.
+        @Override
+        public void close() throws IOException {
+            if (closed && outputClosed) {
+                return;
+            }
+            closed = true;
+            Throwable failure = null;
+            try {
+                flush();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+            }
+            try {
+                out.close();
+                outputClosed = true;
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = mergeFailure(failure, exception);
+            }
+            throwFailure(failure);
+        }
+
+        /// Requires this stream to be open.
+        private void ensureOpen() throws IOException {
+            if (closed) {
+                throw new IOException("ZIP traditional output stream is closed");
             }
         }
     }

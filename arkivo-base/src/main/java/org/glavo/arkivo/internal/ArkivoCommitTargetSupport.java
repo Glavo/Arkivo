@@ -106,6 +106,9 @@ public final class ArkivoCommitTargetSupport {
         /// Whether this output has been committed or rolled back.
         private boolean finished;
 
+        /// Whether rollback cleanup has completed.
+        private boolean cleanupComplete;
+
         /// Creates path-backed commit output.
         private PathCommitOutput(Path path, Path replacementTarget) {
             this.path = Objects.requireNonNull(path, "path");
@@ -135,17 +138,20 @@ public final class ArkivoCommitTargetSupport {
                 Files.move(path, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             }
             finished = true;
+            cleanupComplete = true;
         }
 
         /// Rolls this output back.
         @Override
         public void rollback() throws IOException {
-            if (!finished) {
-                finished = true;
-                if (replacementTarget != null) {
-                    Files.deleteIfExists(path);
-                }
+            if (cleanupComplete) {
+                return;
             }
+            finished = true;
+            if (replacementTarget != null) {
+                Files.deleteIfExists(path);
+            }
+            cleanupComplete = true;
         }
 
         /// Closes this output without committing it.

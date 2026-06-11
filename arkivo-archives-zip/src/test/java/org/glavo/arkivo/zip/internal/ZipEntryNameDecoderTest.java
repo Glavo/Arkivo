@@ -7,12 +7,14 @@ import org.glavo.arkivo.zip.ZipEntryNameEncoding;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests raw ZIP entry name decoding.
 @NotNullByDefault
@@ -44,6 +46,42 @@ public final class ZipEntryNameDecoderTest {
         assertEquals("目录/文件.txt", path);
     }
 
+    /// Verifies that invalid Unicode extra fields do not hide later valid Unicode metadata.
+    @Test
+    public void unicodePathExtraFieldUsesLaterValidRecord() throws Exception {
+        ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(ZipEntryNameEncoding.standard());
+        byte[] rawPath = "fallback.txt".getBytes(StandardCharsets.US_ASCII);
+        byte[] invalidExtraData = unicodeExtraField(
+                ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID,
+                "other.txt".getBytes(StandardCharsets.US_ASCII),
+                "ignored.txt"
+        );
+        byte[] validExtraData = unicodeExtraField(
+                ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID,
+                rawPath,
+                "目录/文件.txt"
+        );
+        byte[] extraData = concatenate(invalidExtraData, validExtraData);
+
+        String path = decoder.decodePath(rawPath, 0, extraData);
+
+        assertEquals("目录/文件.txt", path);
+    }
+
+    /// Verifies that malformed extra field lengths are rejected before fallback decoding.
+    @Test
+    public void malformedExtraFieldLength() {
+        ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(ZipEntryNameEncoding.standard());
+        byte[] rawPath = "fallback.txt".getBytes(StandardCharsets.UTF_8);
+
+        IOException exception = assertThrows(
+                IOException.class,
+                () -> decoder.decodePath(rawPath, ZipEntryNameDecoder.UTF_8_FLAG, new byte[]{1, 0, 2, 0, 0})
+        );
+
+        assertEquals(true, exception.getMessage().contains("Invalid ZIP extra field length"));
+    }
+
     /// Verifies that automatic decoding can select GB18030 from a candidate list.
     @Test
     public void autoDetectsGb18030() throws Exception {
@@ -57,6 +95,14 @@ public final class ZipEntryNameDecoderTest {
         String path = decoder.decodePath(rawPath, 0, new byte[0]);
 
         assertEquals("目录/文件.txt", path);
+    }
+
+    /// Returns the concatenation of two byte arrays.
+    private static byte[] concatenate(byte[] first, byte[] second) {
+        byte[] result = new byte[first.length + second.length];
+        System.arraycopy(first, 0, result, 0, first.length);
+        System.arraycopy(second, 0, result, first.length, second.length);
+        return result;
     }
 
     /// Creates an Info-ZIP Unicode extra field.

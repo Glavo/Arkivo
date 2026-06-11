@@ -4,6 +4,7 @@
 package org.glavo.arkivo.zip.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import javax.crypto.Cipher;
 import javax.crypto.Mac;
@@ -82,6 +83,28 @@ final class ZipAesCrypto {
                 "Unexpected end of WinZip AES password verifier"
         );
         return new Decryptor(createDecryptingState(aes, password, salt, passwordVerifier));
+    }
+
+    /// Returns the current failure with the given exception added as a suppressed failure when needed.
+    private static Throwable mergeFailure(@Nullable Throwable failure, Throwable exception) {
+        if (failure != null) {
+            failure.addSuppressed(exception);
+            return failure;
+        }
+        return exception;
+    }
+
+    /// Throws the given failure while preserving its original checked or unchecked type.
+    private static void throwFailure(@Nullable Throwable failure) throws IOException {
+        if (failure instanceof IOException exception) {
+            throw exception;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure instanceof Error exception) {
+            throw exception;
+        }
     }
 
     /// Opens a stream that encrypts one WinZip AES entry body and appends its authentication code.
@@ -351,6 +374,12 @@ final class ZipAesCrypto {
         /// Whether the authentication code has already been written.
         private boolean finished;
 
+        /// The generated authentication code, or `null` until first finish attempt.
+        private byte @Nullable [] authenticationCode;
+
+        /// Whether this stream has been closed to further entry content writes.
+        private boolean closed;
+
         /// Creates an encrypting stream over ZIP compressed content bytes.
         private EncryptingOutputStream(OutputStream output, State state) {
             super(Objects.requireNonNull(output, "output"));
@@ -368,7 +397,7 @@ final class ZipAesCrypto {
         @Override
         public void write(byte[] bytes, int offset, int length) throws IOException {
             Objects.checkFromIndexSize(offset, length, bytes.length);
-            if (finished) {
+            if (closed) {
                 throw new IOException("WinZip AES output stream is finished");
             }
             byte[] encrypted = Arrays.copyOfRange(bytes, offset, offset + length);
@@ -382,8 +411,14 @@ final class ZipAesCrypto {
             if (finished) {
                 return;
             }
+            closed = true;
+            byte @Nullable [] code = authenticationCode;
+            if (code == null) {
+                code = state.authenticationCode();
+                authenticationCode = code;
+            }
+            out.write(code, 0, ZipAesExtraField.AUTHENTICATION_CODE_SIZE);
             finished = true;
-            out.write(state.authenticationCode(), 0, ZipAesExtraField.AUTHENTICATION_CODE_SIZE);
         }
 
         /// Finishes this stream without closing the archive output.
@@ -407,6 +442,12 @@ final class ZipAesCrypto {
 
         /// Whether the authentication code has already been verified.
         private boolean verified;
+
+        /// Whether this stream has been closed.
+        private boolean closed;
+
+        /// Whether the wrapped input stream has been closed.
+        private boolean inputClosed;
 
         /// Creates a decrypting stream over encrypted content bytes.
         private DecryptingInputStream(
@@ -433,6 +474,12 @@ final class ZipAesCrypto {
         @Override
         public int read(byte[] bytes, int offset, int length) throws IOException {
             Objects.checkFromIndexSize(offset, length, bytes.length);
+            ensureOpen();
+            return readUnchecked(bytes, offset, length);
+        }
+
+        /// Reads decrypted bytes without checking the wrapper open state for close-time draining.
+        private int readUnchecked(byte[] bytes, int offset, int length) throws IOException {
             if (length == 0) {
                 return 0;
             }
@@ -454,14 +501,32 @@ final class ZipAesCrypto {
         /// Closes the stream after draining content and verifying authentication.
         @Override
         public void close() throws IOException {
-            try {
-                byte[] discard = new byte[8192];
-                while (read(discard) >= 0) {
-                    // Drain remaining encrypted content so the authentication code can be verified.
-                }
-            } finally {
-                in.close();
+            if (closed && inputClosed) {
+                return;
             }
+
+            Throwable failure = null;
+            if (!closed) {
+                closed = true;
+                try {
+                    byte[] discard = new byte[8192];
+                    while (readUnchecked(discard, 0, discard.length) >= 0) {
+                        // Drain remaining encrypted content so the authentication code can be verified.
+                    }
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = exception;
+                }
+            }
+
+            if (!inputClosed) {
+                try {
+                    in.close();
+                    inputClosed = true;
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = mergeFailure(failure, exception);
+                }
+            }
+            throwFailure(failure);
         }
 
         /// Reads and verifies the trailing authentication code.
@@ -477,6 +542,13 @@ final class ZipAesCrypto {
             );
             if (!decryptor.verify(expectedAuthentication)) {
                 throw new IOException("WinZip AES authentication failed");
+            }
+        }
+
+        /// Requires this stream to be open.
+        private void ensureOpen() throws IOException {
+            if (closed) {
+                throw new IOException("WinZip AES input stream is closed");
             }
         }
     }

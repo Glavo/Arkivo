@@ -20,6 +20,7 @@ import java.nio.file.attribute.FileTime;
 import java.time.DateTimeException;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 
 /// Implements the public forward-only TAR streaming reader API.
@@ -60,6 +61,9 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
 
     /// Whether this reader is open.
     private boolean open = true;
+
+    /// Whether the backing archive input stream has been closed.
+    private boolean sourceClosed;
 
     /// Creates a streaming TAR reader.
     public TarArkivoStreamingReaderImpl(InputStream source) {
@@ -117,7 +121,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 continue;
             }
             if (typeFlag == TarEntryAttributes.PAX_GLOBAL_EXTENDED_HEADER_TYPE) {
-                globalPaxHeaders.putAll(parsePaxHeaders(readCurrentEntryBodyBytes("PAX global header")));
+                mergeGlobalPaxHeaders(parsePaxHeaders(readCurrentEntryBodyBytes("PAX global header")));
                 skipCurrentEntryBody();
                 continue;
             }
@@ -133,7 +137,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
 
     /// Reads the current archive entry attributes as the requested attribute type.
     @Override
-    public <A extends BasicFileAttributes> A readAttributes(Class<A> type) {
+    public <A extends BasicFileAttributes> A readAttributes(Class<A> type) throws IOException {
+        ensureOpen();
         Objects.requireNonNull(type, "type");
         TarEntryAttributes attributes = currentAttributes;
         if (attributes == null) {
@@ -166,7 +171,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     /// Closes this streaming reader.
     @Override
     public void close() throws IOException {
-        if (!open) {
+        if (!open && sourceClosed) {
             return;
         }
         open = false;
@@ -174,6 +179,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         clearPendingEntryMetadata();
         globalPaxHeaders.clear();
         source.close();
+        sourceClosed = true;
     }
 
     /// Parses one TAR header block.
@@ -463,6 +469,17 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         return new String(body, 0, length, StandardCharsets.UTF_8);
     }
 
+    /// Merges global PAX records for subsequent real entries.
+    private void mergeGlobalPaxHeaders(HashMap<String, String> records) {
+        for (Map.Entry<String, String> record : records.entrySet()) {
+            if (record.getValue().isEmpty()) {
+                globalPaxHeaders.remove(record.getKey());
+            } else {
+                globalPaxHeaders.put(record.getKey(), record.getValue());
+            }
+        }
+    }
+
     /// Merges per-entry PAX records for the next real entry.
     private void mergePendingPaxHeaders(HashMap<String, String> records) {
         HashMap<String, String> pending = pendingPaxHeaders;
@@ -488,15 +505,17 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             FileTime lastAccessTime = attributes.lastAccessTime();
             FileTime creationTime = attributes.creationTime();
 
-            @Nullable String paxPath = pendingPaxValue("path");
+            @Nullable String paxPath = paxValue("path");
             if (paxPath != null) {
                 path = paxPath;
             }
-            @Nullable String paxLinkPath = pendingPaxValue("linkpath");
+            @Nullable String paxLinkPath = paxOptionalStringValue("linkpath");
             if (paxLinkPath != null) {
                 linkName = paxLinkPath;
+            } else if (isPaxValueDeleted("linkpath")) {
+                linkName = null;
             }
-            @Nullable String paxSize = pendingPaxValue("size");
+            @Nullable String paxSize = paxValue("size");
             if (paxSize != null) {
                 size = parsePaxNonNegativeLong(paxSize, "size");
             }
@@ -510,11 +529,11 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             }
             @Nullable String paxUserName = paxValue("uname");
             if (paxUserName != null) {
-                userName = paxUserName;
+                userName = paxUserName.isEmpty() ? null : paxUserName;
             }
             @Nullable String paxGroupName = paxValue("gname");
             if (paxGroupName != null) {
-                groupName = paxGroupName;
+                groupName = paxGroupName.isEmpty() ? null : paxGroupName;
             }
             @Nullable String paxModifiedTime = paxValue("mtime");
             if (paxModifiedTime != null) {
@@ -587,12 +606,6 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         return Math.min(forwardSlash, backslash);
     }
 
-    /// Returns the pending per-entry PAX value for a key.
-    private @Nullable String pendingPaxValue(String key) {
-        HashMap<String, String> pending = pendingPaxHeaders;
-        return pending == null ? null : pending.get(key);
-    }
-
     /// Returns the active PAX value for a key, preferring per-entry records.
     private @Nullable String paxValue(String key) {
         HashMap<String, String> pending = pendingPaxHeaders;
@@ -603,6 +616,18 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             }
         }
         return globalPaxHeaders.get(key);
+    }
+
+    /// Returns the active PAX string value, or `null` when the value is absent or deleted.
+    private @Nullable String paxOptionalStringValue(String key) {
+        String value = paxValue(key);
+        return value != null && !value.isEmpty() ? value : null;
+    }
+
+    /// Returns whether the per-entry PAX records delete a value for this key.
+    private boolean isPaxValueDeleted(String key) {
+        HashMap<String, String> pending = pendingPaxHeaders;
+        return pending != null && "".equals(pending.get(key));
     }
 
     /// Clears metadata that applies only to the next real entry.

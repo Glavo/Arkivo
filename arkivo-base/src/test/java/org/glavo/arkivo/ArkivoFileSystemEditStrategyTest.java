@@ -7,9 +7,11 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -17,6 +19,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests built-in archive file system edit strategies.
 @NotNullByDefault
@@ -89,6 +92,78 @@ public final class ArkivoFileSystemEditStrategyTest {
         }
     }
 
+    /// Verifies that temporary stored content can retry cleanup after a failed delete.
+    @Test
+    public void temporaryStoredContentCloseCanRetryCleanup() throws Exception {
+        Path directory = Files.createTempDirectory(Path.of("build", "tmp"), "arkivo-fs-storage-");
+        Path contentPath = null;
+        Path blocker = null;
+
+        try (ArkivoEditStorage storage = ArkivoEditStorage.temporaryFiles(directory)) {
+            ArkivoStoredContent stored = storage.createContent("hello.txt", ArkivoEditStorage.UNKNOWN_SIZE);
+            contentPath = temporaryContentPath(stored);
+            Files.delete(contentPath);
+            Files.createDirectory(contentPath);
+            blocker = contentPath.resolve("blocker");
+            Files.writeString(blocker, "blocker", StandardCharsets.UTF_8);
+
+            IOException exception = assertThrows(IOException.class, stored::close);
+            assertEquals(DirectoryNotEmptyException.class, exception.getClass());
+            assertThrows(IOException.class, () -> stored.openChannel(Set.of(StandardOpenOption.READ)));
+
+            Files.delete(blocker);
+            stored.close();
+
+            assertEquals(false, Files.exists(contentPath));
+            stored.close();
+        } finally {
+            if (blocker != null) {
+                Files.deleteIfExists(blocker);
+            }
+            if (contentPath != null) {
+                Files.deleteIfExists(contentPath);
+            }
+            Files.deleteIfExists(directory);
+        }
+    }
+
+    /// Verifies that atomic commit output can retry rollback cleanup after a failed delete.
+    @Test
+    public void atomicCommitOutputCloseCanRetryRollbackCleanup() throws IOException {
+        Path directory = Files.createTempDirectory(Path.of("build", "tmp"), "arkivo-fs-commit-");
+        Path sourcePath = directory.resolve("source.zip");
+        Path outputPath = null;
+        Path blocker = null;
+
+        try {
+            ArkivoCommitOutput output = ArkivoCommitTarget.atomicReplace(directory).openOutput(sourcePath);
+            outputPath = output.path();
+            Files.delete(outputPath);
+            Files.createDirectory(outputPath);
+            blocker = outputPath.resolve("blocker");
+            Files.writeString(blocker, "blocker", StandardCharsets.UTF_8);
+
+            IOException exception = assertThrows(IOException.class, output::close);
+            assertEquals(DirectoryNotEmptyException.class, exception.getClass());
+            assertThrows(IOException.class, () -> output.openChannel(Set.of(StandardOpenOption.WRITE)));
+
+            Files.delete(blocker);
+            output.close();
+
+            assertEquals(false, Files.exists(outputPath));
+            output.close();
+        } finally {
+            if (blocker != null) {
+                Files.deleteIfExists(blocker);
+            }
+            if (outputPath != null) {
+                Files.deleteIfExists(outputPath);
+            }
+            Files.deleteIfExists(sourcePath);
+            Files.deleteIfExists(directory);
+        }
+    }
+
     /// Verifies that source mutation policies return the expected decisions.
     @Test
     public void sourceMutationPolicies() throws IOException {
@@ -131,5 +206,12 @@ public final class ArkivoFileSystemEditStrategyTest {
                 return directMutationSupported;
             }
         };
+    }
+
+    /// Returns the temporary file path owned by a stored content instance.
+    private static Path temporaryContentPath(ArkivoStoredContent stored) throws ReflectiveOperationException {
+        Field field = stored.getClass().getDeclaredField("path");
+        field.setAccessible(true);
+        return (Path) field.get(stored);
     }
 }

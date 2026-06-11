@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
+import java.util.zip.CRC32;
 
 /// Parses unencoded 7z metadata headers.
 @NotNullByDefault
@@ -66,6 +67,9 @@ public final class SevenZipHeaderParser {
 
     /// The `kEmptyFile` property ID.
     private static final int K_EMPTY_FILE = 0x0f;
+
+    /// The `kAnti` property ID.
+    private static final int K_ANTI = 0x10;
 
     /// The `kName` property ID.
     private static final int K_NAME = 0x11;
@@ -175,12 +179,23 @@ public final class SevenZipHeaderParser {
             throw new IOException("7z encoded header is too large to index");
         }
 
-        try (InputStream packed = packedStreamOpener.open(streamsInfo.dataOffset(index), streamsInfo.packedSize(index))) {
-            InputStream decoded;
+        long packedSize = streamsInfo.packedSize(index);
+        InputStream rawPacked = packedStreamOpener.open(streamsInfo.dataOffset(index), packedSize);
+        long packedCrc32 = streamsInfo.packedCrc32(index);
+        InputStream packed = packedCrc32 != SevenZipEntryMetadata.UNKNOWN_CRC32
+                ? new SevenZipBoundedInputStream(
+                        rawPacked,
+                        packedSize,
+                        packedCrc32,
+                        "7z packed stream data does not match CRC-32"
+                )
+                : rawPacked;
+        InputStream decoded = packed;
+        Throwable failure = null;
+        try {
             boolean skipDecodedOffset;
             SevenZipFolderMethod method = streamsInfo.method(index);
             if (method.isCopyOnly()) {
-                decoded = packed;
                 skipDecodedOffset = false;
             } else {
                 long decodedLimit = checkedAdd(decodedOffset, unpackSize, "7z encoded header size is too large");
@@ -195,7 +210,21 @@ public final class SevenZipHeaderParser {
             if (bytes.length != unpackSize) {
                 throw new EOFException("Unexpected end of 7z encoded header");
             }
+            validateCrc32(bytes, streamsInfo.crc32(index), "7z encoded header stream");
             return bytes;
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            try {
+                decoded.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                if (failure != null) {
+                    failure.addSuppressed(exception);
+                } else {
+                    throw exception;
+                }
+            }
         }
     }
 
@@ -239,7 +268,7 @@ public final class SevenZipHeaderParser {
         if (packInfo.packSizes.length != folders.length) {
             throw new IOException("7z pack stream count does not match folder count");
         }
-        return new StreamsInfo(packInfo.packPosition, packInfo.packSizes, folders, subStreamsInfo);
+        return new StreamsInfo(packInfo.packPosition, packInfo.packSizes, packInfo.packCrc32s, folders, subStreamsInfo);
     }
 
     /// Reads `SubStreamsInfo` for folders.
@@ -247,12 +276,13 @@ public final class SevenZipHeaderParser {
         int[] counts = new int[folders.length];
         Arrays.fill(counts, 1);
         long[][] sizes = null;
+        long[][] crc32s = null;
         boolean countsLocked = false;
         while (true) {
             int property = input.readId();
             switch (property) {
                 case K_END -> {
-                    return buildSubStreamsInfo(folders, counts, sizes);
+                    return buildSubStreamsInfo(folders, counts, sizes, crc32s);
                 }
                 case K_NUM_UNPACK_STREAM -> {
                     if (countsLocked) {
@@ -271,7 +301,7 @@ public final class SevenZipHeaderParser {
                 }
                 case K_CRC -> {
                     countsLocked = true;
-                    skipDigests(input, sum(counts));
+                    crc32s = readSubStreamCrc32s(input, folders, counts);
                 }
                 default -> throw new UnsupportedOperationException(
                         "Unsupported 7z substreams info property: 0x" + Integer.toHexString(property)
@@ -311,11 +341,56 @@ public final class SevenZipHeaderParser {
         return sizes;
     }
 
+    /// Reads substream CRC-32 values.
+    private static long[][] readSubStreamCrc32s(
+            HeaderInput input,
+            FolderInfo[] folders,
+            int[] counts
+    ) throws IOException {
+        long[] flat = readDigests(input, subStreamDigestCount(folders, counts));
+        long[][] crc32s = new long[folders.length][];
+        int streamIndex = 0;
+        for (int folderIndex = 0; folderIndex < folders.length; folderIndex++) {
+            int count = counts[folderIndex];
+            crc32s[folderIndex] = new long[count];
+            long folderCrc32 = folders[folderIndex].crc32();
+            if (count == 1 && folderCrc32 != SevenZipEntryMetadata.UNKNOWN_CRC32) {
+                crc32s[folderIndex][0] = folderCrc32;
+                continue;
+            }
+            for (int subStreamIndex = 0; subStreamIndex < count; subStreamIndex++) {
+                crc32s[folderIndex][subStreamIndex] = flat[streamIndex++];
+            }
+        }
+        return crc32s;
+    }
+
+    /// Returns the number of CRC-32 digest slots stored in `SubStreamsInfo`.
+    private static int subStreamDigestCount(FolderInfo[] folders, int[] counts) throws IOException {
+        int result = 0;
+        for (int folderIndex = 0; folderIndex < folders.length; folderIndex++) {
+            int count = counts[folderIndex];
+            if (count < 0) {
+                throw new IOException("7z substream count is negative");
+            }
+            if (count == 1 && folders[folderIndex].crc32() != SevenZipEntryMetadata.UNKNOWN_CRC32) {
+                continue;
+            }
+            try {
+                result = Math.addExact(result, count);
+            } catch (ArithmeticException exception) {
+                throw new IOException("7z substream count is too large", exception);
+            }
+        }
+        return result;
+    }
+
     /// Builds substream metadata from optional `SubStreamsInfo`.
     private static SubStreamsInfo buildSubStreamsInfo(
             FolderInfo[] folders,
             int[] counts,
-            long[][] sizes
+            long[][] sizes,
+            @Nullable long[][] crc32s
     ) throws IOException {
         long[][] resolvedSizes = sizes;
         if (resolvedSizes == null) {
@@ -334,8 +409,14 @@ public final class SevenZipHeaderParser {
         ArrayList<SubStreamInfo> streams = new ArrayList<>();
         for (int folderIndex = 0; folderIndex < folders.length; folderIndex++) {
             long decodedOffset = 0;
-            for (long size : resolvedSizes[folderIndex]) {
-                streams.add(new SubStreamInfo(folderIndex, decodedOffset, size));
+            for (int subStreamIndex = 0; subStreamIndex < resolvedSizes[folderIndex].length; subStreamIndex++) {
+                long size = resolvedSizes[folderIndex][subStreamIndex];
+                long crc32 = crc32s != null
+                        ? crc32s[folderIndex][subStreamIndex]
+                        : resolvedSizes[folderIndex].length == 1
+                        ? folders[folderIndex].crc32()
+                        : SevenZipEntryMetadata.UNKNOWN_CRC32;
+                streams.add(new SubStreamInfo(folderIndex, decodedOffset, size, crc32));
                 decodedOffset = checkedAdd(decodedOffset, size, "7z folder unpack size is too large");
             }
         }
@@ -347,6 +428,7 @@ public final class SevenZipHeaderParser {
         long packPosition = input.readNumber();
         int streamCount = input.readIntNumber("pack stream count");
         long[] packSizes = new long[streamCount];
+        long[] packCrc32s = unknownCrc32s(streamCount);
         boolean sizesRead = false;
         while (true) {
             int property = input.readId();
@@ -355,7 +437,7 @@ public final class SevenZipHeaderParser {
                     if (streamCount > 0 && !sizesRead) {
                         throw new IOException("7z pack sizes are missing");
                     }
-                    return new PackInfo(packPosition, packSizes);
+                    return new PackInfo(packPosition, packSizes, packCrc32s);
                 }
                 case K_SIZE -> {
                     sizesRead = true;
@@ -363,7 +445,7 @@ public final class SevenZipHeaderParser {
                         packSizes[index] = input.readNumber();
                     }
                 }
-                case K_CRC -> skipDigests(input, streamCount);
+                case K_CRC -> packCrc32s = readDigests(input, streamCount);
                 default -> throw new UnsupportedOperationException(
                         "Unsupported 7z pack info property: 0x" + Integer.toHexString(property)
                 );
@@ -391,14 +473,14 @@ public final class SevenZipHeaderParser {
                     for (FolderInfo folder : folders) {
                         folder.setUnpackSizes(input);
                     }
-                    requireUnPackInfoEnd(input, folders.length);
+                    requireUnPackInfoEnd(input, folders);
                     return folders;
                 }
                 case K_CRC -> {
                     if (folders.length == 0) {
                         throw new IOException("7z folder CRC appeared before folders");
                     }
-                    skipDigests(input, folders.length);
+                    readFolderCrc32s(input, folders);
                 }
                 default -> throw new UnsupportedOperationException(
                         "Unsupported 7z unpack info property: 0x" + Integer.toHexString(property)
@@ -408,14 +490,14 @@ public final class SevenZipHeaderParser {
     }
 
     /// Requires the remaining `UnPackInfo` block to contain only supported optional data and `kEnd`.
-    private static void requireUnPackInfoEnd(HeaderInput input, int folderCount) throws IOException {
+    private static void requireUnPackInfoEnd(HeaderInput input, FolderInfo[] folders) throws IOException {
         while (true) {
             int property = input.readId();
             switch (property) {
                 case K_END -> {
                     return;
                 }
-                case K_CRC -> skipDigests(input, folderCount);
+                case K_CRC -> readFolderCrc32s(input, folders);
                 default -> throw new UnsupportedOperationException(
                         "Unsupported 7z unpack info property after sizes: 0x" + Integer.toHexString(property)
                 );
@@ -435,6 +517,14 @@ public final class SevenZipHeaderParser {
             return folders;
         }
         return readInlineFolders(input, folderCount);
+    }
+
+    /// Reads and stores folder CRC-32 values.
+    private static void readFolderCrc32s(HeaderInput input, FolderInfo[] folders) throws IOException {
+        long[] crc32s = readDigests(input, folders.length);
+        for (int index = 0; index < folders.length; index++) {
+            folders[index].setCrc32(crc32s[index]);
+        }
     }
 
     /// Reads inline folder definitions.
@@ -577,6 +667,7 @@ public final class SevenZipHeaderParser {
         String[] names = new String[fileCount];
         boolean[] emptyStreams = new boolean[fileCount];
         boolean[] emptyFiles = new boolean[fileCount];
+        boolean[] antiFiles = new boolean[fileCount];
         FileTime[] creationTimes = new FileTime[fileCount];
         FileTime[] lastAccessTimes = new FileTime[fileCount];
         FileTime[] lastModifiedTimes = new FileTime[fileCount];
@@ -590,6 +681,7 @@ public final class SevenZipHeaderParser {
                         names,
                         emptyStreams,
                         emptyFiles,
+                        antiFiles,
                         creationTimes,
                         lastAccessTimes,
                         lastModifiedTimes,
@@ -603,6 +695,7 @@ public final class SevenZipHeaderParser {
             switch (property) {
                 case K_EMPTY_STREAM -> readBooleanVector(input, emptyStreams);
                 case K_EMPTY_FILE -> readEmptyFileVector(input, emptyStreams, emptyFiles);
+                case K_ANTI -> readAntiFileVector(input, emptyStreams, antiFiles);
                 case K_NAME -> readNames(input, end, names, externalData);
                 case K_CREATION_TIME -> readFileTimes(input, end, creationTimes, externalData);
                 case K_LAST_ACCESS_TIME -> readFileTimes(input, end, lastAccessTimes, externalData);
@@ -619,6 +712,7 @@ public final class SevenZipHeaderParser {
             String[] names,
             boolean[] emptyStreams,
             boolean[] emptyFiles,
+            boolean[] antiFiles,
             FileTime[] creationTimes,
             FileTime[] lastAccessTimes,
             FileTime[] lastModifiedTimes,
@@ -631,6 +725,9 @@ public final class SevenZipHeaderParser {
             String name = names[index];
             if (name == null || name.isEmpty()) {
                 throw new IOException("7z file entry is missing a name");
+            }
+            if (antiFiles[index]) {
+                throw new IOException("Unsupported 7z anti item: " + name);
             }
             if (emptyStreams[index]) {
                 boolean directory = !emptyFiles[index];
@@ -656,6 +753,8 @@ public final class SevenZipHeaderParser {
                         streamsInfo.dataOffset(streamIndex),
                         streamsInfo.decodedOffset(streamIndex),
                         streamsInfo.packedSize(streamIndex),
+                        streamsInfo.packedCrc32(streamIndex),
+                        streamsInfo.crc32(streamIndex),
                         streamsInfo.method(streamIndex),
                         creationTimes[index],
                         lastAccessTimes[index],
@@ -687,13 +786,31 @@ public final class SevenZipHeaderParser {
             boolean[] emptyStreams,
             boolean[] emptyFiles
     ) throws IOException {
-        boolean[] emptyFileValues = new boolean[countTrue(emptyStreams)];
-        readBooleanVector(input, emptyFileValues);
+        readEmptyStreamMappedVector(input, emptyStreams, emptyFiles);
+    }
+
+    /// Reads the `kAnti` vector and maps it back to file indices.
+    private static void readAntiFileVector(
+            HeaderInput input,
+            boolean[] emptyStreams,
+            boolean[] antiFiles
+    ) throws IOException {
+        readEmptyStreamMappedVector(input, emptyStreams, antiFiles);
+    }
+
+    /// Reads a vector for empty-stream entries and maps it back to file indices.
+    private static void readEmptyStreamMappedVector(
+            HeaderInput input,
+            boolean[] emptyStreams,
+            boolean[] target
+    ) throws IOException {
+        boolean[] values = new boolean[countTrue(emptyStreams)];
+        readBooleanVector(input, values);
 
         int valueIndex = 0;
         for (int index = 0; index < emptyStreams.length; index++) {
             if (emptyStreams[index]) {
-                emptyFiles[index] = emptyFileValues[valueIndex++];
+                target[index] = values[valueIndex++];
             }
         }
     }
@@ -854,8 +971,33 @@ public final class SevenZipHeaderParser {
         }
     }
 
+    /// Validates the CRC-32 of decoded bytes when an expected digest is present.
+    private static void validateCrc32(byte[] bytes, long expectedCrc32, String description) throws IOException {
+        if (expectedCrc32 == SevenZipEntryMetadata.UNKNOWN_CRC32) {
+            return;
+        }
+        CRC32 crc32 = new CRC32();
+        crc32.update(bytes);
+        if (crc32.getValue() != expectedCrc32) {
+            throw new IOException(description + " does not match CRC-32");
+        }
+    }
+
     /// Skips CRC digest definitions.
     private static void skipDigests(HeaderInput input, int count) throws IOException {
+        readDigests(input, count);
+    }
+
+    /// Creates an array of unknown CRC-32 values.
+    private static long[] unknownCrc32s(int count) {
+        long[] result = new long[count];
+        Arrays.fill(result, SevenZipEntryMetadata.UNKNOWN_CRC32);
+        return result;
+    }
+
+    /// Reads CRC digest definitions.
+    private static long[] readDigests(HeaderInput input, int count) throws IOException {
+        long[] digests = unknownCrc32s(count);
         boolean[] defined = new boolean[count];
         int allAreDefined = input.readUnsignedByte();
         if (allAreDefined != 0) {
@@ -863,18 +1005,19 @@ public final class SevenZipHeaderParser {
         } else {
             readBooleanVector(input, defined);
         }
-        for (boolean value : defined) {
-            if (value) {
-                input.skipBytes(4);
+        for (int index = 0; index < defined.length; index++) {
+            if (defined[index]) {
+                digests[index] = Integer.toUnsignedLong(input.readIntLE());
             }
         }
+        return digests;
     }
 
     /// Stores parsed pack stream information.
     @NotNullByDefault
     private static final class PackInfo {
         /// The empty pack information value.
-        private static final PackInfo EMPTY = new PackInfo(0L, new long[0]);
+        private static final PackInfo EMPTY = new PackInfo(0L, new long[0], new long[0]);
 
         /// The first pack stream position relative to the first byte after the signature header.
         private final long packPosition;
@@ -882,10 +1025,17 @@ public final class SevenZipHeaderParser {
         /// The pack stream sizes.
         private final long[] packSizes;
 
+        /// The expected packed stream CRC-32 values.
+        private final long[] packCrc32s;
+
         /// Creates pack stream information.
-        private PackInfo(long packPosition, long[] packSizes) {
+        private PackInfo(long packPosition, long[] packSizes, long[] packCrc32s) {
+            if (packSizes.length != packCrc32s.length) {
+                throw new IllegalArgumentException("packSizes and packCrc32s must have the same length");
+            }
             this.packPosition = packPosition;
             this.packSizes = packSizes.clone();
+            this.packCrc32s = packCrc32s.clone();
         }
     }
 
@@ -893,13 +1043,16 @@ public final class SevenZipHeaderParser {
     @NotNullByDefault
     private static final class StreamsInfo {
         /// The empty streams information value.
-        private static final StreamsInfo EMPTY = new StreamsInfo(0L, new long[0], new FolderInfo[0], null);
+        private static final StreamsInfo EMPTY = new StreamsInfo(0L, new long[0], new long[0], new FolderInfo[0], null);
 
         /// The first pack stream position relative to the first byte after the signature header.
         private final long packPosition;
 
         /// The pack stream sizes.
         private final long[] packSizes;
+
+        /// The expected packed stream CRC-32 values.
+        private final long[] packCrc32s;
 
         /// The parsed folders.
         private final FolderInfo[] folders;
@@ -911,14 +1064,19 @@ public final class SevenZipHeaderParser {
         private StreamsInfo(
                 long packPosition,
                 long[] packSizes,
+                long[] packCrc32s,
                 FolderInfo[] folders,
                 @Nullable SubStreamsInfo subStreamsInfo
         ) {
             if (packSizes.length != folders.length) {
                 throw new IllegalArgumentException("packSizes and folders must have the same length");
             }
+            if (packCrc32s.length != folders.length) {
+                throw new IllegalArgumentException("packCrc32s and folders must have the same length");
+            }
             this.packPosition = packPosition;
             this.packSizes = packSizes.clone();
+            this.packCrc32s = packCrc32s.clone();
             this.folders = folders.clone();
             this.subStreamsInfo = subStreamsInfo != null ? subStreamsInfo : SubStreamsInfo.fromFolders(folders);
         }
@@ -948,10 +1106,26 @@ public final class SevenZipHeaderParser {
             return folder.isCopyOnly() ? stream.size() : packSizes[stream.folderIndex()];
         }
 
+        /// Returns the expected packed CRC-32 for a fully addressable packed stream.
+        private long packedCrc32(int index) throws IOException {
+            requireStreamIndex(index);
+            SubStreamInfo stream = subStreamsInfo.stream(index);
+            if (!streamCoversFolder(stream)) {
+                return SevenZipEntryMetadata.UNKNOWN_CRC32;
+            }
+            return packCrc32s[stream.folderIndex()];
+        }
+
         /// Returns the folder method for a stream.
         private SevenZipFolderMethod method(int index) throws IOException {
             requireStreamIndex(index);
             return folders[subStreamsInfo.stream(index).folderIndex()].method();
+        }
+
+        /// Returns the expected unpacked CRC-32 for a stream, or `UNKNOWN_CRC32` when not present.
+        private long crc32(int index) throws IOException {
+            requireStreamIndex(index);
+            return subStreamsInfo.stream(index).crc32();
         }
 
         /// Returns the absolute archive data offset for a stream.
@@ -970,6 +1144,11 @@ public final class SevenZipHeaderParser {
                 offset = checkedAdd(offset, stream.decodedOffset(), "7z packed stream offset is too large");
             }
             return offset;
+        }
+
+        /// Returns whether the given stream covers the entire decoded folder output.
+        private boolean streamCoversFolder(SubStreamInfo stream) throws IOException {
+            return stream.decodedOffset() == 0L && stream.size() == folders[stream.folderIndex()].unpackSize();
         }
 
         /// Requires a stream index to be valid and supported.
@@ -996,7 +1175,7 @@ public final class SevenZipHeaderParser {
             SubStreamInfo[] streams = new SubStreamInfo[folders.length];
             for (int index = 0; index < folders.length; index++) {
                 try {
-                    streams[index] = new SubStreamInfo(index, 0L, folders[index].unpackSize());
+                    streams[index] = new SubStreamInfo(index, 0L, folders[index].unpackSize(), folders[index].crc32());
                 } catch (IOException exception) {
                     throw new IllegalStateException("folder unpack size should already be validated", exception);
                 }
@@ -1057,8 +1236,11 @@ public final class SevenZipHeaderParser {
         /// The decoded stream size.
         private final long size;
 
+        /// The expected uncompressed stream CRC-32, or `UNKNOWN_CRC32` when not present.
+        private final long crc32;
+
         /// Creates substream information.
-        private SubStreamInfo(int folderIndex, long decodedOffset, long size) {
+        private SubStreamInfo(int folderIndex, long decodedOffset, long size, long crc32) {
             if (folderIndex < 0) {
                 throw new IllegalArgumentException("folderIndex must be non-negative");
             }
@@ -1068,9 +1250,13 @@ public final class SevenZipHeaderParser {
             if (size < 0) {
                 throw new IllegalArgumentException("size must be non-negative");
             }
+            if (crc32 < SevenZipEntryMetadata.UNKNOWN_CRC32 || crc32 > 0xffff_ffffL) {
+                throw new IllegalArgumentException("crc32 must be an unsigned 32-bit value or UNKNOWN_CRC32");
+            }
             this.folderIndex = folderIndex;
             this.decodedOffset = decodedOffset;
             this.size = size;
+            this.crc32 = crc32;
         }
 
         /// Returns the folder index that contains this stream.
@@ -1086,6 +1272,11 @@ public final class SevenZipHeaderParser {
         /// Returns the decoded stream size.
         private long size() {
             return size;
+        }
+
+        /// Returns the expected uncompressed stream CRC-32, or `UNKNOWN_CRC32` when not present.
+        private long crc32() {
+            return crc32;
         }
     }
 
@@ -1151,6 +1342,9 @@ public final class SevenZipHeaderParser {
         /// The unpack size produced by each coder, indexed by coder declaration order.
         private long[] unpackSizes = new long[0];
 
+        /// The expected final folder CRC-32, or `UNKNOWN_CRC32` when not present.
+        private long crc32 = SevenZipEntryMetadata.UNKNOWN_CRC32;
+
         /// Creates folder information.
         private FolderInfo(CoderInfo[] coders, int[] coderOrder) {
             if (coders.length == 0) {
@@ -1187,9 +1381,22 @@ public final class SevenZipHeaderParser {
             this.unpackSizes = sizes;
         }
 
+        /// Stores the expected final folder CRC-32.
+        private void setCrc32(long crc32) {
+            if (crc32 < SevenZipEntryMetadata.UNKNOWN_CRC32 || crc32 > 0xffff_ffffL) {
+                throw new IllegalArgumentException("crc32 must be an unsigned 32-bit value or UNKNOWN_CRC32");
+            }
+            this.crc32 = crc32;
+        }
+
         /// Returns the final folder unpack size.
         private long unpackSize() throws IOException {
             return method().finalUnpackSize();
+        }
+
+        /// Returns the expected final folder CRC-32, or `UNKNOWN_CRC32` when not present.
+        private long crc32() {
+            return crc32;
         }
 
         /// Returns the folder method in decoder pipeline order.

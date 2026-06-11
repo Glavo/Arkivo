@@ -7,6 +7,7 @@ import org.glavo.arkivo.zip.ZipEncryption;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.IOException;
 import java.util.Objects;
 
 import static org.glavo.arkivo.zip.internal.ZipLittleEndian.readUnsignedShort;
@@ -63,19 +64,25 @@ final class ZipAesExtraField {
 
     /// Reads the first valid WinZip AES extra field, or returns `null` when no valid field is present.
     static @Nullable ZipAesExtraField read(byte[] extraData) {
+        try {
+            return readValidated(extraData);
+        } catch (IOException ignored) {
+            return null;
+        }
+    }
+
+    /// Reads the first valid WinZip AES extra field after validating extra field record boundaries.
+    static @Nullable ZipAesExtraField readValidated(byte[] extraData) throws IOException {
         int offset = 0;
-        while (offset + 4 <= extraData.length) {
-            int fieldId = readUnsignedShort(extraData, offset);
-            int dataSize = readUnsignedShort(extraData, offset + 2);
-            int dataOffset = offset + 4;
-            int nextOffset = dataOffset + dataSize;
-            if (nextOffset > extraData.length) {
-                return null;
+        while (offset < extraData.length) {
+            ZipExtraFields.Field field = ZipExtraFields.read(extraData, offset);
+            if (field.id() == ZipConstants.WINZIP_AES_EXTRA_FIELD_ID) {
+                ZipAesExtraField aes = readData(extraData, field.dataOffset(), field.dataSize());
+                if (aes != null) {
+                    return aes;
+                }
             }
-            if (fieldId == ZipConstants.WINZIP_AES_EXTRA_FIELD_ID) {
-                return readData(extraData, dataOffset, dataSize);
-            }
-            offset = nextOffset;
+            offset = field.nextOffset();
         }
         return null;
     }
@@ -190,6 +197,14 @@ final class ZipAesExtraField {
     /// Returns the actual ZIP compression method.
     int compressionMethod() {
         return compressionMethod;
+    }
+
+    /// Returns whether this field has the same metadata as another parsed WinZip AES field.
+    boolean metadataMatches(ZipAesExtraField other) {
+        Objects.requireNonNull(other, "other");
+        return vendorVersion == other.vendorVersion
+                && strength == other.strength
+                && compressionMethod == other.compressionMethod;
     }
 
     /// Encodes this WinZip AES extra field.

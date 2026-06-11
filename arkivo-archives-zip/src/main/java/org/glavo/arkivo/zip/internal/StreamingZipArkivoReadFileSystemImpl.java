@@ -239,6 +239,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             int extraLength = readUnsignedShort(input);
             byte[] rawName = readBytes(nameLength);
             byte[] extraData = readBytes(extraLength);
+            ZipExtraFields.validate(extraData);
             if (!hasDataDescriptor && (headerCompressedSize == UINT32_MAX || headerUncompressedSize == UINT32_MAX)) {
                 Zip64LocalSizes zip64Sizes = readZip64LocalSizes(
                         extraData,
@@ -426,6 +427,53 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         );
     }
 
+    /// Reads stored-entry descriptor fields after a consumed signature.
+    private static boolean readStoredDataDescriptorAfterSignature(
+            PushbackInputStream input,
+            boolean zip64,
+            long crc32,
+            long compressedSize,
+            long uncompressedSize,
+            String failureMessage
+    ) throws IOException {
+        byte[] descriptor = new byte[dataDescriptorSize(false)];
+        int offset = 0;
+        while (offset < descriptor.length) {
+            int read = input.read(descriptor, offset, descriptor.length - offset);
+            if (read < 0) {
+                throw new EOFException("Unexpected end of ZIP data descriptor");
+            }
+            offset += read;
+        }
+        if (zip64) {
+            byte[] tail = new byte[dataDescriptorSize(true) - dataDescriptorSize(false)];
+            int tailSize = readPotentialZip64DescriptorTail(input, tail);
+            if (tailSize == tail.length) {
+                byte[] zip64Descriptor = new byte[dataDescriptorSize(true)];
+                System.arraycopy(descriptor, 0, zip64Descriptor, 0, descriptor.length);
+                System.arraycopy(tail, 0, zip64Descriptor, descriptor.length, tail.length);
+                if (matchesDataDescriptor(zip64Descriptor, crc32, compressedSize, uncompressedSize)) {
+                    return true;
+                }
+                if (matchesDataDescriptorSizes(zip64Descriptor, compressedSize, uncompressedSize)
+                        && followedByZipRecordSignature(input)) {
+                    throw new IOException(failureMessage);
+                }
+                unread(input, tail, tailSize);
+            }
+        }
+
+        if (matchesDataDescriptor(descriptor, crc32, compressedSize, uncompressedSize)) {
+            return true;
+        }
+        if (matchesDataDescriptorSizes(descriptor, compressedSize, uncompressedSize)
+                && followedByZipRecordSignature(input)) {
+            throw new IOException(failureMessage);
+        }
+        unread(input, descriptor, descriptor.length);
+        return false;
+    }
+
     /// Reads descriptor fields after a consumed signature, checks sizes, and pushes the fields back.
     private static boolean readAndMatchesDataDescriptorSizesAfterSignature(
             PushbackInputStream input,
@@ -524,6 +572,27 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         return offset;
     }
 
+    /// Returns whether the next bytes are a ZIP stream record signature without consuming them.
+    private static boolean followedByZipRecordSignature(PushbackInputStream input) throws IOException {
+        byte[] signatureBytes = new byte[Integer.BYTES];
+        int length = 0;
+        try {
+            while (length < signatureBytes.length) {
+                int read = input.read(signatureBytes, length, signatureBytes.length - length);
+                if (read < 0) {
+                    return false;
+                }
+                length += read;
+            }
+            int signature = readInt(signatureBytes, 0);
+            return signature == LOCAL_FILE_HEADER_SIGNATURE
+                    || signature == CENTRAL_DIRECTORY_HEADER_SIGNATURE
+                    || signature == END_OF_CENTRAL_DIRECTORY_SIGNATURE;
+        } finally {
+            unread(input, signatureBytes, length);
+        }
+    }
+
     /// Pushes bytes back in reverse read order.
     private static void unread(PushbackInputStream input, byte[] bytes, int length) throws IOException {
         for (int index = length - 1; index >= 0; index--) {
@@ -591,20 +660,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
 
     /// Returns whether extra data contains a ZIP64 extended information field.
     private static boolean hasZip64ExtraField(byte[] extraData) throws IOException {
-        int offset = 0;
-        while (offset + 4 <= extraData.length) {
-            int fieldId = readUnsignedShortLE(extraData, offset);
-            int fieldSize = readUnsignedShortLE(extraData, offset + 2);
-            int nextOffset = offset + 4 + fieldSize;
-            if (nextOffset > extraData.length) {
-                throw new IOException("Invalid ZIP extra field length");
-            }
-            if (fieldId == ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID) {
-                return true;
-            }
-            offset = nextOffset;
-        }
-        return false;
+        return ZipExtraFields.find(extraData, ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID) != null;
     }
 
     /// Reads local ZIP64 size values when 32-bit local header fields require them.
@@ -619,29 +675,21 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             return new Zip64LocalSizes(uncompressedSize, compressedSize);
         }
 
-        int offset = 0;
-        while (offset + 4 <= extraData.length) {
-            int fieldId = readUnsignedShortLE(extraData, offset);
-            int fieldSize = readUnsignedShortLE(extraData, offset + 2);
-            int dataOffset = offset + 4;
-            int nextOffset = dataOffset + fieldSize;
-            if (nextOffset > extraData.length) {
-                throw new IOException("Invalid ZIP extra field length");
-            }
-            if (fieldId == ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID) {
-                if (needsUncompressedSize) {
-                    uncompressedSize = readZip64Size(extraData, dataOffset, nextOffset);
-                    dataOffset += Long.BYTES;
-                }
-                if (needsCompressedSize) {
-                    compressedSize = readZip64Size(extraData, dataOffset, nextOffset);
-                }
-                return new Zip64LocalSizes(uncompressedSize, compressedSize);
-            }
-            offset = nextOffset;
+        ZipExtraFields.Field field = ZipExtraFields.find(extraData, ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID);
+        if (field == null) {
+            throw new IOException("Required ZIP64 extended information extra field is missing");
         }
 
-        throw new IOException("Required ZIP64 extended information extra field is missing");
+        int dataOffset = field.dataOffset();
+        int dataEnd = field.nextOffset();
+        if (needsUncompressedSize) {
+            uncompressedSize = readZip64Size(extraData, dataOffset, dataEnd);
+            dataOffset += Long.BYTES;
+        }
+        if (needsCompressedSize) {
+            compressedSize = readZip64Size(extraData, dataOffset, dataEnd);
+        }
+        return new Zip64LocalSizes(uncompressedSize, compressedSize);
     }
 
     /// Reads one non-negative ZIP64 size value from extra data.
@@ -654,12 +702,6 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             throw new IOException("ZIP64 size is too large");
         }
         return value;
-    }
-
-    /// Reads a little-endian unsigned 16-bit value from a byte array.
-    private static int readUnsignedShortLE(byte[] value, int offset) {
-        return Byte.toUnsignedInt(value[offset])
-                | (Byte.toUnsignedInt(value[offset + 1]) << 8);
     }
 
     /// Writes one little-endian `int` value into a byte array.
@@ -723,7 +765,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
     private InputStream entryInputStream(LocalEntry entry) throws IOException {
         boolean hasDataDescriptor = (entry.flags & DATA_DESCRIPTOR_FLAG) != 0;
         boolean encrypted = entry.encrypted();
-        ZipAesExtraField aes = encrypted ? ZipAesExtraField.read(entry.extraData) : null;
+        ZipAesExtraField aes = encrypted ? ZipAesExtraField.readValidated(entry.extraData) : null;
         if (encrypted && aes == null) {
             requireTraditionalEncryption(entry);
         }
@@ -750,15 +792,34 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
                 }
                 throw new IOException("Unsupported ZIP compression method: " + compressionMethod);
             }
+            if (compressionMethod != STORED_METHOD && compressionMethod != DEFLATED_METHOD) {
+                throw new IOException("Unsupported ZIP compression method: " + compressionMethod);
+            }
+
             InputStream encryptedData = new BoundedInputStream(input, entry.compressedSize);
-            InputStream decryptedData = openAesDecryptingStream(entry, aes, encryptedData);
+            InputStream decryptedData;
+            try {
+                decryptedData = openAesDecryptingStream(entry, aes, encryptedData);
+            } catch (IOException | RuntimeException | Error exception) {
+                closeEntryAfterFailedSetup(encryptedData, exception);
+                throw exception;
+            }
             if (compressionMethod == STORED_METHOD) {
-                return decryptedData;
+                return new KnownSizeEntryInputStream(
+                        decryptedData,
+                        ZipArkivoEntryAttributes.UNKNOWN_CRC32,
+                        entry.uncompressedSize
+                );
             }
-            if (compressionMethod == DEFLATED_METHOD) {
-                return new EntryInflaterInputStream(decryptedData, new Inflater(true), null, false);
-            }
-            throw new IOException("Unsupported ZIP compression method: " + compressionMethod);
+            return new EntryInflaterInputStream(
+                    decryptedData,
+                    new Inflater(true),
+                    null,
+                    false,
+                    ZipArkivoEntryAttributes.UNKNOWN_SIZE,
+                    ZipArkivoEntryAttributes.UNKNOWN_CRC32,
+                    entry.uncompressedSize
+            );
         }
 
         if (compressionMethod == STORED_METHOD) {
@@ -773,7 +834,8 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
                 return new StoredDataDescriptorInputStream(input, entry.zip64DataDescriptor);
             }
             InputStream stored = new BoundedInputStream(input, entry.compressedSize);
-            return encrypted ? openTraditionalDecryptingStream(entry, stored) : stored;
+            InputStream data = encrypted ? openTraditionalKnownSizeDecryptingStream(entry, stored) : stored;
+            return new KnownSizeEntryInputStream(data, entry.crc32, entry.uncompressedSize);
         }
         if (compressionMethod == DEFLATED_METHOD) {
             if (hasDataDescriptor) {
@@ -784,14 +846,30 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
                             entry.zip64DataDescriptor
                     );
                 }
-                return new EntryInflaterInputStream(input, new Inflater(true), input, entry.zip64DataDescriptor);
+                return new EntryInflaterInputStream(
+                        input,
+                        new Inflater(true),
+                        input,
+                        entry.zip64DataDescriptor,
+                        ZipArkivoEntryAttributes.UNKNOWN_SIZE,
+                        ZipArkivoEntryAttributes.UNKNOWN_CRC32,
+                        ZipArkivoEntryAttributes.UNKNOWN_SIZE
+                );
             }
 
             InputStream compressed = new BoundedInputStream(input, entry.compressedSize);
             if (encrypted) {
-                compressed = openTraditionalDecryptingStream(entry, compressed);
+                compressed = openTraditionalKnownSizeDecryptingStream(entry, compressed);
             }
-            return new EntryInflaterInputStream(compressed, new Inflater(true), null, false);
+            return new EntryInflaterInputStream(
+                    compressed,
+                    new Inflater(true),
+                    null,
+                    false,
+                    encrypted ? ZipArkivoEntryAttributes.UNKNOWN_SIZE : entry.compressedSize,
+                    entry.crc32,
+                    entry.uncompressedSize
+            );
         }
         throw new IOException("Unsupported ZIP compression method: " + compressionMethod);
     }
@@ -832,6 +910,16 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         );
     }
 
+    /// Opens a traditional ZIP decrypting stream and drains known-size raw data if setup fails.
+    private InputStream openTraditionalKnownSizeDecryptingStream(LocalEntry entry, InputStream input) throws IOException {
+        try {
+            return openTraditionalDecryptingStream(entry, input);
+        } catch (IOException | RuntimeException | Error exception) {
+            closeEntryAfterFailedSetup(input, exception);
+            throw exception;
+        }
+    }
+
     /// Opens a traditional ZIP decryptor after consuming and validating the encryption header.
     private ZipTraditionalCrypto.Decryptor openTraditionalDecryptor(
             LocalEntry entry,
@@ -870,6 +958,70 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             return entry.lastModifiedDosTime >>> 8;
         }
         return (int) (entry.crc32 >>> 24);
+    }
+
+    /// Drains a known-size entry after stream setup fails and clears current entry state when recovery succeeds.
+    private void closeEntryAfterFailedSetup(InputStream input, Throwable failure) {
+        try {
+            input.close();
+            currentEntry = null;
+            currentStreamingEntry = null;
+        } catch (IOException | RuntimeException | Error exception) {
+            failure.addSuppressed(exception);
+        }
+    }
+
+    /// Validates known-size entry data against local file header metadata.
+    private static void validateKnownEntryData(
+            long compressedSize,
+            long crc32,
+            long uncompressedSize,
+            long expectedCompressedSize,
+            long expectedCrc32,
+            long expectedUncompressedSize
+    ) throws IOException {
+        if (expectedCompressedSize != ZipArkivoEntryAttributes.UNKNOWN_SIZE
+                && compressedSize != expectedCompressedSize) {
+            throw new IOException("ZIP entry data does not match local header");
+        }
+        if (expectedCrc32 != ZipArkivoEntryAttributes.UNKNOWN_CRC32 && crc32 != expectedCrc32) {
+            throw new IOException("ZIP entry data does not match local header");
+        }
+        if (expectedUncompressedSize != ZipArkivoEntryAttributes.UNKNOWN_SIZE
+                && uncompressedSize != expectedUncompressedSize) {
+            throw new IOException("ZIP entry data does not match local header");
+        }
+    }
+
+    /// Returns the current failure with the given exception added as a suppressed failure when needed.
+    private static IOException mergeFailure(@Nullable IOException failure, IOException exception) {
+        if (failure != null) {
+            failure.addSuppressed(exception);
+            return failure;
+        }
+        return exception;
+    }
+
+    /// Returns the current failure with the given exception added as a suppressed failure when needed.
+    private static Throwable mergeFailure(@Nullable Throwable failure, Throwable exception) {
+        if (failure != null) {
+            failure.addSuppressed(exception);
+            return failure;
+        }
+        return exception;
+    }
+
+    /// Throws the given failure while preserving its original checked or unchecked type.
+    private static void throwFailure(@Nullable Throwable failure) throws IOException {
+        if (failure instanceof IOException exception) {
+            throw exception;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure instanceof Error exception) {
+            throw exception;
+        }
     }
 
     /// Closes or drains the current entry.
@@ -928,6 +1080,142 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         }
     }
 
+    /// Reads known-size ZIP entry data and validates it when the stream ends.
+    @NotNullByDefault
+    private static final class KnownSizeEntryInputStream extends InputStream {
+        /// The source stream.
+        private final InputStream input;
+
+        /// The expected CRC-32 value.
+        private final long expectedCrc32;
+
+        /// The expected uncompressed size.
+        private final long expectedUncompressedSize;
+
+        /// The CRC-32 of bytes returned so far.
+        private final CRC32 crc32 = new CRC32();
+
+        /// The number of bytes returned so far.
+        private long uncompressedSize;
+
+        /// Whether end-of-entry validation has run.
+        private boolean finishedEntry;
+
+        /// Whether this stream has been closed.
+        private boolean closed;
+
+        /// Creates a known-size entry stream.
+        private KnownSizeEntryInputStream(InputStream input, long expectedCrc32, long expectedUncompressedSize) {
+            this.input = Objects.requireNonNull(input, "input");
+            this.expectedCrc32 = expectedCrc32;
+            this.expectedUncompressedSize = expectedUncompressedSize;
+        }
+
+        /// Reads one byte from the entry.
+        @Override
+        public int read() throws IOException {
+            byte[] buffer = new byte[1];
+            int read = read(buffer, 0, 1);
+            return read < 0 ? -1 : Byte.toUnsignedInt(buffer[0]);
+        }
+
+        /// Reads bytes from the entry.
+        @Override
+        public int read(byte[] bytes, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, bytes.length);
+            ensureOpen();
+            return readUnchecked(bytes, offset, length);
+        }
+
+        /// Reads bytes without checking the wrapper open state for close-time draining.
+        private int readUnchecked(byte[] bytes, int offset, int length) throws IOException {
+            if (finishedEntry) {
+                return -1;
+            }
+            if (length == 0) {
+                return 0;
+            }
+            int read = input.read(bytes, offset, length);
+            if (read > 0) {
+                crc32.update(bytes, offset, read);
+                uncompressedSize += read;
+            }
+            if (read < 0) {
+                finishEntry();
+            }
+            return read;
+        }
+
+        /// Closes this entry stream after draining unread bytes.
+        @Override
+        public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            closed = true;
+
+            Throwable failure = null;
+            try {
+                byte[] discard = new byte[8192];
+                while (readUnchecked(discard, 0, discard.length) >= 0) {
+                    // Drain known-size data so it can be validated.
+                }
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+            }
+            try {
+                finishEntry();
+            } catch (IOException | RuntimeException | Error exception) {
+                if (failure != null) {
+                    failure.addSuppressed(exception);
+                } else {
+                    failure = exception;
+                }
+            }
+            try {
+                input.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                if (failure != null) {
+                    failure.addSuppressed(exception);
+                } else {
+                    failure = exception;
+                }
+            }
+            if (failure instanceof IOException exception) {
+                throw exception;
+            }
+            if (failure instanceof RuntimeException exception) {
+                throw exception;
+            }
+            if (failure instanceof Error exception) {
+                throw exception;
+            }
+        }
+
+        /// Finishes the current entry and validates the known metadata.
+        private void finishEntry() throws IOException {
+            if (finishedEntry) {
+                return;
+            }
+            finishedEntry = true;
+            validateKnownEntryData(
+                    ZipArkivoEntryAttributes.UNKNOWN_SIZE,
+                    crc32.getValue(),
+                    uncompressedSize,
+                    ZipArkivoEntryAttributes.UNKNOWN_SIZE,
+                    expectedCrc32,
+                    expectedUncompressedSize
+            );
+        }
+
+        /// Requires this stream to be open.
+        private void ensureOpen() throws IOException {
+            if (closed) {
+                throw new IOException("ZIP entry input stream is closed");
+            }
+        }
+    }
+
     /// Reads bytes from the current ZIP entry.
     @NotNullByDefault
     private static final class CurrentEntryInputStream extends InputStream {
@@ -981,12 +1269,25 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
                     return;
                 }
                 inputOpen = false;
+                Throwable failure = null;
                 try {
                     input.transferTo(OutputStream.nullOutputStream());
-                    input.close();
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = exception;
                 } finally {
-                    owner.closeCurrentInput(this);
+                    try {
+                        input.close();
+                    } catch (IOException | RuntimeException | Error exception) {
+                        if (failure != null) {
+                            failure.addSuppressed(exception);
+                        } else {
+                            failure = exception;
+                        }
+                    } finally {
+                        owner.closeCurrentInput(this);
+                    }
                 }
+                throwFailure(failure);
             } finally {
                 owner.unlock();
             }
@@ -1008,25 +1309,50 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// Whether this entry's data descriptor stores ZIP64 sizes.
         private final boolean zip64DataDescriptor;
 
+        /// The expected CRC-32 value when no data descriptor is present.
+        private final long expectedCrc32;
+
+        /// The expected compressed size when no data descriptor is present.
+        private final long expectedCompressedSize;
+
+        /// The expected uncompressed size when no data descriptor is present.
+        private final long expectedUncompressedSize;
+
         /// Whether end-of-entry cleanup has run.
         private boolean finishedEntry;
+
+        /// Whether this stream has been closed.
+        private boolean closed;
 
         /// Creates an entry inflater stream.
         private EntryInflaterInputStream(
                 InputStream input,
                 Inflater inflater,
                 @Nullable PushbackInputStream pushbackInput,
-                boolean zip64DataDescriptor
+                boolean zip64DataDescriptor,
+                long expectedCompressedSize,
+                long expectedCrc32,
+                long expectedUncompressedSize
         ) {
             super(input, inflater);
             this.inflater = inflater;
             this.pushbackInput = pushbackInput;
             this.zip64DataDescriptor = zip64DataDescriptor;
+            this.expectedCompressedSize = expectedCompressedSize;
+            this.expectedCrc32 = expectedCrc32;
+            this.expectedUncompressedSize = expectedUncompressedSize;
         }
 
         /// Reads bytes from the inflated entry.
         @Override
         public int read(byte[] bytes, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, bytes.length);
+            ensureOpen();
+            return readUnchecked(bytes, offset, length);
+        }
+
+        /// Reads bytes without checking the wrapper open state for close-time draining.
+        private int readUnchecked(byte[] bytes, int offset, int length) throws IOException {
             if (finishedEntry) {
                 return -1;
             }
@@ -1043,14 +1369,26 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// Closes this inflater stream.
         @Override
         public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            closed = true;
+
+            Throwable failure = null;
             try {
                 byte[] discard = new byte[8192];
-                while (read(discard) >= 0) {
+                while (readUnchecked(discard, 0, discard.length) >= 0) {
                     // Drain the deflate stream so the following descriptor can be parsed.
                 }
-            } finally {
-                finishEntry();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
             }
+            try {
+                finishEntry();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = mergeFailure(failure, exception);
+            }
+            throwFailure(failure);
         }
 
         /// Finishes the current entry and releases the inflater.
@@ -1076,10 +1414,35 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
                         throw new IOException("ZIP data descriptor does not match entry data");
                     }
                 } else {
-                    in.close();
+                    Throwable failure = null;
+                    try {
+                        validateKnownEntryData(
+                                inflater.getBytesRead(),
+                                crc32.getValue(),
+                                inflater.getBytesWritten(),
+                                expectedCompressedSize,
+                                expectedCrc32,
+                                expectedUncompressedSize
+                        );
+                    } catch (IOException | RuntimeException | Error exception) {
+                        failure = exception;
+                    }
+                    try {
+                        in.close();
+                    } catch (IOException | RuntimeException | Error exception) {
+                        failure = mergeFailure(failure, exception);
+                    }
+                    throwFailure(failure);
                 }
             } finally {
                 inflater.end();
+            }
+        }
+
+        /// Requires this stream to be open.
+        private void ensureOpen() throws IOException {
+            if (closed) {
+                throw new IOException("ZIP entry input stream is closed");
             }
         }
     }
@@ -1102,6 +1465,9 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// Whether the data descriptor has been consumed.
         private boolean finishedEntry;
 
+        /// Whether this stream has been closed.
+        private boolean closed;
+
         /// Creates a stored entry input stream.
         private StoredDataDescriptorInputStream(PushbackInputStream input, boolean zip64DataDescriptor) {
             this.input = Objects.requireNonNull(input, "input");
@@ -1111,6 +1477,12 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// Reads one stored entry byte.
         @Override
         public int read() throws IOException {
+            ensureOpen();
+            return readUnchecked();
+        }
+
+        /// Reads one stored entry byte without checking the wrapper open state for close-time draining.
+        private int readUnchecked() throws IOException {
             if (finishedEntry) {
                 return -1;
             }
@@ -1138,14 +1510,21 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
                 }
             }
 
-            if (!readAndMatchesDataDescriptorAfterSignature(
-                    input,
-                    zip64DataDescriptor,
-                    crc32.getValue(),
-                    size,
-                    size,
-                    true
-            )) {
+            boolean descriptorMatches;
+            try {
+                descriptorMatches = readStoredDataDescriptorAfterSignature(
+                        input,
+                        zip64DataDescriptor,
+                        crc32.getValue(),
+                        size,
+                        size,
+                        "ZIP data descriptor does not match entry data"
+                );
+            } catch (IOException | RuntimeException | Error exception) {
+                finishedEntry = true;
+                throw exception;
+            }
+            if (!descriptorMatches) {
                 unread(candidate, count);
                 return storedByte(first);
             }
@@ -1157,17 +1536,23 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         @Override
         public int read(byte[] bytes, int offset, int length) throws IOException {
             Objects.checkFromIndexSize(offset, length, bytes.length);
+            ensureOpen();
+            return readUnchecked(bytes, offset, length);
+        }
+
+        /// Reads stored entry bytes without checking the wrapper open state for close-time draining.
+        private int readUnchecked(byte[] bytes, int offset, int length) throws IOException {
             if (length == 0) {
                 return 0;
             }
-            int first = read();
+            int first = readUnchecked();
             if (first < 0) {
                 return -1;
             }
             bytes[offset] = (byte) first;
             int count = 1;
             while (count < length) {
-                int value = read();
+                int value = readUnchecked();
                 if (value < 0) {
                     break;
                 }
@@ -1180,8 +1565,13 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// Drains the stored entry.
         @Override
         public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            closed = true;
+
             byte[] discard = new byte[8192];
-            while (read(discard) >= 0) {
+            while (readUnchecked(discard, 0, discard.length) >= 0) {
                 // Drain stored data until the signed descriptor has been consumed.
             }
         }
@@ -1198,6 +1588,13 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             crc32.update(value);
             size++;
             return value;
+        }
+
+        /// Requires this stream to be open.
+        private void ensureOpen() throws IOException {
+            if (closed) {
+                throw new IOException("ZIP entry input stream is closed");
+            }
         }
     }
 
@@ -1237,6 +1634,9 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// Whether the data descriptor has been consumed.
         private boolean finishedEntry;
 
+        /// Whether this stream has been closed.
+        private boolean closed;
+
         /// Creates a WinZip AES stored entry input stream.
         private AesStoredDataDescriptorInputStream(
                 PushbackInputStream input,
@@ -1255,6 +1655,12 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// Reads one decrypted stored entry byte.
         @Override
         public int read() throws IOException {
+            ensureOpen();
+            return readUnchecked();
+        }
+
+        /// Reads one decrypted stored entry byte without checking the wrapper open state for close-time draining.
+        private int readUnchecked() throws IOException {
             Integer pending = pendingPlain.pollFirst();
             if (pending != null) {
                 return pending;
@@ -1286,17 +1692,23 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         @Override
         public int read(byte[] bytes, int offset, int length) throws IOException {
             Objects.checkFromIndexSize(offset, length, bytes.length);
+            ensureOpen();
+            return readUnchecked(bytes, offset, length);
+        }
+
+        /// Reads decrypted stored entry bytes without checking the wrapper open state for close-time draining.
+        private int readUnchecked(byte[] bytes, int offset, int length) throws IOException {
             if (length == 0) {
                 return 0;
             }
-            int first = read();
+            int first = readUnchecked();
             if (first < 0) {
                 return -1;
             }
             bytes[offset] = (byte) first;
             int count = 1;
             while (count < length) {
-                int value = read();
+                int value = readUnchecked();
                 if (value < 0) {
                     break;
                 }
@@ -1309,8 +1721,13 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// Drains the encrypted stored entry.
         @Override
         public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            closed = true;
+
             byte[] discard = new byte[8192];
-            while (read(discard) >= 0) {
+            while (readUnchecked(discard, 0, discard.length) >= 0) {
                 // Drain encrypted stored data until authentication and descriptor bytes have been consumed.
             }
         }
@@ -1389,19 +1806,28 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             for (int index = 0; index < expectedAuthentication.length; index++) {
                 expectedAuthentication[index] = (byte) pendingRaw.removeFirst().intValue();
             }
+            Throwable failure = null;
             if (!decryptor.verify(expectedAuthentication)) {
-                throw new IOException("WinZip AES authentication failed");
+                failure = new IOException("WinZip AES authentication failed");
             }
             long compressedSize = overheadSize + encryptedContentSize;
-            if (!readAndMatchesDataDescriptorAfterSignature(
-                    input,
-                    zip64DataDescriptor,
-                    crc32.getValue(),
-                    compressedSize,
-                    uncompressedSize,
-                    false
-            )) {
-                throw new IOException("WinZip AES data descriptor does not match entry data");
+            try {
+                if (!readStoredDataDescriptorAfterSignature(
+                        input,
+                        zip64DataDescriptor,
+                        crc32.getValue(),
+                        compressedSize,
+                        uncompressedSize,
+                        "WinZip AES data descriptor does not match entry data"
+                )) {
+                    IOException exception = new IOException("WinZip AES data descriptor does not match entry data");
+                    failure = mergeFailure(failure, exception);
+                }
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = mergeFailure(failure, exception);
+            }
+            if (failure != null) {
+                throwFailure(failure);
             }
         }
 
@@ -1414,6 +1840,13 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             encryptedContentSize++;
             uncompressedSize++;
             return plain;
+        }
+
+        /// Requires this stream to be open.
+        private void ensureOpen() throws IOException {
+            if (closed) {
+                throw new IOException("ZIP entry input stream is closed");
+            }
         }
     }
 
@@ -1453,6 +1886,9 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// Whether end-of-entry cleanup has run.
         private boolean finishedEntry;
 
+        /// Whether this stream has been closed.
+        private boolean closed;
+
         /// Creates a WinZip AES deflate stream with a following authentication code and data descriptor.
         private AesDataDescriptorInflaterInputStream(
                 PushbackInputStream input,
@@ -1480,6 +1916,12 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         @Override
         public int read(byte[] bytes, int offset, int length) throws IOException {
             Objects.checkFromIndexSize(offset, length, bytes.length);
+            ensureOpen();
+            return readUnchecked(bytes, offset, length);
+        }
+
+        /// Reads inflated bytes without checking the wrapper open state for close-time draining.
+        private int readUnchecked(byte[] bytes, int offset, int length) throws IOException {
             if (length == 0) {
                 return 0;
             }
@@ -1523,14 +1965,26 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// Closes this inflater stream.
         @Override
         public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            closed = true;
+
+            Throwable failure = null;
             try {
                 byte[] discard = new byte[8192];
-                while (read(discard) >= 0) {
+                while (readUnchecked(discard, 0, discard.length) >= 0) {
                     // Drain the AES deflate stream so authentication and descriptor bytes can be parsed.
                 }
-            } finally {
-                finishEntry();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
             }
+            try {
+                finishEntry();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = mergeFailure(failure, exception);
+            }
+            throwFailure(failure);
         }
 
         /// Finishes the current entry, verifies authentication, and releases the inflater.
@@ -1549,21 +2003,37 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
                     }
                     offset += read;
                 }
+                Throwable failure = null;
                 if (!decryptor.verify(expectedAuthentication)) {
-                    throw new IOException("WinZip AES authentication failed");
+                    failure = new IOException("WinZip AES authentication failed");
                 }
                 long compressedSize = overheadSize + encryptedContentSize;
-                if (!readAndMatchesDataDescriptor(
-                        input,
-                        zip64DataDescriptor,
-                        crc32.getValue(),
-                        compressedSize,
-                        uncompressedSize
-                )) {
-                    throw new IOException("WinZip AES data descriptor does not match entry data");
+                try {
+                    if (!readAndMatchesDataDescriptor(
+                            input,
+                            zip64DataDescriptor,
+                            crc32.getValue(),
+                            compressedSize,
+                            uncompressedSize
+                    )) {
+                        IOException exception = new IOException("WinZip AES data descriptor does not match entry data");
+                        failure = mergeFailure(failure, exception);
+                    }
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = mergeFailure(failure, exception);
+                }
+                if (failure != null) {
+                    throwFailure(failure);
                 }
             } finally {
                 inflater.end();
+            }
+        }
+
+        /// Requires this stream to be open.
+        private void ensureOpen() throws IOException {
+            if (closed) {
+                throw new IOException("ZIP entry input stream is closed");
             }
         }
     }
@@ -1598,6 +2068,9 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// Whether end-of-entry cleanup has run.
         private boolean finishedEntry;
 
+        /// Whether this stream has been closed.
+        private boolean closed;
+
         /// Creates an encrypted deflate stream with a following data descriptor.
         private EncryptedDataDescriptorInflaterInputStream(
                 PushbackInputStream input,
@@ -1621,6 +2094,12 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         @Override
         public int read(byte[] bytes, int offset, int length) throws IOException {
             Objects.checkFromIndexSize(offset, length, bytes.length);
+            ensureOpen();
+            return readUnchecked(bytes, offset, length);
+        }
+
+        /// Reads inflated bytes without checking the wrapper open state for close-time draining.
+        private int readUnchecked(byte[] bytes, int offset, int length) throws IOException {
             if (length == 0) {
                 return 0;
             }
@@ -1663,14 +2142,26 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// Closes this inflater stream.
         @Override
         public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            closed = true;
+
+            Throwable failure = null;
             try {
                 byte[] discard = new byte[8192];
-                while (read(discard) >= 0) {
+                while (readUnchecked(discard, 0, discard.length) >= 0) {
                     // Drain the encrypted deflate stream so the following descriptor can be parsed.
                 }
-            } finally {
-                finishEntry();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
             }
+            try {
+                finishEntry();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = mergeFailure(failure, exception);
+            }
+            throwFailure(failure);
         }
 
         /// Finishes the current entry and releases the inflater.
@@ -1692,6 +2183,13 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
                 }
             } finally {
                 inflater.end();
+            }
+        }
+
+        /// Requires this stream to be open.
+        private void ensureOpen() throws IOException {
+            if (closed) {
+                throw new IOException("ZIP entry input stream is closed");
             }
         }
     }
@@ -1720,6 +2218,9 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// Whether the data descriptor has been consumed.
         private boolean finishedEntry;
 
+        /// Whether this stream has been closed.
+        private boolean closed;
+
         /// Creates an encrypted stored entry input stream.
         private EncryptedStoredDataDescriptorInputStream(
                 PushbackInputStream input,
@@ -1734,6 +2235,12 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// Reads one decrypted stored entry byte.
         @Override
         public int read() throws IOException {
+            ensureOpen();
+            return readUnchecked();
+        }
+
+        /// Reads one decrypted stored entry byte without checking the wrapper open state for close-time draining.
+        private int readUnchecked() throws IOException {
             if (finishedEntry) {
                 return -1;
             }
@@ -1762,14 +2269,21 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             }
 
             long compressedSize = ZipTraditionalCrypto.HEADER_SIZE + encryptedContentSize;
-            if (!readAndMatchesDataDescriptorAfterSignature(
-                    input,
-                    zip64DataDescriptor,
-                    crc32.getValue(),
-                    compressedSize,
-                    uncompressedSize,
-                    true
-            )) {
+            boolean descriptorMatches;
+            try {
+                descriptorMatches = readStoredDataDescriptorAfterSignature(
+                        input,
+                        zip64DataDescriptor,
+                        crc32.getValue(),
+                        compressedSize,
+                        uncompressedSize,
+                        "ZIP data descriptor does not match entry data"
+                );
+            } catch (IOException | RuntimeException | Error exception) {
+                finishedEntry = true;
+                throw exception;
+            }
+            if (!descriptorMatches) {
                 unread(candidate, count);
                 return decryptedByte(first);
             }
@@ -1781,17 +2295,23 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         @Override
         public int read(byte[] bytes, int offset, int length) throws IOException {
             Objects.checkFromIndexSize(offset, length, bytes.length);
+            ensureOpen();
+            return readUnchecked(bytes, offset, length);
+        }
+
+        /// Reads decrypted stored entry bytes without checking the wrapper open state for close-time draining.
+        private int readUnchecked(byte[] bytes, int offset, int length) throws IOException {
             if (length == 0) {
                 return 0;
             }
-            int first = read();
+            int first = readUnchecked();
             if (first < 0) {
                 return -1;
             }
             bytes[offset] = (byte) first;
             int count = 1;
             while (count < length) {
-                int value = read();
+                int value = readUnchecked();
                 if (value < 0) {
                     break;
                 }
@@ -1804,8 +2324,13 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// Drains the encrypted stored entry.
         @Override
         public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            closed = true;
+
             byte[] discard = new byte[8192];
-            while (read(discard) >= 0) {
+            while (readUnchecked(discard, 0, discard.length) >= 0) {
                 // Drain encrypted stored data until the signed descriptor has been consumed.
             }
         }
@@ -1825,6 +2350,13 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             uncompressedSize++;
             return plain;
         }
+
+        /// Requires this stream to be open.
+        private void ensureOpen() throws IOException {
+            if (closed) {
+                throw new IOException("ZIP entry input stream is closed");
+            }
+        }
     }
 
     /// Reads a bounded number of bytes from an input stream without closing it.
@@ -1835,6 +2367,9 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
 
         /// The remaining bytes.
         private long remaining;
+
+        /// Whether this stream has been closed.
+        private boolean closed;
 
         /// Creates a bounded input stream.
         private BoundedInputStream(InputStream input, long size) {
@@ -1854,6 +2389,12 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         @Override
         public int read(byte[] bytes, int offset, int length) throws IOException {
             Objects.checkFromIndexSize(offset, length, bytes.length);
+            ensureOpen();
+            return readUnchecked(bytes, offset, length);
+        }
+
+        /// Reads bytes without checking the wrapper open state for close-time draining.
+        private int readUnchecked(byte[] bytes, int offset, int length) throws IOException {
             if (length == 0) {
                 return 0;
             }
@@ -1872,9 +2413,21 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// Drains remaining bytes.
         @Override
         public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            closed = true;
+
             byte[] discard = new byte[8192];
-            while (read(discard) >= 0) {
+            while (readUnchecked(discard, 0, discard.length) >= 0) {
                 // Drain remaining bounded data.
+            }
+        }
+
+        /// Requires this stream to be open.
+        private void ensureOpen() throws IOException {
+            if (closed) {
+                throw new IOException("ZIP entry input stream is closed");
             }
         }
     }
