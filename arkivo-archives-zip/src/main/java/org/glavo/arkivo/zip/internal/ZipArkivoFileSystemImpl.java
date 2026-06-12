@@ -3,6 +3,9 @@
 
 package org.glavo.arkivo.zip.internal;
 
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
+import org.apache.commons.compress.compressors.deflate64.Deflate64CompressorInputStream;
+import org.apache.commons.compress.compressors.zstandard.ZstdCompressorInputStream;
 import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
@@ -73,6 +76,7 @@ import static org.glavo.arkivo.zip.internal.ZipConstants.WINZIP_AES_METHOD;
 import static org.glavo.arkivo.zip.internal.ZipConstants.ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIGNATURE;
 import static org.glavo.arkivo.zip.internal.ZipConstants.ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE;
 import static org.glavo.arkivo.zip.internal.ZipConstants.ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID;
+import static org.glavo.arkivo.zip.internal.ZipConstants.isZstandardMethod;
 
 /// Implements ZIP archive file system state and operations.
 @NotNullByDefault
@@ -357,7 +361,11 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                     entry.uncompressedSize
             );
         }
-        if (compressionMethod == ZipMethod.STORED_ID || compressionMethod == ZipMethod.DEFLATED_ID) {
+        if (compressionMethod == ZipMethod.STORED_ID
+                || compressionMethod == ZipMethod.DEFLATED_ID
+                || compressionMethod == ZipMethod.DEFLATE64_ID
+                || compressionMethod == ZipMethod.BZIP2_ID
+                || isZstandardMethod(compressionMethod)) {
             return new ByteArraySeekableByteChannel(readEntryBytes(path, entry, dataOffset));
         }
         throw new IOException("Unsupported ZIP compression method: " + compressionMethod);
@@ -369,7 +377,11 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         ZipEntryRecord entry = requireReadableEntry(path);
         requireSupportedEncryption(path, entry);
         int compressionMethod = entry.compressionMethod();
-        if (compressionMethod != ZipMethod.STORED_ID && compressionMethod != ZipMethod.DEFLATED_ID) {
+        if (compressionMethod != ZipMethod.STORED_ID
+                && compressionMethod != ZipMethod.DEFLATED_ID
+                && compressionMethod != ZipMethod.DEFLATE64_ID
+                && compressionMethod != ZipMethod.BZIP2_ID
+                && !isZstandardMethod(compressionMethod)) {
             throw new IOException("Unsupported ZIP compression method: " + compressionMethod);
         }
 
@@ -858,6 +870,12 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             }
             if (entry.compressionMethod() == ZipMethod.DEFLATED_ID) {
                 input = new EntryInflaterInputStream(input);
+            } else if (entry.compressionMethod() == ZipMethod.DEFLATE64_ID) {
+                input = openDeflate64InputStream(input);
+            } else if (entry.compressionMethod() == ZipMethod.BZIP2_ID) {
+                input = openBzip2InputStream(input);
+            } else if (isZstandardMethod(entry.compressionMethod())) {
+                input = openZstandardInputStream(input);
             }
             long expectedCrc32 = aes != null ? ZipArkivoEntryAttributes.UNKNOWN_CRC32 : entry.crc32;
             input = new ValidatingEntryInputStream(input, expectedCrc32, entry.uncompressedSize);
@@ -870,6 +888,48 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             if (!completed) {
                 closeAfterFailedOpen(archive, failure);
             }
+        }
+    }
+
+    /// Opens a Deflate64 decoding stream and closes the compressed stream if setup fails.
+    private static InputStream openDeflate64InputStream(InputStream input) throws IOException {
+        try {
+            return new Deflate64CompressorInputStream(input);
+        } catch (RuntimeException | Error exception) {
+            try {
+                input.close();
+            } catch (IOException | RuntimeException | Error closeException) {
+                exception.addSuppressed(closeException);
+            }
+            throw exception;
+        }
+    }
+
+    /// Opens a BZIP2 decoding stream and closes the compressed stream if setup fails.
+    private static InputStream openBzip2InputStream(InputStream input) throws IOException {
+        try {
+            return new BZip2CompressorInputStream(input);
+        } catch (IOException | RuntimeException | Error exception) {
+            try {
+                input.close();
+            } catch (IOException | RuntimeException | Error closeException) {
+                exception.addSuppressed(closeException);
+            }
+            throw exception;
+        }
+    }
+
+    /// Opens a Zstandard decoding stream and closes the compressed stream if setup fails.
+    private static InputStream openZstandardInputStream(InputStream input) throws IOException {
+        try {
+            return new ZstdCompressorInputStream(input);
+        } catch (IOException | RuntimeException | Error exception) {
+            try {
+                input.close();
+            } catch (IOException | RuntimeException | Error closeException) {
+                exception.addSuppressed(closeException);
+            }
+            throw exception;
         }
     }
 

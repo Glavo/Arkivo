@@ -17,11 +17,36 @@ public final class ZipMethod {
     /// The deflated method identifier.
     public static final int DEFLATED_ID = 8;
 
+    /// The Deflate64 method identifier.
+    public static final int DEFLATE64_ID = 9;
+
+    /// The BZIP2 method identifier.
+    public static final int BZIP2_ID = 12;
+
+    /// The deprecated Zstandard method identifier from APPNOTE 6.3.7.
+    public static final int DEPRECATED_ZSTANDARD_ID = 20;
+
+    /// The Zstandard method identifier.
+    public static final int ZSTANDARD_ID = 93;
+
     /// The stored ZIP method.
     private static final ZipMethod STORED = new ZipMethod(STORED_ID, "stored");
 
     /// The deflated ZIP method.
     private static final ZipMethod DEFLATED = new ZipMethod(DEFLATED_ID, "deflated");
+
+    /// The Deflate64 ZIP method.
+    private static final ZipMethod DEFLATE64 = new ZipMethod(DEFLATE64_ID, "deflate64");
+
+    /// The BZIP2 ZIP method.
+    private static final ZipMethod BZIP2 = new ZipMethod(BZIP2_ID, "bzip2");
+
+    /// The deprecated Zstandard ZIP method.
+    private static final ZipMethod DEPRECATED_ZSTANDARD =
+            new ZipMethod(DEPRECATED_ZSTANDARD_ID, "zstandard-deprecated");
+
+    /// The Zstandard ZIP method.
+    private static final ZipMethod ZSTANDARD = new ZipMethod(ZSTANDARD_ID, "zstandard");
 
     /// The numeric ZIP compression method identifier.
     private final int id;
@@ -45,11 +70,30 @@ public final class ZipMethod {
         return DEFLATED;
     }
 
+    /// Returns the Deflate64 ZIP method.
+    public static ZipMethod deflate64() {
+        return DEFLATE64;
+    }
+
+    /// Returns the BZIP2 ZIP method.
+    public static ZipMethod bzip2() {
+        return BZIP2;
+    }
+
+    /// Returns the Zstandard ZIP method.
+    public static ZipMethod zstandard() {
+        return ZSTANDARD;
+    }
+
     /// Returns a ZIP method for the given numeric identifier.
     public static ZipMethod of(int id) {
         return switch (id) {
             case STORED_ID -> STORED;
             case DEFLATED_ID -> DEFLATED;
+            case DEFLATE64_ID -> DEFLATE64;
+            case BZIP2_ID -> BZIP2;
+            case DEPRECATED_ZSTANDARD_ID -> DEPRECATED_ZSTANDARD;
+            case ZSTANDARD_ID -> ZSTANDARD;
             default -> new ZipMethod(id, "method-" + id);
         };
     }

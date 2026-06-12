@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.zip.internal;
 
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
+import org.apache.commons.compress.compressors.zstandard.ZstdCompressorOutputStream;
 import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
@@ -47,6 +49,7 @@ import java.util.zip.CRC32;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 
+import static org.glavo.arkivo.zip.internal.ZipConstants.BZIP2_METHOD;
 import static org.glavo.arkivo.zip.internal.ZipConstants.CENTRAL_DIRECTORY_HEADER_SIGNATURE;
 import static org.glavo.arkivo.zip.internal.ZipConstants.DATA_DESCRIPTOR_FLAG;
 import static org.glavo.arkivo.zip.internal.ZipConstants.DATA_DESCRIPTOR_SIGNATURE;
@@ -58,6 +61,7 @@ import static org.glavo.arkivo.zip.internal.ZipConstants.STORED_METHOD;
 import static org.glavo.arkivo.zip.internal.ZipConstants.UTF8_FLAG;
 import static org.glavo.arkivo.zip.internal.ZipConstants.VERSION_NEEDED;
 import static org.glavo.arkivo.zip.internal.ZipConstants.WINZIP_AES_METHOD;
+import static org.glavo.arkivo.zip.internal.ZipConstants.ZSTANDARD_METHOD;
 import static org.glavo.arkivo.zip.internal.ZipLittleEndian.requireUInt16;
 import static org.glavo.arkivo.zip.internal.ZipLittleEndian.requireUInt32;
 import static org.glavo.arkivo.zip.internal.ZipLittleEndian.writeInt;
@@ -811,6 +815,12 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 Deflater entryDeflater = new Deflater(Deflater.DEFAULT_COMPRESSION, true);
                 this.deflater = entryDeflater;
                 this.entryOutput = new DeflaterOutputStream(dataOutput, entryDeflater);
+            } else if (metadata.method == BZIP2_METHOD) {
+                this.deflater = null;
+                this.entryOutput = new BZip2CompressorOutputStream(dataOutput);
+            } else if (metadata.method == ZSTANDARD_METHOD) {
+                this.deflater = null;
+                this.entryOutput = new ZstdCompressorOutputStream(new NonClosingOutputStream(dataOutput));
             } else {
                 this.deflater = null;
                 this.entryOutput = dataOutput;
@@ -858,6 +868,10 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 try {
                     if (entryOutput instanceof DeflaterOutputStream deflatedOutput) {
                         deflatedOutput.finish();
+                    } else if (entryOutput instanceof BZip2CompressorOutputStream bzip2Output) {
+                        bzip2Output.finish();
+                    } else if (entryOutput instanceof ZstdCompressorOutputStream zstandardOutput) {
+                        zstandardOutput.close();
                     }
                     ZipAesCrypto.EncryptingOutputStream entryAesOutput = aesOutput;
                     if (entryAesOutput != null) {
@@ -1061,6 +1075,41 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
     }
 
+    /// Forwards writes without closing the wrapped stream.
+    @NotNullByDefault
+    private static final class NonClosingOutputStream extends OutputStream {
+        /// The wrapped output stream.
+        private final OutputStream output;
+
+        /// Creates a non-closing output stream wrapper.
+        private NonClosingOutputStream(OutputStream output) {
+            this.output = Objects.requireNonNull(output, "output");
+        }
+
+        /// Writes one byte to the wrapped stream.
+        @Override
+        public void write(int value) throws IOException {
+            output.write(value);
+        }
+
+        /// Writes bytes to the wrapped stream.
+        @Override
+        public void write(byte[] bytes, int offset, int length) throws IOException {
+            output.write(bytes, offset, length);
+        }
+
+        /// Flushes the wrapped stream.
+        @Override
+        public void flush() throws IOException {
+            output.flush();
+        }
+
+        /// Does not close the wrapped stream.
+        @Override
+        public void close() {
+        }
+    }
+
     /// Stores write metadata for one streaming ZIP entry.
     @NotNullByDefault
     static final class EntryMetadata {
@@ -1173,7 +1222,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
         /// Returns whether this entry requires a data descriptor.
         private boolean requiresDataDescriptor() {
-            return method == DEFLATED_METHOD
+            return method != STORED_METHOD
                     || expectedUncompressedSize == ZipArkivoEntryAttributes.UNKNOWN_SIZE
                     || expectedCrc32 == ZipArkivoEntryAttributes.UNKNOWN_CRC32;
         }
@@ -1253,7 +1302,10 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
         /// Validates that this metadata can be stored in ZIP32 records.
         private void validate() {
-            if (method != STORED_METHOD && method != DEFLATED_METHOD) {
+            if (method != STORED_METHOD
+                    && method != DEFLATED_METHOD
+                    && method != BZIP2_METHOD
+                    && method != ZSTANDARD_METHOD) {
                 throw new UnsupportedOperationException("Unsupported ZIP compression method: " + method);
             }
             if (!encryption.equals(ZipEncryption.none())

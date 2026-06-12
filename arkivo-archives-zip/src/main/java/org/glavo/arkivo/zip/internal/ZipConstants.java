@@ -47,6 +47,18 @@ final class ZipConstants {
     /// The ZIP deflated method identifier.
     static final int DEFLATED_METHOD = 8;
 
+    /// The ZIP Deflate64 method identifier.
+    static final int DEFLATE64_METHOD = 9;
+
+    /// The ZIP BZIP2 method identifier.
+    static final int BZIP2_METHOD = 12;
+
+    /// The deprecated ZIP Zstandard method identifier from APPNOTE 6.3.7.
+    static final int DEPRECATED_ZSTANDARD_METHOD = 20;
+
+    /// The ZIP Zstandard method identifier.
+    static final int ZSTANDARD_METHOD = 93;
+
     /// The WinZip AES placeholder method identifier.
     static final int WINZIP_AES_METHOD = 99;
 
@@ -67,5 +79,10 @@ final class ZipConstants {
 
     /// Prevents instantiation.
     private ZipConstants() {
+    }
+
+    /// Returns whether the method identifier is an assigned or deprecated Zstandard method.
+    static boolean isZstandardMethod(int method) {
+        return method == ZSTANDARD_METHOD || method == DEPRECATED_ZSTANDARD_METHOD;
     }
 }
