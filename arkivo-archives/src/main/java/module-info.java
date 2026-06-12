@@ -5,6 +5,8 @@
 module org.glavo.arkivo.archives {
     requires transitive org.glavo.arkivo.base;
     requires transitive org.glavo.arkivo.archives.sevenzip;
+    requires transitive org.glavo.arkivo.archives.ar;
+    requires transitive org.glavo.arkivo.archives.rar;
     requires transitive org.glavo.arkivo.archives.tar;
     requires transitive org.glavo.arkivo.archives.zip;
 }

@@ -9,15 +9,33 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.ClosedFileSystemException;
+import java.nio.file.DirectoryStream;
+import java.nio.file.FileSystem;
+import java.nio.file.FileSystemAlreadyExistsException;
+import java.nio.file.FileSystemNotFoundException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.ReadOnlyFileSystemException;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermission;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -61,6 +79,299 @@ public final class TarArkivoStreamingReaderTest {
         }
 
         assertEquals(List.of("dir/", "dir/hello.txt", "link"), paths);
+    }
+
+    /// Verifies that the streaming writer creates regular files, directories, and symbolic links.
+    @Test
+    public void writesStreamingEntries() throws IOException {
+        byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output)) {
+            writer.beginDirectory("dir");
+            writer.endEntry();
+
+            writer.beginFile("dir/hello.txt");
+            try (OutputStream body = writer.openOutputStream()) {
+                body.write(content);
+            }
+
+            writer.beginSymbolicLink("link", "dir/hello.txt");
+            writer.endEntry();
+        }
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertEquals(true, reader.next());
+            TarArkivoEntryAttributes directory = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("dir/", directory.path());
+            assertEquals(true, directory.isDirectory());
+            assertEquals(0755, directory.mode());
+
+            assertEquals(true, reader.next());
+            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("dir/hello.txt", file.path());
+            assertEquals(true, file.isRegularFile());
+            assertEquals(0644, file.mode());
+            assertEquals(content.length, file.size());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
+
+            assertEquals(true, reader.next());
+            TarArkivoEntryAttributes link = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("link", link.path());
+            assertEquals(true, link.isSymbolicLink());
+            assertEquals(0777, link.mode());
+            assertEquals("dir/hello.txt", link.linkName());
+
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that the streaming writer persists metadata configured through standard attribute views.
+    @Test
+    public void writesConfiguredEntryMetadata() throws IOException {
+        byte[] content = "metadata".getBytes(StandardCharsets.UTF_8);
+        FileTime lastModifiedTime = FileTime.from(Instant.ofEpochSecond(1_700_000_000L, 123_456_789L));
+        FileTime lastAccessTime = FileTime.from(Instant.ofEpochSecond(1_700_000_001L, 500_000_000L));
+        FileTime creationTime = FileTime.from(Instant.ofEpochSecond(1_700_000_002L, 750_000_000L));
+        String userName = "writer-user-name-that-requires-pax-metadata";
+        String groupName = "writer-group-name-that-requires-pax-metadata";
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output)) {
+            writer.beginFile("meta.txt");
+            BasicFileAttributeView basicView =
+                    Objects.requireNonNull(writer.attributeView(BasicFileAttributeView.class));
+            basicView.setTimes(lastModifiedTime, lastAccessTime, creationTime);
+
+            PosixFileAttributeView posixView =
+                    Objects.requireNonNull(writer.attributeView(PosixFileAttributeView.class));
+            posixView.setOwner(() -> userName);
+            posixView.setGroup(() -> groupName);
+            posixView.setPermissions(Set.of(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.GROUP_READ
+            ));
+
+            try (OutputStream body = writer.openOutputStream()) {
+                body.write(content);
+            }
+        }
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertEquals(true, reader.next());
+            TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("meta.txt", attributes.path());
+            assertEquals(0640, attributes.mode());
+            assertEquals(userName, attributes.userName());
+            assertEquals(groupName, attributes.groupName());
+            assertEquals(lastModifiedTime.toInstant(), attributes.lastModifiedTime().toInstant());
+            assertEquals(lastAccessTime.toInstant(), attributes.lastAccessTime().toInstant());
+            assertEquals(creationTime.toInstant(), attributes.creationTime().toInstant());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that TAR archives can be opened as read-only file systems.
+    @Test
+    public void opensEntriesAsReadOnlyFileSystem() throws IOException {
+        byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("tar-fs-");
+        try {
+            try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
+                writer.beginDirectory("dir");
+                writer.endEntry();
+
+                writer.beginFile("dir/hello.txt");
+                BasicFileAttributeView basicView =
+                        Objects.requireNonNull(writer.attributeView(BasicFileAttributeView.class));
+                basicView.setTimes(FileTime.fromMillis(1_700_000_000_000L), null, null);
+
+                PosixFileAttributeView posixView =
+                        Objects.requireNonNull(writer.attributeView(PosixFileAttributeView.class));
+                posixView.setOwner(() -> "fs-user");
+                posixView.setGroup(() -> "fs-group");
+                posixView.setPermissions(Set.of(
+                        PosixFilePermission.OWNER_READ,
+                        PosixFilePermission.OWNER_WRITE,
+                        PosixFilePermission.GROUP_READ
+                ));
+                try (OutputStream body = writer.openOutputStream()) {
+                    body.write(content);
+                }
+
+                writer.beginSymbolicLink("link", "dir/hello.txt");
+                writer.endEntry();
+            }
+
+            TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath);
+            try (fileSystem) {
+                assertEquals(true, fileSystem.isReadOnly());
+
+                Path directory = fileSystem.getPath("/dir");
+                BasicFileAttributes directoryAttributes = Files.readAttributes(directory, BasicFileAttributes.class);
+                assertEquals(true, directoryAttributes.isDirectory());
+
+                ArrayList<String> children = new ArrayList<>();
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(fileSystem.getPath("/"))) {
+                    for (Path child : stream) {
+                        children.add(child.toString());
+                    }
+                }
+                assertEquals(Set.of("/dir", "/link"), Set.copyOf(children));
+
+                Path file = fileSystem.getPath("/dir/hello.txt");
+                TarArkivoEntryAttributes fileAttributes = Files.readAttributes(file, TarArkivoEntryAttributes.class);
+                assertEquals(true, fileAttributes.isRegularFile());
+                assertEquals(0640, fileAttributes.mode());
+                assertEquals(content.length, fileAttributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+
+                Map<String, Object> basicNamedAttributes = Files.readAttributes(file, "basic:size,isRegularFile");
+                assertEquals((long) content.length, basicNamedAttributes.get("size"));
+                assertEquals(true, basicNamedAttributes.get("isRegularFile"));
+                assertEquals(false, basicNamedAttributes.containsKey("mode"));
+
+                Map<String, Object> tarNamedAttributes = Files.readAttributes(
+                        file,
+                        "tar:path,typeFlag,mode,userId,groupId,userName,groupName,size,linkName"
+                );
+                assertEquals("dir/hello.txt", tarNamedAttributes.get("path"));
+                assertEquals((byte) '0', tarNamedAttributes.get("typeFlag"));
+                assertEquals(0640, tarNamedAttributes.get("mode"));
+                assertEquals(0L, tarNamedAttributes.get("userId"));
+                assertEquals(0L, tarNamedAttributes.get("groupId"));
+                assertEquals("fs-user", tarNamedAttributes.get("userName"));
+                assertEquals("fs-group", tarNamedAttributes.get("groupName"));
+                assertEquals((long) content.length, tarNamedAttributes.get("size"));
+                assertNull(tarNamedAttributes.get("linkName"));
+
+                try (SeekableByteChannel channel = Files.newByteChannel(file, StandardOpenOption.READ)) {
+                    assertEquals(content.length, channel.size());
+                    channel.position(1);
+                    ByteBuffer buffer = ByteBuffer.allocate(2);
+                    assertEquals(2, channel.read(buffer));
+                    buffer.flip();
+                    assertEquals((byte) 'e', buffer.get());
+                    assertEquals((byte) 'l', buffer.get());
+                }
+
+                Path link = fileSystem.getPath("/link");
+                TarArkivoEntryAttributes linkAttributes = Files.readAttributes(link, TarArkivoEntryAttributes.class);
+                assertEquals(true, linkAttributes.isSymbolicLink());
+                assertEquals(fileSystem.getPath("dir/hello.txt"), Files.readSymbolicLink(link));
+
+                Map<String, Object> linkNamedAttributes = Files.readAttributes(
+                        link,
+                        "tar:isSymbolicLink,typeFlag,linkName"
+                );
+                assertEquals(true, linkNamedAttributes.get("isSymbolicLink"));
+                assertEquals((byte) '2', linkNamedAttributes.get("typeFlag"));
+                assertEquals("dir/hello.txt", linkNamedAttributes.get("linkName"));
+
+                assertThrows(UnsupportedOperationException.class, () -> Files.readAttributes(file, "zip:size"));
+                assertThrows(ReadOnlyFileSystemException.class, () -> Files.delete(file));
+            }
+
+            assertThrows(ClosedFileSystemException.class, () -> fileSystem.getPath("/dir"));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that provider URI entry points register and unregister TAR file systems.
+    @Test
+    public void providerUriLifecycleSupportsEntryPaths() throws IOException {
+        byte[] content = "provider".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("tar-provider-");
+        try {
+            try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
+                writer.beginFile("dir/provider.txt");
+                try (OutputStream body = writer.openOutputStream()) {
+                    body.write(content);
+                }
+            }
+
+            TarArkivoFileSystemProvider provider = TarArkivoFileSystemProvider.instance();
+            URI archiveUri = archivePath.toUri().normalize();
+            URI fileSystemUri = URI.create(TarArkivoFileSystemProvider.SCHEME + ":" + archiveUri.toASCIIString());
+            URI entryUri = URI.create(
+                    TarArkivoFileSystemProvider.SCHEME + ":" + archiveUri.toASCIIString() + "!/dir/provider.txt"
+            );
+
+            FileSystem fileSystem = provider.newFileSystem(fileSystemUri, Map.of());
+            try (fileSystem) {
+                assertEquals(fileSystem, provider.getFileSystem(fileSystemUri));
+                assertThrows(FileSystemAlreadyExistsException.class, () -> provider.newFileSystem(fileSystemUri, Map.of()));
+
+                Path entry = provider.getPath(entryUri);
+                assertEquals(entryUri, entry.toUri());
+                assertArrayEquals(content, Files.readAllBytes(entry));
+            }
+
+            assertThrows(FileSystemNotFoundException.class, () -> provider.getFileSystem(fileSystemUri));
+
+            try (FileSystem reopenedFileSystem = provider.newFileSystem(fileSystemUri, Map.of())) {
+                assertEquals(reopenedFileSystem, provider.getFileSystem(fileSystemUri));
+                assertArrayEquals(content, Files.readAllBytes(provider.getPath(entryUri)));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that the streaming writer emits PAX metadata for long paths and symbolic link targets.
+    @Test
+    public void writesPaxMetadataForLongNames() throws IOException {
+        byte[] content = "long".getBytes(StandardCharsets.UTF_8);
+        String path = "pax/this-file-name-segment-is-long-enough-to-require-pax-metadata-because-ustar-name-fields"
+                + "-cannot-store-this-single-segment-without-an-extension.txt";
+        String target = "this-link-target-segment-is-long-enough-to-require-pax-metadata-because-ustar-link-fields"
+                + "-cannot-store-this-single-segment-without-an-extension.txt";
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output)) {
+            writer.beginFile(path);
+            try (OutputStream body = writer.openOutputStream()) {
+                body.write(content);
+            }
+
+            writer.beginSymbolicLink("long-link", target);
+            writer.endEntry();
+        }
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertEquals(true, reader.next());
+            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals(path, file.path());
+            assertEquals(content.length, file.size());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
+
+            assertEquals(true, reader.next());
+            TarArkivoEntryAttributes link = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("long-link", link.path());
+            assertEquals(target, link.linkName());
+
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that the streaming writer rejects unsafe archive paths before writing them.
+    @Test
+    public void writerRejectsUnsafeEntryPaths() throws IOException {
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(new ByteArrayOutputStream())) {
+            assertThrows(IllegalArgumentException.class, () -> writer.beginFile("../evil.txt"));
+            assertThrows(IllegalArgumentException.class, () -> writer.beginDirectory("/absolute"));
+            assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink("C:/evil.txt", "target"));
+        }
     }
 
     /// Verifies that streaming reader operations fail as closed after the reader is closed.
@@ -623,6 +934,18 @@ public final class TarArkivoStreamingReaderTest {
         writeHeader(output, "link", 0777, 0, 0, 0, '2', "dir/hello.txt", "user", "group");
         output.write(new byte[1024]);
         return output.toByteArray();
+    }
+
+    /// Creates a temporary TAR archive path under the build directory.
+    private static Path createTemporaryArchivePath(String prefix) throws IOException {
+        Path temporaryRoot = Path.of("build", "tmp", "arkivo-tar-tests");
+        Files.createDirectories(temporaryRoot);
+        return Files.createTempFile(temporaryRoot, prefix, ".tar");
+    }
+
+    /// Deletes a temporary TAR archive when it exists.
+    private static void deleteTemporaryArchive(Path archivePath) throws IOException {
+        Files.deleteIfExists(archivePath);
     }
 
     /// Writes a regular file entry.

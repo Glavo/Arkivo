@@ -4,6 +4,7 @@
 package org.glavo.arkivo.sevenzip;
 
 import java.io.ByteArrayOutputStream;
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
@@ -26,6 +27,9 @@ import org.tukaani.xz.PowerPCOptions;
 import org.tukaani.xz.SPARCOptions;
 import org.tukaani.xz.X86Options;
 
+import javax.crypto.Cipher;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -46,12 +50,17 @@ import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.attribute.UserPrincipalNotFoundException;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.zip.CRC32;
+import java.util.zip.Deflater;
+import java.util.zip.DeflaterOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -223,6 +232,36 @@ public final class SevenZipArkivoFileSystemTest {
             }
         } finally {
             deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a 7z archive can be read through multiple logical volumes.
+    @Test
+    public void splitVolumeSource() throws IOException {
+        byte[] content = "split volume content body".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = archiveWithCopyFile(content);
+        int bodyStart = 32;
+        ArkivoVolumeSource volumes = new SplitVolumeSource(splitArchive(
+                archive,
+                5,
+                bodyStart + 2,
+                bodyStart + content.length - 1,
+                archive.length - 3
+        ));
+
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(volumes)) {
+            Path file = fileSystem.getPath("/hello.txt");
+            BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+            assertEquals(content.length, attributes.size());
+            assertArrayEquals(content, Files.readAllBytes(file));
+            try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                assertEquals(content.length, channel.size());
+                channel.position(1);
+                ByteBuffer buffer = ByteBuffer.allocate(content.length - 1);
+                assertEquals(content.length - 1, channel.read(buffer));
+                assertArrayEquals(Arrays.copyOfRange(content, 1, content.length), buffer.array());
+            }
         }
     }
 
@@ -772,8 +811,20 @@ public final class SevenZipArkivoFileSystemTest {
                 assertEquals(creationTime, namedAttributes.get("creationTime"));
                 assertEquals(lastAccessTime, namedAttributes.get("lastAccessTime"));
                 assertEquals(lastModifiedTime, namedAttributes.get("lastModifiedTime"));
+                assertEquals(false, namedAttributes.containsKey("size"));
                 assertEquals("hello.txt", namedSevenZipAttributes.get("path"));
                 assertEquals(0x20, namedSevenZipAttributes.get("windowsAttributes"));
+                assertEquals(false, namedSevenZipAttributes.containsKey("size"));
+                assertEquals(false, namedSevenZipAttributes.containsKey("lastModifiedTime"));
+
+                Map<String, Object> rootAttributes = Files.readAttributes(
+                        fileSystem.getPath("/"),
+                        "basic:size,isDirectory"
+                );
+                assertEquals(0L, rootAttributes.get("size"));
+                assertEquals(true, rootAttributes.get("isDirectory"));
+                assertEquals(false, rootAttributes.containsKey("isRegularFile"));
+                assertThrows(UnsupportedOperationException.class, () -> Files.readAttributes(file, "zip:size"));
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -982,6 +1033,135 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that a non-empty file stored with the 7z Deflate method can be read.
+    @Test
+    public void deflateFileEntry() throws IOException {
+        byte[] content = "hello deflate".getBytes(StandardCharsets.UTF_8);
+        CoderPayload payload = deflatePayload(content);
+        Path archivePath = createTemporaryArchivePath("deflate-file-");
+        Files.write(archivePath, archiveWithDeflateFile(payload, content.length));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+                try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                    assertEquals(content.length, channel.size());
+                    ByteBuffer buffer = ByteBuffer.allocate(content.length);
+                    assertEquals(content.length, channel.read(buffer));
+                    assertArrayEquals(content, buffer.array());
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a non-empty file stored with the 7z Deflate64 method can be read.
+    @Test
+    public void deflate64FileEntry() throws IOException {
+        byte[] content = "hello deflate64".getBytes(StandardCharsets.UTF_8);
+        CoderPayload payload = deflate64StoredPayload(content);
+        Path archivePath = createTemporaryArchivePath("deflate64-file-");
+        Files.write(archivePath, archiveWithDeflate64File(payload, content.length));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+                try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                    assertEquals(content.length, channel.size());
+                    ByteBuffer buffer = ByteBuffer.allocate(content.length);
+                    assertEquals(content.length, channel.read(buffer));
+                    assertArrayEquals(content, buffer.array());
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a non-empty file stored with the 7z BZip2 method can be read.
+    @Test
+    public void bzip2FileEntry() throws IOException {
+        byte[] content = "hello bzip2".getBytes(StandardCharsets.UTF_8);
+        CoderPayload payload = bzip2Payload(content);
+        Path archivePath = createTemporaryArchivePath("bzip2-file-");
+        Files.write(archivePath, archiveWithBZip2File(payload, content.length));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+                try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                    assertEquals(content.length, channel.size());
+                    ByteBuffer buffer = ByteBuffer.allocate(content.length);
+                    assertEquals(content.length, channel.read(buffer));
+                    assertArrayEquals(content, buffer.array());
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a non-empty file stored with the 7z AES method can be read with a password.
+    @Test
+    public void aesFileEntry() throws IOException {
+        byte[] password = sevenZipAesPassword();
+        byte[] content = "hello aes encrypted file".getBytes(StandardCharsets.UTF_8);
+        CoderPayload payload = aesPayload(content, password);
+        Path archivePath = createTemporaryArchivePath("aes-file-");
+        Files.write(archivePath, archiveWithAesFile(payload, content));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+
+                IOException exception = assertThrows(IOException.class, () -> Files.readAllBytes(file));
+                assertEquals(true, exception.getMessage().contains("7z AES encrypted data requires a password"));
+            }
+
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(SevenZipArkivoFileSystem.PASSWORD.key(), password)
+            )) {
+                Path file = fileSystem.getPath("/hello.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+                try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                    assertEquals(content.length, channel.size());
+                    ByteBuffer buffer = ByteBuffer.allocate(content.length);
+                    assertEquals(content.length, channel.read(buffer));
+                    assertArrayEquals(content, buffer.array());
+                }
+            }
+
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(SevenZipArkivoFileSystem.PASSWORD.key(), "wrong".getBytes(StandardCharsets.UTF_16LE))
+            )) {
+                Path file = fileSystem.getPath("/hello.txt");
+
+                IOException exception = assertThrows(IOException.class, () -> Files.readAllBytes(file));
+                assertEquals(true, exception.getMessage().contains("7z entry data does not match CRC-32"));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that a file stored with a Delta-to-LZMA2 7z coder pipeline can be read.
     @Test
     public void deltaLzma2FileEntry() throws IOException {
@@ -1116,6 +1296,33 @@ public final class SevenZipArkivoFileSystemTest {
 
         try {
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a 7z archive with an AES-encrypted LZMA2-compressed header can be opened with a password.
+    @Test
+    public void aesLzma2EncodedHeader() throws IOException {
+        byte[] password = sevenZipAesPassword();
+        byte[] content = "aes encoded header body".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("aes-encoded-header-");
+        Files.write(archivePath, archiveWithAesLzma2EncodedHeader(content, password));
+
+        try {
+            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            assertEquals(true, exception.getMessage().contains("7z AES encrypted data requires a password"));
+
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(SevenZipArkivoFileSystem.PASSWORD.key(), password)
+            )) {
                 Path file = fileSystem.getPath("/hello.txt");
                 BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
 
@@ -1535,6 +1742,51 @@ public final class SevenZipArkivoFileSystemTest {
         return archive(payload.content(), header, crc32(header));
     }
 
+    /// Returns a 7z archive with one file stored through the Deflate method.
+    private static byte[] archiveWithDeflateFile(CoderPayload payload, int uncompressedSize) throws IOException {
+        byte[] header = fileHeader(
+                payload.content().length,
+                uncompressedSize,
+                new byte[]{0x04, 0x01, 0x08},
+                payload.properties()
+        );
+        return archive(payload.content(), header, crc32(header));
+    }
+
+    /// Returns a 7z archive with one file stored through the Deflate64 method.
+    private static byte[] archiveWithDeflate64File(CoderPayload payload, int uncompressedSize) throws IOException {
+        byte[] header = fileHeader(
+                payload.content().length,
+                uncompressedSize,
+                new byte[]{0x04, 0x01, 0x09},
+                payload.properties()
+        );
+        return archive(payload.content(), header, crc32(header));
+    }
+
+    /// Returns a 7z archive with one file stored through the BZip2 method.
+    private static byte[] archiveWithBZip2File(CoderPayload payload, int uncompressedSize) throws IOException {
+        byte[] header = fileHeader(
+                payload.content().length,
+                uncompressedSize,
+                new byte[]{0x04, 0x02, 0x02},
+                payload.properties()
+        );
+        return archive(payload.content(), header, crc32(header));
+    }
+
+    /// Returns a 7z archive with one file stored through the AES method.
+    private static byte[] archiveWithAesFile(CoderPayload payload, byte[] content) throws IOException {
+        byte[] header = fileHeader(
+                payload.content().length,
+                content.length,
+                sevenZipAesMethodId(),
+                payload.properties(),
+                crc32(content)
+        );
+        return archive(payload.content(), header, crc32(header));
+    }
+
     /// Returns a 7z archive with one file stored through a Delta-to-LZMA2 coder pipeline.
     private static byte[] archiveWithDeltaLZMA2File(
             CoderPayload payload,
@@ -1590,6 +1842,22 @@ public final class SevenZipArkivoFileSystemTest {
                 encodedHeaderPayload.properties()
         );
         return archive(concatenate(content, encodedHeaderPayload.content()), nextHeader, crc32(nextHeader));
+    }
+
+    /// Returns a 7z archive with one Copy-method file and an AES-encrypted LZMA2-compressed header.
+    private static byte[] archiveWithAesLzma2EncodedHeader(byte[] content, byte[] password) throws IOException {
+        byte[] plainHeader = fileHeader(content.length, content.length, new byte[]{0x00}, new byte[0]);
+        CoderPayload lzma2HeaderPayload = lzma2Payload(plainHeader);
+        CoderPayload encryptedHeaderPayload = aesPayload(lzma2HeaderPayload.content(), password);
+        byte[] nextHeader = aesLzma2EncodedHeader(
+                content.length,
+                encryptedHeaderPayload.content().length,
+                lzma2HeaderPayload.content().length,
+                plainHeader.length,
+                encryptedHeaderPayload.properties(),
+                lzma2HeaderPayload.properties()
+        );
+        return archive(concatenate(content, encryptedHeaderPayload.content()), nextHeader, crc32(nextHeader));
     }
 
     /// Returns a 7z archive with one Copy-method file and an LZMA2-compressed header with an incorrect pack CRC-32.
@@ -2603,6 +2871,48 @@ public final class SevenZipArkivoFileSystemTest {
         return output.toByteArray();
     }
 
+    /// Returns an encoded-header descriptor that decodes one AES-to-LZMA2 pipeline.
+    private static byte[] aesLzma2EncodedHeader(
+            int packPosition,
+            int packedSize,
+            int aesUnpackSize,
+            int uncompressedSize,
+            byte[] aesProperties,
+            byte[] lzma2Properties
+    ) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x17);
+
+        output.write(0x06);
+        writeNumber(output, packPosition);
+        writeNumber(output, 1);
+        output.write(0x09);
+        writeNumber(output, packedSize);
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(0);
+        writeNumber(output, 2);
+        output.write(0x24);
+        output.write(sevenZipAesMethodId());
+        writeNumber(output, aesProperties.length);
+        output.write(aesProperties);
+        output.write(0x21);
+        output.write(0x21);
+        writeNumber(output, lzma2Properties.length);
+        output.write(lzma2Properties);
+        writeNumber(output, 1);
+        writeNumber(output, 0);
+        output.write(0x0c);
+        writeNumber(output, aesUnpackSize);
+        writeNumber(output, uncompressedSize);
+        output.write(0x00);
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
     /// Returns an encoded-header descriptor with one packed folder exposed as two substreams.
     private static byte[] encodedHeaderSubStreams(
             int packPosition,
@@ -2789,6 +3099,127 @@ public final class SevenZipArkivoFileSystemTest {
         return new CoderPayload(output.toByteArray(), new byte[]{lzma2Property(options.getDictSize())});
     }
 
+    /// Returns a raw Deflate payload and its 7z coder properties.
+    private static CoderPayload deflatePayload(byte[] content) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Deflater deflater = new Deflater(Deflater.DEFAULT_COMPRESSION, true);
+        try (DeflaterOutputStream deflate = new DeflaterOutputStream(output, deflater)) {
+            deflate.write(content);
+        } finally {
+            deflater.end();
+        }
+        return new CoderPayload(output.toByteArray(), new byte[0]);
+    }
+
+    /// Returns a raw Deflate64 stored-block payload and its 7z coder properties.
+    private static CoderPayload deflate64StoredPayload(byte[] content) {
+        if (content.length > 0xffff) {
+            throw new IllegalArgumentException("Deflate64 stored-block fixture content is too large");
+        }
+        ByteBuffer output = ByteBuffer.allocate(5 + content.length).order(ByteOrder.LITTLE_ENDIAN);
+        output.put((byte) 0x01);
+        output.putShort((short) content.length);
+        output.putShort((short) ~content.length);
+        output.put(content);
+        return new CoderPayload(output.array(), new byte[0]);
+    }
+
+    /// Returns a BZip2 payload and its 7z coder properties.
+    private static CoderPayload bzip2Payload(byte[] content) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (BZip2CompressorOutputStream bzip2 = new BZip2CompressorOutputStream(output)) {
+            bzip2.write(content);
+        }
+        return new CoderPayload(output.toByteArray(), new byte[0]);
+    }
+
+    /// Returns an AES-encrypted payload and its 7zAES coder properties.
+    private static CoderPayload aesPayload(byte[] content, byte[] password) throws IOException {
+        byte[] properties = sevenZipAesProperties();
+        byte[] key = deriveSevenZipAesKey(properties, password);
+        byte[] paddedContent = Arrays.copyOf(content, roundUpToAesBlock(content.length));
+        try {
+            Cipher cipher = Cipher.getInstance("AES/CBC/NoPadding");
+            cipher.init(
+                    Cipher.ENCRYPT_MODE,
+                    new SecretKeySpec(key, "AES"),
+                    new IvParameterSpec(sevenZipAesInitializationVector())
+            );
+            return new CoderPayload(cipher.doFinal(paddedContent), properties);
+        } catch (GeneralSecurityException exception) {
+            throw new IOException("Failed to create 7z AES test payload", exception);
+        }
+    }
+
+    /// Returns the 7zAES method ID.
+    private static byte[] sevenZipAesMethodId() {
+        return new byte[]{0x06, (byte) 0xf1, 0x07, 0x01};
+    }
+
+    /// Returns the password bytes used by 7zAES test fixtures.
+    private static byte[] sevenZipAesPassword() {
+        return "secret".getBytes(StandardCharsets.UTF_16LE);
+    }
+
+    /// Returns the 7zAES coder properties used by test fixtures.
+    private static byte[] sevenZipAesProperties() {
+        byte[] salt = sevenZipAesSalt();
+        byte[] initializationVector = sevenZipAesInitializationVector();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        int cyclePower = 3;
+        output.write(cyclePower | 0xc0);
+        output.write(((salt.length - 1) << 4) | (initializationVector.length - 1));
+        output.writeBytes(salt);
+        output.writeBytes(initializationVector);
+        return output.toByteArray();
+    }
+
+    /// Returns the 7zAES salt bytes used by test fixtures.
+    private static byte[] sevenZipAesSalt() {
+        return new byte[]{1, 2, 3, 4};
+    }
+
+    /// Returns the full 7zAES initialization vector used by test fixtures.
+    private static byte[] sevenZipAesInitializationVector() {
+        return new byte[]{16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1};
+    }
+
+    /// Derives the 7zAES key for test fixture encryption.
+    private static byte[] deriveSevenZipAesKey(byte[] properties, byte[] password) throws IOException {
+        int cyclePower = properties[0] & 0x3f;
+        int saltSize = ((properties[0] >>> 7) & 1) + ((properties[1] & 0xff) >>> 4);
+        byte[] salt = Arrays.copyOfRange(properties, 2, 2 + saltSize);
+        try {
+            MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
+            byte[] counter = new byte[Long.BYTES];
+            long rounds = 1L << cyclePower;
+            for (long round = 0; round < rounds; round++) {
+                sha256.update(salt);
+                sha256.update(password);
+                sha256.update(counter);
+                incrementLittleEndianCounter(counter);
+            }
+            return sha256.digest();
+        } catch (GeneralSecurityException exception) {
+            throw new IOException("Failed to derive 7z AES test key", exception);
+        }
+    }
+
+    /// Increments an eight-byte little-endian counter.
+    private static void incrementLittleEndianCounter(byte[] counter) {
+        for (int index = 0; index < counter.length; index++) {
+            counter[index]++;
+            if (counter[index] != 0) {
+                return;
+            }
+        }
+    }
+
+    /// Rounds a byte count up to the next AES block boundary.
+    private static int roundUpToAesBlock(int length) {
+        return (length + 15) & ~15;
+    }
+
     /// Returns an LZMA2-compressed Delta-filtered payload and its LZMA2 coder properties.
     private static CoderPayload deltaLzma2Payload(byte[] content, int deltaDistance) throws IOException {
         LZMA2Options options = new LZMA2Options();
@@ -2846,6 +3277,22 @@ public final class SevenZipArkivoFileSystemTest {
         throw new IllegalArgumentException("dictionarySize cannot be represented exactly");
     }
 
+    /// Splits archive bytes at the given logical offsets.
+    private static byte[][] splitArchive(byte[] archive, int... offsets) {
+        byte[][] result = new byte[offsets.length + 1][];
+        int previous = 0;
+        for (int index = 0; index < offsets.length; index++) {
+            int offset = offsets[index];
+            if (offset <= previous || offset >= archive.length) {
+                throw new IllegalArgumentException("split offsets must be strictly inside the archive");
+            }
+            result[index] = Arrays.copyOfRange(archive, previous, offset);
+            previous = offset;
+        }
+        result[offsets.length] = Arrays.copyOfRange(archive, previous, archive.length);
+        return result;
+    }
+
     /// Concatenates two byte arrays.
     private static byte[] concatenate(byte[] first, byte[] second) {
         byte[] result = new byte[first.length + second.length];
@@ -2877,6 +3324,30 @@ public final class SevenZipArkivoFileSystemTest {
             }
         }
         return false;
+    }
+
+    /// Provides archive bytes through multiple in-memory split volumes.
+    @NotNullByDefault
+    private static final class SplitVolumeSource implements ArkivoVolumeSource {
+        /// The split archive volumes.
+        private final byte @Unmodifiable [] @Unmodifiable [] volumes;
+
+        /// Creates an in-memory split-volume source.
+        private SplitVolumeSource(byte[][] volumes) {
+            this.volumes = new byte[volumes.length][];
+            for (int index = 0; index < volumes.length; index++) {
+                this.volumes[index] = Objects.requireNonNull(volumes[index], "volume").clone();
+            }
+        }
+
+        /// Opens the requested volume channel, or returns `null` when the volume is absent.
+        @Override
+        public @Nullable SeekableByteChannel openVolume(long index) {
+            if (index < 0 || index >= volumes.length) {
+                return null;
+            }
+            return new MemorySeekableByteChannel(volumes[(int) index], false);
+        }
     }
 
     /// Provides archive bytes through a volume source with a selectable close-failing open.

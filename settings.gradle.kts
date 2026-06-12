@@ -10,6 +10,8 @@ include(
     "arkivo-codecs-lzma",
     "arkivo-codecs-zstd",
     "arkivo-archives",
+    "arkivo-archives-ar",
+    "arkivo-archives-rar",
     "arkivo-archives-tar",
     "arkivo-archives-zip",
     "arkivo-archives-7z",

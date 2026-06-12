@@ -28,6 +28,9 @@ public final class ZipEntryNameDecoder {
     /// The Info-ZIP Unicode Path Extra Field identifier.
     public static final int UNICODE_PATH_EXTRA_FIELD_ID = 0x7075;
 
+    /// The Info-ZIP Unicode Comment Extra Field identifier.
+    public static final int UNICODE_COMMENT_EXTRA_FIELD_ID = 0x6375;
+
     /// The entry name encoding policy used when no authoritative Unicode name is available.
     private final ZipEntryNameEncoding encoding;
 
@@ -43,6 +46,28 @@ public final class ZipEntryNameDecoder {
             return unicodePath;
         }
         return decodeFallback(rawPath, generalPurposeFlags);
+    }
+
+    /// Decodes a raw ZIP entry comment, or returns `null` when no comment is present.
+    public @Nullable String decodeComment(
+            byte @Nullable [] rawComment,
+            int generalPurposeFlags,
+            byte[] extraData
+    ) throws IOException {
+        if (rawComment == null || rawComment.length == 0) {
+            return null;
+        }
+
+        try {
+            String unicodeComment =
+                    decodeUnicodeExtraField(rawComment, extraData, UNICODE_COMMENT_EXTRA_FIELD_ID);
+            if (unicodeComment != null) {
+                return unicodeComment;
+            }
+            return decodeFallback(rawComment, generalPurposeFlags);
+        } catch (CharacterCodingException exception) {
+            throw new IOException("Failed to decode ZIP entry comment", exception);
+        }
     }
 
     /// Decodes a validated Info-ZIP Unicode extra field value, or returns `null` when no valid field is present.

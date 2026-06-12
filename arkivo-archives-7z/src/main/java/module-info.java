@@ -4,6 +4,7 @@
 /// Provides 7z archive APIs for Arkivo.
 module org.glavo.arkivo.archives.sevenzip {
     requires org.glavo.arkivo.base;
+    requires org.apache.commons.compress;
     requires org.tukaani.xz;
     requires static org.jetbrains.annotations;
 

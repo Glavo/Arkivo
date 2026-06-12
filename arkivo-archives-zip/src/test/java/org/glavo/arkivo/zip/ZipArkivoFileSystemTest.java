@@ -181,6 +181,7 @@ public final class ZipArkivoFileSystemTest {
     @Test
     public void streamingWriterEntryAttributeView() throws IOException {
         Path archivePath = createTemporaryArchivePath("stream-write-attrs-");
+        byte[] rawComment = "pending comment".getBytes(StandardCharsets.UTF_8);
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
@@ -200,6 +201,7 @@ public final class ZipArkivoFileSystemTest {
                 assertThrows(UserPrincipalNotFoundException.class, () -> posixView.setGroup(() -> "missing"));
 
                 zipView.setMethod(ZipMethod.deflated());
+                zipView.setRawComment(rawComment);
                 Set<PosixFilePermission> permissions = Set.of(
                         PosixFilePermission.OWNER_READ,
                         PosixFilePermission.OWNER_WRITE,
@@ -217,6 +219,9 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals(true, centralExtraException.getMessage().contains("Invalid ZIP extra field length"));
                 ZipArkivoEntryAttributes attributes = zipView.readAttributes();
                 assertEquals("dir/hello.txt", attributes.path());
+                assertEquals("pending comment", attributes.comment());
+                assertArrayEquals(rawComment, attributes.rawComment());
+                assertEquals(true, (attributes.generalPurposeFlags() & (1 << 11)) != 0);
                 assertEquals(ZipMethod.deflated(), attributes.method());
                 assertEquals(permissions, attributes.permissions());
 
@@ -228,8 +233,10 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
                 assertEquals("hello", Files.readString(fileSystem.getPath("/dir/hello.txt"), StandardCharsets.UTF_8));
-                PosixFileAttributes attributes =
-                        Files.readAttributes(fileSystem.getPath("/dir/hello.txt"), PosixFileAttributes.class);
+                ZipArkivoEntryAttributes attributes =
+                        Files.readAttributes(fileSystem.getPath("/dir/hello.txt"), ZipArkivoEntryAttributes.class);
+                assertEquals("pending comment", attributes.comment());
+                assertArrayEquals(rawComment, attributes.rawComment());
                 assertEquals(Set.of(
                         PosixFilePermission.OWNER_READ,
                         PosixFilePermission.OWNER_WRITE,
@@ -2539,6 +2546,62 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that ZIP entry comments are decoded with the configured fallback encoding.
+    @Test
+    public void decodesEntryCommentWithFallbackEncoding() throws IOException {
+        byte[] name = "comment.txt".getBytes(StandardCharsets.UTF_8);
+        byte[] rawComment = "M\u00fcnchen".getBytes(ZipEntryNameEncoding.cp437());
+        Path archivePath = createTemporaryArchiveContent(singleEntryZipWithRawNameExtraAndComment(
+                name,
+                0,
+                new byte[0],
+                rawComment
+        ));
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/comment.txt");
+                ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
+
+                assertEquals("M\u00fcnchen", attributes.comment());
+                assertArrayEquals(rawComment, attributes.rawComment());
+
+                Map<String, Object> namedAttributes = Files.readAttributes(file, "zip:comment,rawComment");
+                assertEquals(Set.of("comment", "rawComment"), namedAttributes.keySet());
+                assertEquals("M\u00fcnchen", namedAttributes.get("comment"));
+                assertArrayEquals(rawComment, (byte[]) namedAttributes.get("rawComment"));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a valid Info-ZIP Unicode Comment Extra Field overrides fallback comment decoding.
+    @Test
+    public void decodesUnicodeCommentExtraFieldBeforeFallback() throws IOException {
+        byte[] name = "unicode-comment.txt".getBytes(StandardCharsets.UTF_8);
+        byte[] rawComment = "legacy".getBytes(ZipEntryNameEncoding.cp437());
+        byte[] centralExtraData = unicodeExtraField(0x6375, rawComment, "Gr\u00fc\u00dfe");
+        Path archivePath = createTemporaryArchiveContent(singleEntryZipWithRawNameExtraAndComment(
+                name,
+                0,
+                centralExtraData,
+                rawComment
+        ));
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                ZipArkivoEntryAttributes attributes =
+                        Files.readAttributes(fileSystem.getPath("/unicode-comment.txt"), ZipArkivoEntryAttributes.class);
+
+                assertEquals("Gr\u00fc\u00dfe", attributes.comment());
+                assertArrayEquals(rawComment, attributes.rawComment());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that malformed central directory extra field lengths are rejected.
     @Test
     public void rejectsMalformedCentralDirectoryExtraFieldLength() throws IOException {
@@ -3133,9 +3196,23 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals(true, attributes.compressedSize() > 0);
 
                 Map<String, Object> namedAttributes = Files.readAttributes(file, "zip:size,compressedSize,method");
+                assertEquals(Set.of("size", "compressedSize", "method"), namedAttributes.keySet());
                 assertEquals(5L, namedAttributes.get("size"));
                 assertEquals(ZipMethod.deflated(), namedAttributes.get("method"));
                 assertEquals(true, ((Long) namedAttributes.get("compressedSize")) > 0);
+
+                Map<String, Object> ownerAttributes = Files.readAttributes(file, "owner:owner");
+                assertEquals(Set.of("owner"), ownerAttributes.keySet());
+                assertEquals(attributes.owner(), ownerAttributes.get("owner"));
+                assertThrows(IllegalArgumentException.class, () -> Files.readAttributes(file, "owner:size"));
+
+                Map<String, Object> posixAttributes =
+                        Files.readAttributes(file, "posix:size,owner,group,permissions");
+                assertEquals(Set.of("size", "owner", "group", "permissions"), posixAttributes.keySet());
+                assertEquals(5L, posixAttributes.get("size"));
+                assertEquals(attributes.owner(), posixAttributes.get("owner"));
+                assertEquals(attributes.group(), posixAttributes.get("group"));
+                assertEquals(attributes.permissions(), posixAttributes.get("permissions"));
 
                 ArrayList<String> children = new ArrayList<>();
                 try (DirectoryStream<Path> stream = Files.newDirectoryStream(fileSystem.getPath("/dir"))) {
@@ -3970,6 +4047,44 @@ public final class ZipArkivoFileSystemTest {
         return buffer.array();
     }
 
+    /// Returns a minimal seekable ZIP archive with central directory extra data and an entry comment.
+    private static byte[] singleEntryZipWithRawNameExtraAndComment(
+            byte[] name,
+            int flags,
+            byte[] centralExtraData,
+            byte[] comment
+    ) {
+        int localHeaderSize = 30 + name.length;
+        int centralDirectoryOffset = localHeaderSize;
+        int centralDirectorySize = 46 + name.length + centralExtraData.length + comment.length;
+
+        ByteBuffer buffer = ByteBuffer.allocate(localHeaderSize + centralDirectorySize + 22)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        writeLocalHeader(buffer, name, flags, ZipMethod.STORED_ID);
+        writeCentralDirectoryEntry(
+                buffer,
+                name,
+                flags,
+                ZipMethod.STORED_ID,
+                0,
+                0,
+                0,
+                0,
+                centralExtraData,
+                comment
+        );
+
+        buffer.putInt(0x06054b50);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 1);
+        buffer.putShort((short) 1);
+        buffer.putInt(centralDirectorySize);
+        buffer.putInt(centralDirectoryOffset);
+        buffer.putShort((short) 0);
+        return buffer.array();
+    }
+
     /// Returns a minimal seekable ZIP archive with local ZIP64 sizes and central directory sizes.
     private static byte[] singleEntryZipWithLocalZip64Sizes(
             byte[] name,
@@ -4149,6 +4264,33 @@ public final class ZipArkivoFileSystemTest {
             long uncompressedSize,
             byte[] extraData
     ) {
+        writeCentralDirectoryEntry(
+                buffer,
+                name,
+                flags,
+                method,
+                localHeaderOffset,
+                crc32,
+                compressedSize,
+                uncompressedSize,
+                extraData,
+                new byte[0]
+        );
+    }
+
+    /// Writes a minimal central directory entry with configurable data metadata, extra field data, and comment.
+    private static void writeCentralDirectoryEntry(
+            ByteBuffer buffer,
+            byte[] name,
+            int flags,
+            int method,
+            int localHeaderOffset,
+            long crc32,
+            long compressedSize,
+            long uncompressedSize,
+            byte[] extraData,
+            byte[] comment
+    ) {
         buffer.putInt(0x02014b50);
         buffer.putShort((short) 20);
         buffer.putShort((short) 20);
@@ -4161,13 +4303,14 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt((int) uncompressedSize);
         buffer.putShort((short) name.length);
         buffer.putShort((short) extraData.length);
-        buffer.putShort((short) 0);
+        buffer.putShort((short) comment.length);
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt(0);
         buffer.putInt(localHeaderOffset);
         buffer.put(name);
         buffer.put(extraData);
+        buffer.put(comment);
     }
 
     /// Returns stored content containing the data descriptor signature byte sequence.
@@ -5693,6 +5836,17 @@ public final class ZipArkivoFileSystemTest {
         buffer.putShort((short) data.length);
         buffer.put(data);
         return buffer.array();
+    }
+
+    /// Returns an Info-ZIP Unicode Path or Comment Extra Field for a raw value.
+    private static byte[] unicodeExtraField(int fieldId, byte[] rawValue, String value) {
+        byte[] encodedValue = value.getBytes(StandardCharsets.UTF_8);
+        ByteBuffer payload = ByteBuffer.allocate(1 + Integer.BYTES + encodedValue.length)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        payload.put((byte) 1);
+        payload.putInt((int) crc32(rawValue));
+        payload.put(encodedValue);
+        return extraField(fieldId, payload.array());
     }
 
     /// Creates a temporary archive file under the module build directory.

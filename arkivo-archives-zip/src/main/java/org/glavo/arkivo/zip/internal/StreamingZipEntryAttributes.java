@@ -90,6 +90,12 @@ final class StreamingZipEntryAttributes implements ZipArkivoEntryAttributes {
         return path;
     }
 
+    /// Returns no decoded ZIP entry comment because local streaming headers do not carry entry comments.
+    @Override
+    public @Nullable String comment() {
+        return null;
+    }
+
     /// Returns the compressed size stored in the ZIP metadata, or `UNKNOWN_SIZE` when it is not known.
     @Override
     public long compressedSize() {

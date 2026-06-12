@@ -23,6 +23,9 @@ public interface ZipArkivoEntryAttributes extends PosixFileAttributes {
     /// Returns the decoded ZIP entry path text.
     String path();
 
+    /// Returns the decoded ZIP entry comment text, or `null` when no comment is present.
+    @Nullable String comment();
+
     /// Returns the compressed size stored in the ZIP metadata, or `UNKNOWN_SIZE` when it is not known.
     long compressedSize();
 

@@ -3,7 +3,9 @@
 
 package org.glavo.arkivo.sevenzip.internal;
 
+import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.ByteArrayInputStream;
 import java.io.EOFException;
@@ -31,6 +33,14 @@ public final class SevenZipHeaderReader {
 
     /// Reads and validates 7z archive metadata.
     public static SevenZipArchiveMetadata readArchiveMetadata(SeekableByteChannel channel) throws IOException {
+        return readArchiveMetadata(channel, null);
+    }
+
+    /// Reads and validates 7z archive metadata.
+    public static SevenZipArchiveMetadata readArchiveMetadata(
+            SeekableByteChannel channel,
+            @Nullable ArkivoPasswordProvider passwordProvider
+    ) throws IOException {
         Objects.requireNonNull(channel, "channel");
         ByteBuffer buffer = ByteBuffer.allocate(SevenZipSignatureHeader.SIZE).order(ByteOrder.LITTLE_ENDIAN);
         channel.position(0);
@@ -71,7 +81,8 @@ public final class SevenZipHeaderReader {
                 signatureHeader,
                 SevenZipHeaderParser.parseEntries(
                         nextHeader,
-                        (offset, size) -> openPackedStream(channel, offset, size)
+                        (offset, size) -> openPackedStream(channel, offset, size),
+                        passwordProvider
                 )
         );
     }

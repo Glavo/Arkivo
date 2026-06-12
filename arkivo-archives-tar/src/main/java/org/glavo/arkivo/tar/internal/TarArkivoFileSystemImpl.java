@@ -1,0 +1,769 @@
+// Copyright (c) 2026 Glavo
+// SPDX-License-Identifier: MPL-2.0
+
+package org.glavo.arkivo.tar.internal;
+
+import org.glavo.arkivo.ArkivoFileSystem;
+import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.tar.TarArkivoEntryAttributes;
+import org.glavo.arkivo.tar.TarArkivoFileSystem;
+import org.glavo.arkivo.tar.TarArkivoFileSystemProvider;
+import org.glavo.arkivo.tar.TarArkivoStreamingReader;
+import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
+
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URI;
+import java.nio.channels.SeekableByteChannel;
+import java.nio.file.AccessMode;
+import java.nio.file.ClosedFileSystemException;
+import java.nio.file.DirectoryIteratorException;
+import java.nio.file.DirectoryStream;
+import java.nio.file.FileStore;
+import java.nio.file.FileSystemException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.NoSuchFileException;
+import java.nio.file.NotLinkException;
+import java.nio.file.OpenOption;
+import java.nio.file.Path;
+import java.nio.file.PathMatcher;
+import java.nio.file.ReadOnlyFileSystemException;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.FileStoreAttributeView;
+import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.UserPrincipalLookupService;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+
+/// Implements a read-only TAR archive file system backed by an in-memory entry index.
+@NotNullByDefault
+public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
+    /// The supported file attribute view names.
+    private static final @Unmodifiable Set<String> SUPPORTED_ATTRIBUTE_VIEWS = Set.of("basic", "tar");
+
+    /// The file system provider that owns this file system.
+    private final TarArkivoFileSystemProvider provider;
+
+    /// The source archive path.
+    private final Path archivePath;
+
+    /// The archive URI used by generated entry URIs.
+    private final URI archiveUri;
+
+    /// The action invoked when this file system closes.
+    private final Runnable closeAction;
+
+    /// The synthetic root path.
+    private final TarArkivoPath rootPath;
+
+    /// The file store view for this archive.
+    private final TarFileStore fileStore = new TarFileStore();
+
+    /// Entry nodes by normalized archive path.
+    private final @Unmodifiable Map<String, Node> nodes;
+
+    /// Whether this file system is open.
+    private volatile boolean open = true;
+
+    /// Creates a TAR file system instance.
+    private TarArkivoFileSystemImpl(
+            TarArkivoFileSystemProvider provider,
+            Path archivePath,
+            URI archiveUri,
+            ArkivoFileSystemThreadSafety threadSafety,
+            Map<String, Node> nodes,
+            Runnable closeAction
+    ) {
+        super(threadSafety);
+        this.provider = Objects.requireNonNull(provider, "provider");
+        this.archivePath = Objects.requireNonNull(archivePath, "archivePath");
+        this.archiveUri = Objects.requireNonNull(archiveUri, "archiveUri");
+        this.closeAction = Objects.requireNonNull(closeAction, "closeAction");
+        this.nodes = Map.copyOf(nodes);
+        this.rootPath = TarArkivoPath.root(this);
+    }
+
+    /// Opens a TAR file system from an archive path.
+    public static TarArkivoFileSystemImpl open(
+            TarArkivoFileSystemProvider provider,
+            Path archivePath,
+            URI archiveUri,
+            Map<String, ?> environment,
+            Runnable closeAction
+    ) throws IOException {
+        Objects.requireNonNull(environment, "environment");
+        ArkivoFileSystemThreadSafety threadSafety = ArkivoFileSystem.THREAD_SAFETY.readOrDefault(
+                environment,
+                ArkivoFileSystemThreadSafety.CONCURRENT_READ
+        );
+        Set<OpenOption> openOptions = ArkivoFileSystem.OPEN_OPTIONS.readOrDefault(
+                environment,
+                Set.of(StandardOpenOption.READ)
+        );
+        for (OpenOption option : openOptions) {
+            if (option != StandardOpenOption.READ) {
+                throw new UnsupportedOperationException("TAR archive file systems are read-only");
+            }
+        }
+
+        try (InputStream input = Files.newInputStream(archivePath, openOptions.toArray(OpenOption[]::new))) {
+            return new TarArkivoFileSystemImpl(
+                    provider,
+                    archivePath,
+                    archiveUri,
+                    threadSafety,
+                    readNodes(input),
+                    closeAction
+            );
+        }
+    }
+
+    /// Returns the provider that owns this file system.
+    @Override
+    public TarArkivoFileSystemProvider provider() {
+        return provider;
+    }
+
+    /// Closes this file system.
+    @Override
+    public void close() {
+        if (open) {
+            open = false;
+            closeAction.run();
+        }
+    }
+
+    /// Returns whether this file system is open.
+    @Override
+    public boolean isOpen() {
+        return open;
+    }
+
+    /// Returns whether this file system is read-only.
+    @Override
+    public boolean isReadOnly() {
+        return true;
+    }
+
+    /// Returns the TAR archive path separator.
+    @Override
+    public String getSeparator() {
+        return "/";
+    }
+
+    /// Returns the root directories in this file system.
+    @Override
+    public Iterable<Path> getRootDirectories() {
+        ensureOpen();
+        return List.of(rootPath);
+    }
+
+    /// Returns file stores for this file system.
+    @Override
+    public Iterable<FileStore> getFileStores() {
+        ensureOpen();
+        return List.of(fileStore);
+    }
+
+    /// Returns supported attribute view names.
+    @Override
+    public Set<String> supportedFileAttributeViews() {
+        return SUPPORTED_ATTRIBUTE_VIEWS;
+    }
+
+    /// Returns a path inside this TAR file system.
+    @Override
+    public Path getPath(String first, String... more) {
+        ensureOpen();
+        return TarArkivoPath.of(this, first, more);
+    }
+
+    /// Returns a path matcher for TAR paths.
+    @Override
+    public PathMatcher getPathMatcher(String syntaxAndPattern) {
+        Objects.requireNonNull(syntaxAndPattern, "syntaxAndPattern");
+        int separator = syntaxAndPattern.indexOf(':');
+        if (separator <= 0) {
+            throw new IllegalArgumentException("Path matcher syntax must be syntax:pattern");
+        }
+        String syntax = syntaxAndPattern.substring(0, separator);
+        String pattern = syntaxAndPattern.substring(separator + 1);
+        if ("regex".equals(syntax)) {
+            java.util.regex.Pattern compiled = java.util.regex.Pattern.compile(pattern);
+            return path -> compiled.matcher(path.toString()).matches();
+        }
+        if ("glob".equals(syntax)) {
+            PathMatcher matcher = java.nio.file.FileSystems.getDefault().getPathMatcher("glob:" + pattern);
+            return path -> matcher.matches(Path.of(path.toString()));
+        }
+        throw new UnsupportedOperationException("Unsupported path matcher syntax: " + syntax);
+    }
+
+    /// User principal lookup is not supported by TAR file systems.
+    @Override
+    public UserPrincipalLookupService getUserPrincipalLookupService() {
+        throw new UnsupportedOperationException("TAR user principal lookup is not supported");
+    }
+
+    /// Watch services are not supported by TAR file systems.
+    @Override
+    public java.nio.file.WatchService newWatchService() {
+        throw new UnsupportedOperationException("TAR watch services are not supported");
+    }
+
+    /// Returns the archive URI used by generated entry URIs.
+    URI archiveUri() {
+        return archiveUri;
+    }
+
+    /// Opens an input stream for an entry.
+    public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
+        validateReadOptions(Set.of(options));
+        Node node = requireNode(path);
+        if (!node.attributes().isRegularFile()) {
+            throw new FileSystemException(path.toString(), null, "TAR entry is not a regular file");
+        }
+        return new ByteArrayInputStream(node.content());
+    }
+
+    /// Opens a read-only byte channel for an entry.
+    public SeekableByteChannel newByteChannel(
+            Path path,
+            Set<? extends OpenOption> options,
+            FileAttribute<?>... attributes
+    ) throws IOException {
+        Objects.requireNonNull(attributes, "attributes");
+        validateReadOptions(options);
+        Node node = requireNode(path);
+        if (!node.attributes().isRegularFile()) {
+            throw new FileSystemException(path.toString(), null, "TAR entry is not a regular file");
+        }
+        return new ByteArraySeekableByteChannel(node.content());
+    }
+
+    /// Opens a directory stream for an entry.
+    public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter)
+            throws IOException {
+        Objects.requireNonNull(filter, "filter");
+        Node node = requireNode(directory);
+        if (!node.directory()) {
+            throw new FileSystemException(directory.toString(), null, "TAR entry is not a directory");
+        }
+
+        ArrayList<Path> accepted = new ArrayList<>();
+        for (String childPath : node.children().values()) {
+            Path child = rootPath.resolve(childPath);
+            try {
+                if (filter.accept(child)) {
+                    accepted.add(child);
+                }
+            } catch (IOException exception) {
+                throw new DirectoryIteratorException(exception);
+            }
+        }
+        return new ListDirectoryStream(accepted);
+    }
+
+    /// Checks access to an entry.
+    public void checkAccess(Path path, AccessMode... modes) throws IOException {
+        requireNode(path);
+        for (AccessMode mode : modes) {
+            if (mode != AccessMode.READ) {
+                throw new ReadOnlyFileSystemException();
+            }
+        }
+    }
+
+    /// Returns this archive's file store.
+    public FileStore fileStore(Path path) throws IOException {
+        requireNode(path);
+        return fileStore;
+    }
+
+    /// Reads a symbolic link target.
+    public Path readSymbolicLink(Path link) throws IOException {
+        Node node = requireNode(link);
+        String linkName = node.attributes().linkName();
+        if (!node.attributes().isSymbolicLink() || linkName == null) {
+            throw new NotLinkException(link.toString());
+        }
+        return getPath(linkName);
+    }
+
+    /// Returns an attribute view for a path.
+    public <V extends java.nio.file.attribute.FileAttributeView> @Nullable V getFileAttributeView(
+            Path path,
+            Class<V> type,
+            LinkOption... options
+    ) {
+        Objects.requireNonNull(type, "type");
+        Objects.requireNonNull(options, "options");
+        if (type == BasicFileAttributeView.class) {
+            return type.cast(new BasicView(path));
+        }
+        return null;
+    }
+
+    /// Reads attributes for a path.
+    public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, LinkOption... options)
+            throws IOException {
+        Objects.requireNonNull(type, "type");
+        Objects.requireNonNull(options, "options");
+        TarArkivoEntryAttributes attributes = requireNode(path).attributes();
+        if (type == BasicFileAttributes.class || type == TarArkivoEntryAttributes.class) {
+            return type.cast(attributes);
+        }
+        throw new UnsupportedOperationException("Unsupported TAR attribute type: " + type.getName());
+    }
+
+    /// Reads named attributes for a path.
+    public Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options) throws IOException {
+        Objects.requireNonNull(attributes, "attributes");
+        Objects.requireNonNull(options, "options");
+        TarArkivoEntryAttributes entryAttributes = requireNode(path).attributes();
+        HashMap<String, Object> values = new HashMap<>();
+        RequestedAttributes requestedAttributes = RequestedAttributes.parse(attributes);
+        boolean all = requestedAttributes.contains("*");
+        if (requestedAttributes.tarView()) {
+            putTarAttributes(values, entryAttributes, requestedAttributes, all);
+        } else {
+            putBasicAttributes(values, entryAttributes, requestedAttributes, all);
+        }
+        return Collections.unmodifiableMap(values);
+    }
+
+    /// Adds selected basic attributes to the result map.
+    private static void putBasicAttributes(
+            Map<String, Object> values,
+            TarArkivoEntryAttributes entryAttributes,
+            RequestedAttributes requestedAttributes,
+            boolean all
+    ) {
+        if (all || requestedAttributes.contains("size")) {
+            values.put("size", entryAttributes.size());
+        }
+        if (all || requestedAttributes.contains("lastModifiedTime")) {
+            values.put("lastModifiedTime", entryAttributes.lastModifiedTime());
+        }
+        if (all || requestedAttributes.contains("lastAccessTime")) {
+            values.put("lastAccessTime", entryAttributes.lastAccessTime());
+        }
+        if (all || requestedAttributes.contains("creationTime")) {
+            values.put("creationTime", entryAttributes.creationTime());
+        }
+        if (all || requestedAttributes.contains("isDirectory")) {
+            values.put("isDirectory", entryAttributes.isDirectory());
+        }
+        if (all || requestedAttributes.contains("isRegularFile")) {
+            values.put("isRegularFile", entryAttributes.isRegularFile());
+        }
+        if (all || requestedAttributes.contains("isSymbolicLink")) {
+            values.put("isSymbolicLink", entryAttributes.isSymbolicLink());
+        }
+        if (all || requestedAttributes.contains("isOther")) {
+            values.put("isOther", entryAttributes.isOther());
+        }
+        if (all || requestedAttributes.contains("fileKey")) {
+            values.put("fileKey", entryAttributes.fileKey());
+        }
+    }
+
+    /// Adds selected TAR attributes to the result map.
+    private static void putTarAttributes(
+            Map<String, Object> values,
+            TarArkivoEntryAttributes entryAttributes,
+            RequestedAttributes requestedAttributes,
+            boolean all
+    ) {
+        putBasicAttributes(values, entryAttributes, requestedAttributes, all);
+        if (all || requestedAttributes.contains("path")) {
+            values.put("path", entryAttributes.path());
+        }
+        if (all || requestedAttributes.contains("typeFlag")) {
+            values.put("typeFlag", entryAttributes.typeFlag());
+        }
+        if (all || requestedAttributes.contains("mode")) {
+            values.put("mode", entryAttributes.mode());
+        }
+        if (all || requestedAttributes.contains("userId")) {
+            values.put("userId", entryAttributes.userId());
+        }
+        if (all || requestedAttributes.contains("groupId")) {
+            values.put("groupId", entryAttributes.groupId());
+        }
+        if (all || requestedAttributes.contains("userName")) {
+            values.put("userName", entryAttributes.userName());
+        }
+        if (all || requestedAttributes.contains("groupName")) {
+            values.put("groupName", entryAttributes.groupName());
+        }
+        if (all || requestedAttributes.contains("linkName")) {
+            values.put("linkName", entryAttributes.linkName());
+        }
+    }
+
+    /// Requires this file system to be open.
+    private void ensureOpen() {
+        if (!open) {
+            throw new ClosedFileSystemException();
+        }
+    }
+
+    /// Returns a node for a path.
+    private Node requireNode(Path path) throws IOException {
+        ensureOpen();
+        String normalizedPath = normalizedNodePath(path);
+        Node node = nodes.get(normalizedPath);
+        if (node == null) {
+            throw new NoSuchFileException(path.toString());
+        }
+        return node;
+    }
+
+    /// Returns a normalized node path.
+    private String normalizedNodePath(Path path) {
+        TarArkivoPath tarPath = TarArkivoPath.require(path, this);
+        TarArkivoPath normalized = (TarArkivoPath) tarPath.toAbsolutePath().normalize();
+        return normalized.archivePath();
+    }
+
+    /// Validates that only read options are requested.
+    private static void validateReadOptions(Set<? extends OpenOption> options) {
+        for (OpenOption option : options) {
+            if (option != StandardOpenOption.READ) {
+                throw new UnsupportedOperationException("TAR file systems are read-only");
+            }
+        }
+    }
+
+    /// Reads all entry nodes from a TAR stream.
+    private static Map<String, Node> readNodes(InputStream input) throws IOException {
+        LinkedHashMap<String, Node> nodes = new LinkedHashMap<>();
+        nodes.put("", new Node("", syntheticDirectoryAttributes("/"), true, new byte[0], true));
+
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(input)) {
+            while (reader.next()) {
+                TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+                String path = normalizeEntryPath(attributes.path());
+                ensureParents(nodes, path);
+                byte[] content = new byte[0];
+                if (attributes.isRegularFile()) {
+                    try (InputStream entryInput = reader.openInputStream()) {
+                        content = entryInput.readAllBytes();
+                    }
+                }
+                putNode(nodes, new Node(path, attributes, attributes.isDirectory(), content, false));
+            }
+        }
+        return nodes;
+    }
+
+    /// Adds implicit parent directory nodes.
+    private static void ensureParents(Map<String, Node> nodes, String path) throws IOException {
+        int separator = path.indexOf('/');
+        while (separator >= 0) {
+            String parent = path.substring(0, separator);
+            if (!parent.isEmpty()) {
+                Node existing = nodes.get(parent);
+                if (existing == null) {
+                    ensureParents(nodes, parent);
+                    putNode(nodes, new Node(parent, syntheticDirectoryAttributes(parent), true, new byte[0], true));
+                } else if (!existing.directory()) {
+                    throw new IOException("TAR parent entry is not a directory: " + parent);
+                }
+            }
+            separator = path.indexOf('/', separator + 1);
+        }
+    }
+
+    /// Adds or replaces one node in the node map.
+    private static void putNode(Map<String, Node> nodes, Node node) throws IOException {
+        Node existing = nodes.get(node.path());
+        if (existing != null && !(existing.syntheticDirectory() && node.directory())) {
+            throw new IOException("Duplicate TAR entry path: " + node.path());
+        }
+        @Nullable LinkedHashMap<String, String> existingChildren = existing != null ? existing.children() : null;
+        if (!node.path().isEmpty()) {
+            Node parent = nodes.get(parentPath(node.path()));
+            if (parent != null) {
+                if (!parent.directory()) {
+                    throw new IOException("TAR parent entry is not a directory: " + parent.path());
+                }
+                parent.children().put(fileName(node.path()), node.path());
+            }
+        }
+        nodes.put(node.path(), node);
+        if (existingChildren != null) {
+            node.children().putAll(existingChildren);
+        }
+    }
+
+    /// Normalizes an entry path into node map form.
+    private static String normalizeEntryPath(String path) throws IOException {
+        String normalized = path;
+        while (normalized.endsWith("/") && normalized.length() > 1) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        if (normalized.isEmpty()) {
+            throw new IOException("TAR entry is missing a path");
+        }
+        return normalized;
+    }
+
+    /// Returns the parent path for a normalized node path.
+    private static String parentPath(String path) {
+        int slash = path.lastIndexOf('/');
+        return slash >= 0 ? path.substring(0, slash) : "";
+    }
+
+    /// Returns the final file name for a normalized node path.
+    private static String fileName(String path) {
+        int slash = path.lastIndexOf('/');
+        return slash >= 0 ? path.substring(slash + 1) : path;
+    }
+
+    /// Returns synthetic directory attributes.
+    private static TarEntryAttributes syntheticDirectoryAttributes(String path) {
+        FileTime time = FileTime.fromMillis(0L);
+        return new TarEntryAttributes(path, TarEntryAttributes.DIRECTORY_TYPE, 040755, 0L, 0L, null, null, null, 0L, time, time, time);
+    }
+
+    /// Stores parsed named attribute selection.
+    ///
+    /// @param view  the selected attribute view name
+    /// @param names the selected attribute names
+    @NotNullByDefault
+    private record RequestedAttributes(String view, @Unmodifiable Set<String> names) {
+        /// Parses a named attribute selection.
+        private static RequestedAttributes parse(String attributes) {
+            int separator = attributes.indexOf(':');
+            String view = separator >= 0 ? attributes.substring(0, separator) : "basic";
+            String names = separator >= 0 ? attributes.substring(separator + 1) : attributes;
+            if (!"basic".equals(view) && !"tar".equals(view)) {
+                throw new UnsupportedOperationException("Unsupported TAR attribute view: " + view);
+            }
+            if (names.isEmpty()) {
+                throw new IllegalArgumentException("TAR attribute names must not be empty");
+            }
+            if ("*".equals(names)) {
+                return new RequestedAttributes(view, Set.of("*"));
+            }
+            return new RequestedAttributes(view, Set.of(names.split(",")));
+        }
+
+        /// Returns whether this request targets the TAR attribute view.
+        private boolean tarView() {
+            return "tar".equals(view);
+        }
+
+        /// Returns whether the given attribute was requested.
+        private boolean contains(String name) {
+            return names.contains(name);
+        }
+    }
+
+    /// Stores one TAR file system node.
+    @NotNullByDefault
+    private static final class Node {
+        /// The normalized archive path.
+        private final String path;
+
+        /// The node attributes.
+        private final TarArkivoEntryAttributes attributes;
+
+        /// Whether this node is a directory.
+        private final boolean directory;
+
+        /// The cached file content.
+        private final byte @Unmodifiable [] content;
+
+        /// Whether this is an implicit directory.
+        private final boolean syntheticDirectory;
+
+        /// Child node paths keyed by child name.
+        private final LinkedHashMap<String, String> children = new LinkedHashMap<>();
+
+        /// Creates one node.
+        private Node(
+                String path,
+                TarArkivoEntryAttributes attributes,
+                boolean directory,
+                byte @Unmodifiable [] content,
+                boolean syntheticDirectory
+        ) {
+            this.path = Objects.requireNonNull(path, "path");
+            this.attributes = Objects.requireNonNull(attributes, "attributes");
+            this.directory = directory;
+            this.content = Objects.requireNonNull(content, "content").clone();
+            this.syntheticDirectory = syntheticDirectory;
+        }
+
+        /// Returns the normalized archive path.
+        private String path() {
+            return path;
+        }
+
+        /// Returns the node attributes.
+        private TarArkivoEntryAttributes attributes() {
+            return attributes;
+        }
+
+        /// Returns whether this node is a directory.
+        private boolean directory() {
+            return directory;
+        }
+
+        /// Returns the cached file content.
+        private byte @Unmodifiable [] content() {
+            return content;
+        }
+
+        /// Returns whether this is an implicit directory.
+        private boolean syntheticDirectory() {
+            return syntheticDirectory;
+        }
+
+        /// Returns mutable child path map while the file system index is being built.
+        private LinkedHashMap<String, String> children() {
+            return children;
+        }
+    }
+
+    /// Implements a read-only basic attribute view.
+    @NotNullByDefault
+    private final class BasicView implements BasicFileAttributeView {
+        /// The path whose attributes are exposed.
+        private final Path path;
+
+        /// Creates an attribute view.
+        private BasicView(Path path) {
+            this.path = Objects.requireNonNull(path, "path");
+        }
+
+        /// Returns this view's name.
+        @Override
+        public String name() {
+            return "basic";
+        }
+
+        /// Reads this path's attributes.
+        @Override
+        public BasicFileAttributes readAttributes() throws IOException {
+            return TarArkivoFileSystemImpl.this.readAttributes(path, BasicFileAttributes.class);
+        }
+
+        /// TAR attributes are read-only.
+        @Override
+        public void setTimes(FileTime lastModifiedTime, FileTime lastAccessTime, FileTime createTime) {
+            throw new ReadOnlyFileSystemException();
+        }
+    }
+
+    /// Implements a simple TAR file store.
+    @NotNullByDefault
+    private final class TarFileStore extends FileStore {
+        /// Returns the archive file store name.
+        @Override
+        public String name() {
+            return archivePath.toString();
+        }
+
+        /// Returns the archive file store type.
+        @Override
+        public String type() {
+            return "tar";
+        }
+
+        /// Returns whether this file store is read-only.
+        @Override
+        public boolean isReadOnly() {
+            return true;
+        }
+
+        /// Returns total space when known.
+        @Override
+        public long getTotalSpace() throws IOException {
+            return Files.size(archivePath);
+        }
+
+        /// Returns unallocated space.
+        @Override
+        public long getUnallocatedSpace() {
+            return 0L;
+        }
+
+        /// Returns usable space.
+        @Override
+        public long getUsableSpace() {
+            return 0L;
+        }
+
+        /// Returns whether this store supports an attribute view.
+        @Override
+        public boolean supportsFileAttributeView(Class<? extends java.nio.file.attribute.FileAttributeView> type) {
+            return type == BasicFileAttributeView.class;
+        }
+
+        /// Returns whether this store supports an attribute view.
+        @Override
+        public boolean supportsFileAttributeView(String name) {
+            return SUPPORTED_ATTRIBUTE_VIEWS.contains(name);
+        }
+
+        /// Returns a file store attribute view.
+        @Override
+        public <V extends FileStoreAttributeView> @Nullable V getFileStoreAttributeView(Class<V> type) {
+            return null;
+        }
+
+        /// Returns a file store attribute.
+        @Override
+        public Object getAttribute(String attribute) {
+            throw new UnsupportedOperationException("TAR file store attributes are not supported");
+        }
+    }
+
+    /// Implements a directory stream over a fixed list.
+    @NotNullByDefault
+    private static final class ListDirectoryStream implements DirectoryStream<Path> {
+        /// The paths exposed by this stream.
+        private final @Unmodifiable List<Path> paths;
+
+        /// Whether this stream is open.
+        private boolean open = true;
+
+        /// Creates a directory stream.
+        private ListDirectoryStream(List<Path> paths) {
+            this.paths = List.copyOf(paths);
+        }
+
+        /// Returns an iterator over paths.
+        @Override
+        public Iterator<Path> iterator() {
+            if (!open) {
+                throw new IllegalStateException("TAR directory stream is closed");
+            }
+            return paths.iterator();
+        }
+
+        /// Closes this stream.
+        @Override
+        public void close() {
+            open = false;
+        }
+    }
+}

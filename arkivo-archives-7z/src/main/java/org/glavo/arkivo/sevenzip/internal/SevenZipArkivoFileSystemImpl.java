@@ -39,6 +39,7 @@ import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -368,7 +369,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 decoded = SevenZipLZMADecoder.openFolder(
                         input,
                         metadata.method(),
-                        checkedDecodedLimit(metadata)
+                        checkedDecodedLimit(metadata),
+                        config.passwordProvider()
                 );
                 skipDecodedOffset = true;
             }
@@ -458,37 +460,75 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     public Map<String, Object> readAttributes(Path path, String attributes) throws IOException {
         Objects.requireNonNull(attributes, "attributes");
         String pathText = requireExistingPath(path);
-        if (!attributes.startsWith("basic:") && !attributes.startsWith("7z:")) {
-            throw new UnsupportedOperationException("Unsupported 7z attribute view: " + attributes);
-        }
         SevenZipEntryMetadata metadata = entries.get(pathText);
-        boolean directory = metadata == null || metadata.directory();
         BasicFileAttributes basicAttributes = metadata != null
                 ? new SevenZipEntryAttributes(metadata)
                 : SevenZipRootAttributes.INSTANCE;
-        if (attributes.startsWith("7z:")) {
+        RequestedAttributes requestedAttributes = RequestedAttributes.parse(attributes);
+        HashMap<String, Object> values = new HashMap<>();
+        boolean all = requestedAttributes.contains("*");
+        if (requestedAttributes.sevenZipView()) {
             if (metadata == null) {
                 throw new UnsupportedOperationException("The synthetic 7z root has no 7z entry attributes");
             }
-            return Map.of(
-                    "path", metadata.path(),
-                    "windowsAttributes", metadata.windowsAttributes(),
-                    "creationTime", basicAttributes.creationTime(),
-                    "lastAccessTime", basicAttributes.lastAccessTime(),
-                    "lastModifiedTime", basicAttributes.lastModifiedTime(),
-                    "size", metadata.size()
-            );
+            putSevenZipAttributes(values, basicAttributes, metadata, requestedAttributes, all);
+        } else {
+            putBasicAttributes(values, basicAttributes, requestedAttributes, all);
         }
-        return Map.of(
-                "isDirectory", directory,
-                "isRegularFile", !directory,
-                "isSymbolicLink", false,
-                "isOther", false,
-                "size", metadata != null ? metadata.size() : 0L,
-                "creationTime", basicAttributes.creationTime(),
-                "lastAccessTime", basicAttributes.lastAccessTime(),
-                "lastModifiedTime", basicAttributes.lastModifiedTime()
-        );
+        return Collections.unmodifiableMap(values);
+    }
+
+    /// Adds selected basic attributes to the result map.
+    private static void putBasicAttributes(
+            Map<String, Object> values,
+            BasicFileAttributes basicAttributes,
+            RequestedAttributes requestedAttributes,
+            boolean all
+    ) {
+        if (all || requestedAttributes.contains("size")) {
+            values.put("size", basicAttributes.size());
+        }
+        if (all || requestedAttributes.contains("creationTime")) {
+            values.put("creationTime", basicAttributes.creationTime());
+        }
+        if (all || requestedAttributes.contains("lastAccessTime")) {
+            values.put("lastAccessTime", basicAttributes.lastAccessTime());
+        }
+        if (all || requestedAttributes.contains("lastModifiedTime")) {
+            values.put("lastModifiedTime", basicAttributes.lastModifiedTime());
+        }
+        if (all || requestedAttributes.contains("isDirectory")) {
+            values.put("isDirectory", basicAttributes.isDirectory());
+        }
+        if (all || requestedAttributes.contains("isRegularFile")) {
+            values.put("isRegularFile", basicAttributes.isRegularFile());
+        }
+        if (all || requestedAttributes.contains("isSymbolicLink")) {
+            values.put("isSymbolicLink", basicAttributes.isSymbolicLink());
+        }
+        if (all || requestedAttributes.contains("isOther")) {
+            values.put("isOther", basicAttributes.isOther());
+        }
+        if (all || requestedAttributes.contains("fileKey")) {
+            values.put("fileKey", basicAttributes.fileKey());
+        }
+    }
+
+    /// Adds selected 7z attributes to the result map.
+    private static void putSevenZipAttributes(
+            Map<String, Object> values,
+            BasicFileAttributes basicAttributes,
+            SevenZipEntryMetadata metadata,
+            RequestedAttributes requestedAttributes,
+            boolean all
+    ) {
+        putBasicAttributes(values, basicAttributes, requestedAttributes, all);
+        if (all || requestedAttributes.contains("path")) {
+            values.put("path", metadata.path());
+        }
+        if (all || requestedAttributes.contains("windowsAttributes")) {
+            values.put("windowsAttributes", metadata.windowsAttributes());
+        }
     }
 
     /// Requires this file system to be open.
@@ -546,7 +586,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Reads archive metadata from the archive storage.
     private SevenZipArchiveMetadata readArchiveMetadata() throws IOException {
         try (SeekableByteChannel channel = openArchiveChannel()) {
-            return SevenZipHeaderReader.readArchiveMetadata(channel);
+            return SevenZipHeaderReader.readArchiveMetadata(channel, config.passwordProvider());
         }
     }
 
@@ -556,11 +596,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             return Files.newByteChannel(archivePath, config.openOptions());
         }
         if (volumes != null) {
-            SeekableByteChannel channel = volumes.openVolume(0);
-            if (channel == null) {
-                throw new IOException("7z volume source did not provide the first volume");
-            }
-            return channel;
+            return SevenZipVolumeChannel.open(volumes);
         }
         throw new IOException("7z archive storage is not available");
     }
@@ -656,6 +692,40 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             copied.put(entry.getKey(), List.copyOf(entry.getValue()));
         }
         return Collections.unmodifiableMap(copied);
+    }
+
+    /// Stores parsed named attribute selection.
+    ///
+    /// @param view  the selected attribute view name
+    /// @param names the selected attribute names
+    @NotNullByDefault
+    private record RequestedAttributes(String view, @Unmodifiable Set<String> names) {
+        /// Parses a named attribute selection.
+        private static RequestedAttributes parse(String attributes) {
+            int separator = attributes.indexOf(':');
+            String view = separator >= 0 ? attributes.substring(0, separator) : "basic";
+            String names = separator >= 0 ? attributes.substring(separator + 1) : attributes;
+            if (!"basic".equals(view) && !"7z".equals(view)) {
+                throw new UnsupportedOperationException("Unsupported 7z attribute view: " + view);
+            }
+            if (names.isEmpty()) {
+                throw new IllegalArgumentException("7z attribute names must not be empty");
+            }
+            if ("*".equals(names)) {
+                return new RequestedAttributes(view, Set.of("*"));
+            }
+            return new RequestedAttributes(view, Set.of(names.split(",")));
+        }
+
+        /// Returns whether this request targets the 7z attribute view.
+        private boolean sevenZipView() {
+            return "7z".equals(view);
+        }
+
+        /// Returns whether the given attribute was requested.
+        private boolean contains(String name) {
+            return names.contains(name);
+        }
     }
 
     /// Directory stream over parsed 7z child paths.

@@ -526,6 +526,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     private static void addZipAttributes(Map<String, Object> values, ZipArkivoEntryAttributes attributes) {
         values.put("rawPath", attributes.rawPath());
         values.put("path", attributes.path());
+        values.put("comment", attributes.comment());
         values.put("compressedSize", attributes.compressedSize());
         values.put("crc32", attributes.crc32());
         values.put("generalPurposeFlags", attributes.generalPurposeFlags());
@@ -562,17 +563,18 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     ) {
         boolean zipView = "zip".equals(view);
         switch (name) {
-            case "lastModifiedTime" -> values.put(name, attributes.lastModifiedTime());
-            case "lastAccessTime" -> values.put(name, attributes.lastAccessTime());
-            case "creationTime" -> values.put(name, attributes.creationTime());
-            case "size" -> values.put(name, attributes.size());
-            case "isRegularFile" -> values.put(name, attributes.isRegularFile());
-            case "isDirectory" -> values.put(name, attributes.isDirectory());
-            case "isSymbolicLink" -> values.put(name, attributes.isSymbolicLink());
-            case "isOther" -> values.put(name, attributes.isOther());
-            case "fileKey" -> values.put(name, attributes.fileKey());
+            case "lastModifiedTime" -> requireBasicView(values, name, view, attributes.lastModifiedTime());
+            case "lastAccessTime" -> requireBasicView(values, name, view, attributes.lastAccessTime());
+            case "creationTime" -> requireBasicView(values, name, view, attributes.creationTime());
+            case "size" -> requireBasicView(values, name, view, attributes.size());
+            case "isRegularFile" -> requireBasicView(values, name, view, attributes.isRegularFile());
+            case "isDirectory" -> requireBasicView(values, name, view, attributes.isDirectory());
+            case "isSymbolicLink" -> requireBasicView(values, name, view, attributes.isSymbolicLink());
+            case "isOther" -> requireBasicView(values, name, view, attributes.isOther());
+            case "fileKey" -> requireBasicView(values, name, view, attributes.fileKey());
             case "rawPath" -> requireZipView(values, name, zipView, attributes.rawPath());
             case "path" -> requireZipView(values, name, zipView, attributes.path());
+            case "comment" -> requireZipView(values, name, zipView, attributes.comment());
             case "compressedSize" -> requireZipView(values, name, zipView, attributes.compressedSize());
             case "crc32" -> requireZipView(values, name, zipView, attributes.crc32());
             case "generalPurposeFlags" -> requireZipView(values, name, zipView, attributes.generalPurposeFlags());
@@ -590,6 +592,14 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             case "permissions" -> requirePosixView(values, name, view, posixAttributes.permissions());
             default -> throw new IllegalArgumentException("Unsupported ZIP attribute: " + name);
         }
+    }
+
+    /// Adds a basic attribute or rejects it for views that do not expose basic attributes.
+    private static void requireBasicView(Map<String, Object> values, String name, String view, @Nullable Object value) {
+        if ("owner".equals(view)) {
+            throw new IllegalArgumentException("Attribute requires basic, zip, or posix view: " + name);
+        }
+        values.put(name, value);
     }
 
     /// Adds a ZIP-view-only attribute or rejects it for the basic view.
@@ -727,6 +737,8 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 } catch (java.nio.charset.CharacterCodingException exception) {
                     throw new IOException("Failed to decode ZIP entry name", exception);
                 }
+                String decodedComment =
+                        decoder.decodeComment(rawComment.length > 0 ? rawComment : null, flags, extraData);
 
                 String key = entryKey(decodedPath);
                 if (key.isEmpty()) {
@@ -770,6 +782,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                         actualLocalHeaderOffset,
                         localExtraData,
                         extraData,
+                        decodedComment,
                         rawComment.length > 0 ? rawComment : null,
                         lastModifiedTime,
                         dosTime(lastModifiedDate, lastModifiedTime),
@@ -1985,6 +1998,9 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         /// The decoded path text.
         private final String path;
 
+        /// The decoded comment text, or `null` when absent.
+        private final @Nullable String comment;
+
         /// The compressed entry size.
         private final long compressedSize;
 
@@ -2050,6 +2066,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 long localHeaderOffset,
                 byte[] localExtraData,
                 byte[] centralDirectoryExtraData,
+                @Nullable String comment,
                 byte @Nullable [] rawComment,
                 int lastModifiedDosTime,
                 FileTime lastModifiedTime,
@@ -2070,6 +2087,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             this.localHeaderOffset = localHeaderOffset;
             this.localExtraData = localExtraData;
             this.centralDirectoryExtraData = centralDirectoryExtraData;
+            this.comment = comment;
             this.rawComment = rawComment;
             this.lastModifiedDosTime = lastModifiedDosTime;
             this.lastModifiedTime = lastModifiedTime;
@@ -2268,6 +2286,13 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         public String path() {
             ZipEntryRecord record = entry;
             return record != null ? record.path : Objects.requireNonNull(syntheticDirectoryKey, "syntheticDirectoryKey");
+        }
+
+        /// Returns the decoded ZIP entry comment text, or `null` when no comment is present.
+        @Override
+        public @Nullable String comment() {
+            ZipEntryRecord record = entry;
+            return record != null ? record.comment : null;
         }
 
         /// Returns the compressed size stored in the ZIP metadata, or `UNKNOWN_SIZE` when it is not known.

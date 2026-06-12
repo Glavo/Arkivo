@@ -856,6 +856,13 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             return path;
         }
 
+        /// Returns the decoded ZIP entry comment text, or `null` when no comment is present.
+        @Override
+        public @Nullable String comment() {
+            byte[] comment = rawComment;
+            return comment != null ? new String(comment, StandardCharsets.UTF_8) : null;
+        }
+
         /// Returns the compressed size stored in the ZIP metadata, or `UNKNOWN_SIZE` when it is not known.
         @Override
         public long compressedSize() {
@@ -871,7 +878,11 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Returns the general purpose bit flags stored for the ZIP entry.
         @Override
         public int generalPurposeFlags() {
-            return encryption.equals(ZipEncryption.none()) ? 0 : ZipConstants.ENCRYPTED_FLAG;
+            int flags = ZipConstants.UTF8_FLAG;
+            if (!encryption.equals(ZipEncryption.none())) {
+                flags |= ZipConstants.ENCRYPTED_FLAG;
+            }
+            return flags;
         }
 
         /// Returns the ZIP version made by field.

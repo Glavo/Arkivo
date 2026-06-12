@@ -6,8 +6,13 @@ package org.glavo.arkivo.tar;
 import org.glavo.arkivo.ArkivoFormat;
 import org.jetbrains.annotations.NotNullByDefault;
 
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.WritableByteChannel;
+import java.nio.file.Path;
+import java.util.Map;
 
 /// Describes TAR archive streaming support provided by Arkivo.
 @NotNullByDefault
@@ -33,6 +38,16 @@ public final class TarArkivoFormat implements ArkivoFormat {
         return NAME;
     }
 
+    /// Opens a TAR archive as a read-only file system.
+    public TarArkivoFileSystem open(Path path) throws IOException {
+        return TarArkivoFileSystem.open(path);
+    }
+
+    /// Opens a TAR archive as a read-only file system with provider environment options.
+    public TarArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
+        return TarArkivoFileSystem.open(path, environment);
+    }
+
     /// Opens a streaming TAR reader from an input stream.
     public TarArkivoStreamingReader openStreamingReader(InputStream source) {
         return TarArkivoStreamingReader.open(source);
@@ -41,5 +56,15 @@ public final class TarArkivoFormat implements ArkivoFormat {
     /// Opens a streaming TAR reader from a readable channel.
     public TarArkivoStreamingReader openStreamingReader(ReadableByteChannel source) {
         return TarArkivoStreamingReader.open(source);
+    }
+
+    /// Opens a streaming TAR writer over an output stream.
+    public TarArkivoStreamingWriter openStreamingWriter(OutputStream output) {
+        return TarArkivoStreamingWriter.open(output);
+    }
+
+    /// Opens a streaming TAR writer over a writable channel.
+    public TarArkivoStreamingWriter openStreamingWriter(WritableByteChannel output) {
+        return TarArkivoStreamingWriter.open(output);
     }
 }

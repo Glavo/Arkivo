@@ -3,7 +3,11 @@
 
 package org.glavo.arkivo.sevenzip.internal;
 
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
+import org.apache.commons.compress.compressors.deflate64.Deflate64CompressorInputStream;
+import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.tukaani.xz.ArrayCache;
 import org.tukaani.xz.ARMOptions;
 import org.tukaani.xz.ARMThumbOptions;
@@ -21,6 +25,8 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.zip.Inflater;
+import java.util.zip.InflaterInputStream;
 
 /// Opens supported coder streams stored in 7z folders.
 @NotNullByDefault
@@ -33,6 +39,18 @@ final class SevenZipLZMADecoder {
 
     /// The 7z LZMA2 method ID.
     static final byte[] LZMA2_METHOD_ID = new byte[]{0x21};
+
+    /// The 7z Deflate method ID.
+    static final byte[] DEFLATE_METHOD_ID = new byte[]{0x04, 0x01, 0x08};
+
+    /// The 7z Deflate64 method ID.
+    static final byte[] DEFLATE64_METHOD_ID = new byte[]{0x04, 0x01, 0x09};
+
+    /// The 7z BZip2 method ID.
+    static final byte[] BZIP2_METHOD_ID = new byte[]{0x04, 0x02, 0x02};
+
+    /// The 7z AES-256/SHA-256 encryption method ID.
+    static final byte[] AES_METHOD_ID = new byte[]{0x06, (byte) 0xf1, 0x07, 0x01};
 
     /// The 7z Delta filter method ID.
     static final byte[] DELTA_METHOD_ID = new byte[]{0x03};
@@ -72,6 +90,26 @@ final class SevenZipLZMADecoder {
     /// Returns whether the method ID identifies the LZMA2 method.
     static boolean isLZMA2(byte[] methodId) {
         return Arrays.equals(methodId, LZMA2_METHOD_ID);
+    }
+
+    /// Returns whether the method ID identifies the Deflate method.
+    static boolean isDeflate(byte[] methodId) {
+        return Arrays.equals(methodId, DEFLATE_METHOD_ID);
+    }
+
+    /// Returns whether the method ID identifies the Deflate64 method.
+    static boolean isDeflate64(byte[] methodId) {
+        return Arrays.equals(methodId, DEFLATE64_METHOD_ID);
+    }
+
+    /// Returns whether the method ID identifies the BZip2 method.
+    static boolean isBZip2(byte[] methodId) {
+        return Arrays.equals(methodId, BZIP2_METHOD_ID);
+    }
+
+    /// Returns whether the method ID identifies the AES-256/SHA-256 encryption filter.
+    static boolean isAes(byte[] methodId) {
+        return Arrays.equals(methodId, AES_METHOD_ID);
     }
 
     /// Returns whether the method ID identifies the Delta filter.
@@ -121,7 +159,15 @@ final class SevenZipLZMADecoder {
 
     /// Returns whether the method ID identifies a supported decoder.
     static boolean isSupported(byte[] methodId) {
-        return isCopy(methodId) || isLZMA(methodId) || isLZMA2(methodId) || isDelta(methodId) || isBcjFilter(methodId);
+        return isCopy(methodId)
+                || isLZMA(methodId)
+                || isLZMA2(methodId)
+                || isDeflate(methodId)
+                || isDeflate64(methodId)
+                || isBZip2(methodId)
+                || isAes(methodId)
+                || isDelta(methodId)
+                || isBcjFilter(methodId);
     }
 
     /// Opens the decoder pipeline for a 7z folder method.
@@ -129,6 +175,16 @@ final class SevenZipLZMADecoder {
             InputStream input,
             SevenZipFolderMethod method,
             long finalOutputLimit
+    ) throws IOException {
+        return openFolder(input, method, finalOutputLimit, null);
+    }
+
+    /// Opens the decoder pipeline for a 7z folder method.
+    static InputStream openFolder(
+            InputStream input,
+            SevenZipFolderMethod method,
+            long finalOutputLimit,
+            @Nullable ArkivoPasswordProvider passwordProvider
     ) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(method, "method");
@@ -147,6 +203,14 @@ final class SevenZipLZMADecoder {
                     current = openLZMA(current, outputLimit, properties);
                 } else if (isLZMA2(methodId)) {
                     current = openLZMA2(current, properties);
+                } else if (isDeflate(methodId)) {
+                    current = openDeflate(current, properties);
+                } else if (isDeflate64(methodId)) {
+                    current = openDeflate64(current, properties);
+                } else if (isBZip2(methodId)) {
+                    current = openBZip2(current, properties);
+                } else if (isAes(methodId)) {
+                    current = openAes(current, properties, passwordProvider);
                 } else if (isDelta(methodId)) {
                     current = openDelta(current, properties);
                 } else if (isBcjFilter(methodId)) {
@@ -175,6 +239,15 @@ final class SevenZipLZMADecoder {
         }
     }
 
+    /// Opens a 7z AES decrypting stream for coder properties.
+    static InputStream openAes(
+            InputStream input,
+            byte[] properties,
+            @Nullable ArkivoPasswordProvider passwordProvider
+    ) throws IOException {
+        return SevenZipAesCrypto.openDecryptingStream(input, properties, passwordProvider);
+    }
+
     /// Opens a raw LZMA decoder for 7z coder properties.
     static InputStream openLZMA(InputStream input, long uncompressedSize, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
@@ -199,6 +272,36 @@ final class SevenZipLZMADecoder {
         }
         int dictionarySize = (2 | (property & 1)) << ((property >>> 1) + 11);
         return new LZMA2InputStream(input, dictionarySize);
+    }
+
+    /// Opens a raw Deflate decoder for 7z coder properties.
+    static InputStream openDeflate(InputStream input, byte[] properties) throws IOException {
+        Objects.requireNonNull(input, "input");
+        Objects.requireNonNull(properties, "properties");
+        if (properties.length != 0) {
+            throw new IOException("7z Deflate coder properties must be empty");
+        }
+        return new EndingInflaterInputStream(input);
+    }
+
+    /// Opens a Deflate64 decoder for 7z coder properties.
+    static InputStream openDeflate64(InputStream input, byte[] properties) throws IOException {
+        Objects.requireNonNull(input, "input");
+        Objects.requireNonNull(properties, "properties");
+        if (properties.length != 0) {
+            throw new IOException("7z Deflate64 coder properties must be empty");
+        }
+        return new Deflate64CompressorInputStream(input);
+    }
+
+    /// Opens a BZip2 decoder for 7z coder properties.
+    static InputStream openBZip2(InputStream input, byte[] properties) throws IOException {
+        Objects.requireNonNull(input, "input");
+        Objects.requireNonNull(properties, "properties");
+        if (properties.length != 0) {
+            throw new IOException("7z BZip2 coder properties must be empty");
+        }
+        return new BZip2CompressorInputStream(input);
     }
 
     /// Opens a raw Delta filter decoder for 7z coder properties.
@@ -295,5 +398,39 @@ final class SevenZipLZMADecoder {
             throw new IOException(description + " properties must contain zero or four bytes");
         }
         return ByteBuffer.wrap(properties).order(ByteOrder.LITTLE_ENDIAN).getInt();
+    }
+
+    /// Inflates raw Deflate input and releases the backing inflater.
+    @NotNullByDefault
+    private static final class EndingInflaterInputStream extends InflaterInputStream {
+        /// The inflater owned by this stream.
+        private final Inflater inflater;
+
+        /// Whether the inflater has been released.
+        private boolean released;
+
+        /// Creates a raw Deflate input stream.
+        private EndingInflaterInputStream(InputStream input) {
+            this(input, new Inflater(true));
+        }
+
+        /// Creates a raw Deflate input stream with the given inflater.
+        private EndingInflaterInputStream(InputStream input, Inflater inflater) {
+            super(input, inflater);
+            this.inflater = inflater;
+        }
+
+        /// Closes the stream and releases the inflater.
+        @Override
+        public void close() throws IOException {
+            try {
+                super.close();
+            } finally {
+                if (!released) {
+                    released = true;
+                    inflater.end();
+                }
+            }
+        }
     }
 }
