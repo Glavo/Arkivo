@@ -150,7 +150,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         throw new UnsupportedOperationException("Unsupported TAR streaming attributes type: " + type.getName());
     }
 
-    /// Opens a readable channel for the current file entry.
+    /// Opens a readable channel for the current entry body.
     @Override
     public ReadableByteChannel openChannel() throws IOException {
         ensureOpen();
@@ -162,7 +162,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             throw new IOException("TAR entry body has already been opened");
         }
         currentBodyOpened = true;
-        if (!attributes.isRegularFile()) {
+        if (!attributes.hasDataBody()) {
             return Channels.newChannel(InputStream.nullInputStream());
         }
         return Channels.newChannel(new EntryInputStream());

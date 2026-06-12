@@ -385,6 +385,41 @@ public final class ArArkivoStreamingReaderTest {
         }
     }
 
+    /// Verifies that drive-letter member paths are rejected as non-relative paths.
+    @Test
+    public void rejectsDriveLetterMemberPath() throws IOException {
+        byte[] archive = archive(member("C:/evil.txt/", 0, 0, 0, 0100644, new byte[0]));
+
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            IOException exception = assertThrows(IOException.class, reader::next);
+
+            assertEquals(true, exception.getMessage().contains("must be relative"));
+        }
+    }
+
+    /// Verifies that a member body can only be opened once.
+    @Test
+    public void entryBodyCanOnlyBeOpenedOnce() throws IOException {
+        byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = archive(member("hello.txt/", 0, 0, 0, 0100644, content));
+
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            assertEquals(true, reader.next());
+
+            try (var channel = reader.openChannel()) {
+                IOException exception = assertThrows(IOException.class, reader::openChannel);
+                assertEquals(true, exception.getMessage().contains("already been opened"));
+
+                ByteBuffer buffer = ByteBuffer.allocate(content.length);
+                assertEquals(content.length, channel.read(buffer));
+                buffer.flip();
+                assertEquals("hello", StandardCharsets.UTF_8.decode(buffer).toString());
+            }
+
+            assertEquals(false, reader.next());
+        }
+    }
+
     /// Verifies that reader close can retry source cleanup after failure.
     @Test
     public void readerCloseRetriesSourceCleanupAfterFailure() throws IOException {

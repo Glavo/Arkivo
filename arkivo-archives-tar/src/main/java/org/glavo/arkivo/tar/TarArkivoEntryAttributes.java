@@ -11,6 +11,9 @@ import java.nio.file.attribute.BasicFileAttributes;
 /// Exposes metadata parsed from one TAR archive entry header.
 @NotNullByDefault
 public interface TarArkivoEntryAttributes extends BasicFileAttributes {
+    /// The TAR type flag for hard link entries.
+    byte HARD_LINK_TYPE = '1';
+
     /// Returns the decoded TAR entry path.
     String path();
 
@@ -32,6 +35,11 @@ public interface TarArkivoEntryAttributes extends BasicFileAttributes {
     /// Returns the group name stored by the TAR header, or `null` when absent.
     @Nullable String groupName();
 
-    /// Returns the symbolic link target stored by the TAR header, or `null` when this entry is not a symbolic link.
+    /// Returns whether this entry is a TAR hard link entry.
+    default boolean isHardLink() {
+        return typeFlag() == HARD_LINK_TYPE;
+    }
+
+    /// Returns the link target stored by the TAR header, or `null` when absent.
     @Nullable String linkName();
 }

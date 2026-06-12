@@ -27,6 +27,7 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +46,13 @@ public final class RarArkivoStreamingReaderTest {
     /// The RAR5 archive signature.
     private static final byte @Unmodifiable [] RAR5_SIGNATURE =
             new byte[]{'R', 'a', 'r', '!', 0x1a, 0x07, 0x01, 0x00};
+
+    /// The RAR4 archive signature.
+    private static final byte @Unmodifiable [] RAR4_SIGNATURE =
+            new byte[]{'R', 'a', 'r', '!', 0x1a, 0x07, 0x00};
+
+    /// RAR4 file header flag indicating that the name field includes Unicode metadata.
+    private static final long RAR4_FILE_FLAG_UNICODE = 0x0200L;
 
     /// Verifies that stored RAR5 entries can be streamed with metadata.
     @Test
@@ -194,8 +202,16 @@ public final class RarArkivoStreamingReaderTest {
                         "dir/hello.txt"
                 ),
                 redirectedEntry(
-                        "junction",
+                        "file-copy",
                         1_700_000_001L,
+                        0100644,
+                        RarArkivoEntryAttributes.REDIRECTION_TYPE_FILE_COPY,
+                        0,
+                        "dir/hello.txt"
+                ),
+                redirectedEntry(
+                        "junction",
+                        1_700_000_002L,
                         040755,
                         RarArkivoEntryAttributes.REDIRECTION_TYPE_WINDOWS_JUNCTION,
                         RarArkivoEntryAttributes.REDIRECTION_FLAG_TARGET_DIRECTORY,
@@ -207,14 +223,29 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals(true, reader.next());
             RarArkivoEntryAttributes hardLink = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals("hard-link", hardLink.path());
-            assertEquals(false, hardLink.isRegularFile());
+            assertEquals(true, hardLink.isRegularFile());
             assertEquals(false, hardLink.isSymbolicLink());
-            assertEquals(true, hardLink.isOther());
+            assertEquals(false, hardLink.isOther());
             assertNull(hardLink.linkName());
             assertEquals(RarArkivoEntryAttributes.REDIRECTION_TYPE_HARD_LINK, hardLink.redirectionType());
             assertEquals(0, hardLink.redirectionFlags());
             assertEquals("dir/hello.txt", hardLink.redirectionTarget());
             assertEquals(false, hardLink.redirectionTargetDirectory());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(new byte[0], input.readAllBytes());
+            }
+
+            assertEquals(true, reader.next());
+            RarArkivoEntryAttributes fileCopy = reader.readAttributes(RarArkivoEntryAttributes.class);
+            assertEquals("file-copy", fileCopy.path());
+            assertEquals(true, fileCopy.isRegularFile());
+            assertEquals(false, fileCopy.isSymbolicLink());
+            assertEquals(false, fileCopy.isOther());
+            assertNull(fileCopy.linkName());
+            assertEquals(RarArkivoEntryAttributes.REDIRECTION_TYPE_FILE_COPY, fileCopy.redirectionType());
+            assertEquals(0, fileCopy.redirectionFlags());
+            assertEquals("dir/hello.txt", fileCopy.redirectionTarget());
+            assertEquals(false, fileCopy.redirectionTargetDirectory());
             try (var input = reader.openInputStream()) {
                 assertArrayEquals(new byte[0], input.readAllBytes());
             }
@@ -241,6 +272,7 @@ public final class RarArkivoStreamingReaderTest {
     @Test
     public void opensStoredEntriesAsReadOnlyFileSystem() throws IOException {
         byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
+        byte[] backslashContent = "backslash path".getBytes(StandardCharsets.UTF_8);
         byte[] splitFirstPart = "split ".getBytes(StandardCharsets.UTF_8);
         byte[] splitSecondPart = "content".getBytes(StandardCharsets.UTF_8);
         byte[] splitContent = concatenate(splitFirstPart, splitSecondPart);
@@ -258,6 +290,29 @@ public final class RarArkivoStreamingReaderTest {
                         0100644,
                         content,
                         concatenate(owner("alice", "staff", 1000, 1001), blake2spHash(hash))
+                ),
+                storedFile(
+                        "windows\\path\\backslash.txt",
+                        1_700_000_010L,
+                        0100644,
+                        backslashContent,
+                        null
+                ),
+                redirectedEntry(
+                        "dir/hard-link.txt",
+                        1_700_000_010L,
+                        0100644,
+                        RarArkivoEntryAttributes.REDIRECTION_TYPE_HARD_LINK,
+                        0,
+                        "dir/hello.txt"
+                ),
+                redirectedEntry(
+                        "dir/file-copy.txt",
+                        1_700_000_010L,
+                        0100644,
+                        RarArkivoEntryAttributes.REDIRECTION_TYPE_FILE_COPY,
+                        0,
+                        "dir/hello.txt"
                 ),
                 splitStoredFilePart(
                         "dir/split.txt",
@@ -297,6 +352,29 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals(content.length, fileAttributes.size());
             assertEquals("alice", fileAttributes.userName());
             assertArrayEquals(content, Files.readAllBytes(file));
+
+            Path backslashFile = fileSystem.getPath("/windows/path/backslash.txt");
+            assertArrayEquals(backslashContent, Files.readAllBytes(backslashFile));
+
+            Path hardLink = fileSystem.getPath("/dir/hard-link.txt");
+            RarArkivoEntryAttributes hardLinkAttributes =
+                    Files.readAttributes(hardLink, RarArkivoEntryAttributes.class);
+            assertEquals(true, hardLinkAttributes.isRegularFile());
+            assertEquals(false, hardLinkAttributes.isOther());
+            assertEquals(RarArkivoEntryAttributes.REDIRECTION_TYPE_HARD_LINK, hardLinkAttributes.redirectionType());
+            assertEquals("dir/hello.txt", hardLinkAttributes.redirectionTarget());
+            assertEquals(content.length, hardLinkAttributes.size());
+            assertArrayEquals(content, Files.readAllBytes(hardLink));
+
+            Path fileCopy = fileSystem.getPath("/dir/file-copy.txt");
+            RarArkivoEntryAttributes fileCopyAttributes =
+                    Files.readAttributes(fileCopy, RarArkivoEntryAttributes.class);
+            assertEquals(true, fileCopyAttributes.isRegularFile());
+            assertEquals(false, fileCopyAttributes.isOther());
+            assertEquals(RarArkivoEntryAttributes.REDIRECTION_TYPE_FILE_COPY, fileCopyAttributes.redirectionType());
+            assertEquals("dir/hello.txt", fileCopyAttributes.redirectionTarget());
+            assertEquals(content.length, fileCopyAttributes.size());
+            assertArrayEquals(content, Files.readAllBytes(fileCopy));
 
             Map<String, Object> selectedBasicAttributes = Files.readAttributes(file, "basic:size,isRegularFile");
             assertEquals((long) content.length, selectedBasicAttributes.get("size"));
@@ -373,7 +451,16 @@ public final class RarArkivoStreamingReaderTest {
                     children.add(child.toString());
                 }
             }
-            assertEquals(Set.of("/dir/hello.txt", "/dir/split.txt", "/dir/compressed.bin"), Set.copyOf(children));
+            assertEquals(
+                    Set.of(
+                            "/dir/hello.txt",
+                            "/dir/hard-link.txt",
+                            "/dir/file-copy.txt",
+                            "/dir/split.txt",
+                            "/dir/compressed.bin"
+                    ),
+                    Set.copyOf(children)
+            );
 
             IOException exception = assertThrows(IOException.class, () -> Files.readAllBytes(fileSystem.getPath("/dir/compressed.bin")));
             assertEquals(true, exception.getMessage().contains("content is not available"));
@@ -606,16 +693,66 @@ public final class RarArkivoStreamingReaderTest {
         }
     }
 
-    /// Verifies that RAR4 archives are detected as currently unsupported.
+    /// Verifies that stored RAR4 entries can be streamed and exposed through the file system API.
     @Test
-    public void rejectsRar4SignatureAsUnsupported() throws IOException {
-        byte[] archive = new byte[]{'R', 'a', 'r', '!', 0x1a, 0x07, 0x00};
+    public void readsStoredRar4Entries() throws IOException {
+        byte[] content = "rar4 stored content".getBytes(StandardCharsets.UTF_8);
+        byte[] unicodeContent = "rar4 unicode content".getBytes(StandardCharsets.UTF_8);
+        String unicodePath = "unicod\u00e9/na\u00efve.txt";
+        long modificationTime = 1_700_000_010L;
+        byte[] archive = rar4Archive(
+                directory("dir/", modificationTime, 040755),
+                storedFile("dir/hello.txt", modificationTime, 0100644, content, null),
+                storedFile(unicodePath, modificationTime, 0100644, unicodeContent, null)
+        );
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            IOException exception = assertThrows(IOException.class, reader::next);
+            assertEquals(true, reader.next());
+            RarArkivoEntryAttributes directory = reader.readAttributes(RarArkivoEntryAttributes.class);
+            assertEquals("dir/", directory.path());
+            assertEquals(true, directory.isDirectory());
+            assertEquals(RarArkivoEntryAttributes.HOST_OS_UNIX, directory.hostOs());
+            assertEquals(0, directory.compressionMethod());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(modificationTime)), directory.lastModifiedTime());
 
-            assertEquals(true, exception.getMessage().contains("RAR4 archives are not supported yet"));
+            assertEquals(true, reader.next());
+            RarArkivoEntryAttributes file = reader.readAttributes(RarArkivoEntryAttributes.class);
+            assertEquals("dir/hello.txt", file.path());
+            assertEquals(true, file.isRegularFile());
+            assertEquals(RarArkivoEntryAttributes.HOST_OS_UNIX, file.hostOs());
+            assertEquals(0, file.compressionMethod());
+            assertEquals(content.length, file.packedSize());
+            assertEquals(content.length, file.unpackedSize());
+            assertEquals(crc32(content), file.dataCrc32());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(modificationTime)), file.lastModifiedTime());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
+
+            assertEquals(true, reader.next());
+            RarArkivoEntryAttributes unicodeFile = reader.readAttributes(RarArkivoEntryAttributes.class);
+            assertEquals(unicodePath, unicodeFile.path());
+            assertEquals(true, unicodeFile.isRegularFile());
+            assertEquals(0, unicodeFile.compressionMethod());
+            assertEquals(unicodeContent.length, unicodeFile.packedSize());
+            assertEquals(unicodeContent.length, unicodeFile.unpackedSize());
+            assertEquals(crc32(unicodeContent), unicodeFile.dataCrc32());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(unicodeContent, input.readAllBytes());
+            }
+
+            assertEquals(false, reader.next());
         }
+
+        Path archivePath = createTemporaryArchivePath("rar4-fs-");
+        Files.write(archivePath, archive);
+        try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archivePath)) {
+            Path file = fileSystem.getPath("/dir/hello.txt");
+            assertArrayEquals(content, Files.readAllBytes(file));
+            assertEquals(content.length, Files.size(file));
+            assertArrayEquals(unicodeContent, Files.readAllBytes(fileSystem.getPath("/" + unicodePath)));
+        }
+        deleteTemporaryArchive(archivePath);
     }
 
     /// Verifies that stored entry CRC32 mismatches are reported while draining the entry.
@@ -660,6 +797,18 @@ public final class RarArkivoStreamingReaderTest {
         return archiveVolume(true, members);
     }
 
+    /// Creates one RAR4 archive.
+    private static byte[] rar4Archive(Member... members) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(RAR4_SIGNATURE);
+        writeRar4Block(output, 0x73, 0, new byte[6], new byte[0]);
+        for (Member member : members) {
+            writeRar4Member(output, member);
+        }
+        writeRar4Block(output, 0x7b, 0, new byte[0], new byte[0]);
+        return output.toByteArray();
+    }
+
     /// Creates one RAR5 archive volume.
     private static byte[] archiveVolume(boolean includeEndHeader, Member... members) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -683,6 +832,94 @@ public final class RarArkivoStreamingReaderTest {
         writeBlock(output, 2, blockFlags(member), fileFields(member, true), member.extraArea(), member.body());
     }
 
+    /// Writes one RAR4 member block.
+    private static void writeRar4Member(ByteArrayOutputStream output, Member member) throws IOException {
+        if (member.service()) {
+            return;
+        }
+
+        boolean unicodeName = needsRar4UnicodeName(member.path());
+        byte[] name = rar4NameBytes(member.path(), unicodeName);
+        ByteArrayOutputStream fields = new ByteArrayOutputStream();
+        writeUInt32(fields, member.body().length);
+        writeUInt32(fields, member.unpackedSize());
+        fields.write(3);
+        writeUInt32(fields, member.crc32());
+        writeUInt32(fields, rar4DosTime(member.modificationTime()));
+        fields.write(29);
+        fields.write(member.compressionMethod() == 0 ? 0x30 : 0x30 + member.compressionMethod());
+        writeUInt16(fields, name.length);
+        writeUInt32(fields, member.attributes());
+        fields.write(name);
+
+        long flags = 0x8000L;
+        if (member.continuesFromPreviousVolume()) {
+            flags |= 0x0001L;
+        }
+        if (member.continuesInNextVolume()) {
+            flags |= 0x0002L;
+        }
+        if (unicodeName) {
+            flags |= RAR4_FILE_FLAG_UNICODE;
+        }
+        writeRar4Block(output, 0x74, flags, fields.toByteArray(), member.body());
+    }
+
+    /// Returns whether a RAR4 fixture name needs Unicode metadata.
+    private static boolean needsRar4UnicodeName(String path) {
+        for (int index = 0; index < path.length(); index++) {
+            if (path.charAt(index) > 0x7f) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Encodes a RAR4 fixture name.
+    private static byte[] rar4NameBytes(String path, boolean unicodeName) {
+        if (!unicodeName) {
+            return path.getBytes(StandardCharsets.UTF_8);
+        }
+
+        byte[] fallbackName = rar4FallbackName(path);
+        byte[] encodedName = rar4UnicodeNameData(path);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(fallbackName, 0, fallbackName.length);
+        output.write(0);
+        output.write(encodedName, 0, encodedName.length);
+        return output.toByteArray();
+    }
+
+    /// Returns a single-byte fallback name for a RAR4 Unicode fixture name.
+    private static byte[] rar4FallbackName(String path) {
+        byte[] fallbackName = new byte[path.length()];
+        for (int index = 0; index < path.length(); index++) {
+            char character = path.charAt(index);
+            fallbackName[index] = character <= 0x7f ? (byte) character : (byte) '?';
+        }
+        return fallbackName;
+    }
+
+    /// Encodes Unicode name data for a RAR4 fixture name.
+    private static byte[] rar4UnicodeNameData(String path) {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0);
+        for (int offset = 0; offset < path.length(); ) {
+            int groupLength = Math.min(4, path.length() - offset);
+            int flags = 0;
+            for (int index = 0; index < groupLength; index++) {
+                flags |= 0x02 << (6 - index * 2);
+            }
+            output.write(flags);
+            for (int index = 0; index < groupLength; index++) {
+                char character = path.charAt(offset++);
+                output.write(character & 0xff);
+                output.write(character >>> 8);
+            }
+        }
+        return output.toByteArray();
+    }
+
     /// Returns encoded RAR5 block continuation flags for one member.
     private static long blockFlags(Member member) {
         long flags = 0L;
@@ -693,6 +930,28 @@ public final class RarArkivoStreamingReaderTest {
             flags |= 0x0010L;
         }
         return flags;
+    }
+
+    /// Writes one complete RAR4 block.
+    private static void writeRar4Block(
+            ByteArrayOutputStream output,
+            int type,
+            long flags,
+            byte[] fields,
+            byte[] data
+    ) throws IOException {
+        ByteArrayOutputStream headerData = new ByteArrayOutputStream();
+        headerData.write(type);
+        writeUInt16(headerData, flags);
+        writeUInt16(headerData, 7 + fields.length);
+        headerData.write(fields);
+
+        byte[] headerDataBytes = headerData.toByteArray();
+        CRC32 headerCrc32 = new CRC32();
+        headerCrc32.update(headerDataBytes, 0, headerDataBytes.length);
+        writeUInt16(output, headerCrc32.getValue());
+        output.write(headerDataBytes);
+        output.write(data);
     }
 
     /// Concatenates two byte arrays.
@@ -1034,6 +1293,12 @@ public final class RarArkivoStreamingReaderTest {
         output.write((byte) (value >>> 24));
     }
 
+    /// Writes one little-endian unsigned 16-bit integer.
+    private static void writeUInt16(ByteArrayOutputStream output, long value) {
+        output.write((byte) value);
+        output.write((byte) (value >>> 8));
+    }
+
     /// Writes one little-endian unsigned 64-bit integer.
     private static void writeUInt64(ByteArrayOutputStream output, long value) {
         output.write((byte) value);
@@ -1051,6 +1316,21 @@ public final class RarArkivoStreamingReaderTest {
         CRC32 crc32 = new CRC32();
         crc32.update(data, 0, data.length);
         return crc32.getValue();
+    }
+
+    /// Converts an epoch second value to a RAR4 DOS timestamp.
+    private static long rar4DosTime(long epochSeconds) {
+        var time = Instant.ofEpochSecond(epochSeconds).atZone(ZoneOffset.UTC);
+        int year = time.getYear();
+        if (year < 1980 || year > 2107) {
+            throw new IllegalArgumentException("RAR4 DOS timestamp year is out of range");
+        }
+        return (long) (year - 1980) << 25
+                | (long) time.getMonthValue() << 21
+                | (long) time.getDayOfMonth() << 16
+                | (long) time.getHour() << 11
+                | (long) time.getMinute() << 5
+                | time.getSecond() / 2L;
     }
 
     /// Creates a temporary archive path under the module build directory.

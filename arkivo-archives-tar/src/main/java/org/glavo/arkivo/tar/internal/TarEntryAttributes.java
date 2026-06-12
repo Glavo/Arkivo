@@ -19,6 +19,9 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes {
     /// The TAR type flag for regular files in older archives.
     static final byte OLD_REGULAR_TYPE = 0;
 
+    /// The TAR type flag for hard links.
+    static final byte HARD_LINK_TYPE = TarArkivoEntryAttributes.HARD_LINK_TYPE;
+
     /// The TAR type flag for symbolic links.
     static final byte SYMBOLIC_LINK_TYPE = '2';
 
@@ -58,7 +61,7 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes {
     /// The stored group name.
     private final @Nullable String groupName;
 
-    /// The symbolic link target.
+    /// The link target stored by the TAR header.
     private final @Nullable String linkName;
 
     /// The entry size.
@@ -147,7 +150,7 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes {
         return groupName;
     }
 
-    /// Returns the symbolic link target.
+    /// Returns the link target stored by the TAR header.
     @Override
     public @Nullable String linkName() {
         return linkName;
@@ -174,7 +177,13 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes {
     /// Returns whether this entry is a regular file.
     @Override
     public boolean isRegularFile() {
-        return typeFlag == REGULAR_TYPE || typeFlag == OLD_REGULAR_TYPE;
+        return hasDataBody() || isHardLink();
+    }
+
+    /// Returns whether this entry is a hard link.
+    @Override
+    public boolean isHardLink() {
+        return typeFlag == HARD_LINK_TYPE;
     }
 
     /// Returns whether this entry is a directory.
@@ -195,7 +204,7 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes {
         return !isRegularFile() && !isDirectory() && !isSymbolicLink();
     }
 
-    /// Returns the regular file size, or zero for non-file entries.
+    /// Returns the regular file or hard link size, or zero for non-file entries.
     @Override
     public long size() {
         return isRegularFile() ? size : 0L;
@@ -210,5 +219,10 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes {
     /// Returns the raw TAR body size.
     long bodySize() {
         return size;
+    }
+
+    /// Returns whether this entry stores file data in its own TAR body.
+    boolean hasDataBody() {
+        return typeFlag == REGULAR_TYPE || typeFlag == OLD_REGULAR_TYPE;
     }
 }

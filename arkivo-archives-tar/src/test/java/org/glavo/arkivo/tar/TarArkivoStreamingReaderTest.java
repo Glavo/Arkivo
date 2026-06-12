@@ -81,7 +81,46 @@ public final class TarArkivoStreamingReaderTest {
         assertEquals(List.of("dir/", "dir/hello.txt", "link"), paths);
     }
 
-    /// Verifies that the streaming writer creates regular files, directories, and symbolic links.
+    /// Verifies that hard link entries expose link metadata without synthetic stream body data.
+    @Test
+    public void readsHardLinkMetadata() throws IOException {
+        byte[] content = "hard-link-source".getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeEntry(output, "original.txt", content);
+        writeHeader(output, "copy.txt", 0644, 1000, 1000, 0, '1', "original.txt", "user", "group");
+        output.write(new byte[1024]);
+
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertEquals(true, reader.next());
+            TarArkivoEntryAttributes original = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("original.txt", original.path());
+            assertEquals(true, original.isRegularFile());
+            assertEquals(false, original.isHardLink());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
+
+            assertEquals(true, reader.next());
+            TarArkivoEntryAttributes link = reader.readAttributes(TarArkivoEntryAttributes.class);
+            BasicFileAttributes basicLink = reader.readAttributes(BasicFileAttributes.class);
+            assertEquals("copy.txt", link.path());
+            assertEquals((byte) '1', link.typeFlag());
+            assertEquals(true, link.isHardLink());
+            assertEquals(true, link.isRegularFile());
+            assertEquals(false, link.isSymbolicLink());
+            assertEquals(false, link.isOther());
+            assertEquals("original.txt", link.linkName());
+            assertEquals(0L, basicLink.size());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(new byte[0], input.readAllBytes());
+            }
+
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that the streaming writer creates regular files, directories, symbolic links, and hard links.
     @Test
     public void writesStreamingEntries() throws IOException {
         byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
@@ -96,6 +135,9 @@ public final class TarArkivoStreamingReaderTest {
             }
 
             writer.beginSymbolicLink("link", "dir/hello.txt");
+            writer.endEntry();
+
+            writer.beginHardLink("hard-link", "dir/hello.txt");
             writer.endEntry();
         }
 
@@ -123,6 +165,17 @@ public final class TarArkivoStreamingReaderTest {
             assertEquals(true, link.isSymbolicLink());
             assertEquals(0777, link.mode());
             assertEquals("dir/hello.txt", link.linkName());
+
+            assertEquals(true, reader.next());
+            TarArkivoEntryAttributes hardLink = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("hard-link", hardLink.path());
+            assertEquals(true, hardLink.isHardLink());
+            assertEquals(true, hardLink.isRegularFile());
+            assertEquals(0644, hardLink.mode());
+            assertEquals("dir/hello.txt", hardLink.linkName());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(new byte[0], input.readAllBytes());
+            }
 
             assertEquals(false, reader.next());
         }
@@ -326,7 +379,54 @@ public final class TarArkivoStreamingReaderTest {
         }
     }
 
-    /// Verifies that the streaming writer emits PAX metadata for long paths and symbolic link targets.
+    /// Verifies that TAR hard links resolve to earlier regular file content in the read-only file system.
+    @Test
+    public void opensHardLinksAsReadOnlyFileSystemEntries() throws IOException {
+        byte[] content = "linked content".getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeEntry(output, "original.txt", content);
+        writeHeader(output, "copy.txt", 0644, 1000, 1000, 0, '1', "original.txt", "user", "group");
+        output.write(new byte[1024]);
+
+        Path archivePath = createTemporaryArchivePath("tar-hard-link-fs-");
+        try {
+            Files.write(archivePath, output.toByteArray());
+
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath)) {
+                Path original = fileSystem.getPath("/original.txt");
+                Path copy = fileSystem.getPath("/copy.txt");
+
+                assertArrayEquals(content, Files.readAllBytes(original));
+                assertArrayEquals(content, Files.readAllBytes(copy));
+                assertEquals((long) content.length, Files.size(copy));
+
+                TarArkivoEntryAttributes copyAttributes =
+                        Files.readAttributes(copy, TarArkivoEntryAttributes.class);
+                assertEquals(true, copyAttributes.isHardLink());
+                assertEquals(true, copyAttributes.isRegularFile());
+                assertEquals(false, copyAttributes.isSymbolicLink());
+                assertEquals(false, copyAttributes.isOther());
+                assertEquals((byte) '1', copyAttributes.typeFlag());
+                assertEquals("original.txt", copyAttributes.linkName());
+                assertEquals(content.length, copyAttributes.size());
+
+                Map<String, Object> namedAttributes = Files.readAttributes(
+                        copy,
+                        "tar:isHardLink,isRegularFile,isOther,typeFlag,linkName,size"
+                );
+                assertEquals(true, namedAttributes.get("isHardLink"));
+                assertEquals(true, namedAttributes.get("isRegularFile"));
+                assertEquals(false, namedAttributes.get("isOther"));
+                assertEquals((byte) '1', namedAttributes.get("typeFlag"));
+                assertEquals("original.txt", namedAttributes.get("linkName"));
+                assertEquals((long) content.length, namedAttributes.get("size"));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that the streaming writer emits PAX metadata for long paths and link targets.
     @Test
     public void writesPaxMetadataForLongNames() throws IOException {
         byte[] content = "long".getBytes(StandardCharsets.UTF_8);
@@ -342,6 +442,9 @@ public final class TarArkivoStreamingReaderTest {
             }
 
             writer.beginSymbolicLink("long-link", target);
+            writer.endEntry();
+
+            writer.beginHardLink("long-hard-link", path);
             writer.endEntry();
         }
 
@@ -360,6 +463,12 @@ public final class TarArkivoStreamingReaderTest {
             assertEquals("long-link", link.path());
             assertEquals(target, link.linkName());
 
+            assertEquals(true, reader.next());
+            TarArkivoEntryAttributes hardLink = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("long-hard-link", hardLink.path());
+            assertEquals(true, hardLink.isHardLink());
+            assertEquals(path, hardLink.linkName());
+
             assertEquals(false, reader.next());
         }
     }
@@ -371,6 +480,8 @@ public final class TarArkivoStreamingReaderTest {
             assertThrows(IllegalArgumentException.class, () -> writer.beginFile("../evil.txt"));
             assertThrows(IllegalArgumentException.class, () -> writer.beginDirectory("/absolute"));
             assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink("C:/evil.txt", "target"));
+            assertThrows(IllegalArgumentException.class, () -> writer.beginHardLink("copy.txt", "../target.txt"));
+            assertThrows(IllegalArgumentException.class, () -> writer.beginHardLink("copy.txt", "/target.txt"));
         }
     }
 

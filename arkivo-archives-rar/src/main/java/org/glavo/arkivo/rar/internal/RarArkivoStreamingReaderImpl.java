@@ -19,6 +19,8 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.time.DateTimeException;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Objects;
 import java.util.zip.CRC32;
 
@@ -39,6 +41,12 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     private static final byte @Unmodifiable [] RAR4_SIGNATURE =
             new byte[]{'R', 'a', 'r', '!', 0x1a, 0x07, 0x00};
 
+    /// The internal version marker for RAR4 archives.
+    private static final int RAR_VERSION_4 = 4;
+
+    /// The internal version marker for RAR5 archives.
+    private static final int RAR_VERSION_5 = 5;
+
     /// The main archive header type.
     private static final int HEADER_TYPE_MAIN = 1;
 
@@ -54,6 +62,15 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// The end of archive header type.
     private static final int HEADER_TYPE_END = 5;
 
+    /// The RAR4 main archive header type.
+    private static final int RAR4_HEADER_TYPE_MAIN = 0x73;
+
+    /// The RAR4 file header type.
+    private static final int RAR4_HEADER_TYPE_FILE = 0x74;
+
+    /// The RAR4 end of archive header type.
+    private static final int RAR4_HEADER_TYPE_END = 0x7b;
+
     /// Header flag indicating that an extra area is present.
     private static final long HEADER_FLAG_EXTRA_AREA = 0x0001L;
 
@@ -65,6 +82,54 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Header flag indicating that data continues in the next volume.
     private static final long HEADER_FLAG_CONTINUE_NEXT = 0x0010L;
+
+    /// RAR4 common header flag indicating that a data area follows the header.
+    private static final long RAR4_HEADER_FLAG_DATA_AREA = 0x8000L;
+
+    /// RAR4 main header flag indicating that archive headers are encrypted.
+    private static final long RAR4_MAIN_FLAG_PASSWORD = 0x0080L;
+
+    /// RAR4 file header flag indicating that data continues from the previous volume.
+    private static final long RAR4_FILE_FLAG_CONTINUE_PREVIOUS = 0x0001L;
+
+    /// RAR4 file header flag indicating that data continues in the next volume.
+    private static final long RAR4_FILE_FLAG_CONTINUE_NEXT = 0x0002L;
+
+    /// RAR4 file header flag indicating that entry data is encrypted.
+    private static final long RAR4_FILE_FLAG_PASSWORD = 0x0004L;
+
+    /// RAR4 file header flag indicating that high size fields are present.
+    private static final long RAR4_FILE_FLAG_LARGE = 0x0100L;
+
+    /// RAR4 file header flag indicating that the name field includes Unicode metadata.
+    private static final long RAR4_FILE_FLAG_UNICODE = 0x0200L;
+
+    /// The raw RAR4 host operating system value for MS-DOS entries.
+    private static final int RAR4_HOST_OS_MSDOS = 0;
+
+    /// The raw RAR4 host operating system value for OS/2 entries.
+    private static final int RAR4_HOST_OS_OS2 = 1;
+
+    /// The raw RAR4 host operating system value for Windows entries.
+    private static final int RAR4_HOST_OS_WINDOWS = 2;
+
+    /// The raw RAR4 host operating system value for Unix entries.
+    private static final int RAR4_HOST_OS_UNIX = 3;
+
+    /// The RAR4 compression method byte for stored entries.
+    private static final int RAR4_METHOD_STORE = 0x30;
+
+    /// The RAR4 compression method byte for the fastest compressed entries.
+    private static final int RAR4_METHOD_FASTEST = 0x31;
+
+    /// The RAR4 compression method byte for the best compressed entries.
+    private static final int RAR4_METHOD_BEST = 0x35;
+
+    /// The RAR4 dictionary bits mask in the method byte.
+    private static final int RAR4_DICTIONARY_MASK = 0xe0;
+
+    /// The RAR4 method-byte marker for directory entries.
+    private static final int RAR4_FILE_IS_DIRECTORY = 0xe0;
 
     /// File flag indicating that the entry is a directory.
     private static final long FILE_FLAG_DIRECTORY = 0x0001L;
@@ -173,6 +238,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Whether the RAR signature has been consumed.
     private boolean signatureRead;
+
+    /// The archive version detected from the RAR signature.
+    private int rarVersion;
 
     /// Whether the end of archive marker has been consumed.
     private boolean finished;
@@ -308,11 +376,14 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             window[count % window.length] = (byte) value;
             count++;
             if (endsWith(window, count, RAR5_SIGNATURE)) {
+                rarVersion = RAR_VERSION_5;
                 signatureRead = true;
                 return;
             }
             if (endsWith(window, count, RAR4_SIGNATURE)) {
-                throw new IOException("RAR4 archives are not supported yet");
+                rarVersion = RAR_VERSION_4;
+                signatureRead = true;
+                return;
             }
         }
         throw new IOException("RAR signature is missing");
@@ -334,6 +405,14 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Reads the next RAR block header, or `null` at archive EOF.
     private @Nullable BlockHeader readBlockHeader() throws IOException {
+        if (rarVersion == RAR_VERSION_4) {
+            return readRar4BlockHeader();
+        }
+        return readRar5BlockHeader();
+    }
+
+    /// Reads the next RAR5 block header, or `null` at archive EOF.
+    private @Nullable BlockHeader readRar5BlockHeader() throws IOException {
         byte[] crcBytes = new byte[Integer.BYTES];
         int first = source.read();
         if (first < 0) {
@@ -375,11 +454,96 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (reader.position() > extraOffset) {
             throw new IOException("RAR header fields exceed header size");
         }
-        return new BlockHeader(type, flags, dataSize, headerData, reader.position(), extraOffset);
+        return new BlockHeader(RAR_VERSION_5, type, flags, dataSize, headerData, reader.position(), extraOffset);
+    }
+
+    /// Reads the next RAR4 block header, or `null` at archive EOF.
+    private @Nullable BlockHeader readRar4BlockHeader() throws IOException {
+        byte[] prefix = new byte[7];
+        int first = source.read();
+        if (first < 0) {
+            return null;
+        }
+        prefix[0] = (byte) first;
+        readFully(prefix, 1, prefix.length - 1, "Unexpected end of RAR4 header");
+
+        int headerSize = littleEndianUInt16(prefix, 5);
+        if (headerSize < prefix.length) {
+            throw new IOException("RAR4 header is too small");
+        }
+        if (headerSize > MAX_HEADER_SIZE) {
+            throw new IOException("RAR4 header is too large");
+        }
+
+        byte[] headerData = new byte[headerSize - Short.BYTES];
+        System.arraycopy(prefix, Short.BYTES, headerData, 0, prefix.length - Short.BYTES);
+        readFully(
+                headerData,
+                prefix.length - Short.BYTES,
+                headerData.length - (prefix.length - Short.BYTES),
+                "Unexpected end of RAR4 header"
+        );
+
+        headerCrc32.reset();
+        headerCrc32.update(headerData, 0, headerData.length);
+        if ((headerCrc32.getValue() & 0xffffL) != littleEndianUInt16(prefix, 0)) {
+            throw new IOException("Invalid RAR4 header CRC16");
+        }
+
+        int rawType = Byte.toUnsignedInt(headerData[0]);
+        long flags = littleEndianUInt16(headerData, 1);
+        int type = rar4HeaderType(rawType);
+        if (type == HEADER_TYPE_MAIN && (flags & RAR4_MAIN_FLAG_PASSWORD) != 0) {
+            throw new IOException("Encrypted RAR headers are not supported");
+        }
+
+        long dataSize = 0L;
+        if (type == HEADER_TYPE_FILE) {
+            dataSize = rar4PackedSize(headerData, flags);
+        } else if ((flags & RAR4_HEADER_FLAG_DATA_AREA) != 0) {
+            if (headerData.length < 9) {
+                throw new IOException("RAR4 data area size is missing");
+            }
+            dataSize = littleEndianUInt32(headerData, 5);
+        }
+        return new BlockHeader(RAR_VERSION_4, type, flags, dataSize, headerData, 5, headerData.length);
+    }
+
+    /// Maps a raw RAR4 header type to the reader's normalized block type.
+    private static int rar4HeaderType(int rawType) {
+        return switch (rawType) {
+            case RAR4_HEADER_TYPE_MAIN -> HEADER_TYPE_MAIN;
+            case RAR4_HEADER_TYPE_FILE -> HEADER_TYPE_FILE;
+            case RAR4_HEADER_TYPE_END -> HEADER_TYPE_END;
+            default -> HEADER_TYPE_SERVICE;
+        };
+    }
+
+    /// Reads the packed data size stored in a RAR4 file header.
+    private static long rar4PackedSize(byte[] headerData, long flags) throws IOException {
+        if (headerData.length < 30) {
+            throw new IOException("RAR4 file header is too small");
+        }
+        long lowPackedSize = littleEndianUInt32(headerData, 5);
+        if ((flags & RAR4_FILE_FLAG_LARGE) == 0) {
+            return lowPackedSize;
+        }
+        if (headerData.length < 38) {
+            throw new IOException("RAR4 large file size fields are missing");
+        }
+        return combineUInt64(littleEndianUInt32(headerData, 30), lowPackedSize, "RAR4 packed size");
+    }
+
+    /// Parses a RAR file header block.
+    private static RarEntryAttributes parseFileHeader(BlockHeader block) throws IOException {
+        if (block.version() == RAR_VERSION_4) {
+            return parseRar4FileHeader(block);
+        }
+        return parseRar5FileHeader(block);
     }
 
     /// Parses a RAR5 file header block.
-    private static RarEntryAttributes parseFileHeader(BlockHeader block) throws IOException {
+    private static RarEntryAttributes parseRar5FileHeader(BlockHeader block) throws IOException {
         HeaderReader reader = new HeaderReader(block.headerData(), block.fieldsOffset(), block.extraOffset());
         long fileFlags = reader.readVint("RAR file flags");
         long rawUnpackedSize = reader.readVint("RAR unpacked size");
@@ -407,7 +571,11 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         boolean directory = (fileFlags & FILE_FLAG_DIRECTORY) != 0;
         boolean symbolicLink = extraMetadata.redirectionType == RarArkivoEntryAttributes.REDIRECTION_TYPE_UNIX_SYMLINK
                 || extraMetadata.redirectionType == RarArkivoEntryAttributes.REDIRECTION_TYPE_WINDOWS_SYMLINK;
-        boolean other = extraMetadata.redirectionType != RarArkivoEntryAttributes.NO_REDIRECTION_TYPE && !symbolicLink;
+        boolean regularRedirection = extraMetadata.redirectionType == RarArkivoEntryAttributes.REDIRECTION_TYPE_HARD_LINK
+                || extraMetadata.redirectionType == RarArkivoEntryAttributes.REDIRECTION_TYPE_FILE_COPY;
+        boolean other = extraMetadata.redirectionType != RarArkivoEntryAttributes.NO_REDIRECTION_TYPE
+                && !symbolicLink
+                && !regularRedirection;
         long unpackedSize = (fileFlags & FILE_FLAG_UNKNOWN_UNPACKED_SIZE) != 0
                 ? RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE
                 : rawUnpackedSize;
@@ -448,6 +616,203 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 creationTime,
                 lastAccessTime
         );
+    }
+
+    /// Parses a RAR4 file header block.
+    private static RarEntryAttributes parseRar4FileHeader(BlockHeader block) throws IOException {
+        HeaderReader reader = new HeaderReader(block.headerData(), block.fieldsOffset(), block.extraOffset());
+        long lowPackedSize = reader.readUInt32("RAR4 packed size");
+        long lowUnpackedSize = reader.readUInt32("RAR4 unpacked size");
+        int rawHostOs = reader.readUnsignedByte("RAR4 host OS");
+        long dataCrc32 = reader.readUInt32("RAR4 data CRC32");
+        FileTime lastModifiedTime = fileTimeFromDosTime((int) reader.readUInt32("RAR4 modification time"));
+        reader.readUnsignedByte("RAR4 extraction version");
+        int rawMethod = reader.readUnsignedByte("RAR4 compression method");
+        int nameLength = reader.readUInt16("RAR4 name length");
+        long fileAttributes = reader.readUInt32("RAR4 file attributes");
+
+        long packedSize = lowPackedSize;
+        long unpackedSize = lowUnpackedSize;
+        if ((block.flags() & RAR4_FILE_FLAG_LARGE) != 0) {
+            packedSize = combineUInt64(reader.readUInt32("RAR4 high packed size"), lowPackedSize, "RAR4 packed size");
+            unpackedSize = combineUInt64(
+                    reader.readUInt32("RAR4 high unpacked size"),
+                    lowUnpackedSize,
+                    "RAR4 unpacked size"
+            );
+        }
+        if (packedSize != block.dataSize()) {
+            throw new IOException("RAR4 file header packed size is inconsistent");
+        }
+
+        String path = validatePath(decodeRar4Name(
+                reader.readBytes(nameLength, "RAR4 entry name"),
+                (block.flags() & RAR4_FILE_FLAG_UNICODE) != 0
+        ));
+        int hostOs = rar4HostOs(rawHostOs);
+        int compressionMethod = rar4CompressionMethod(rawMethod);
+        boolean directory = (rawMethod & RAR4_DICTIONARY_MASK) == RAR4_FILE_IS_DIRECTORY
+                || rar4FileAttributesMarkDirectory(rawHostOs, fileAttributes);
+        boolean encrypted = (block.flags() & RAR4_FILE_FLAG_PASSWORD) != 0;
+        boolean splitFilePart =
+                (block.flags() & (RAR4_FILE_FLAG_CONTINUE_PREVIOUS | RAR4_FILE_FLAG_CONTINUE_NEXT)) != 0;
+        if (!directory && compressionMethod == 0 && !splitFilePart && packedSize != unpackedSize) {
+            throw new IOException("RAR4 stored file packed and unpacked sizes differ");
+        }
+
+        return new RarEntryAttributes(
+                path,
+                directory,
+                false,
+                false,
+                null,
+                RarArkivoEntryAttributes.NO_REDIRECTION_TYPE,
+                0L,
+                null,
+                null,
+                null,
+                RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE,
+                RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE,
+                hostOs,
+                fileAttributes,
+                compressionMethod,
+                packedSize,
+                unpackedSize,
+                dataCrc32,
+                null,
+                encrypted,
+                (block.flags() & RAR4_FILE_FLAG_CONTINUE_PREVIOUS) != 0,
+                (block.flags() & RAR4_FILE_FLAG_CONTINUE_NEXT) != 0,
+                lastModifiedTime,
+                lastModifiedTime,
+                lastModifiedTime
+        );
+    }
+
+    /// Combines two little-endian unsigned 32-bit halves into a positive signed `long`.
+    private static long combineUInt64(long high, long low, String description) throws IOException {
+        if ((high & 0x8000_0000L) != 0) {
+            throw new IOException(description + " is too large");
+        }
+        return (high << 32) | low;
+    }
+
+    /// Decodes a RAR4 name field.
+    private static String decodeRar4Name(byte[] nameBytes, boolean unicodeName) throws IOException {
+        if (!unicodeName) {
+            return new String(nameBytes, StandardCharsets.UTF_8);
+        }
+
+        int separatorIndex = -1;
+        for (int index = 0; index < nameBytes.length; index++) {
+            if (nameBytes[index] == 0) {
+                separatorIndex = index;
+                break;
+            }
+        }
+        if (separatorIndex < 0) {
+            throw new IOException("Invalid RAR4 Unicode name");
+        }
+        if (separatorIndex + 1 == nameBytes.length) {
+            return new String(nameBytes, 0, separatorIndex, StandardCharsets.UTF_8);
+        }
+
+        int highByte = Byte.toUnsignedInt(nameBytes[separatorIndex + 1]);
+        int encodedOffset = separatorIndex + 2;
+        int fallbackOffset = 0;
+        int flags = 0;
+        int flagBits = 0;
+        StringBuilder builder = new StringBuilder(separatorIndex);
+        while (encodedOffset < nameBytes.length) {
+            if (flagBits == 0) {
+                flags = Byte.toUnsignedInt(nameBytes[encodedOffset++]);
+                flagBits = 8;
+                if (encodedOffset >= nameBytes.length) {
+                    throw new IOException("Invalid RAR4 Unicode name");
+                }
+            }
+
+            int flag = flags >>> 6;
+            flags = (flags << 2) & 0xff;
+            flagBits -= 2;
+            switch (flag) {
+                case 0 -> {
+                    builder.append((char) Byte.toUnsignedInt(nameBytes[encodedOffset++]));
+                    fallbackOffset++;
+                }
+                case 1 -> {
+                    int lowByte = Byte.toUnsignedInt(nameBytes[encodedOffset++]);
+                    builder.append((char) (lowByte | (highByte << 8)));
+                    fallbackOffset++;
+                }
+                case 2 -> {
+                    if (encodedOffset + 1 >= nameBytes.length) {
+                        throw new IOException("Invalid RAR4 Unicode name");
+                    }
+                    int lowByte = Byte.toUnsignedInt(nameBytes[encodedOffset++]);
+                    int nextHighByte = Byte.toUnsignedInt(nameBytes[encodedOffset++]);
+                    builder.append((char) (lowByte | (nextHighByte << 8)));
+                    fallbackOffset++;
+                }
+                case 3 -> {
+                    int length = Byte.toUnsignedInt(nameBytes[encodedOffset++]);
+                    if ((length & 0x80) == 0) {
+                        int copyLength = length + 2;
+                        if (fallbackOffset + copyLength > separatorIndex) {
+                            throw new IOException("Invalid RAR4 Unicode name");
+                        }
+                        for (int index = 0; index < copyLength; index++) {
+                            builder.append((char) Byte.toUnsignedInt(nameBytes[fallbackOffset++]));
+                        }
+                    } else {
+                        if (encodedOffset >= nameBytes.length) {
+                            throw new IOException("Invalid RAR4 Unicode name");
+                        }
+                        int correction = Byte.toUnsignedInt(nameBytes[encodedOffset++]);
+                        int copyLength = (length & 0x7f) + 2;
+                        if (fallbackOffset + copyLength > separatorIndex) {
+                            throw new IOException("Invalid RAR4 Unicode name");
+                        }
+                        for (int index = 0; index < copyLength; index++) {
+                            int correctedByte = Byte.toUnsignedInt(nameBytes[fallbackOffset++]) + correction;
+                            builder.append((char) ((correctedByte & 0xff) | (highByte << 8)));
+                        }
+                    }
+                }
+                default -> throw new AssertionError(flag);
+            }
+        }
+        return builder.toString();
+    }
+
+    /// Normalizes a raw RAR4 host OS value to the public host OS value set.
+    private static int rar4HostOs(int rawHostOs) {
+        return switch (rawHostOs) {
+            case RAR4_HOST_OS_MSDOS, RAR4_HOST_OS_OS2, RAR4_HOST_OS_WINDOWS ->
+                    RarArkivoEntryAttributes.HOST_OS_WINDOWS;
+            case RAR4_HOST_OS_UNIX -> RarArkivoEntryAttributes.HOST_OS_UNIX;
+            default -> rawHostOs;
+        };
+    }
+
+    /// Returns the normalized compression method value for a raw RAR4 method byte.
+    private static int rar4CompressionMethod(int rawMethod) {
+        if (rawMethod == RAR4_METHOD_STORE || (rawMethod & RAR4_DICTIONARY_MASK) == RAR4_FILE_IS_DIRECTORY) {
+            return 0;
+        }
+        if (rawMethod >= RAR4_METHOD_FASTEST && rawMethod <= RAR4_METHOD_BEST) {
+            return rawMethod - RAR4_METHOD_STORE;
+        }
+        return rawMethod;
+    }
+
+    /// Returns whether RAR4 host-specific attributes mark a directory entry.
+    private static boolean rar4FileAttributesMarkDirectory(int rawHostOs, long fileAttributes) {
+        return switch (rawHostOs) {
+            case RAR4_HOST_OS_MSDOS, RAR4_HOST_OS_OS2, RAR4_HOST_OS_WINDOWS -> (fileAttributes & 0x10L) != 0;
+            case RAR4_HOST_OS_UNIX -> (fileAttributes & 0170000L) == 0040000L;
+            default -> false;
+        };
     }
 
     /// Parses RAR file extra area records used by this reader.
@@ -635,6 +1000,27 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 - WINDOWS_FILETIME_UNIX_EPOCH_SECONDS;
         long nanos = Math.floorMod(windowsFileTime, WINDOWS_FILETIME_TICKS_PER_SECOND) * 100L;
         return fileTimeFromEpochSecond(seconds, nanos, description);
+    }
+
+    /// Converts a RAR4 DOS timestamp into a file time.
+    private static FileTime fileTimeFromDosTime(int dosTime) throws IOException {
+        if (dosTime == 0) {
+            return MISSING_TIME;
+        }
+        int second = (dosTime & 0x1f) << 1;
+        int minute = (dosTime >>> 5) & 0x3f;
+        int hour = (dosTime >>> 11) & 0x1f;
+        int day = (dosTime >>> 16) & 0x1f;
+        int month = (dosTime >>> 21) & 0x0f;
+        int year = ((dosTime >>> 25) & 0x7f) + 1980;
+        if (day == 0 || month == 0) {
+            return MISSING_TIME;
+        }
+        try {
+            return FileTime.from(LocalDateTime.of(year, month, day, hour, minute, second).toInstant(ZoneOffset.UTC));
+        } catch (DateTimeException exception) {
+            throw new IOException("RAR modification time is out of range", exception);
+        }
     }
 
     /// Prepares CRC32 validation state for the current entry.
@@ -871,6 +1257,12 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 | (long) Byte.toUnsignedInt(data[offset + 3]) << 24;
     }
 
+    /// Reads a little-endian unsigned 16-bit integer from a byte array.
+    private static int littleEndianUInt16(byte[] data, int offset) {
+        return Byte.toUnsignedInt(data[offset])
+                | Byte.toUnsignedInt(data[offset + 1]) << 8;
+    }
+
     /// Requires this reader to be open.
     private void ensureOpen() throws IOException {
         if (!open) {
@@ -880,6 +1272,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Stores one decoded RAR block header.
     ///
+    /// @param version the detected RAR archive version
     /// @param type the RAR block type
     /// @param flags the RAR block flags
     /// @param dataSize the optional data area size
@@ -888,6 +1281,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// @param extraOffset the offset of the optional extra area
     @NotNullByDefault
     private record BlockHeader(
+            int version,
             int type,
             long flags,
             long dataSize,
@@ -898,7 +1292,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         /// Creates a decoded RAR block header.
         private BlockHeader {
             Objects.requireNonNull(headerData, "headerData");
-            if (type < 0 || flags < 0 || dataSize < 0 || fieldsOffset < 0 || extraOffset < fieldsOffset
+            if (version < 0 || type < 0 || flags < 0 || dataSize < 0 || fieldsOffset < 0 || extraOffset < fieldsOffset
                     || extraOffset > headerData.length) {
                 throw new IllegalArgumentException("Invalid RAR block header");
             }
@@ -988,6 +1382,14 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             requireRemaining(Integer.BYTES, description);
             long value = littleEndianUInt32(data, position);
             position += Integer.BYTES;
+            return value;
+        }
+
+        /// Reads one little-endian unsigned 16-bit integer.
+        private int readUInt16(String description) throws IOException {
+            requireRemaining(Short.BYTES, description);
+            int value = littleEndianUInt16(data, position);
+            position += Short.BYTES;
             return value;
         }
 

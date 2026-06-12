@@ -39,4 +39,7 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
         Objects.requireNonNull(output, "output");
         return open(Channels.newOutputStream(output));
     }
+
+    /// Begins a pending hard link entry for the given logical archive path and target archive path.
+    public abstract void beginHardLink(String path, String target) throws IOException;
 }

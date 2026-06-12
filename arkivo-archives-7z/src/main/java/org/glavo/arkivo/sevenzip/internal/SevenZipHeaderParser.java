@@ -30,6 +30,9 @@ public final class SevenZipHeaderParser {
     /// The `kHeader` property ID.
     private static final int K_HEADER = 0x01;
 
+    /// The `kArchiveProperties` property ID.
+    private static final int K_ARCHIVE_PROPERTIES = 0x02;
+
     /// The `kAdditionalStreamsInfo` property ID.
     private static final int K_ADDITIONAL_STREAMS_INFO = 0x03;
 
@@ -90,6 +93,9 @@ public final class SevenZipHeaderParser {
     /// The `kEncodedHeader` property ID.
     private static final int K_ENCODED_HEADER = 0x17;
 
+    /// The `kDummy` property ID.
+    private static final int K_DUMMY = 0x19;
+
     /// The number of 100-nanosecond ticks between 1601-01-01T00:00:00Z and 1970-01-01T00:00:00Z.
     private static final long WINDOWS_EPOCH_OFFSET_TICKS = 116_444_736_000_000_000L;
 
@@ -147,10 +153,12 @@ public final class SevenZipHeaderParser {
                 return List.copyOf(entries);
             }
             switch (property) {
+                case K_ARCHIVE_PROPERTIES -> skipArchiveProperties(input);
                 case K_ADDITIONAL_STREAMS_INFO -> externalData =
                         new ExternalData(readStreamsInfo(input), packedStreamOpener, passwordProvider);
                 case K_MAIN_STREAMS_INFO -> streamsInfo = readStreamsInfo(input, externalData);
                 case K_FILES_INFO -> entries.addAll(readFilesInfo(input, streamsInfo, externalData));
+                case K_DUMMY -> skipDummyData(input);
                 default -> throw new UnsupportedOperationException(
                         "Unsupported 7z header property: 0x" + Integer.toHexString(property)
                 );
@@ -269,6 +277,7 @@ public final class SevenZipHeaderParser {
                     }
                     subStreamsInfo = readSubStreamsInfo(input, folders);
                 }
+                case K_DUMMY -> skipDummyData(input);
                 default -> throw new UnsupportedOperationException(
                         "Unsupported 7z streams info property: 0x" + Integer.toHexString(property)
                 );
@@ -320,6 +329,7 @@ public final class SevenZipHeaderParser {
                     countsLocked = true;
                     crc32s = readSubStreamCrc32s(input, folders, counts);
                 }
+                case K_DUMMY -> skipDummyData(input);
                 default -> throw new UnsupportedOperationException(
                         "Unsupported 7z substreams info property: 0x" + Integer.toHexString(property)
                 );
@@ -463,6 +473,7 @@ public final class SevenZipHeaderParser {
                     }
                 }
                 case K_CRC -> packCrc32s = readDigests(input, streamCount);
+                case K_DUMMY -> skipDummyData(input);
                 default -> throw new UnsupportedOperationException(
                         "Unsupported 7z pack info property: 0x" + Integer.toHexString(property)
                 );
@@ -499,6 +510,7 @@ public final class SevenZipHeaderParser {
                     }
                     readFolderCrc32s(input, folders);
                 }
+                case K_DUMMY -> skipDummyData(input);
                 default -> throw new UnsupportedOperationException(
                         "Unsupported 7z unpack info property: 0x" + Integer.toHexString(property)
                 );
@@ -515,10 +527,27 @@ public final class SevenZipHeaderParser {
                     return;
                 }
                 case K_CRC -> readFolderCrc32s(input, folders);
+                case K_DUMMY -> skipDummyData(input);
                 default -> throw new UnsupportedOperationException(
                         "Unsupported 7z unpack info property after sizes: 0x" + Integer.toHexString(property)
                 );
             }
+        }
+    }
+
+    /// Skips a sized `kDummy` property payload.
+    private static void skipDummyData(HeaderInput input) throws IOException {
+        input.skipBytes(input.readIntNumber("dummy property size"));
+    }
+
+    /// Skips an `ArchiveProperties` block.
+    private static void skipArchiveProperties(HeaderInput input) throws IOException {
+        while (true) {
+            int property = input.readId();
+            if (property == K_END) {
+                return;
+            }
+            input.skipBytes(input.readIntNumber("archive property size"));
         }
     }
 
@@ -744,7 +773,7 @@ public final class SevenZipHeaderParser {
                 throw new IOException("7z file entry is missing a name");
             }
             if (antiFiles[index]) {
-                throw new IOException("Unsupported 7z anti item: " + name);
+                continue;
             }
             if (emptyStreams[index]) {
                 boolean directory = !emptyFiles[index];

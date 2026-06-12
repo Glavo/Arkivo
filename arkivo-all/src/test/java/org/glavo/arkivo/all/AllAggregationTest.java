@@ -31,6 +31,6 @@ final class AllAggregationTest {
                 .collect(Collectors.toUnmodifiableSet());
 
         assertEquals(Set.of("7z", "ar", "rar", "tar", "zip"), archiveNames);
-        assertEquals(Set.of("deflate", "gzip", "lzma", "xz", "zlib", "zstd"), codecNames);
+        assertEquals(Set.of("bzip2", "deflate", "gzip", "lzma", "xz", "zlib", "zstd"), codecNames);
     }
 }

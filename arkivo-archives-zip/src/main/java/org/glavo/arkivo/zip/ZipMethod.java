@@ -23,11 +23,17 @@ public final class ZipMethod {
     /// The BZIP2 method identifier.
     public static final int BZIP2_ID = 12;
 
+    /// The LZMA method identifier.
+    public static final int LZMA_ID = 14;
+
     /// The deprecated Zstandard method identifier from APPNOTE 6.3.7.
     public static final int DEPRECATED_ZSTANDARD_ID = 20;
 
     /// The Zstandard method identifier.
     public static final int ZSTANDARD_ID = 93;
+
+    /// The XZ method identifier.
+    public static final int XZ_ID = 95;
 
     /// The stored ZIP method.
     private static final ZipMethod STORED = new ZipMethod(STORED_ID, "stored");
@@ -41,12 +47,18 @@ public final class ZipMethod {
     /// The BZIP2 ZIP method.
     private static final ZipMethod BZIP2 = new ZipMethod(BZIP2_ID, "bzip2");
 
+    /// The LZMA ZIP method.
+    private static final ZipMethod LZMA = new ZipMethod(LZMA_ID, "lzma");
+
     /// The deprecated Zstandard ZIP method.
     private static final ZipMethod DEPRECATED_ZSTANDARD =
             new ZipMethod(DEPRECATED_ZSTANDARD_ID, "zstandard-deprecated");
 
     /// The Zstandard ZIP method.
     private static final ZipMethod ZSTANDARD = new ZipMethod(ZSTANDARD_ID, "zstandard");
+
+    /// The XZ ZIP method.
+    private static final ZipMethod XZ = new ZipMethod(XZ_ID, "xz");
 
     /// The numeric ZIP compression method identifier.
     private final int id;
@@ -80,9 +92,24 @@ public final class ZipMethod {
         return BZIP2;
     }
 
+    /// Returns the LZMA ZIP method.
+    public static ZipMethod lzma() {
+        return LZMA;
+    }
+
+    /// Returns the deprecated Zstandard ZIP method from APPNOTE 6.3.7.
+    public static ZipMethod deprecatedZstandard() {
+        return DEPRECATED_ZSTANDARD;
+    }
+
     /// Returns the Zstandard ZIP method.
     public static ZipMethod zstandard() {
         return ZSTANDARD;
+    }
+
+    /// Returns the XZ ZIP method.
+    public static ZipMethod xz() {
+        return XZ;
     }
 
     /// Returns a ZIP method for the given numeric identifier.
@@ -92,8 +119,10 @@ public final class ZipMethod {
             case DEFLATED_ID -> DEFLATED;
             case DEFLATE64_ID -> DEFLATE64;
             case BZIP2_ID -> BZIP2;
+            case LZMA_ID -> LZMA;
             case DEPRECATED_ZSTANDARD_ID -> DEPRECATED_ZSTANDARD;
             case ZSTANDARD_ID -> ZSTANDARD;
+            case XZ_ID -> XZ;
             default -> new ZipMethod(id, "method-" + id);
         };
     }

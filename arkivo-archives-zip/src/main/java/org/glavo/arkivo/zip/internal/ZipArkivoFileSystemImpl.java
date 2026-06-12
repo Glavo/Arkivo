@@ -5,6 +5,7 @@ package org.glavo.arkivo.zip.internal;
 
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
 import org.apache.commons.compress.compressors.deflate64.Deflate64CompressorInputStream;
+import org.apache.commons.compress.compressors.xz.XZCompressorInputStream;
 import org.apache.commons.compress.compressors.zstandard.ZstdCompressorInputStream;
 import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.ArkivoVolumeSource;
@@ -16,6 +17,7 @@ import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
 import org.glavo.arkivo.zip.ZipEncryption;
 import org.glavo.arkivo.zip.ZipEntryNameEncoding;
 import org.glavo.arkivo.zip.ZipMethod;
+import org.tukaani.xz.LZMAInputStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -69,6 +71,8 @@ import static org.glavo.arkivo.zip.internal.ZipConstants.CENTRAL_DIRECTORY_HEADE
 import static org.glavo.arkivo.zip.internal.ZipConstants.DATA_DESCRIPTOR_FLAG;
 import static org.glavo.arkivo.zip.internal.ZipConstants.ENCRYPTED_FLAG;
 import static org.glavo.arkivo.zip.internal.ZipConstants.END_OF_CENTRAL_DIRECTORY_SIGNATURE;
+import static org.glavo.arkivo.zip.internal.ZipConstants.LZMA_EOS_MARKER_FLAG;
+import static org.glavo.arkivo.zip.internal.ZipConstants.LZMA_PROPERTY_SIZE;
 import static org.glavo.arkivo.zip.internal.ZipConstants.LOCAL_FILE_HEADER_SIGNATURE;
 import static org.glavo.arkivo.zip.internal.ZipConstants.STRONG_ENCRYPTION_FLAG;
 import static org.glavo.arkivo.zip.internal.ZipConstants.UINT32_MAX;
@@ -77,6 +81,9 @@ import static org.glavo.arkivo.zip.internal.ZipConstants.ZIP64_END_OF_CENTRAL_DI
 import static org.glavo.arkivo.zip.internal.ZipConstants.ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE;
 import static org.glavo.arkivo.zip.internal.ZipConstants.ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID;
 import static org.glavo.arkivo.zip.internal.ZipConstants.isZstandardMethod;
+import static org.glavo.arkivo.zip.internal.ZipLittleEndian.readInt;
+import static org.glavo.arkivo.zip.internal.ZipLittleEndian.readRequiredByte;
+import static org.glavo.arkivo.zip.internal.ZipLittleEndian.readUnsignedShort;
 
 /// Implements ZIP archive file system state and operations.
 @NotNullByDefault
@@ -365,6 +372,8 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 || compressionMethod == ZipMethod.DEFLATED_ID
                 || compressionMethod == ZipMethod.DEFLATE64_ID
                 || compressionMethod == ZipMethod.BZIP2_ID
+                || compressionMethod == ZipMethod.LZMA_ID
+                || compressionMethod == ZipMethod.XZ_ID
                 || isZstandardMethod(compressionMethod)) {
             return new ByteArraySeekableByteChannel(readEntryBytes(path, entry, dataOffset));
         }
@@ -381,6 +390,8 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 && compressionMethod != ZipMethod.DEFLATED_ID
                 && compressionMethod != ZipMethod.DEFLATE64_ID
                 && compressionMethod != ZipMethod.BZIP2_ID
+                && compressionMethod != ZipMethod.LZMA_ID
+                && compressionMethod != ZipMethod.XZ_ID
                 && !isZstandardMethod(compressionMethod)) {
             throw new IOException("Unsupported ZIP compression method: " + compressionMethod);
         }
@@ -876,6 +887,10 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 input = openBzip2InputStream(input);
             } else if (isZstandardMethod(entry.compressionMethod())) {
                 input = openZstandardInputStream(input);
+            } else if (entry.compressionMethod() == ZipMethod.LZMA_ID) {
+                input = openLzmaInputStream(input, entry.uncompressedSize, entry.generalPurposeFlags);
+            } else if (entry.compressionMethod() == ZipMethod.XZ_ID) {
+                input = openXzInputStream(input);
             }
             long expectedCrc32 = aes != null ? ZipArkivoEntryAttributes.UNKNOWN_CRC32 : entry.crc32;
             input = new ValidatingEntryInputStream(input, expectedCrc32, entry.uncompressedSize);
@@ -923,6 +938,54 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     private static InputStream openZstandardInputStream(InputStream input) throws IOException {
         try {
             return new ZstdCompressorInputStream(input);
+        } catch (IOException | RuntimeException | Error exception) {
+            try {
+                input.close();
+            } catch (IOException | RuntimeException | Error closeException) {
+                exception.addSuppressed(closeException);
+            }
+            throw exception;
+        }
+    }
+
+    /// Opens a ZIP LZMA decoding stream and closes the compressed stream if setup fails.
+    private static InputStream openLzmaInputStream(
+            InputStream input,
+            long uncompressedSize,
+            int flags
+    ) throws IOException {
+        try {
+            readUnsignedShort(input);
+            int propertySize = readUnsignedShort(input);
+            if (propertySize != LZMA_PROPERTY_SIZE) {
+                throw new IOException("Unsupported ZIP LZMA property size: " + propertySize);
+            }
+            byte properties = (byte) readRequiredByte(input);
+            int dictionarySize = readInt(input);
+            if (dictionarySize < 0) {
+                throw new IOException("Unsupported ZIP LZMA dictionary size: "
+                        + Integer.toUnsignedLong(dictionarySize));
+            }
+            boolean usesEndMarker = (flags & LZMA_EOS_MARKER_FLAG) != 0;
+            if (!usesEndMarker && uncompressedSize == ZipArkivoEntryAttributes.UNKNOWN_SIZE) {
+                throw new IOException("ZIP LZMA entry without EOS marker requires an uncompressed size");
+            }
+            long expectedUncompressedSize = usesEndMarker ? -1L : uncompressedSize;
+            return new LZMAInputStream(input, expectedUncompressedSize, properties, dictionarySize);
+        } catch (IOException | RuntimeException | Error exception) {
+            try {
+                input.close();
+            } catch (IOException | RuntimeException | Error closeException) {
+                exception.addSuppressed(closeException);
+            }
+            throw exception;
+        }
+    }
+
+    /// Opens an XZ decoding stream and closes the compressed stream if setup fails.
+    private static InputStream openXzInputStream(InputStream input) throws IOException {
+        try {
+            return new XZCompressorInputStream(input);
         } catch (IOException | RuntimeException | Error exception) {
             try {
                 input.close();

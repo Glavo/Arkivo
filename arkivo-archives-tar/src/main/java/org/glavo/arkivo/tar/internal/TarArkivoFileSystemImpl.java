@@ -414,6 +414,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         if (all || requestedAttributes.contains("linkName")) {
             values.put("linkName", entryAttributes.linkName());
         }
+        if (all || requestedAttributes.contains("isHardLink")) {
+            values.put("isHardLink", entryAttributes.isHardLink());
+        }
     }
 
     /// Requires this file system to be open.
@@ -460,16 +463,53 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
                 String path = normalizeEntryPath(attributes.path());
                 ensureParents(nodes, path);
+                TarArkivoEntryAttributes nodeAttributes = attributes;
                 byte[] content = new byte[0];
-                if (attributes.isRegularFile()) {
+                if (attributes.isHardLink()) {
+                    String targetPath = normalizeHardLinkTargetPath(attributes);
+                    Node target = nodes.get(targetPath);
+                    if (target == null || !target.attributes().isRegularFile()) {
+                        throw new IOException("TAR hard link target is not available: " + targetPath);
+                    }
+                    content = target.content();
+                    nodeAttributes = attributesWithSize(attributes, content.length);
+                } else if (attributes.isRegularFile()) {
                     try (InputStream entryInput = reader.openInputStream()) {
                         content = entryInput.readAllBytes();
                     }
                 }
-                putNode(nodes, new Node(path, attributes, attributes.isDirectory(), content, false));
+                putNode(nodes, new Node(path, nodeAttributes, nodeAttributes.isDirectory(), content, false));
             }
         }
         return nodes;
+    }
+
+    /// Normalizes the archive-local target path for a TAR hard link.
+    private static String normalizeHardLinkTargetPath(TarArkivoEntryAttributes attributes) throws IOException {
+        String linkName = attributes.linkName();
+        if (linkName == null) {
+            throw new IOException("TAR hard link entry is missing a link target: " + attributes.path());
+        }
+        requireArchiveLocalPath(linkName, "TAR hard link target");
+        return normalizeEntryPath(linkName);
+    }
+
+    /// Returns an attribute snapshot with a resolved regular file size.
+    private static TarEntryAttributes attributesWithSize(TarArkivoEntryAttributes attributes, long size) {
+        return new TarEntryAttributes(
+                attributes.path(),
+                attributes.typeFlag(),
+                attributes.mode(),
+                attributes.userId(),
+                attributes.groupId(),
+                attributes.userName(),
+                attributes.groupName(),
+                attributes.linkName(),
+                size,
+                attributes.lastModifiedTime(),
+                attributes.lastAccessTime(),
+                attributes.creationTime()
+        );
     }
 
     /// Adds implicit parent directory nodes.
@@ -522,6 +562,42 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             throw new IOException("TAR entry is missing a path");
         }
         return normalized;
+    }
+
+    /// Requires an archive-local path without absolute or parent-directory components.
+    private static void requireArchiveLocalPath(String path, String description) throws IOException {
+        if (path.startsWith("/") || path.startsWith("\\") || path.length() >= 2 && path.charAt(1) == ':') {
+            throw new IOException(description + " must be relative");
+        }
+        boolean hasName = false;
+        int start = 0;
+        while (start <= path.length()) {
+            int end = nextPathSeparator(path, start);
+            String name = path.substring(start, end);
+            if (!name.isEmpty() && !".".equals(name)) {
+                if ("..".equals(name)) {
+                    throw new IOException(description + " must not contain ..");
+                }
+                hasName = true;
+            }
+            start = end + 1;
+        }
+        if (!hasName) {
+            throw new IOException(description + " is missing a path");
+        }
+    }
+
+    /// Returns the index of the next archive path separator, or the path length.
+    private static int nextPathSeparator(String path, int start) {
+        int forwardSlash = path.indexOf('/', start);
+        int backslash = path.indexOf('\\', start);
+        if (forwardSlash < 0) {
+            return backslash >= 0 ? backslash : path.length();
+        }
+        if (backslash < 0) {
+            return forwardSlash;
+        }
+        return Math.min(forwardSlash, backslash);
     }
 
     /// Returns the parent path for a normalized node path.

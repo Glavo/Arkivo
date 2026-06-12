@@ -53,6 +53,9 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     /// Whether the current member body has a one-byte alignment padding after it.
     private boolean pendingEntryPadding;
 
+    /// Whether the current member body has already been opened.
+    private boolean currentBodyOpened;
+
     /// The GNU long filename table, or `null` until such a table is read.
     private byte @Nullable @Unmodifiable [] gnuNameTable;
 
@@ -91,6 +94,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             ResolvedName resolvedName = resolveName(identifier, fields.size());
             remainingEntryBytes = resolvedName.dataSize();
             pendingEntryPadding = (fields.size() & 1L) != 0;
+            currentBodyOpened = false;
             currentAttributes = new ArEntryAttributes(
                     resolvedName.path(),
                     identifier,
@@ -126,6 +130,10 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
         if (currentAttributes == null) {
             throw new IllegalStateException("No current AR entry");
         }
+        if (currentBodyOpened) {
+            throw new IOException("AR member body has already been opened");
+        }
+        currentBodyOpened = true;
         return Channels.newChannel(new EntryInputStream());
     }
 
@@ -139,6 +147,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
         currentAttributes = null;
         remainingEntryBytes = 0L;
         pendingEntryPadding = false;
+        currentBodyOpened = false;
         source.close();
         sourceClosed = true;
     }
@@ -241,7 +250,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
         if (path.isEmpty()) {
             throw new IOException("AR member is missing a path");
         }
-        if (path.startsWith("/") || path.startsWith("\\")) {
+        if (path.startsWith("/") || path.startsWith("\\") || path.length() >= 2 && path.charAt(1) == ':') {
             throw new IOException("AR member path must be relative");
         }
         String[] parts = path.split("[/\\\\]+");
@@ -263,6 +272,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             skipBytes(1L);
             pendingEntryPadding = false;
         }
+        currentBodyOpened = false;
     }
 
     /// Skips member padding when the full stored member size is odd.

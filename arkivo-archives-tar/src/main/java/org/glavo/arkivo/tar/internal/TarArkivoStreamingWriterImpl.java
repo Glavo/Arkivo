@@ -48,6 +48,9 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     /// The default symbolic link mode.
     private static final int DEFAULT_SYMBOLIC_LINK_MODE = 0777;
 
+    /// The default hard link mode.
+    private static final int DEFAULT_HARD_LINK_MODE = 0644;
+
     /// The marker used when a POSIX mode has not been configured.
     private static final int UNKNOWN_MODE = -1;
 
@@ -69,7 +72,10 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         DIRECTORY,
 
         /// A symbolic link entry.
-        SYMBOLIC_LINK
+        SYMBOLIC_LINK,
+
+        /// A hard link entry.
+        HARD_LINK
     }
 
     /// The backing archive output stream.
@@ -111,6 +117,12 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     @Override
     public void beginSymbolicLink(String path, String target) throws IOException {
         beginEntry(path, EntryType.SYMBOLIC_LINK, linkTargetText(target));
+    }
+
+    /// Begins a pending hard link TAR entry for the given logical archive path and target archive path.
+    @Override
+    public void beginHardLink(String path, String target) throws IOException {
+        beginEntry(path, EntryType.HARD_LINK, hardLinkTargetText(target));
     }
 
     /// Begins a pending TAR entry for the given logical archive path and type.
@@ -257,6 +269,12 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             case SYMBOLIC_LINK -> {
                 typeFlag = TarEntryAttributes.SYMBOLIC_LINK_TYPE;
                 defaultMode = DEFAULT_SYMBOLIC_LINK_MODE;
+                size = 0L;
+                linkName = Objects.requireNonNull(entry.linkTarget, "linkTarget");
+            }
+            case HARD_LINK -> {
+                typeFlag = TarEntryAttributes.HARD_LINK_TYPE;
+                defaultMode = DEFAULT_HARD_LINK_MODE;
                 size = 0L;
                 linkName = Objects.requireNonNull(entry.linkTarget, "linkTarget");
             }
@@ -574,6 +592,15 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         return target;
     }
 
+    /// Converts a hard link target to normalized TAR archive path text.
+    private static String hardLinkTargetText(String target) {
+        try {
+            return entryPathText(target, false);
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("TAR hard link target must be an archive-local path", exception);
+        }
+    }
+
     /// Returns the POSIX permissions encoded by the given mode bits.
     private static Set<PosixFilePermission> modePermissions(int mode) {
         EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
@@ -656,7 +683,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         /// The requested entry type.
         private final EntryType type;
 
-        /// The symbolic link target, or `null` for non-link entries.
+        /// The link target, or `null` for non-link entries.
         private final @Nullable String linkTarget;
 
         /// The pending basic metadata view.
@@ -928,7 +955,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         /// Returns whether this pending entry is a regular file.
         @Override
         public boolean isRegularFile() {
-            return entry.type == EntryType.FILE;
+            return entry.type == EntryType.FILE || entry.type == EntryType.HARD_LINK;
         }
 
         /// Returns whether this pending entry is a directory.
@@ -980,6 +1007,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
                 case FILE -> DEFAULT_FILE_MODE;
                 case DIRECTORY -> DEFAULT_DIRECTORY_MODE;
                 case SYMBOLIC_LINK -> DEFAULT_SYMBOLIC_LINK_MODE;
+                case HARD_LINK -> DEFAULT_HARD_LINK_MODE;
             };
             return modePermissions(attributes.mode(defaultMode));
         }

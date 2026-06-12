@@ -4,6 +4,7 @@
 package org.glavo.arkivo.zip.internal;
 
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
+import org.apache.commons.compress.compressors.xz.XZCompressorOutputStream;
 import org.apache.commons.compress.compressors.zstandard.ZstdCompressorOutputStream;
 import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
@@ -11,6 +12,8 @@ import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
 import org.glavo.arkivo.zip.ZipEncryption;
+import org.tukaani.xz.LZMA2Options;
+import org.tukaani.xz.LZMAOutputStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -56,12 +59,17 @@ import static org.glavo.arkivo.zip.internal.ZipConstants.DATA_DESCRIPTOR_SIGNATU
 import static org.glavo.arkivo.zip.internal.ZipConstants.DEFLATED_METHOD;
 import static org.glavo.arkivo.zip.internal.ZipConstants.ENCRYPTED_FLAG;
 import static org.glavo.arkivo.zip.internal.ZipConstants.END_OF_CENTRAL_DIRECTORY_SIGNATURE;
+import static org.glavo.arkivo.zip.internal.ZipConstants.LZMA_EOS_MARKER_FLAG;
+import static org.glavo.arkivo.zip.internal.ZipConstants.LZMA_METHOD;
+import static org.glavo.arkivo.zip.internal.ZipConstants.LZMA_PROPERTY_SIZE;
+import static org.glavo.arkivo.zip.internal.ZipConstants.LZMA_VERSION_NEEDED;
 import static org.glavo.arkivo.zip.internal.ZipConstants.LOCAL_FILE_HEADER_SIGNATURE;
 import static org.glavo.arkivo.zip.internal.ZipConstants.STORED_METHOD;
 import static org.glavo.arkivo.zip.internal.ZipConstants.UTF8_FLAG;
 import static org.glavo.arkivo.zip.internal.ZipConstants.VERSION_NEEDED;
 import static org.glavo.arkivo.zip.internal.ZipConstants.WINZIP_AES_METHOD;
-import static org.glavo.arkivo.zip.internal.ZipConstants.ZSTANDARD_METHOD;
+import static org.glavo.arkivo.zip.internal.ZipConstants.XZ_METHOD;
+import static org.glavo.arkivo.zip.internal.ZipConstants.isZstandardMethod;
 import static org.glavo.arkivo.zip.internal.ZipLittleEndian.requireUInt16;
 import static org.glavo.arkivo.zip.internal.ZipLittleEndian.requireUInt32;
 import static org.glavo.arkivo.zip.internal.ZipLittleEndian.writeInt;
@@ -70,6 +78,12 @@ import static org.glavo.arkivo.zip.internal.ZipLittleEndian.writeShort;
 /// Implements a forward-only ZIP archive file system for streaming writes.
 @NotNullByDefault
 public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
+    /// The LZMA SDK major version stored in ZIP LZMA property headers.
+    private static final int LZMA_SDK_MAJOR_VERSION = 9;
+
+    /// The LZMA SDK minor version stored in ZIP LZMA property headers.
+    private static final int LZMA_SDK_MINOR_VERSION = 20;
+
     /// The provider that created this ZIP file system.
     private final ZipArkivoFileSystemProvider provider;
 
@@ -337,6 +351,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             writeLocalHeader(
                     rawName,
                     metadata.localHeaderExtraData(),
+                    metadata.versionNeeded(),
                     flags,
                     metadata.headerMethod(),
                     metadata.dosTime,
@@ -394,6 +409,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             writeLocalHeader(
                     rawName,
                     metadata.localExtraData,
+                    metadata.versionNeeded(),
                     metadata.generalPurposeFlags(),
                     STORED_METHOD,
                     metadata.dosTime,
@@ -455,6 +471,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             writeLocalHeader(
                     rawName,
                     metadata.localHeaderExtraData(),
+                    metadata.versionNeeded(),
                     flags,
                     metadata.headerMethod(),
                     metadata.dosTime,
@@ -605,6 +622,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     private void writeLocalHeader(
             byte[] rawName,
             byte[] localExtraData,
+            int versionNeeded,
             int flags,
             int method,
             int dosTime,
@@ -614,7 +632,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             long uncompressedSize
     ) throws IOException {
         writeInt(output, LOCAL_FILE_HEADER_SIGNATURE);
-        writeShort(output, VERSION_NEEDED);
+        writeShort(output, versionNeeded);
         writeShort(output, flags);
         writeShort(output, method);
         writeShort(output, dosTime);
@@ -670,7 +688,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
         writeInt(output, CENTRAL_DIRECTORY_HEADER_SIGNATURE);
         writeShort(output, entry.versionMadeBy);
-        writeShort(output, VERSION_NEEDED);
+        writeShort(output, entry.versionNeeded);
         writeShort(output, entry.flags);
         writeShort(output, entry.method);
         writeShort(output, entry.dosTime);
@@ -818,9 +836,15 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             } else if (metadata.method == BZIP2_METHOD) {
                 this.deflater = null;
                 this.entryOutput = new BZip2CompressorOutputStream(dataOutput);
-            } else if (metadata.method == ZSTANDARD_METHOD) {
+            } else if (isZstandardMethod(metadata.method)) {
                 this.deflater = null;
                 this.entryOutput = new ZstdCompressorOutputStream(new NonClosingOutputStream(dataOutput));
+            } else if (metadata.method == LZMA_METHOD) {
+                this.deflater = null;
+                this.entryOutput = new ZipLzmaOutputStream(dataOutput);
+            } else if (metadata.method == XZ_METHOD) {
+                this.deflater = null;
+                this.entryOutput = new XZCompressorOutputStream(new NonClosingOutputStream(dataOutput));
             } else {
                 this.deflater = null;
                 this.entryOutput = dataOutput;
@@ -872,6 +896,10 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                         bzip2Output.finish();
                     } else if (entryOutput instanceof ZstdCompressorOutputStream zstandardOutput) {
                         zstandardOutput.close();
+                    } else if (entryOutput instanceof ZipLzmaOutputStream lzmaOutput) {
+                        lzmaOutput.finish();
+                    } else if (entryOutput instanceof XZCompressorOutputStream xzOutput) {
+                        xzOutput.finish();
                     }
                     ZipAesCrypto.EncryptingOutputStream entryAesOutput = aesOutput;
                     if (entryAesOutput != null) {
@@ -1110,6 +1138,59 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
     }
 
+    /// Writes a ZIP LZMA segment backed by a raw LZMA encoder.
+    private static final class ZipLzmaOutputStream extends OutputStream {
+        /// The raw LZMA output stream.
+        private final LZMAOutputStream output;
+
+        /// Creates a ZIP LZMA output stream and writes the ZIP LZMA property header.
+        private ZipLzmaOutputStream(OutputStream output) throws IOException {
+            LZMA2Options options = new LZMA2Options();
+            LZMAOutputStream lzmaOutput = new LZMAOutputStream(
+                    new NonClosingOutputStream(output),
+                    options,
+                    true
+            );
+            writeLzmaPropertyHeader(output, lzmaOutput.getProps(), options.getDictSize());
+            this.output = lzmaOutput;
+        }
+
+        /// Writes one byte to the LZMA encoder.
+        @Override
+        public void write(int value) throws IOException {
+            output.write(value);
+        }
+
+        /// Writes bytes to the LZMA encoder.
+        @Override
+        public void write(byte[] bytes, int offset, int length) throws IOException {
+            output.write(bytes, offset, length);
+        }
+
+        /// Flushes the LZMA encoder.
+        @Override
+        public void flush() throws IOException {
+            output.flush();
+        }
+
+        /// Finishes the raw LZMA stream.
+        private void finish() throws IOException {
+            output.finish();
+        }
+
+        /// Writes the ZIP LZMA property header.
+        private static void writeLzmaPropertyHeader(
+                OutputStream output,
+                int properties,
+                int dictionarySize
+        ) throws IOException {
+            writeShort(output, LZMA_SDK_MAJOR_VERSION | (LZMA_SDK_MINOR_VERSION << 8));
+            writeShort(output, LZMA_PROPERTY_SIZE);
+            output.write(properties & 0xff);
+            writeInt(output, Integer.toUnsignedLong(dictionarySize));
+        }
+    }
+
     /// Stores write metadata for one streaming ZIP entry.
     @NotNullByDefault
     static final class EntryMetadata {
@@ -1252,9 +1333,17 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             return aesEncrypted() ? WINZIP_AES_METHOD : method;
         }
 
+        /// Returns the ZIP version needed to extract field for this entry.
+        int versionNeeded() {
+            return method == LZMA_METHOD ? LZMA_VERSION_NEEDED : VERSION_NEEDED;
+        }
+
         /// Returns the ZIP general purpose flags for this entry.
         private int generalPurposeFlags() {
             int flags = UTF8_FLAG;
+            if (method == LZMA_METHOD) {
+                flags |= LZMA_EOS_MARKER_FLAG;
+            }
             if (requiresDataDescriptor()) {
                 flags |= DATA_DESCRIPTOR_FLAG;
             }
@@ -1305,7 +1394,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             if (method != STORED_METHOD
                     && method != DEFLATED_METHOD
                     && method != BZIP2_METHOD
-                    && method != ZSTANDARD_METHOD) {
+                    && method != LZMA_METHOD
+                    && method != XZ_METHOD
+                    && !isZstandardMethod(method)) {
                 throw new UnsupportedOperationException("Unsupported ZIP compression method: " + method);
             }
             if (!encryption.equals(ZipEncryption.none())
@@ -1367,6 +1458,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         /// The local header offset.
         private final long localHeaderOffset;
 
+        /// The ZIP version needed to extract field.
+        private final int versionNeeded;
+
         /// The ZIP version made by field.
         private final int versionMadeBy;
 
@@ -1406,6 +1500,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             this.compressedSize = compressedSize;
             this.uncompressedSize = uncompressedSize;
             this.localHeaderOffset = localHeaderOffset;
+            this.versionNeeded = metadata.versionNeeded();
             this.versionMadeBy = metadata.versionMadeBy;
             this.internalAttributes = metadata.internalAttributes;
             this.externalAttributes = metadata.externalAttributes;

@@ -607,18 +607,87 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                 RarEntryAttributes attributes = (RarEntryAttributes) reader.readAttributes(RarArkivoEntryAttributes.class);
                 String path = normalizeEntryPath(attributes.path());
                 ensureParents(nodes, path);
+                RarEntryAttributes nodeAttributes = attributes;
                 byte @Nullable @Unmodifiable [] content = null;
-                if (attributes.isRegularFile() && attributes.compressionMethod() == 0
+                if (isContentRedirection(attributes)) {
+                    @Nullable String targetPath = normalizeRedirectionTargetPath(attributes.redirectionTarget());
+                    Node target = targetPath != null ? nodes.get(targetPath) : null;
+                    if (target != null && !target.directory() && target.content() != null) {
+                        content = target.content();
+                        nodeAttributes = attributesWithResolvedSize(attributes, content.length);
+                    }
+                } else if (attributes.isRegularFile() && attributes.compressionMethod() == 0
                         && !attributes.isEncrypted()
                         && !attributes.continuesFromPreviousVolume()) {
                     try (InputStream entryInput = reader.openInputStream()) {
                         content = entryInput.readAllBytes();
                     }
                 }
-                putNode(nodes, new Node(path, attributes, attributes.isDirectory(), content));
+                putNode(nodes, new Node(path, nodeAttributes, nodeAttributes.isDirectory(), content));
             }
         }
         return nodes;
+    }
+
+    /// Returns whether an entry redirects content to another archive member.
+    private static boolean isContentRedirection(RarEntryAttributes attributes) {
+        int redirectionType = attributes.redirectionType();
+        return redirectionType == RarArkivoEntryAttributes.REDIRECTION_TYPE_HARD_LINK
+                || redirectionType == RarArkivoEntryAttributes.REDIRECTION_TYPE_FILE_COPY;
+    }
+
+    /// Returns a normalized archive-local redirection target path, or `null` when the target is unusable.
+    private static @Nullable String normalizeRedirectionTargetPath(@Nullable String target) throws IOException {
+        if (target == null || target.startsWith("/") || target.startsWith("\\")
+                || target.length() >= 2 && target.charAt(1) == ':') {
+            return null;
+        }
+
+        boolean hasName = false;
+        int start = 0;
+        while (start <= target.length()) {
+            int end = nextPathSeparator(target, start);
+            String name = target.substring(start, end);
+            if (!name.isEmpty() && !".".equals(name)) {
+                if ("..".equals(name)) {
+                    return null;
+                }
+                hasName = true;
+            }
+            start = end + 1;
+        }
+        return hasName ? normalizeEntryPath(target.replace('\\', '/')) : null;
+    }
+
+    /// Returns an attribute snapshot with a resolved regular file size.
+    private static RarEntryAttributes attributesWithResolvedSize(RarEntryAttributes attributes, long size) {
+        return new RarEntryAttributes(
+                attributes.path(),
+                attributes.isDirectory(),
+                attributes.isSymbolicLink(),
+                attributes.isOther(),
+                attributes.linkName(),
+                attributes.redirectionType(),
+                attributes.redirectionFlags(),
+                attributes.redirectionTarget(),
+                attributes.userName(),
+                attributes.groupName(),
+                attributes.userId(),
+                attributes.groupId(),
+                attributes.hostOs(),
+                attributes.fileAttributes(),
+                attributes.compressionMethod(),
+                attributes.packedSize(),
+                size,
+                attributes.dataCrc32(),
+                attributes.blake2spHash(),
+                attributes.isEncrypted(),
+                attributes.continuesFromPreviousVolume(),
+                attributes.continuesInNextVolume(),
+                attributes.lastModifiedTime(),
+                attributes.creationTime(),
+                attributes.lastAccessTime()
+        );
     }
 
     /// Adds implicit parent directory nodes.
@@ -655,7 +724,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
 
     /// Normalizes an entry path into node map form.
     private static String normalizeEntryPath(String path) throws IOException {
-        String normalized = path;
+        String normalized = path.replace('\\', '/');
         while (normalized.endsWith("/") && normalized.length() > 1) {
             normalized = normalized.substring(0, normalized.length() - 1);
         }
@@ -663,6 +732,19 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             throw new IOException("RAR entry is missing a path");
         }
         return normalized;
+    }
+
+    /// Returns the index of the next archive path separator, or the path length.
+    private static int nextPathSeparator(String path, int start) {
+        int forwardSlash = path.indexOf('/', start);
+        int backslash = path.indexOf('\\', start);
+        if (forwardSlash < 0) {
+            return backslash >= 0 ? backslash : path.length();
+        }
+        if (backslash < 0) {
+            return forwardSlash;
+        }
+        return Math.min(forwardSlash, backslash);
     }
 
     /// Returns the parent path for a normalized node path.

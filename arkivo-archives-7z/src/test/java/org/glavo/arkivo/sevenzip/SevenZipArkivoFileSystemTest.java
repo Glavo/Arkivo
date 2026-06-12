@@ -207,6 +207,44 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that sized 7z dummy properties are skipped while parsing supported header scopes.
+    @Test
+    public void dummyProperties() throws IOException {
+        byte[] content = "dummy properties content".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("dummy-properties-");
+        Files.write(archivePath, archiveWithDummyProperties(content));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/dummy.txt");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that 7z archive properties are skipped while parsing the top-level header.
+    @Test
+    public void archiveProperties() throws IOException {
+        byte[] content = "archive properties content".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("archive-properties-");
+        Files.write(archivePath, archiveWithArchiveProperties(content));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+
+                assertArrayEquals(content, Files.readAllBytes(file));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that a non-empty file stored with the 7z Copy method can be read.
     @Test
     public void copyFileEntry() throws IOException {
@@ -591,15 +629,27 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
-    /// Verifies that unsupported 7z anti items are rejected instead of exposed as normal entries.
+    /// Verifies that 7z anti items are treated as deletion markers and are not exposed as normal entries.
     @Test
-    public void rejectsAntiItemEntry() throws IOException {
+    public void skipsAntiItemEntry() throws IOException {
         Path archivePath = createTemporaryArchivePath("anti-item-entry-");
         Files.write(archivePath, archiveWithAntiItemName("deleted.txt"));
 
         try {
-            IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
-            assertEquals(true, exception.getMessage().contains("Unsupported 7z anti item"));
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                ArrayList<Path> children = new ArrayList<>();
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(fileSystem.getPath("/"))) {
+                    for (Path child : stream) {
+                        children.add(child);
+                    }
+                }
+
+                assertEquals(List.of(), children);
+                assertThrows(java.nio.file.NoSuchFileException.class, () -> Files.readAttributes(
+                        fileSystem.getPath("/deleted.txt"),
+                        BasicFileAttributes.class
+                ));
+            }
         } finally {
             deleteTemporaryArchive(archivePath);
         }
@@ -1512,6 +1562,18 @@ public final class SevenZipArkivoFileSystemTest {
         return archive(content, header, crc32(header));
     }
 
+    /// Returns a 7z archive with one Copy-method file and dummy properties in supported header scopes.
+    private static byte[] archiveWithDummyProperties(byte[] content) throws IOException {
+        byte[] header = dummyPropertiesHeader(content.length);
+        return archive(content, header, crc32(header));
+    }
+
+    /// Returns a 7z archive with one Copy-method file and top-level archive properties.
+    private static byte[] archiveWithArchiveProperties(byte[] content) throws IOException {
+        byte[] header = withArchiveProperties(fileHeader(content.length, content.length, new byte[]{0x00}, new byte[0]));
+        return archive(content, header, crc32(header));
+    }
+
     /// Returns a 7z archive with one Copy-method file and an incorrect folder CRC-32.
     private static byte[] archiveWithMismatchedFolderCrc(byte[] content) throws IOException {
         long wrongCrc32 = crc32(content) ^ 1L;
@@ -1957,6 +2019,64 @@ public final class SevenZipArkivoFileSystemTest {
 
         output.write(0x00);
         output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header with dummy properties around one Copy-method file.
+    private static byte[] dummyPropertiesHeader(int contentSize) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+        writeDummyProperty(output, 0x01);
+
+        output.write(0x04);
+        writeDummyProperty(output, 0x04);
+
+        output.write(0x06);
+        writeNumber(output, 0);
+        writeNumber(output, 1);
+        writeDummyProperty(output, 0x06);
+        output.write(0x09);
+        writeNumber(output, contentSize);
+        output.write(0x00);
+
+        output.write(0x07);
+        writeDummyProperty(output, 0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(0);
+        writeNumber(output, 1);
+        output.write(1);
+        output.write(0);
+        output.write(0x0c);
+        writeNumber(output, contentSize);
+        writeDummyProperty(output, 0x0c);
+        output.write(0x00);
+
+        output.write(0x08);
+        writeDummyProperty(output, 0x08);
+        output.write(0x00);
+
+        output.write(0x00);
+
+        output.write(0x05);
+        writeNumber(output, 1);
+        writeDummyProperty(output, 0x05);
+        byte[] names = namesProperty("dummy.txt");
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
+        output.write(0x00);
+
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Adds an `ArchiveProperties` block after the leading 7z `Header` marker.
+    private static byte[] withArchiveProperties(byte[] header) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+        writeArchiveProperties(output);
+        output.write(header, 1, header.length - 1);
         return output.toByteArray();
     }
 
@@ -3070,6 +3190,27 @@ public final class SevenZipArkivoFileSystemTest {
         output.write(0x15);
         writeNumber(output, data.size());
         output.write(data.toByteArray());
+    }
+
+    /// Writes a sized 7z dummy property.
+    private static void writeDummyProperty(ByteArrayOutputStream output, int marker) {
+        output.write(0x19);
+        writeNumber(output, 3);
+        output.write(marker);
+        output.write(marker ^ 0x55);
+        output.write(0);
+    }
+
+    /// Writes a 7z archive properties block with one ignored property.
+    private static void writeArchiveProperties(ByteArrayOutputStream output) {
+        output.write(0x02);
+        output.write(0x19);
+        writeNumber(output, 4);
+        output.write(0x61);
+        output.write(0x72);
+        output.write(0x63);
+        output.write(0);
+        output.write(0x00);
     }
 
     /// Returns a raw LZMA payload and its 7z coder properties.

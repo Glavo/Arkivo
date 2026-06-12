@@ -29,8 +29,14 @@ final class ZipConstants {
     /// The ZIP version needed to extract entries written by the streaming writer.
     static final int VERSION_NEEDED = 20;
 
+    /// The ZIP version needed to extract LZMA entries.
+    static final int LZMA_VERSION_NEEDED = 63;
+
     /// The ZIP general purpose flag indicating encryption.
     static final int ENCRYPTED_FLAG = 1;
+
+    /// The ZIP general purpose flag indicating an LZMA EOS marker is present.
+    static final int LZMA_EOS_MARKER_FLAG = 1 << 1;
 
     /// The ZIP general purpose flag indicating strong encryption.
     static final int STRONG_ENCRYPTION_FLAG = 1 << 6;
@@ -53,11 +59,20 @@ final class ZipConstants {
     /// The ZIP BZIP2 method identifier.
     static final int BZIP2_METHOD = 12;
 
+    /// The ZIP LZMA method identifier.
+    static final int LZMA_METHOD = 14;
+
+    /// The ZIP LZMA property data size for raw LZMA streams.
+    static final int LZMA_PROPERTY_SIZE = 5;
+
     /// The deprecated ZIP Zstandard method identifier from APPNOTE 6.3.7.
     static final int DEPRECATED_ZSTANDARD_METHOD = 20;
 
     /// The ZIP Zstandard method identifier.
     static final int ZSTANDARD_METHOD = 93;
+
+    /// The ZIP XZ method identifier.
+    static final int XZ_METHOD = 95;
 
     /// The WinZip AES placeholder method identifier.
     static final int WINZIP_AES_METHOD = 99;

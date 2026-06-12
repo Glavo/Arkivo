@@ -879,6 +879,9 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         @Override
         public int generalPurposeFlags() {
             int flags = ZipConstants.UTF8_FLAG;
+            if (method.id() == ZipMethod.LZMA_ID) {
+                flags |= ZipConstants.LZMA_EOS_MARKER_FLAG;
+            }
             if (!encryption.equals(ZipEncryption.none())) {
                 flags |= ZipConstants.ENCRYPTED_FLAG;
             }
@@ -894,7 +897,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Returns the ZIP version needed to extract field.
         @Override
         public int versionNeededToExtract() {
-            return ZipConstants.VERSION_NEEDED;
+            return method.id() == ZipMethod.LZMA_ID ? ZipConstants.LZMA_VERSION_NEEDED : ZipConstants.VERSION_NEEDED;
         }
 
         /// Returns the ZIP internal file attributes.

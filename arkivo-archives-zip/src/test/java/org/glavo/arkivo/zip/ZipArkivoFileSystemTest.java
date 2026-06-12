@@ -4,6 +4,7 @@
 package org.glavo.arkivo.zip;
 
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
+import org.apache.commons.compress.compressors.xz.XZCompressorOutputStream;
 import org.apache.commons.compress.compressors.zstandard.ZstdCompressorOutputStream;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
@@ -11,6 +12,8 @@ import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.zip.internal.StreamingZipArkivoFileSystemImpl;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemImpl;
+import org.tukaani.xz.LZMA2Options;
+import org.tukaani.xz.LZMAOutputStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -77,6 +80,21 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Tests basic ZIP Arkivo file system behavior.
 @NotNullByDefault
 public final class ZipArkivoFileSystemTest {
+    /// The ZIP LZMA general purpose flag indicating an EOS marker.
+    private static final int LZMA_EOS_MARKER_FLAG = 1 << 1;
+
+    /// The ZIP version needed to extract LZMA entries.
+    private static final int LZMA_VERSION_NEEDED = 63;
+
+    /// The LZMA SDK major version stored in ZIP LZMA property headers.
+    private static final int LZMA_SDK_MAJOR_VERSION = 9;
+
+    /// The LZMA SDK minor version stored in ZIP LZMA property headers.
+    private static final int LZMA_SDK_MINOR_VERSION = 20;
+
+    /// The ZIP LZMA property data size for raw LZMA streams.
+    private static final int LZMA_PROPERTY_SIZE = 5;
+
     /// Verifies that a ZIP file system can be opened from an archive path.
     @Test
     public void openPath() throws IOException {
@@ -221,6 +239,81 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that a streaming ZIP writer can write deprecated method 20 Zstandard entries.
+    @Test
+    public void streamingWriterDeprecatedZstandardEntry() throws IOException {
+        Path archivePath = createTemporaryArchivePath("stream-write-deprecated-zstandard-");
+        byte[] content = "deprecated zstandard writer content".getBytes(StandardCharsets.UTF_8);
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+                writer.beginFile("deprecated-zstandard.txt");
+                ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(view);
+                view.setMethod(ZipMethod.deprecatedZstandard());
+                try (var output = writer.openOutputStream()) {
+                    output.write(content);
+                }
+            }
+
+            byte[] archive = Files.readAllBytes(archivePath);
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes streamingAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals("deprecated-zstandard.txt", streamingAttributes.path());
+                assertEquals(ZipMethod.deprecatedZstandard(), streamingAttributes.method());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(content, input.readAllBytes());
+                }
+                assertEquals(false, reader.next());
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/deprecated-zstandard.txt");
+                ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
+
+                assertEquals(ZipMethod.deprecatedZstandard(), attributes.method());
+                assertEquals(content.length, attributes.size());
+                assertEquals(crc32(content), attributes.crc32());
+                assertArrayEquals(content, Files.readAllBytes(file));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a streaming ZIP writer can write XZ-compressed file entries.
+    @Test
+    public void streamingWriterXzEntry() throws IOException {
+        Path archivePath = createTemporaryArchivePath("stream-write-xz-");
+        byte[] content = "xz writer content".getBytes(StandardCharsets.UTF_8);
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+                writer.beginFile("xz.txt");
+                ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(view);
+                view.setMethod(ZipMethod.xz());
+                try (var output = writer.openOutputStream()) {
+                    output.write(content);
+                }
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/xz.txt");
+                ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
+
+                assertEquals(ZipMethod.xz(), attributes.method());
+                assertEquals(content.length, attributes.size());
+                assertEquals(crc32(content), attributes.crc32());
+                assertEquals(true, (attributes.generalPurposeFlags() & (1 << 3)) != 0);
+                assertArrayEquals(content, Files.readAllBytes(file));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that the streaming ZIP reader can read writer-produced BZIP2 entries with data descriptors.
     @Test
     public void streamingReaderBzip2DataDescriptorFromWriter() throws IOException {
@@ -273,6 +366,40 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that a streaming ZIP writer can write LZMA-compressed file entries.
+    @Test
+    public void streamingWriterLzmaEntry() throws IOException {
+        Path archivePath = createTemporaryArchivePath("stream-write-lzma-");
+        byte[] content = "lzma writer content".getBytes(StandardCharsets.UTF_8);
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+                writer.beginFile("lzma.txt");
+                ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(view);
+                view.setMethod(ZipMethod.lzma());
+                try (var output = writer.openOutputStream()) {
+                    output.write(content);
+                }
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/lzma.txt");
+                ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
+
+                assertEquals(ZipMethod.lzma(), attributes.method());
+                assertEquals(content.length, attributes.size());
+                assertEquals(crc32(content), attributes.crc32());
+                assertEquals(true, (attributes.generalPurposeFlags() & LZMA_EOS_MARKER_FLAG) != 0);
+                assertEquals(true, (attributes.generalPurposeFlags() & (1 << 3)) != 0);
+                assertEquals(LZMA_VERSION_NEEDED, attributes.versionNeededToExtract());
+                assertArrayEquals(content, Files.readAllBytes(file));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that the streaming ZIP reader can read writer-produced Zstandard entries with data descriptors.
     @Test
     public void streamingReaderZstandardDataDescriptorFromWriter() throws IOException {
@@ -315,6 +442,294 @@ public final class ZipArkivoFileSystemTest {
                 ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
                 assertEquals(ZipMethod.stored(), afterAttributes.method());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(afterContent, input.readAllBytes());
+                }
+                assertEquals(false, reader.next());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that the streaming ZIP reader can read writer-produced XZ entries with data descriptors.
+    @Test
+    public void streamingReaderXzDataDescriptorFromWriter() throws IOException {
+        Path archivePath = createTemporaryArchivePath("xz-descriptor-");
+        byte[] xzContent = "xz descriptor content".getBytes(StandardCharsets.UTF_8);
+        byte[] afterContent = "after xz descriptor".getBytes(StandardCharsets.UTF_8);
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+                writer.beginFile("xz.txt");
+                ZipArkivoEntryAttributeView xzView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(xzView);
+                xzView.setMethod(ZipMethod.xz());
+                try (var output = writer.openOutputStream()) {
+                    output.write(xzContent);
+                }
+
+                writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(afterView);
+                afterView.setMethod(ZipMethod.stored());
+                try (var output = writer.openOutputStream()) {
+                    output.write(afterContent);
+                }
+            }
+
+            byte[] archive = Files.readAllBytes(archivePath);
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes xzAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals("xz.txt", xzAttributes.path());
+                assertEquals(ZipMethod.xz(), xzAttributes.method());
+                assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, xzAttributes.compressedSize());
+                assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, xzAttributes.size());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(xzContent, input.readAllBytes());
+                }
+
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals("after.txt", afterAttributes.path());
+                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(afterContent, input.readAllBytes());
+                }
+                assertEquals(false, reader.next());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that the streaming ZIP reader can read writer-produced LZMA entries with data descriptors.
+    @Test
+    public void streamingReaderLzmaDataDescriptorFromWriter() throws IOException {
+        Path archivePath = createTemporaryArchivePath("lzma-descriptor-");
+        byte[] lzmaContent = "lzma descriptor content".getBytes(StandardCharsets.UTF_8);
+        byte[] afterContent = "after lzma descriptor".getBytes(StandardCharsets.UTF_8);
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+                writer.beginFile("lzma.txt");
+                ZipArkivoEntryAttributeView lzmaView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(lzmaView);
+                lzmaView.setMethod(ZipMethod.lzma());
+                try (var output = writer.openOutputStream()) {
+                    output.write(lzmaContent);
+                }
+
+                writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(afterView);
+                afterView.setMethod(ZipMethod.stored());
+                try (var output = writer.openOutputStream()) {
+                    output.write(afterContent);
+                }
+            }
+
+            byte[] archive = Files.readAllBytes(archivePath);
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes lzmaAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals("lzma.txt", lzmaAttributes.path());
+                assertEquals(ZipMethod.lzma(), lzmaAttributes.method());
+                assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, lzmaAttributes.compressedSize());
+                assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, lzmaAttributes.size());
+                assertEquals(true, (lzmaAttributes.generalPurposeFlags() & LZMA_EOS_MARKER_FLAG) != 0);
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(lzmaContent, input.readAllBytes());
+                }
+
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals("after.txt", afterAttributes.path());
+                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(afterContent, input.readAllBytes());
+                }
+                assertEquals(false, reader.next());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that the streaming ZIP reader can read traditional encrypted XZ data descriptors.
+    @Test
+    public void streamingReaderTraditionalXzDataDescriptorFromWriter() throws IOException {
+        Path archivePath = createTemporaryArchivePath("traditional-xz-descriptor-");
+        byte[] password = "secret".getBytes(StandardCharsets.UTF_8);
+        byte[] xzContent = "traditional xz descriptor content".getBytes(StandardCharsets.UTF_8);
+        byte[] afterContent = "after traditional xz descriptor".getBytes(StandardCharsets.UTF_8);
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
+                    archivePath,
+                    Map.of(ZipArkivoFileSystem.PASSWORD.key(), password)
+            )) {
+                writer.beginFile("secret-xz.txt");
+                ZipArkivoEntryAttributeView xzView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(xzView);
+                xzView.setMethod(ZipMethod.xz());
+                xzView.setEncryption(ZipEncryption.traditional());
+                try (var output = writer.openOutputStream()) {
+                    output.write(xzContent);
+                }
+
+                writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(afterView);
+                afterView.setMethod(ZipMethod.stored());
+                try (var output = writer.openOutputStream()) {
+                    output.write(afterContent);
+                }
+            }
+
+            byte[] archive = Files.readAllBytes(archivePath);
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
+                    new ByteArrayInputStream(archive),
+                    Map.of(ZipArkivoFileSystem.PASSWORD.key(), password)
+            )) {
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes xzAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals("secret-xz.txt", xzAttributes.path());
+                assertEquals(ZipMethod.xz(), xzAttributes.method());
+                assertEquals(ZipEncryption.traditional(), xzAttributes.encryption());
+                assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, xzAttributes.compressedSize());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(xzContent, input.readAllBytes());
+                }
+
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals("after.txt", afterAttributes.path());
+                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                assertEquals(ZipEncryption.none(), afterAttributes.encryption());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(afterContent, input.readAllBytes());
+                }
+                assertEquals(false, reader.next());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that the streaming ZIP reader can read traditional encrypted LZMA data descriptors.
+    @Test
+    public void streamingReaderTraditionalLzmaDataDescriptorFromWriter() throws IOException {
+        Path archivePath = createTemporaryArchivePath("traditional-lzma-descriptor-");
+        byte[] password = "secret".getBytes(StandardCharsets.UTF_8);
+        byte[] lzmaContent = "traditional lzma descriptor content".getBytes(StandardCharsets.UTF_8);
+        byte[] afterContent = "after traditional lzma descriptor".getBytes(StandardCharsets.UTF_8);
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
+                    archivePath,
+                    Map.of(ZipArkivoFileSystem.PASSWORD.key(), password)
+            )) {
+                writer.beginFile("secret-lzma.txt");
+                ZipArkivoEntryAttributeView lzmaView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(lzmaView);
+                lzmaView.setMethod(ZipMethod.lzma());
+                lzmaView.setEncryption(ZipEncryption.traditional());
+                try (var output = writer.openOutputStream()) {
+                    output.write(lzmaContent);
+                }
+
+                writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(afterView);
+                afterView.setMethod(ZipMethod.stored());
+                try (var output = writer.openOutputStream()) {
+                    output.write(afterContent);
+                }
+            }
+
+            byte[] archive = Files.readAllBytes(archivePath);
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
+                    new ByteArrayInputStream(archive),
+                    Map.of(ZipArkivoFileSystem.PASSWORD.key(), password)
+            )) {
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes lzmaAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals("secret-lzma.txt", lzmaAttributes.path());
+                assertEquals(ZipMethod.lzma(), lzmaAttributes.method());
+                assertEquals(ZipEncryption.traditional(), lzmaAttributes.encryption());
+                assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, lzmaAttributes.compressedSize());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(lzmaContent, input.readAllBytes());
+                }
+
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals("after.txt", afterAttributes.path());
+                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                assertEquals(ZipEncryption.none(), afterAttributes.encryption());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(afterContent, input.readAllBytes());
+                }
+                assertEquals(false, reader.next());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that the streaming ZIP reader can read WinZip AES encrypted XZ data descriptors.
+    @Test
+    public void streamingReaderWinZipAesXzDataDescriptorFromWriter() throws IOException {
+        Path archivePath = createTemporaryArchivePath("aes-xz-descriptor-");
+        byte[] password = "secret".getBytes(StandardCharsets.UTF_8);
+        byte[] xzContent = "AES xz descriptor content".getBytes(StandardCharsets.UTF_8);
+        byte[] afterContent = "after AES xz descriptor".getBytes(StandardCharsets.UTF_8);
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
+                    archivePath,
+                    Map.of(ZipArkivoFileSystem.PASSWORD.key(), password)
+            )) {
+                writer.beginFile("aes-xz.txt");
+                ZipArkivoEntryAttributeView xzView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(xzView);
+                xzView.setMethod(ZipMethod.xz());
+                xzView.setEncryption(ZipEncryption.winZipAes256());
+                try (var output = writer.openOutputStream()) {
+                    output.write(xzContent);
+                }
+
+                writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(afterView);
+                afterView.setMethod(ZipMethod.stored());
+                try (var output = writer.openOutputStream()) {
+                    output.write(afterContent);
+                }
+            }
+
+            byte[] archive = Files.readAllBytes(archivePath);
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
+                    new ByteArrayInputStream(archive),
+                    Map.of(ZipArkivoFileSystem.PASSWORD.key(), password)
+            )) {
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes xzAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals("aes-xz.txt", xzAttributes.path());
+                assertEquals(ZipMethod.xz(), xzAttributes.method());
+                assertEquals(ZipEncryption.winZipAes256(), xzAttributes.encryption());
+                assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, xzAttributes.compressedSize());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(xzContent, input.readAllBytes());
+                }
+
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals("after.txt", afterAttributes.path());
+                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                assertEquals(ZipEncryption.none(), afterAttributes.encryption());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
@@ -494,6 +909,67 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals(ZipEncryption.none(), secondAttributes.encryption());
                 try (var secondInput = reader.openInputStream()) {
                     assertArrayEquals(afterContent, secondInput.readAllBytes());
+                }
+                assertEquals(false, reader.next());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that the streaming ZIP reader can read WinZip AES encrypted LZMA data descriptors.
+    @Test
+    public void streamingReaderWinZipAesLzmaDataDescriptorFromWriter() throws IOException {
+        Path archivePath = createTemporaryArchivePath("aes-lzma-descriptor-");
+        byte[] password = "secret".getBytes(StandardCharsets.UTF_8);
+        byte[] lzmaContent = "AES lzma descriptor content".getBytes(StandardCharsets.UTF_8);
+        byte[] afterContent = "after AES lzma descriptor".getBytes(StandardCharsets.UTF_8);
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
+                    archivePath,
+                    Map.of(ZipArkivoFileSystem.PASSWORD.key(), password)
+            )) {
+                writer.beginFile("aes-lzma.txt");
+                ZipArkivoEntryAttributeView lzmaView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(lzmaView);
+                lzmaView.setMethod(ZipMethod.lzma());
+                lzmaView.setEncryption(ZipEncryption.winZipAes256());
+                try (var output = writer.openOutputStream()) {
+                    output.write(lzmaContent);
+                }
+
+                writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(afterView);
+                afterView.setMethod(ZipMethod.stored());
+                try (var output = writer.openOutputStream()) {
+                    output.write(afterContent);
+                }
+            }
+
+            byte[] archive = Files.readAllBytes(archivePath);
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
+                    new ByteArrayInputStream(archive),
+                    Map.of(ZipArkivoFileSystem.PASSWORD.key(), password)
+            )) {
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes lzmaAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals("aes-lzma.txt", lzmaAttributes.path());
+                assertEquals(ZipMethod.lzma(), lzmaAttributes.method());
+                assertEquals(ZipEncryption.winZipAes256(), lzmaAttributes.encryption());
+                assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, lzmaAttributes.compressedSize());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(lzmaContent, input.readAllBytes());
+                }
+
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals("after.txt", afterAttributes.path());
+                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                assertEquals(ZipEncryption.none(), afterAttributes.encryption());
+                try (var input = reader.openInputStream()) {
+                    assertArrayEquals(afterContent, input.readAllBytes());
                 }
                 assertEquals(false, reader.next());
             }
@@ -2383,6 +2859,63 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that streaming ZIP readers decode known-size XZ-compressed entries.
+    @Test
+    public void streamingReaderReadsXzEntry() throws IOException {
+        byte[] name = "xz-streaming.txt".getBytes(StandardCharsets.UTF_8);
+        byte[] content = "xz streaming content".getBytes(StandardCharsets.UTF_8);
+        byte[] compressed = xz(content);
+        byte[] archive = streamingXzArchiveWithContent(
+                name,
+                compressed,
+                crc32(content),
+                compressed.length,
+                content.length
+        );
+
+        try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            assertEquals(true, reader.next());
+            ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+            assertEquals("xz-streaming.txt", attributes.path());
+            assertEquals(ZipMethod.xz(), attributes.method());
+            assertEquals(compressed.length, attributes.compressedSize());
+            assertEquals(content.length, attributes.size());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that streaming ZIP readers decode known-size LZMA-compressed entries.
+    @Test
+    public void streamingReaderReadsLzmaEntry() throws IOException {
+        byte[] name = "lzma-streaming.txt".getBytes(StandardCharsets.UTF_8);
+        byte[] content = "lzma streaming content".getBytes(StandardCharsets.UTF_8);
+        byte[] compressed = lzma(content);
+        byte[] archive = streamingLzmaArchiveWithContent(
+                name,
+                compressed,
+                crc32(content),
+                compressed.length,
+                content.length
+        );
+
+        try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            assertEquals(true, reader.next());
+            ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+            assertEquals("lzma-streaming.txt", attributes.path());
+            assertEquals(ZipMethod.lzma(), attributes.method());
+            assertEquals(compressed.length, attributes.compressedSize());
+            assertEquals(content.length, attributes.size());
+            assertEquals(LZMA_VERSION_NEEDED, attributes.versionNeededToExtract());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+    }
+
     /// Verifies that streaming ZIP readers decode deprecated method 20 Zstandard entries.
     @Test
     public void streamingReaderReadsDeprecatedZstandardEntry() throws IOException {
@@ -3889,6 +4422,86 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that seekable ZIP file systems decode XZ-compressed entries.
+    @Test
+    public void readsSeekableXzEntry() throws IOException {
+        byte[] name = "xz.txt".getBytes(StandardCharsets.UTF_8);
+        byte[] content = "xz seekable content".getBytes(StandardCharsets.UTF_8);
+        byte[] compressed = xz(content);
+        Path archivePath = createTemporaryArchiveContent(singleEntryZipWithEntryBody(
+                name,
+                compressed,
+                ZipMethod.XZ_ID,
+                crc32(content),
+                compressed.length,
+                content.length
+        ));
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/xz.txt");
+                ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
+                assertEquals(ZipMethod.xz(), attributes.method());
+                assertEquals(compressed.length, attributes.compressedSize());
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+
+                try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                    assertEquals(content.length, channel.size());
+                    ByteBuffer buffer = ByteBuffer.allocate(content.length);
+                    assertEquals(content.length, channel.read(buffer));
+                    buffer.flip();
+                    byte[] decoded = new byte[buffer.remaining()];
+                    buffer.get(decoded);
+                    assertArrayEquals(content, decoded);
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that seekable ZIP file systems decode LZMA-compressed entries.
+    @Test
+    public void readsSeekableLzmaEntry() throws IOException {
+        byte[] name = "lzma.txt".getBytes(StandardCharsets.UTF_8);
+        byte[] content = "lzma seekable content".getBytes(StandardCharsets.UTF_8);
+        byte[] compressed = lzma(content);
+        Path archivePath = createTemporaryArchiveContent(singleEntryZipWithEntryBody(
+                name,
+                compressed,
+                ZipMethod.LZMA_ID,
+                LZMA_EOS_MARKER_FLAG,
+                crc32(content),
+                compressed.length,
+                content.length
+        ));
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/lzma.txt");
+                ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
+                assertEquals(ZipMethod.lzma(), attributes.method());
+                assertEquals(compressed.length, attributes.compressedSize());
+                assertEquals(content.length, attributes.size());
+                assertEquals(LZMA_VERSION_NEEDED, attributes.versionNeededToExtract());
+                assertArrayEquals(content, Files.readAllBytes(file));
+
+                try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                    assertEquals(content.length, channel.size());
+                    ByteBuffer buffer = ByteBuffer.allocate(content.length);
+                    assertEquals(content.length, channel.read(buffer));
+                    buffer.flip();
+                    byte[] decoded = new byte[buffer.remaining()];
+                    buffer.get(decoded);
+                    assertArrayEquals(content, decoded);
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that seekable ZIP file systems decode deprecated method 20 Zstandard entries.
     @Test
     public void readsSeekableDeprecatedZstandardEntry() throws IOException {
@@ -5022,6 +5635,19 @@ public final class ZipArkivoFileSystemTest {
             long compressedSize,
             long uncompressedSize
     ) {
+        return singleEntryZipWithEntryBody(name, body, method, 0, crc32, compressedSize, uncompressedSize);
+    }
+
+    /// Returns a minimal seekable ZIP archive with one entry body and configurable flags.
+    private static byte[] singleEntryZipWithEntryBody(
+            byte[] name,
+            byte[] body,
+            int method,
+            int flags,
+            long crc32,
+            long compressedSize,
+            long uncompressedSize
+    ) {
         int localHeaderOffset = 0;
         int localHeaderSize = 30 + name.length;
         int centralDirectoryOffset = localHeaderSize + body.length;
@@ -5029,12 +5655,12 @@ public final class ZipArkivoFileSystemTest {
 
         ByteBuffer buffer = ByteBuffer.allocate(centralDirectoryOffset + centralDirectorySize + 22)
                 .order(ByteOrder.LITTLE_ENDIAN);
-        writeLocalHeader(buffer, name, 0, method, crc32, compressedSize, uncompressedSize);
+        writeLocalHeader(buffer, name, flags, method, crc32, compressedSize, uncompressedSize);
         buffer.put(body);
         writeCentralDirectoryEntry(
                 buffer,
                 name,
-                0,
+                flags,
                 method,
                 localHeaderOffset,
                 crc32,
@@ -5200,6 +5826,11 @@ public final class ZipArkivoFileSystemTest {
         writeLocalHeader(buffer, name, 0, ZipMethod.STORED_ID);
     }
 
+    /// Returns the ZIP version needed to extract field for the method.
+    private static int zipVersionNeeded(int method) {
+        return method == ZipMethod.LZMA_ID ? LZMA_VERSION_NEEDED : 20;
+    }
+
     /// Writes a minimal local header with no content.
     private static void writeLocalHeader(ByteBuffer buffer, byte[] name, int flags, int method) {
         writeLocalHeader(buffer, name, flags, method, 0, 0, 0);
@@ -5230,7 +5861,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] extraData
     ) {
         buffer.putInt(0x04034b50);
-        buffer.putShort((short) 20);
+        buffer.putShort((short) zipVersionNeeded(method));
         buffer.putShort((short) flags);
         buffer.putShort((short) method);
         buffer.putShort((short) 0);
@@ -5325,7 +5956,7 @@ public final class ZipArkivoFileSystemTest {
     ) {
         buffer.putInt(0x02014b50);
         buffer.putShort((short) 20);
-        buffer.putShort((short) 20);
+        buffer.putShort((short) zipVersionNeeded(method));
         buffer.putShort((short) flags);
         buffer.putShort((short) method);
         buffer.putShort((short) 0);
@@ -5484,6 +6115,56 @@ public final class ZipArkivoFileSystemTest {
         buffer.putShort((short) 20);
         buffer.putShort((short) 0);
         buffer.putShort((short) method);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putInt((int) crc32);
+        buffer.putInt((int) compressedSize);
+        buffer.putInt((int) uncompressedSize);
+        buffer.putShort((short) name.length);
+        buffer.putShort((short) 0);
+        buffer.put(name);
+        buffer.put(compressed);
+        return buffer.array();
+    }
+
+    /// Returns a minimal streaming XZ ZIP archive with compressed data and local header metadata.
+    private static byte[] streamingXzArchiveWithContent(
+            byte[] name,
+            byte[] compressed,
+            long crc32,
+            long compressedSize,
+            long uncompressedSize
+    ) {
+        ByteBuffer buffer = ByteBuffer.allocate(30 + name.length + compressed.length).order(ByteOrder.LITTLE_ENDIAN);
+        buffer.putInt(0x04034b50);
+        buffer.putShort((short) 20);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) ZipMethod.XZ_ID);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putInt((int) crc32);
+        buffer.putInt((int) compressedSize);
+        buffer.putInt((int) uncompressedSize);
+        buffer.putShort((short) name.length);
+        buffer.putShort((short) 0);
+        buffer.put(name);
+        buffer.put(compressed);
+        return buffer.array();
+    }
+
+    /// Returns a minimal streaming LZMA ZIP archive with compressed data and local header metadata.
+    private static byte[] streamingLzmaArchiveWithContent(
+            byte[] name,
+            byte[] compressed,
+            long crc32,
+            long compressedSize,
+            long uncompressedSize
+    ) {
+        ByteBuffer buffer = ByteBuffer.allocate(30 + name.length + compressed.length).order(ByteOrder.LITTLE_ENDIAN);
+        buffer.putInt(0x04034b50);
+        buffer.putShort((short) LZMA_VERSION_NEEDED);
+        buffer.putShort((short) LZMA_EOS_MARKER_FLAG);
+        buffer.putShort((short) ZipMethod.LZMA_ID);
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt((int) crc32);
@@ -6309,6 +6990,43 @@ public final class ZipArkivoFileSystemTest {
             zstandard.write(content);
         }
         return output.toByteArray();
+    }
+
+    /// Returns XZ-compressed bytes for a ZIP XZ entry.
+    private static byte[] xz(byte[] content) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (XZCompressorOutputStream xz = new XZCompressorOutputStream(output)) {
+            xz.write(content);
+        }
+        return output.toByteArray();
+    }
+
+    /// Returns ZIP LZMA segment bytes for a ZIP LZMA entry.
+    private static byte[] lzma(byte[] content) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LZMA2Options options = new LZMA2Options();
+        try (LZMAOutputStream lzma = new LZMAOutputStream(output, options, true)) {
+            writeLzmaPropertyHeader(output, lzma.getProps(), options.getDictSize());
+            lzma.write(content);
+        }
+        return output.toByteArray();
+    }
+
+    /// Writes a ZIP LZMA property header.
+    private static void writeLzmaPropertyHeader(
+            OutputStream output,
+            int properties,
+            int dictionarySize
+    ) throws IOException {
+        output.write(LZMA_SDK_MAJOR_VERSION);
+        output.write(LZMA_SDK_MINOR_VERSION);
+        output.write(LZMA_PROPERTY_SIZE);
+        output.write(0);
+        output.write(properties & 0xff);
+        output.write(dictionarySize & 0xff);
+        output.write((dictionarySize >>> 8) & 0xff);
+        output.write((dictionarySize >>> 16) & 0xff);
+        output.write((dictionarySize >>> 24) & 0xff);
     }
 
     /// Returns one raw Deflate64 stored-block payload.

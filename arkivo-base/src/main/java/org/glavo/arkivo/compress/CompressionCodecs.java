@@ -27,11 +27,16 @@ public final class CompressionCodecs {
         return List.copyOf(codecs);
     }
 
-    /// Returns the first compression codec with the given stable name, ignoring ASCII case.
+    /// Returns the first compression codec with the given stable name or alias, ignoring ASCII case.
     public static @Nullable CompressionCodec find(String name) {
         for (CompressionCodec codec : ServiceLoader.load(CompressionCodec.class)) {
             if (codec.name().equalsIgnoreCase(name)) {
                 return codec;
+            }
+            for (String alias : codec.aliases()) {
+                if (alias.equalsIgnoreCase(name)) {
+                    return codec;
+                }
             }
         }
         return null;
