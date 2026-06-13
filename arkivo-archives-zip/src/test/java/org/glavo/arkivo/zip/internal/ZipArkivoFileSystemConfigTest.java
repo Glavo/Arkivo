@@ -14,12 +14,15 @@ import org.glavo.arkivo.zip.ZipEncryption;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.StandardOpenOption;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests ZIP file system environment configuration parsing.
 @NotNullByDefault
@@ -71,6 +74,62 @@ public final class ZipArkivoFileSystemConfigTest {
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
 
         assertEquals(1024L, config.splitSize());
+    }
+
+    /// Verifies that writable ZIP configuration preserves split output settings.
+    @Test
+    public void writableSplitSize() {
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE),
+                ZipArkivoFileSystem.SPLIT_SIZE.key(),
+                1024L
+        );
+
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+
+        assertEquals(1024L, config.splitSize());
+    }
+
+    /// Verifies that writable ZIP configuration accepts append mode.
+    @Test
+    public void writableAppendMode() {
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.APPEND, StandardOpenOption.WRITE)
+        );
+
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+
+        assertEquals(true, config.archiveWritable());
+        assertEquals(true, config.openOptions().contains(StandardOpenOption.APPEND));
+    }
+
+    /// Verifies that read/write update mode is normalized to writable append output options.
+    @Test
+    public void writableUpdateModeNormalizesToAppend() {
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+        );
+
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+
+        assertEquals(true, config.archiveWritable());
+        assertEquals(false, config.openOptions().contains(StandardOpenOption.READ));
+        assertEquals(true, config.openOptions().contains(StandardOpenOption.WRITE));
+        assertEquals(true, config.openOptions().contains(StandardOpenOption.APPEND));
+    }
+
+    /// Verifies that append and truncate modes cannot be combined.
+    @Test
+    public void writableAppendRejectsTruncate() {
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.APPEND, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)
+        );
+
+        assertThrows(IllegalArgumentException.class, () -> ZipArkivoFileSystemConfig.fromEnvironment(environment));
     }
 
     /// Verifies that fixed password bytes are converted into a password provider.

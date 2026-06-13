@@ -38,12 +38,12 @@ public final class TarArkivoFormat implements ArkivoFormat {
         return NAME;
     }
 
-    /// Opens a TAR archive as a read-only file system.
+    /// Opens a TAR archive as a file system.
     public TarArkivoFileSystem open(Path path) throws IOException {
         return TarArkivoFileSystem.open(path);
     }
 
-    /// Opens a TAR archive as a read-only file system with provider environment options.
+    /// Opens a TAR archive as a file system with provider environment options.
     public TarArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         return TarArkivoFileSystem.open(path, environment);
     }

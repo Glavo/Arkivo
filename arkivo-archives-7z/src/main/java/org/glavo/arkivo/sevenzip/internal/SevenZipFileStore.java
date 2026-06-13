@@ -3,23 +3,35 @@
 
 package org.glavo.arkivo.sevenzip.internal;
 
+import org.glavo.arkivo.sevenzip.SevenZipArkivoEntryAttributeView;
+import org.glavo.arkivo.internal.ArkivoFileStoreAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.IOException;
 import java.nio.file.FileStore;
 import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.FileOwnerAttributeView;
 import java.nio.file.attribute.FileStoreAttributeView;
 import java.nio.file.attribute.FileAttributeView;
+import java.nio.file.attribute.PosixFileAttributeView;
 import java.util.Objects;
 
 /// Describes the synthetic file store exposed by 7z file systems.
 @NotNullByDefault
 final class SevenZipFileStore extends FileStore {
     /// The shared read-only 7z file store.
-    static final SevenZipFileStore READ_ONLY = new SevenZipFileStore();
+    static final SevenZipFileStore READ_ONLY = new SevenZipFileStore(true);
+
+    /// The shared writable 7z file store.
+    static final SevenZipFileStore WRITABLE = new SevenZipFileStore(false);
+
+    /// Whether this file store is read-only.
+    private final boolean readOnly;
 
     /// Creates a 7z file store.
-    private SevenZipFileStore() {
+    private SevenZipFileStore(boolean readOnly) {
+        this.readOnly = readOnly;
     }
 
     /// Returns the file store name.
@@ -37,7 +49,7 @@ final class SevenZipFileStore extends FileStore {
     /// Returns whether this file store is read-only.
     @Override
     public boolean isReadOnly() {
-        return true;
+        return readOnly;
     }
 
     /// Returns an unknown total space value.
@@ -62,14 +74,17 @@ final class SevenZipFileStore extends FileStore {
     @Override
     public boolean supportsFileAttributeView(Class<? extends FileAttributeView> type) {
         Objects.requireNonNull(type, "type");
-        return type == BasicFileAttributeView.class;
+        return type == BasicFileAttributeView.class
+                || type == FileOwnerAttributeView.class
+                || type == PosixFileAttributeView.class
+                || type == SevenZipArkivoEntryAttributeView.class;
     }
 
     /// Returns whether this file store supports the given attribute view.
     @Override
     public boolean supportsFileAttributeView(String name) {
         Objects.requireNonNull(name, "name");
-        return "basic".equals(name);
+        return "basic".equals(name) || "owner".equals(name) || "posix".equals(name) || "7z".equals(name);
     }
 
     /// Returns no file store attribute view.
@@ -81,8 +96,7 @@ final class SevenZipFileStore extends FileStore {
 
     /// Returns no file store attribute values.
     @Override
-    public Object getAttribute(String attribute) {
-        Objects.requireNonNull(attribute, "attribute");
-        throw new UnsupportedOperationException("7z file store attributes are not supported");
+    public Object getAttribute(String attribute) throws IOException {
+        return ArkivoFileStoreAttributes.get(this, attribute);
     }
 }

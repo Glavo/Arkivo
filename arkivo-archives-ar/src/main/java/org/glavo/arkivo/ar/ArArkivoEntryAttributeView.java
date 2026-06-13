@@ -29,4 +29,7 @@ public interface ArArkivoEntryAttributeView extends BasicFileAttributeView {
 
     /// Sets the POSIX mode bits stored by the AR header.
     void setMode(int mode) throws IOException;
+
+    /// Sets the expected member data size before the member body stream is opened.
+    void setSize(long size) throws IOException;
 }

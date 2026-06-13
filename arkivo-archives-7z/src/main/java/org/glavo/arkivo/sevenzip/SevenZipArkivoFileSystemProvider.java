@@ -138,10 +138,10 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
         return sevenZipFileSystem(path).newInputStream(path, options);
     }
 
-    /// Opens an output stream for a path inside a 7z archive file system.
+    /// Opens an output stream for a path inside a writable 7z archive file system.
     @Override
-    public OutputStream newOutputStream(Path path, OpenOption... options) {
-        throw new ReadOnlyFileSystemException();
+    public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
+        return sevenZipFileSystem(path).newOutputStream(path, options);
     }
 
     /// Opens a directory stream for a path inside a 7z archive file system.
@@ -153,10 +153,16 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
         return sevenZipFileSystem(directory).newDirectoryStream(directory, filter);
     }
 
-    /// Creates a directory inside a 7z archive file system.
+    /// Creates a directory inside a writable 7z archive file system.
     @Override
-    public void createDirectory(Path directory, FileAttribute<?>... attributes) {
-        throw new ReadOnlyFileSystemException();
+    public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
+        sevenZipFileSystem(directory).createDirectory(directory, attributes);
+    }
+
+    /// Creates a symbolic link inside a writable 7z archive file system.
+    @Override
+    public void createSymbolicLink(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
+        sevenZipFileSystem(link).createSymbolicLink(link, target, attributes);
     }
 
     /// Deletes a path inside a 7z archive file system.
@@ -176,6 +182,22 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
                 throw new UnsupportedOperationException("Unsupported 7z copy option: " + option);
             }
         }
+
+        BasicFileAttributes attributes = readAttributes(source, BasicFileAttributes.class);
+        if (attributes.isDirectory()) {
+            if (Files.exists(target)) {
+                if (!replaceExisting) {
+                    throw new java.nio.file.FileAlreadyExistsException(target.toString());
+                }
+                if (Files.isDirectory(target)) {
+                    return;
+                }
+                Files.delete(target);
+            }
+            Files.createDirectories(target);
+            return;
+        }
+
         if (Files.exists(target) && !replaceExisting) {
             throw new java.nio.file.FileAlreadyExistsException(target.toString());
         }
@@ -246,6 +268,12 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
     @Override
     public Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options) throws IOException {
         return sevenZipFileSystem(path).readAttributes(path, attributes);
+    }
+
+    /// Reads a symbolic link target from a 7z archive path.
+    @Override
+    public Path readSymbolicLink(Path link) throws IOException {
+        return sevenZipFileSystem(link).readSymbolicLink(link);
     }
 
     /// Sets a named file attribute for a 7z archive path.

@@ -17,6 +17,7 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.PosixFileAttributes;
 import java.time.DateTimeException;
 import java.time.Instant;
 import java.util.HashMap;
@@ -144,7 +145,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         if (attributes == null) {
             throw new IllegalStateException("TAR streaming reader is not positioned at an entry");
         }
-        if (type == BasicFileAttributes.class || type == TarArkivoEntryAttributes.class) {
+        if (type == BasicFileAttributes.class || type == TarArkivoEntryAttributes.class || type == PosixFileAttributes.class) {
             return type.cast(attributes);
         }
         throw new UnsupportedOperationException("Unsupported TAR streaming attributes type: " + type.getName());

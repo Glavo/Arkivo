@@ -5,13 +5,18 @@ package org.glavo.arkivo.sevenzip.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
-import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.GroupPrincipal;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
+import java.util.Set;
 
 /// Provides basic attributes for the synthetic 7z root directory.
 @NotNullByDefault
-final class SevenZipRootAttributes implements BasicFileAttributes {
+final class SevenZipRootAttributes implements PosixFileAttributes {
     /// The shared root attributes instance.
     static final SevenZipRootAttributes INSTANCE = new SevenZipRootAttributes();
 
@@ -74,5 +79,23 @@ final class SevenZipRootAttributes implements BasicFileAttributes {
     @Override
     public @Nullable Object fileKey() {
         return null;
+    }
+
+    /// Returns the synthesized owner principal for the root directory.
+    @Override
+    public UserPrincipal owner() {
+        return SevenZipPosixSupport.owner();
+    }
+
+    /// Returns the synthesized group principal for the root directory.
+    @Override
+    public GroupPrincipal group() {
+        return SevenZipPosixSupport.group();
+    }
+
+    /// Returns synthesized POSIX permissions for the root directory.
+    @Override
+    public @Unmodifiable Set<PosixFilePermission> permissions() {
+        return SevenZipPosixSupport.permissions(true, false);
     }
 }

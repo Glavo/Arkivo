@@ -9,11 +9,16 @@ import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.GroupPrincipal;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
 import java.util.Objects;
+import java.util.Set;
 
 /// Stores parsed metadata for one RAR archive entry.
 @NotNullByDefault
-final class RarEntryAttributes implements RarArkivoEntryAttributes {
+final class RarEntryAttributes implements RarArkivoEntryAttributes, PosixFileAttributes {
     /// The decoded entry path.
     private final String path;
 
@@ -326,5 +331,23 @@ final class RarEntryAttributes implements RarArkivoEntryAttributes {
     @Override
     public Object fileKey() {
         return path;
+    }
+
+    /// Returns the owner principal represented by the stored RAR Unix owner metadata.
+    @Override
+    public UserPrincipal owner() {
+        return RarPosixSupport.owner(userName, userId);
+    }
+
+    /// Returns the group principal represented by the stored RAR Unix owner metadata.
+    @Override
+    public GroupPrincipal group() {
+        return RarPosixSupport.group(groupName, groupId);
+    }
+
+    /// Returns the POSIX permissions encoded by the stored Unix file attributes.
+    @Override
+    public @Unmodifiable Set<PosixFilePermission> permissions() {
+        return RarPosixSupport.permissions(hostOs, fileAttributes);
     }
 }

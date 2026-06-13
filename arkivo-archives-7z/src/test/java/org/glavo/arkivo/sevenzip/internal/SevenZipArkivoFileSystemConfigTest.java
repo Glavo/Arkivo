@@ -62,9 +62,46 @@ public final class SevenZipArkivoFileSystemConfigTest {
         assertArrayEquals(new byte[]{1, 2, 3}, config.passwordProvider().passwordForArchive());
     }
 
-    /// Verifies that 7z write mode is rejected until writing is implemented.
+    /// Verifies that 7z write mode open options are accepted for archive creation.
     @Test
-    public void writeModeIsNotImplementedYet() {
+    public void writeModeOpenOptions() {
+        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE
+                )
+        ));
+
+        assertEquals(true, config.archiveWritable());
+        assertEquals(
+                Set.of(
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE
+                ),
+                config.openOptions()
+        );
+    }
+
+    /// Verifies that 7z read/write update mode remains unsupported.
+    @Test
+    public void updateModeIsUnsupported() {
+        UnsupportedOperationException exception = assertThrows(
+                UnsupportedOperationException.class,
+                () -> SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+                        ArkivoFileSystem.OPEN_OPTIONS.key(),
+                        Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+                ))
+        );
+
+        assertEquals("7z archive read/write update mode is not supported", exception.getMessage());
+    }
+
+    /// Verifies that 7z write mode requires a creation or truncation boundary.
+    @Test
+    public void writeModeRequiresCreationBoundary() {
         assertThrows(
                 UnsupportedOperationException.class,
                 () -> SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(

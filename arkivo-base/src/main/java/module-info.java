@@ -8,7 +8,12 @@ module org.glavo.arkivo.base {
 
     exports org.glavo.arkivo;
     exports org.glavo.arkivo.compress;
-    exports org.glavo.arkivo.internal to org.glavo.arkivo.archives.zip, org.glavo.arkivo.archives.sevenzip;
+    exports org.glavo.arkivo.internal to
+            org.glavo.arkivo.archives.ar,
+            org.glavo.arkivo.archives.rar,
+            org.glavo.arkivo.archives.sevenzip,
+            org.glavo.arkivo.archives.tar,
+            org.glavo.arkivo.archives.zip;
 
     uses org.glavo.arkivo.ArkivoFormat;
     uses org.glavo.arkivo.compress.CompressionCodec;

@@ -89,12 +89,13 @@ public final class ZipArkivoFileSystemConfig {
             @Nullable ArkivoCommitTarget commitTarget,
             @Nullable ArkivoSourceMutationPolicy sourceMutationPolicy
     ) {
+        Set<OpenOption> normalizedOpenOptions = normalizeOpenOptions(
+                Objects.requireNonNull(openOptions, "openOptions")
+        );
         if (splitSize != NO_SPLIT_SIZE && splitSize <= 0) {
             throw new IllegalArgumentException("splitSize must be positive or NO_SPLIT_SIZE");
         }
-        this.openOptions = normalizeOpenOptions(
-                Objects.requireNonNull(openOptions, "openOptions")
-        );
+        this.openOptions = normalizedOpenOptions;
         this.passwordProvider = passwordProvider;
         this.defaultEncryption = Objects.requireNonNull(defaultEncryption, "defaultEncryption");
         this.splitSize = splitSize;
@@ -263,17 +264,23 @@ public final class ZipArkivoFileSystemConfig {
             read = true;
         }
 
-        if (append) {
-            throw new UnsupportedOperationException("ZIP archive streaming writes do not support APPEND");
+        if (append && truncate) {
+            throw new IllegalArgumentException("ZIP archive write open options cannot include both APPEND and TRUNCATE_EXISTING");
+        }
+
+        if (read && write) {
+            result.remove(StandardOpenOption.READ);
+            read = false;
+            if (!append && !truncate && !createNew) {
+                result.add(StandardOpenOption.APPEND);
+                append = true;
+            }
         }
 
         if (read) {
-            if (write) {
-                throw new UnsupportedOperationException("ZIP archive update mode is not supported yet");
-            }
-            if (create || createNew || truncate) {
+            if (append || create || createNew || truncate) {
                 throw new IllegalArgumentException(
-                        "ZIP archive read open options cannot include create or truncate options"
+                        "ZIP archive read open options cannot include write, append, create, or truncate options"
                 );
             }
             return Set.copyOf(result);
@@ -282,9 +289,9 @@ public final class ZipArkivoFileSystemConfig {
         if (!write) {
             throw new IllegalArgumentException("ZIP archive write open options must include WRITE");
         }
-        if (!truncate && !createNew) {
+        if (!append && !truncate && !createNew) {
             throw new IllegalArgumentException(
-                    "ZIP archive write open options must include TRUNCATE_EXISTING or CREATE_NEW"
+                    "ZIP archive write open options must include APPEND, TRUNCATE_EXISTING, or CREATE_NEW"
             );
         }
         return Set.copyOf(result);

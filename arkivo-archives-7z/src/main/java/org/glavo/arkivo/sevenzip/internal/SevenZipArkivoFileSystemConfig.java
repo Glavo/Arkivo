@@ -164,10 +164,23 @@ public final class SevenZipArkivoFileSystemConfig {
             throw new UnsupportedOperationException("7z archive writes do not support APPEND");
         }
         if (read && (write || create || createNew || truncate)) {
-            throw new UnsupportedOperationException("7z archive update mode is not implemented yet");
+            throw new UnsupportedOperationException("7z archive read/write update mode is not supported");
         }
-        if (write) {
-            throw new UnsupportedOperationException("7z archive write support is not implemented yet");
+        if (write || create || createNew || truncate) {
+            if (!write) {
+                throw new IllegalArgumentException("7z archive write mode requires WRITE");
+            }
+            if (!truncate && !createNew) {
+                throw new UnsupportedOperationException("7z archive write mode requires TRUNCATE_EXISTING or CREATE_NEW");
+            }
+            for (OpenOption option : result) {
+                if (option != StandardOpenOption.WRITE
+                        && option != StandardOpenOption.CREATE
+                        && option != StandardOpenOption.CREATE_NEW
+                        && option != StandardOpenOption.TRUNCATE_EXISTING) {
+                    throw new UnsupportedOperationException("Unsupported 7z archive write option: " + option);
+                }
+            }
         }
         return Set.copyOf(result);
     }

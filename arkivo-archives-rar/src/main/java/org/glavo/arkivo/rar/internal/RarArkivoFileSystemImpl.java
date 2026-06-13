@@ -6,6 +6,8 @@ package org.glavo.arkivo.rar.internal;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoVolumeSource;
+import org.glavo.arkivo.internal.ArkivoFileStoreAttributes;
+import org.glavo.arkivo.rar.RarArkivoEntryAttributeView;
 import org.glavo.arkivo.rar.RarArkivoEntryAttributes;
 import org.glavo.arkivo.rar.RarArkivoFileSystem;
 import org.glavo.arkivo.rar.RarArkivoFileSystemProvider;
@@ -38,8 +40,14 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.FileOwnerAttributeView;
 import java.nio.file.attribute.FileStoreAttributeView;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.GroupPrincipal;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -55,7 +63,8 @@ import java.util.Set;
 @NotNullByDefault
 public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     /// The supported file attribute view names.
-    private static final @Unmodifiable Set<String> SUPPORTED_ATTRIBUTE_VIEWS = Set.of("basic", "rar");
+    private static final @Unmodifiable Set<String> SUPPORTED_ATTRIBUTE_VIEWS =
+            Set.of("basic", "owner", "posix", "rar");
 
     /// The file system provider that owns this file system.
     private final RarArkivoFileSystemProvider provider;
@@ -139,7 +148,15 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             }
         }
 
-        try (InputStream input = Files.newInputStream(archivePath, openOptions.toArray(OpenOption[]::new))) {
+        List<Path> splitVolumePaths = RarSplitVolumePaths.discover(archivePath);
+        try (InputStream input = splitVolumePaths != null
+                ? new RarVolumeInputStream(index -> {
+                    if (index < 0 || index >= splitVolumePaths.size()) {
+                        return null;
+                    }
+                    return Files.newByteChannel(splitVolumePaths.get((int) index), openOptions);
+                })
+                : Files.newInputStream(archivePath, openOptions.toArray(OpenOption[]::new))) {
             return new RarArkivoFileSystemImpl(
                     provider,
                     archivePath,
@@ -315,10 +332,10 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         throw new UnsupportedOperationException("Unsupported path matcher syntax: " + syntax);
     }
 
-    /// User principal lookup is not supported by RAR file systems.
+    /// Returns the RAR user principal lookup service.
     @Override
     public UserPrincipalLookupService getUserPrincipalLookupService() {
-        throw new UnsupportedOperationException("RAR user principal lookup is not supported");
+        return RarPosixSupport.userPrincipalLookupService();
     }
 
     /// Watch services are not supported by RAR file systems.
@@ -425,6 +442,15 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         if (type == BasicFileAttributeView.class) {
             return type.cast(new BasicView(path));
         }
+        if (type == FileOwnerAttributeView.class) {
+            return type.cast(new OwnerView(path));
+        }
+        if (type == PosixFileAttributeView.class) {
+            return type.cast(new PosixView(path));
+        }
+        if (type == RarArkivoEntryAttributeView.class) {
+            return type.cast(new RarView(path));
+        }
         return null;
     }
 
@@ -434,7 +460,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(options, "options");
         RarEntryAttributes attributes = requireNode(path).attributes();
-        if (type == BasicFileAttributes.class || type == RarArkivoEntryAttributes.class) {
+        if (type == BasicFileAttributes.class || type == RarArkivoEntryAttributes.class || type == PosixFileAttributes.class) {
             return type.cast(attributes);
         }
         throw new UnsupportedOperationException("Unsupported RAR attribute type: " + type.getName());
@@ -448,7 +474,11 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         HashMap<String, Object> values = new HashMap<>();
         RequestedAttributes requestedAttributes = RequestedAttributes.parse(attributes);
         boolean all = requestedAttributes.contains("*");
-        if (requestedAttributes.rarView()) {
+        if (requestedAttributes.ownerView()) {
+            putOwnerAttributes(values, entryAttributes, requestedAttributes, all);
+        } else if (requestedAttributes.posixView()) {
+            putPosixAttributes(values, entryAttributes, requestedAttributes, all);
+        } else if (requestedAttributes.rarView()) {
             putRarAttributes(values, entryAttributes, requestedAttributes, all);
         } else {
             putBasicAttributes(values, entryAttributes, requestedAttributes, all);
@@ -459,7 +489,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     /// Adds selected basic attributes to the result map.
     private static void putBasicAttributes(
             Map<String, Object> values,
-            RarEntryAttributes entryAttributes,
+            BasicFileAttributes entryAttributes,
             RequestedAttributes requestedAttributes,
             boolean all
     ) {
@@ -559,6 +589,35 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         }
         if (all || requestedAttributes.contains("groupId")) {
             values.put("groupId", entryAttributes.groupId());
+        }
+    }
+
+    /// Adds selected owner attributes to the result map.
+    private static void putOwnerAttributes(
+            Map<String, Object> values,
+            PosixFileAttributes entryAttributes,
+            RequestedAttributes requestedAttributes,
+            boolean all
+    ) {
+        if (all || requestedAttributes.contains("owner")) {
+            values.put("owner", entryAttributes.owner());
+        }
+    }
+
+    /// Adds selected POSIX attributes to the result map.
+    private static void putPosixAttributes(
+            Map<String, Object> values,
+            PosixFileAttributes entryAttributes,
+            RequestedAttributes requestedAttributes,
+            boolean all
+    ) {
+        putBasicAttributes(values, entryAttributes, requestedAttributes, all);
+        putOwnerAttributes(values, entryAttributes, requestedAttributes, all);
+        if (all || requestedAttributes.contains("group")) {
+            values.put("group", entryAttributes.group());
+        }
+        if (all || requestedAttributes.contains("permissions")) {
+            values.put("permissions", entryAttributes.permissions());
         }
     }
 
@@ -781,7 +840,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                 RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE,
                 RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE,
                 RarArkivoEntryAttributes.HOST_OS_UNIX,
-                0L,
+                040755L,
                 0,
                 0L,
                 0L,
@@ -807,7 +866,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             int separator = attributes.indexOf(':');
             String view = separator >= 0 ? attributes.substring(0, separator) : "basic";
             String names = separator >= 0 ? attributes.substring(separator + 1) : attributes;
-            if (!"basic".equals(view) && !"rar".equals(view)) {
+            if (!"basic".equals(view) && !"owner".equals(view) && !"posix".equals(view) && !"rar".equals(view)) {
                 throw new UnsupportedOperationException("Unsupported RAR attribute view: " + view);
             }
             if (names.isEmpty()) {
@@ -822,6 +881,16 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         /// Returns whether this request targets the RAR attribute view.
         private boolean rarView() {
             return "rar".equals(view);
+        }
+
+        /// Returns whether this request targets the owner attribute view.
+        private boolean ownerView() {
+            return "owner".equals(view);
+        }
+
+        /// Returns whether this request targets the POSIX attribute view.
+        private boolean posixView() {
+            return "posix".equals(view);
         }
 
         /// Returns whether the given attribute was requested.
@@ -917,7 +986,131 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
 
         /// RAR attributes are read-only.
         @Override
-        public void setTimes(FileTime lastModifiedTime, FileTime lastAccessTime, FileTime createTime) {
+        public void setTimes(
+                @Nullable FileTime lastModifiedTime,
+                @Nullable FileTime lastAccessTime,
+                @Nullable FileTime createTime
+        ) {
+            throw new ReadOnlyFileSystemException();
+        }
+    }
+
+    /// Implements a read-only RAR attribute view.
+    @NotNullByDefault
+    private final class RarView implements RarArkivoEntryAttributeView {
+        /// The path whose attributes are exposed.
+        private final Path path;
+
+        /// Creates a RAR attribute view.
+        private RarView(Path path) {
+            this.path = Objects.requireNonNull(path, "path");
+        }
+
+        /// Reads this path's RAR attributes.
+        @Override
+        public RarArkivoEntryAttributes readAttributes() throws IOException {
+            return RarArkivoFileSystemImpl.this.readAttributes(path, RarArkivoEntryAttributes.class);
+        }
+
+        /// RAR attributes are read-only.
+        @Override
+        public void setTimes(
+                @Nullable FileTime lastModifiedTime,
+                @Nullable FileTime lastAccessTime,
+                @Nullable FileTime createTime
+        ) {
+            throw new ReadOnlyFileSystemException();
+        }
+    }
+
+    /// Implements a read-only owner attribute view.
+    @NotNullByDefault
+    private final class OwnerView implements FileOwnerAttributeView {
+        /// The path whose owner is exposed.
+        private final Path path;
+
+        /// Creates an owner attribute view.
+        private OwnerView(Path path) {
+            this.path = Objects.requireNonNull(path, "path");
+        }
+
+        /// Returns this view's name.
+        @Override
+        public String name() {
+            return "owner";
+        }
+
+        /// Returns this path's owner.
+        @Override
+        public UserPrincipal getOwner() throws IOException {
+            return RarArkivoFileSystemImpl.this.readAttributes(path, PosixFileAttributes.class).owner();
+        }
+
+        /// RAR attributes are read-only.
+        @Override
+        public void setOwner(UserPrincipal owner) {
+            Objects.requireNonNull(owner, "owner");
+            throw new ReadOnlyFileSystemException();
+        }
+    }
+
+    /// Implements a read-only POSIX attribute view.
+    @NotNullByDefault
+    private final class PosixView implements PosixFileAttributeView {
+        /// The path whose POSIX attributes are exposed.
+        private final Path path;
+
+        /// Creates a POSIX attribute view.
+        private PosixView(Path path) {
+            this.path = Objects.requireNonNull(path, "path");
+        }
+
+        /// Returns this view's name.
+        @Override
+        public String name() {
+            return "posix";
+        }
+
+        /// Reads this path's POSIX attributes.
+        @Override
+        public PosixFileAttributes readAttributes() throws IOException {
+            return RarArkivoFileSystemImpl.this.readAttributes(path, PosixFileAttributes.class);
+        }
+
+        /// Returns this path's owner.
+        @Override
+        public UserPrincipal getOwner() throws IOException {
+            return readAttributes().owner();
+        }
+
+        /// RAR attributes are read-only.
+        @Override
+        public void setTimes(
+                @Nullable FileTime lastModifiedTime,
+                @Nullable FileTime lastAccessTime,
+                @Nullable FileTime createTime
+        ) {
+            throw new ReadOnlyFileSystemException();
+        }
+
+        /// RAR attributes are read-only.
+        @Override
+        public void setOwner(UserPrincipal owner) {
+            Objects.requireNonNull(owner, "owner");
+            throw new ReadOnlyFileSystemException();
+        }
+
+        /// RAR attributes are read-only.
+        @Override
+        public void setGroup(GroupPrincipal group) {
+            Objects.requireNonNull(group, "group");
+            throw new ReadOnlyFileSystemException();
+        }
+
+        /// RAR attributes are read-only.
+        @Override
+        public void setPermissions(Set<PosixFilePermission> permissions) {
+            Objects.requireNonNull(permissions, "permissions");
             throw new ReadOnlyFileSystemException();
         }
     }
@@ -966,7 +1159,10 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         /// Returns whether this store supports an attribute view.
         @Override
         public boolean supportsFileAttributeView(Class<? extends java.nio.file.attribute.FileAttributeView> type) {
-            return type == BasicFileAttributeView.class;
+            return type == BasicFileAttributeView.class
+                    || type == FileOwnerAttributeView.class
+                    || type == PosixFileAttributeView.class
+                    || type == RarArkivoEntryAttributeView.class;
         }
 
         /// Returns whether this store supports an attribute view.
@@ -983,8 +1179,8 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
 
         /// Returns a file store attribute.
         @Override
-        public Object getAttribute(String attribute) {
-            throw new UnsupportedOperationException("RAR file store attributes are not supported");
+        public Object getAttribute(String attribute) throws IOException {
+            return ArkivoFileStoreAttributes.get(this, attribute);
         }
     }
 

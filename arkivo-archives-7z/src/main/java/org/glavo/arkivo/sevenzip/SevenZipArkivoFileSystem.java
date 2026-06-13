@@ -33,7 +33,9 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
                     SevenZipArkivoFileSystem::passwordOptionValue
             );
 
-    /// The environment option for a `Long` value that sets the maximum size of each output volume.
+    /// The environment option for a `Long` value reserved for split output volumes.
+    ///
+    /// Current forward-only writes reject non-default split sizes.
     public static final ArkivoFileSystemOption<Long> SPLIT_SIZE =
             ArkivoFileSystemOption.of(
                     "arkivo.7z",
@@ -43,6 +45,8 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
             );
 
     /// The environment option for whether new archives should encrypt metadata headers.
+    ///
+    /// Current forward-only writes reject encrypted headers.
     public static final ArkivoFileSystemOption<Boolean> ENCRYPT_HEADERS =
             ArkivoFileSystemOption.of(
                     "arkivo.7z",

@@ -137,10 +137,10 @@ public final class TarArkivoFileSystemProvider extends FileSystemProvider {
         return readFileSystem(path).newInputStream(path, options);
     }
 
-    /// TAR file systems are read-only.
+    /// Opens an output stream for a path inside a writable TAR archive file system.
     @Override
-    public OutputStream newOutputStream(Path path, OpenOption... options) {
-        throw new ReadOnlyFileSystemException();
+    public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
+        return readFileSystem(path).newOutputStream(path, options);
     }
 
     /// Opens a directory stream for a path inside a TAR archive file system.
@@ -150,10 +150,22 @@ public final class TarArkivoFileSystemProvider extends FileSystemProvider {
         return readFileSystem(directory).newDirectoryStream(directory, filter);
     }
 
-    /// TAR file systems are read-only.
+    /// Creates a directory entry inside a writable TAR archive file system.
     @Override
-    public void createDirectory(Path directory, FileAttribute<?>... attributes) {
-        throw new ReadOnlyFileSystemException();
+    public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
+        readFileSystem(directory).createDirectory(directory, attributes);
+    }
+
+    /// Creates a symbolic link entry inside a writable TAR archive file system.
+    @Override
+    public void createSymbolicLink(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
+        readFileSystem(link).createSymbolicLink(link, target, attributes);
+    }
+
+    /// Creates a hard link entry inside a writable TAR archive file system.
+    @Override
+    public void createLink(Path link, Path existing) throws IOException {
+        readFileSystem(link).createLink(link, existing);
     }
 
     /// TAR file systems are read-only.
@@ -176,8 +188,14 @@ public final class TarArkivoFileSystemProvider extends FileSystemProvider {
 
         BasicFileAttributes attributes = readAttributes(source, BasicFileAttributes.class);
         if (attributes.isDirectory()) {
-            if (Files.exists(target) && !replaceExisting) {
-                throw new java.nio.file.FileAlreadyExistsException(target.toString());
+            if (Files.exists(target)) {
+                if (!replaceExisting) {
+                    throw new java.nio.file.FileAlreadyExistsException(target.toString());
+                }
+                if (Files.isDirectory(target)) {
+                    return;
+                }
+                Files.delete(target);
             }
             Files.createDirectories(target);
             return;

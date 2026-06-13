@@ -9,6 +9,7 @@ import org.apache.commons.compress.compressors.xz.XZCompressorInputStream;
 import org.apache.commons.compress.compressors.zstandard.ZstdCompressorInputStream;
 import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.ArkivoVolumeSource;
+import org.glavo.arkivo.internal.ArkivoFileStoreAttributes;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
@@ -32,12 +33,14 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.DirectoryIteratorException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileStore;
 import java.nio.file.Files;
+import java.nio.file.NotLinkException;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
@@ -398,6 +401,17 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
 
         long dataOffset = dataOffset(entry);
         return entryInputStream(path, entry, dataOffset);
+    }
+
+    /// Reads a symbolic link target from a ZIP archive path.
+    public Path readSymbolicLink(Path link) throws IOException {
+        ZipArkivoEntryAttributes attributes = readZipAttributes(link);
+        if (!attributes.isSymbolicLink()) {
+            throw new NotLinkException(link.toString());
+        }
+        try (InputStream input = newInputStream(link, StandardOpenOption.READ)) {
+            return getPath(new String(input.readAllBytes(), StandardCharsets.UTF_8));
+        }
     }
 
     /// Returns a readable entry record for a path.
@@ -828,6 +842,95 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                     freezeChildren(children)
             );
         }
+    }
+
+    /// Reads the current central directory bytes and entry names for ZIP append mode.
+    static CentralDirectorySnapshot readCentralDirectorySnapshot(
+            Path archivePath,
+            ZipArkivoFileSystemConfig config
+    ) throws IOException {
+        Objects.requireNonNull(archivePath, "archivePath");
+        Objects.requireNonNull(config, "config");
+        if (ZipSplitVolumePaths.discover(archivePath) != null) {
+            throw new UnsupportedOperationException("ZIP append mode does not support split archives");
+        }
+
+        ZipArkivoFileSystemConfig readConfig = new ZipArkivoFileSystemConfig(
+                Set.of(StandardOpenOption.READ),
+                config.passwordProvider(),
+                config.defaultEncryption(),
+                ZipArkivoFileSystemConfig.NO_SPLIT_SIZE,
+                config.entryNameEncoding(),
+                config.threadSafety(),
+                null,
+                null,
+                null
+        );
+        try (ZipArkivoFileSystemImpl fileSystem = new ZipArkivoFileSystemImpl(
+                ZipArkivoFileSystemProvider.instance(),
+                archivePath,
+                null,
+                readConfig
+        )) {
+            ZipIndex index = fileSystem.index();
+            try (ArchiveChannel channel = fileSystem.openArchiveChannel()) {
+                ZipEndRecord endRecord = readEndRecord(channel);
+                ByteBuffer centralDirectory =
+                        ByteBuffer.allocate(centralDirectoryIndexSize(endRecord.centralDirectorySize));
+                readFully(channel, endRecord.actualCentralDirectoryOffset, centralDirectory);
+                centralDirectory.flip();
+                return new CentralDirectorySnapshot(
+                        index.storageEntries.size(),
+                        index.entries.keySet(),
+                        centralDirectoryEntrySnapshots(centralDirectory, config.entryNameEncoding())
+                );
+            }
+        }
+    }
+
+    /// Reads raw central directory entries together with their normalized keys.
+    private static @Unmodifiable List<CentralDirectoryEntrySnapshot> centralDirectoryEntrySnapshots(
+            ByteBuffer centralDirectory,
+            ZipEntryNameEncoding entryNameEncoding
+    ) throws IOException {
+        ByteBuffer buffer = centralDirectory.duplicate().order(ByteOrder.LITTLE_ENDIAN);
+        ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(entryNameEncoding);
+        ArrayList<CentralDirectoryEntrySnapshot> entries = new ArrayList<>();
+        while (buffer.hasRemaining()) {
+            int offset = buffer.position();
+            if (buffer.remaining() < ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE
+                    || buffer.getInt(offset) != CENTRAL_DIRECTORY_HEADER_SIGNATURE) {
+                throw new IOException("Invalid ZIP central directory header");
+            }
+
+            int flags = Short.toUnsignedInt(buffer.getShort(offset + 8));
+            int nameLength = Short.toUnsignedInt(buffer.getShort(offset + 28));
+            int extraLength = Short.toUnsignedInt(buffer.getShort(offset + 30));
+            int commentLength = Short.toUnsignedInt(buffer.getShort(offset + 32));
+            int variableOffset = offset + ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE;
+            int nextOffset = variableOffset + nameLength + extraLength + commentLength;
+            if (nextOffset > buffer.limit()) {
+                throw new IOException("Invalid ZIP central directory variable data length");
+            }
+
+            byte[] rawPath = readBytes(buffer, variableOffset, nameLength);
+            byte[] extraData = readBytes(buffer, variableOffset + nameLength, extraLength);
+            ZipExtraFields.validate(extraData);
+            String decodedPath;
+            try {
+                decodedPath = decoder.decodePath(rawPath, flags, extraData);
+            } catch (java.nio.charset.CharacterCodingException exception) {
+                throw new IOException("Failed to decode ZIP entry name", exception);
+            }
+
+            String key = entryKey(decodedPath);
+            if (key.isEmpty()) {
+                throw new IOException("ZIP entry is missing a path");
+            }
+            entries.add(new CentralDirectoryEntrySnapshot(key, readBytes(buffer, offset, nextOffset - offset)));
+            buffer.position(nextOffset);
+        }
+        return List.copyOf(entries);
     }
 
     /// Returns an entry record for a path key or throws when the entry is absent.
@@ -1529,6 +1632,15 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Opens a channel for the physical storage that contains the beginning of this ZIP archive.
     private ArchiveChannel openArchiveChannel() throws IOException {
         if (archivePath != null) {
+            List<Path> splitVolumePaths = ZipSplitVolumePaths.discover(archivePath);
+            if (splitVolumePaths != null) {
+                return ConcatenatedArchiveChannel.open(index -> {
+                    if (index < 0 || index >= splitVolumePaths.size()) {
+                        return null;
+                    }
+                    return Files.newByteChannel(splitVolumePaths.get((int) index), config.openOptions());
+                });
+            }
             return new SingleArchiveChannel(Files.newByteChannel(archivePath, config.openOptions()));
         }
 
@@ -2054,6 +2166,44 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         }
     }
 
+    /// Stores central directory entry names and raw entry records from an existing ZIP archive.
+    ///
+    /// @param entryCount the number of central directory entries
+    /// @param entryNames the normalized entry names already present in the archive
+    /// @param entries the raw central directory entries keyed by normalized entry name
+    record CentralDirectorySnapshot(
+            long entryCount,
+            @Unmodifiable Set<String> entryNames,
+            @Unmodifiable List<CentralDirectoryEntrySnapshot> entries
+    ) {
+        /// Creates a central directory snapshot.
+        CentralDirectorySnapshot {
+            entryNames = Set.copyOf(Objects.requireNonNull(entryNames, "entryNames"));
+            entries = List.copyOf(Objects.requireNonNull(entries, "entries"));
+        }
+    }
+
+    /// Stores one raw central directory entry from an existing ZIP archive.
+    ///
+    /// @param entryName the normalized entry name
+    /// @param bytes the raw central directory entry bytes
+    record CentralDirectoryEntrySnapshot(
+            String entryName,
+            byte @Unmodifiable [] bytes
+    ) {
+        /// Creates a central directory entry snapshot.
+        CentralDirectoryEntrySnapshot {
+            Objects.requireNonNull(entryName, "entryName");
+            bytes = Objects.requireNonNull(bytes, "bytes").clone();
+        }
+
+        /// Returns a copy of the raw central directory entry bytes.
+        @Override
+        public byte @Unmodifiable [] bytes() {
+            return bytes.clone();
+        }
+    }
+
     /// Stores the parsed ZIP end record values needed by the index.
     private static final class ZipEndRecord {
         /// The central directory size in bytes.
@@ -2367,8 +2517,8 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
 
         /// Reads a file store attribute.
         @Override
-        public @Nullable Object getAttribute(String attribute) {
-            return null;
+        public Object getAttribute(String attribute) throws IOException {
+            return ArkivoFileStoreAttributes.get(this, attribute);
         }
     }
 

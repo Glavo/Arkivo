@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.tar;
 
+import org.glavo.arkivo.ArkivoFileSystem;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -18,18 +19,25 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.DirectoryStream;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.ReadOnlyFileSystemException;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileOwnerAttributeView;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.UserPrincipal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -190,6 +198,8 @@ public final class TarArkivoStreamingReaderTest {
         FileTime creationTime = FileTime.from(Instant.ofEpochSecond(1_700_000_002L, 750_000_000L));
         String userName = "writer-user-name-that-requires-pax-metadata";
         String groupName = "writer-group-name-that-requires-pax-metadata";
+        long userId = 3_000_000L;
+        long groupId = 4_000_000L;
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output)) {
@@ -200,13 +210,19 @@ public final class TarArkivoStreamingReaderTest {
 
             PosixFileAttributeView posixView =
                     Objects.requireNonNull(writer.attributeView(PosixFileAttributeView.class));
-            posixView.setOwner(() -> userName);
-            posixView.setGroup(() -> groupName);
             posixView.setPermissions(Set.of(
                     PosixFilePermission.OWNER_READ,
                     PosixFilePermission.OWNER_WRITE,
                     PosixFilePermission.GROUP_READ
             ));
+
+            TarArkivoEntryAttributeView tarView =
+                    Objects.requireNonNull(writer.attributeView(TarArkivoEntryAttributeView.class));
+            assertEquals("tar", tarView.name());
+            tarView.setUserId(userId);
+            tarView.setGroupId(groupId);
+            tarView.setUserName(userName);
+            tarView.setGroupName(groupName);
 
             try (OutputStream body = writer.openOutputStream()) {
                 body.write(content);
@@ -217,10 +233,23 @@ public final class TarArkivoStreamingReaderTest {
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
             assertEquals(true, reader.next());
             TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+            PosixFileAttributes posixAttributes = reader.readAttributes(PosixFileAttributes.class);
             assertEquals("meta.txt", attributes.path());
             assertEquals(0640, attributes.mode());
+            assertEquals(userId, attributes.userId());
+            assertEquals(groupId, attributes.groupId());
             assertEquals(userName, attributes.userName());
             assertEquals(groupName, attributes.groupName());
+            assertEquals(userName, posixAttributes.owner().getName());
+            assertEquals(groupName, posixAttributes.group().getName());
+            assertEquals(
+                    Set.of(
+                            PosixFilePermission.OWNER_READ,
+                            PosixFilePermission.OWNER_WRITE,
+                            PosixFilePermission.GROUP_READ
+                    ),
+                    posixAttributes.permissions()
+            );
             assertEquals(lastModifiedTime.toInstant(), attributes.lastModifiedTime().toInstant());
             assertEquals(lastAccessTime.toInstant(), attributes.lastAccessTime().toInstant());
             assertEquals(creationTime.toInstant(), attributes.creationTime().toInstant());
@@ -236,6 +265,13 @@ public final class TarArkivoStreamingReaderTest {
     public void opensEntriesAsReadOnlyFileSystem() throws IOException {
         byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
         Path archivePath = createTemporaryArchivePath("tar-fs-");
+        Path copiedDirectory = archivePath.getParent().resolve("copied-dir");
+        Path existingFile = archivePath.getParent().resolve("existing-file");
+        Set<PosixFilePermission> filePermissions = Set.of(
+                PosixFilePermission.OWNER_READ,
+                PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.GROUP_READ
+        );
         try {
             try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
                 writer.beginDirectory("dir");
@@ -250,11 +286,11 @@ public final class TarArkivoStreamingReaderTest {
                         Objects.requireNonNull(writer.attributeView(PosixFileAttributeView.class));
                 posixView.setOwner(() -> "fs-user");
                 posixView.setGroup(() -> "fs-group");
-                posixView.setPermissions(Set.of(
-                        PosixFilePermission.OWNER_READ,
-                        PosixFilePermission.OWNER_WRITE,
-                        PosixFilePermission.GROUP_READ
-                ));
+                posixView.setPermissions(filePermissions);
+                TarArkivoEntryAttributeView tarView =
+                        Objects.requireNonNull(writer.attributeView(TarArkivoEntryAttributeView.class));
+                tarView.setUserId(1234L);
+                tarView.setGroupId(5678L);
                 try (OutputStream body = writer.openOutputStream()) {
                     body.write(content);
                 }
@@ -270,6 +306,13 @@ public final class TarArkivoStreamingReaderTest {
                 Path directory = fileSystem.getPath("/dir");
                 BasicFileAttributes directoryAttributes = Files.readAttributes(directory, BasicFileAttributes.class);
                 assertEquals(true, directoryAttributes.isDirectory());
+                Files.copy(directory, copiedDirectory);
+                assertEquals(true, Files.isDirectory(copiedDirectory));
+                assertThrows(FileAlreadyExistsException.class, () -> Files.copy(directory, copiedDirectory));
+                Files.copy(directory, copiedDirectory, StandardCopyOption.REPLACE_EXISTING);
+                Files.writeString(existingFile, "existing", StandardCharsets.UTF_8);
+                Files.copy(directory, existingFile, StandardCopyOption.REPLACE_EXISTING);
+                assertEquals(true, Files.isDirectory(existingFile));
 
                 ArrayList<String> children = new ArrayList<>();
                 try (DirectoryStream<Path> stream = Files.newDirectoryStream(fileSystem.getPath("/"))) {
@@ -283,8 +326,63 @@ public final class TarArkivoStreamingReaderTest {
                 TarArkivoEntryAttributes fileAttributes = Files.readAttributes(file, TarArkivoEntryAttributes.class);
                 assertEquals(true, fileAttributes.isRegularFile());
                 assertEquals(0640, fileAttributes.mode());
+                assertEquals(1234L, fileAttributes.userId());
+                assertEquals(5678L, fileAttributes.groupId());
                 assertEquals(content.length, fileAttributes.size());
                 assertArrayEquals(content, Files.readAllBytes(file));
+
+                PosixFileAttributes posixAttributes = Files.readAttributes(file, PosixFileAttributes.class);
+                assertEquals("fs-user", posixAttributes.owner().getName());
+                assertEquals("fs-group", posixAttributes.group().getName());
+                assertEquals(filePermissions, posixAttributes.permissions());
+
+                FileOwnerAttributeView ownerView =
+                        Objects.requireNonNull(Files.getFileAttributeView(file, FileOwnerAttributeView.class));
+                assertEquals("owner", ownerView.name());
+                assertEquals("fs-user", ownerView.getOwner().getName());
+                assertThrows(ReadOnlyFileSystemException.class, () -> ownerView.setOwner(() -> "other-user"));
+
+                PosixFileAttributeView readPosixView =
+                        Objects.requireNonNull(Files.getFileAttributeView(file, PosixFileAttributeView.class));
+                assertEquals("posix", readPosixView.name());
+                assertEquals(filePermissions, readPosixView.readAttributes().permissions());
+                assertEquals("fs-user", readPosixView.getOwner().getName());
+                assertThrows(ReadOnlyFileSystemException.class, () -> readPosixView.setGroup(() -> "other-group"));
+                assertThrows(
+                        ReadOnlyFileSystemException.class,
+                        () -> readPosixView.setPermissions(Set.<PosixFilePermission>of())
+                );
+
+                TarArkivoEntryAttributeView tarView =
+                        Objects.requireNonNull(Files.getFileAttributeView(file, TarArkivoEntryAttributeView.class));
+                assertEquals("tar", tarView.name());
+                TarArkivoEntryAttributes viewAttributes = tarView.readAttributes();
+                assertEquals("dir/hello.txt", viewAttributes.path());
+                assertEquals(0640, viewAttributes.mode());
+                assertEquals(1234L, viewAttributes.userId());
+                assertEquals(5678L, viewAttributes.groupId());
+                assertThrows(ReadOnlyFileSystemException.class, () -> tarView.setMode(0600));
+                var fileStore = Files.getFileStore(file);
+                assertEquals(fileStore.name(), fileStore.getAttribute("name"));
+                assertEquals(fileStore.type(), fileStore.getAttribute("type"));
+                assertEquals(Boolean.valueOf(fileStore.isReadOnly()), fileStore.getAttribute("basic:readOnly"));
+                assertEquals(Long.valueOf(fileStore.getTotalSpace()), fileStore.getAttribute("totalSpace"));
+                assertEquals(Long.valueOf(fileStore.getUsableSpace()), fileStore.getAttribute("usableSpace"));
+                assertEquals(Long.valueOf(fileStore.getUnallocatedSpace()), fileStore.getAttribute("unallocatedSpace"));
+                assertThrows(UnsupportedOperationException.class, () -> fileStore.getAttribute("tar:type"));
+                assertThrows(UnsupportedOperationException.class, () -> fileStore.getAttribute("missing"));
+                assertEquals(
+                        true,
+                        fileStore.supportsFileAttributeView(TarArkivoEntryAttributeView.class)
+                );
+                assertEquals(
+                        true,
+                        fileStore.supportsFileAttributeView(FileOwnerAttributeView.class)
+                );
+                assertEquals(
+                        true,
+                        fileStore.supportsFileAttributeView(PosixFileAttributeView.class)
+                );
 
                 Map<String, Object> basicNamedAttributes = Files.readAttributes(file, "basic:size,isRegularFile");
                 assertEquals((long) content.length, basicNamedAttributes.get("size"));
@@ -298,12 +396,22 @@ public final class TarArkivoStreamingReaderTest {
                 assertEquals("dir/hello.txt", tarNamedAttributes.get("path"));
                 assertEquals((byte) '0', tarNamedAttributes.get("typeFlag"));
                 assertEquals(0640, tarNamedAttributes.get("mode"));
-                assertEquals(0L, tarNamedAttributes.get("userId"));
-                assertEquals(0L, tarNamedAttributes.get("groupId"));
+                assertEquals(1234L, tarNamedAttributes.get("userId"));
+                assertEquals(5678L, tarNamedAttributes.get("groupId"));
                 assertEquals("fs-user", tarNamedAttributes.get("userName"));
                 assertEquals("fs-group", tarNamedAttributes.get("groupName"));
                 assertEquals((long) content.length, tarNamedAttributes.get("size"));
                 assertNull(tarNamedAttributes.get("linkName"));
+
+                Map<String, Object> ownerNamedAttributes = Files.readAttributes(file, "owner:owner");
+                assertEquals("fs-user", ((UserPrincipal) ownerNamedAttributes.get("owner")).getName());
+
+                Map<String, Object> posixNamedAttributes =
+                        Files.readAttributes(file, "posix:owner,group,permissions,isRegularFile");
+                assertEquals("fs-user", ((UserPrincipal) posixNamedAttributes.get("owner")).getName());
+                assertEquals("fs-group", ((GroupPrincipal) posixNamedAttributes.get("group")).getName());
+                assertEquals(filePermissions, posixNamedAttributes.get("permissions"));
+                assertEquals(true, posixNamedAttributes.get("isRegularFile"));
 
                 try (SeekableByteChannel channel = Files.newByteChannel(file, StandardOpenOption.READ)) {
                     assertEquals(content.length, channel.size());
@@ -333,6 +441,100 @@ public final class TarArkivoStreamingReaderTest {
             }
 
             assertThrows(ClosedFileSystemException.class, () -> fileSystem.getPath("/dir"));
+        } finally {
+            Files.deleteIfExists(existingFile);
+            Files.deleteIfExists(copiedDirectory);
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that TAR archives can be created through a forward-only writable file system.
+    @Test
+    public void createsEntriesAsWritableFileSystem() throws IOException {
+        byte[] content = "hello from writable file system".getBytes(StandardCharsets.UTF_8);
+        byte[] channelContent = new byte[]{1, 2, 3};
+        Path archivePath = createTemporaryArchivePath("tar-writable-fs-");
+        Set<PosixFilePermission> directoryPermissions = PosixFilePermissions.fromString("rwxr-x---");
+        Set<PosixFilePermission> channelFilePermissions = PosixFilePermissions.fromString("rw-r-----");
+        Set<PosixFilePermission> linkPermissions = PosixFilePermissions.fromString("rwxr-xr--");
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE
+                )
+        );
+
+        try {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, environment)) {
+                assertEquals(false, fileSystem.isReadOnly());
+
+                Path directory = fileSystem.getPath("/dir");
+                Files.createDirectory(directory, PosixFilePermissions.asFileAttribute(directoryPermissions));
+
+                Path file = fileSystem.getPath("/dir/hello.txt");
+                Files.write(file, content);
+                assertThrows(FileAlreadyExistsException.class, () -> Files.write(file, content));
+
+                Path channelFile = fileSystem.getPath("/channel.bin");
+                try (SeekableByteChannel channel =
+                             Files.newByteChannel(
+                                     channelFile,
+                                     Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE),
+                                     PosixFilePermissions.asFileAttribute(channelFilePermissions)
+                             )) {
+                    assertEquals(0L, channel.position());
+                    assertEquals(channelContent.length, channel.write(ByteBuffer.wrap(channelContent)));
+                    assertEquals(channelContent.length, channel.size());
+                    assertThrows(UnsupportedOperationException.class, () -> channel.position(0L));
+                }
+
+                Files.createSymbolicLink(
+                        fileSystem.getPath("/link"),
+                        Path.of("dir/hello.txt"),
+                        PosixFilePermissions.asFileAttribute(linkPermissions)
+                );
+                Files.createLink(fileSystem.getPath("/hard-link"), file);
+                assertThrows(UnsupportedOperationException.class, () -> Files.readString(file, StandardCharsets.UTF_8));
+            }
+
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath)) {
+                Path directory = fileSystem.getPath("/dir");
+                TarArkivoEntryAttributes directoryAttributes =
+                        Files.readAttributes(directory, TarArkivoEntryAttributes.class);
+                PosixFileAttributes directoryPosixAttributes =
+                        Files.readAttributes(directory, PosixFileAttributes.class);
+                assertEquals(true, Files.isDirectory(directory));
+                assertEquals(0750, directoryAttributes.mode());
+                assertEquals(directoryPermissions, directoryPosixAttributes.permissions());
+
+                Path file = fileSystem.getPath("/dir/hello.txt");
+                assertArrayEquals(content, Files.readAllBytes(file));
+
+                Path channelFile = fileSystem.getPath("/channel.bin");
+                TarArkivoEntryAttributes channelFileAttributes =
+                        Files.readAttributes(channelFile, TarArkivoEntryAttributes.class);
+                PosixFileAttributes channelFilePosixAttributes =
+                        Files.readAttributes(channelFile, PosixFileAttributes.class);
+                assertArrayEquals(channelContent, Files.readAllBytes(channelFile));
+                assertEquals(0640, channelFileAttributes.mode());
+                assertEquals(channelFilePermissions, channelFilePosixAttributes.permissions());
+
+                Path link = fileSystem.getPath("/link");
+                TarArkivoEntryAttributes linkAttributes = Files.readAttributes(link, TarArkivoEntryAttributes.class);
+                PosixFileAttributes linkPosixAttributes = Files.readAttributes(link, PosixFileAttributes.class);
+                assertEquals(true, linkAttributes.isSymbolicLink());
+                assertEquals(0754, linkAttributes.mode());
+                assertEquals(linkPermissions, linkPosixAttributes.permissions());
+                assertEquals(fileSystem.getPath("dir/hello.txt"), Files.readSymbolicLink(link));
+
+                Path hardLink = fileSystem.getPath("/hard-link");
+                TarArkivoEntryAttributes hardLinkAttributes =
+                        Files.readAttributes(hardLink, TarArkivoEntryAttributes.class);
+                assertEquals(true, hardLinkAttributes.isHardLink());
+                assertArrayEquals(content, Files.readAllBytes(hardLink));
+            }
         } finally {
             deleteTemporaryArchive(archivePath);
         }

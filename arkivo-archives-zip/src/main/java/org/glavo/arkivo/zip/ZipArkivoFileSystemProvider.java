@@ -91,7 +91,7 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
                 }
             };
             ZipArkivoFileSystem fileSystem = config.archiveWritable()
-                    ? new StreamingZipArkivoFileSystemImpl(this, parsedUri.archivePath, config, closeAction)
+                    ? new StreamingZipArkivoFileSystemImpl(this, parsedUri.archivePath, config, closeAction, true)
                     : new ZipArkivoFileSystemImpl(this, parsedUri.archivePath, null, config, closeAction);
             holder[0] = fileSystem;
 
@@ -110,7 +110,7 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
         Objects.requireNonNull(path, "path");
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
         return config.archiveWritable()
-                ? new StreamingZipArkivoFileSystemImpl(this, path, config)
+                ? new StreamingZipArkivoFileSystemImpl(this, path, config, null, true)
                 : new ZipArkivoFileSystemImpl(this, path, null, config);
     }
 
@@ -167,7 +167,14 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     /// Opens a directory stream for a path inside a ZIP archive file system.
     @Override
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter) throws IOException {
-        return readFileSystem(directory).newDirectoryStream(directory, filter);
+        ZipArkivoFileSystem fileSystem = fileSystem(directory);
+        if (fileSystem instanceof ZipArkivoFileSystemImpl readFileSystem) {
+            return readFileSystem.newDirectoryStream(directory, filter);
+        }
+        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
+            return writeFileSystem.newDirectoryStream(directory, filter);
+        }
+        throw new ProviderMismatchException();
     }
 
     /// Creates a directory inside a writable streaming ZIP archive file system.
@@ -181,9 +188,25 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
         throw new ReadOnlyFileSystemException();
     }
 
+    /// Creates a symbolic link inside a writable streaming ZIP archive file system.
+    @Override
+    public void createSymbolicLink(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
+        ZipArkivoFileSystem fileSystem = fileSystem(link);
+        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
+            writeFileSystem.createSymbolicLink(link, target, attributes);
+            return;
+        }
+        throw new ReadOnlyFileSystemException();
+    }
+
     /// Deletes a path inside a ZIP archive file system.
     @Override
     public void delete(Path path) throws IOException {
+        ZipArkivoFileSystem fileSystem = fileSystem(path);
+        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
+            writeFileSystem.delete(path);
+            return;
+        }
         throw new ReadOnlyFileSystemException();
     }
 
@@ -191,23 +214,43 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     @Override
     public void copy(Path source, Path target, CopyOption... options) throws IOException {
         boolean replaceExisting = false;
+        boolean followLinks = true;
         for (CopyOption option : options) {
             if (option == StandardCopyOption.REPLACE_EXISTING) {
                 replaceExisting = true;
+            } else if (option == LinkOption.NOFOLLOW_LINKS) {
+                followLinks = false;
             } else {
                 throw new UnsupportedOperationException("Unsupported ZIP copy option: " + option);
             }
         }
 
         BasicFileAttributes attributes = readAttributes(source, BasicFileAttributes.class);
+        if (attributes.isSymbolicLink()) {
+            if (followLinks) {
+                copy(resolveLinkTarget(source), target, options);
+                return;
+            }
+            if (Files.exists(target)) {
+                if (!replaceExisting) {
+                    throw new FileAlreadyExistsException(target.toString());
+                }
+                Files.delete(target);
+            }
+            Files.createSymbolicLink(target, readSymbolicLink(source));
+            return;
+        }
         if (attributes.isDirectory()) {
             if (Files.exists(target)) {
                 if (!replaceExisting) {
                     throw new FileAlreadyExistsException(target.toString());
                 }
-            } else {
-                Files.createDirectories(target);
+                if (Files.isDirectory(target)) {
+                    return;
+                }
+                Files.delete(target);
             }
+            Files.createDirectories(target);
             return;
         }
 
@@ -221,6 +264,16 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
                 Files.copy(input, target);
             }
         }
+    }
+
+    /// Resolves a symbolic link target against the link parent when the target is relative.
+    private static Path resolveLinkTarget(Path link) throws IOException {
+        Path target = Files.readSymbolicLink(link);
+        if (target.isAbsolute()) {
+            return target;
+        }
+        Path parent = link.getParent();
+        return parent != null ? parent.resolve(target).normalize() : target.normalize();
     }
 
     /// Moves a path inside or across ZIP archive file systems.
@@ -276,19 +329,49 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
         if (fileSystem instanceof ZipArkivoFileSystemImpl readFileSystem) {
             return readFileSystem.getFileAttributeView(path, type);
         }
+        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
+            return writeFileSystem.getFileAttributeView(path, type);
+        }
         return null;
     }
 
     /// Reads file attributes for a ZIP archive path.
     @Override
     public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, LinkOption... options) throws IOException {
-        return readFileSystem(path).readAttributes(path, type);
+        ZipArkivoFileSystem fileSystem = fileSystem(path);
+        if (fileSystem instanceof ZipArkivoFileSystemImpl readFileSystem) {
+            return readFileSystem.readAttributes(path, type);
+        }
+        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
+            return writeFileSystem.readAttributes(path, type);
+        }
+        throw new ProviderMismatchException();
     }
 
     /// Reads named file attributes for a ZIP archive path.
     @Override
     public Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options) throws IOException {
-        return readFileSystem(path).readAttributes(path, attributes);
+        ZipArkivoFileSystem fileSystem = fileSystem(path);
+        if (fileSystem instanceof ZipArkivoFileSystemImpl readFileSystem) {
+            return readFileSystem.readAttributes(path, attributes);
+        }
+        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
+            return writeFileSystem.readAttributes(path, attributes);
+        }
+        throw new ProviderMismatchException();
+    }
+
+    /// Reads a symbolic link target from a ZIP archive path.
+    @Override
+    public Path readSymbolicLink(Path link) throws IOException {
+        ZipArkivoFileSystem fileSystem = fileSystem(link);
+        if (fileSystem instanceof ZipArkivoFileSystemImpl readFileSystem) {
+            return readFileSystem.readSymbolicLink(link);
+        }
+        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
+            return writeFileSystem.readSymbolicLink(link);
+        }
+        throw new ProviderMismatchException();
     }
 
     /// Sets a named file attribute for a ZIP archive path.

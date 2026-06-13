@@ -6,6 +6,7 @@ package org.glavo.arkivo.rar.internal;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -19,7 +20,12 @@ import java.util.Objects;
 @NotNullByDefault
 final class RarVolumeInputStream extends InputStream {
     /// The RAR5 archive signature prefix present at the start of each volume.
-    private static final byte[] RAR5_SIGNATURE = new byte[]{'R', 'a', 'r', '!', 0x1a, 0x07, 0x01, 0x00};
+    private static final byte @Unmodifiable [] RAR5_SIGNATURE =
+            new byte[]{'R', 'a', 'r', '!', 0x1a, 0x07, 0x01, 0x00};
+
+    /// The RAR4 archive signature prefix present at the start of each volume.
+    private static final byte @Unmodifiable [] RAR4_SIGNATURE =
+            new byte[]{'R', 'a', 'r', '!', 0x1a, 0x07, 0x00};
 
     /// The volume source opened by this stream.
     private final ArkivoVolumeSource volumes;
@@ -115,9 +121,24 @@ final class RarVolumeInputStream extends InputStream {
         return true;
     }
 
-    /// Skips and validates the RAR5 signature at the start of a continuation volume.
+    /// Skips and validates the RAR signature at the start of a continuation volume.
     private static void skipContinuationVolumeSignature(SeekableByteChannel channel) throws IOException {
-        ByteBuffer buffer = ByteBuffer.allocate(RAR5_SIGNATURE.length);
+        ByteBuffer prefix = ByteBuffer.allocate(RAR4_SIGNATURE.length);
+        readSignatureBytes(channel, prefix);
+        if (Arrays.equals(prefix.array(), RAR4_SIGNATURE)) {
+            return;
+        }
+
+        byte[] signature = Arrays.copyOf(prefix.array(), RAR5_SIGNATURE.length);
+        ByteBuffer suffix = ByteBuffer.wrap(signature, RAR4_SIGNATURE.length, 1);
+        readSignatureBytes(channel, suffix);
+        if (!Arrays.equals(signature, RAR5_SIGNATURE)) {
+            throw new IOException("Invalid RAR continuation volume signature");
+        }
+    }
+
+    /// Reads continuation signature bytes from a volume channel.
+    private static void readSignatureBytes(SeekableByteChannel channel, ByteBuffer buffer) throws IOException {
         while (buffer.hasRemaining()) {
             int read = channel.read(buffer);
             if (read < 0) {
@@ -126,9 +147,6 @@ final class RarVolumeInputStream extends InputStream {
             if (read == 0) {
                 throw new IOException("RAR continuation volume signature could not be read");
             }
-        }
-        if (!Arrays.equals(buffer.array(), RAR5_SIGNATURE)) {
-            throw new IOException("Invalid RAR continuation volume signature");
         }
     }
 

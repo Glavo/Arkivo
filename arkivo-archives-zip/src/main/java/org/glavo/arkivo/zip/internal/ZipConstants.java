@@ -32,6 +32,9 @@ final class ZipConstants {
     /// The ZIP version needed to extract LZMA entries.
     static final int LZMA_VERSION_NEEDED = 63;
 
+    /// The ZIP version needed to extract entries that use ZIP64 metadata.
+    static final int ZIP64_VERSION_NEEDED = 45;
+
     /// The ZIP general purpose flag indicating encryption.
     static final int ENCRYPTED_FLAG = 1;
 

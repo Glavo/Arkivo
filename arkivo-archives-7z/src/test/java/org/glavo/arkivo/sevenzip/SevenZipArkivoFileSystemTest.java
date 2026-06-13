@@ -39,14 +39,23 @@ import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
+import java.nio.file.NotLinkException;
 import java.nio.file.Path;
+import java.nio.file.ReadOnlyFileSystemException;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileOwnerAttributeView;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.GroupPrincipal;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.attribute.UserPrincipalNotFoundException;
@@ -58,12 +67,14 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests basic 7z Arkivo file system behavior.
@@ -87,7 +98,18 @@ public final class SevenZipArkivoFileSystemTest {
                 assertEquals(0L, fileSystem.nextHeaderSize());
                 assertEquals(0L, fileSystem.nextHeaderCrc32());
                 assertEquals(true, fileSystem.supportedFileAttributeViews().contains("basic"));
-                assertEquals("7z", Files.getFileStore(fileSystem.getPath("/")).type());
+                assertEquals(true, fileSystem.supportedFileAttributeViews().contains("owner"));
+                assertEquals(true, fileSystem.supportedFileAttributeViews().contains("posix"));
+                var fileStore = Files.getFileStore(fileSystem.getPath("/"));
+                assertEquals("7z", fileStore.type());
+                assertEquals(fileStore.name(), fileStore.getAttribute("name"));
+                assertEquals(fileStore.type(), fileStore.getAttribute("type"));
+                assertEquals(Boolean.valueOf(fileStore.isReadOnly()), fileStore.getAttribute("basic:readOnly"));
+                assertEquals(Long.valueOf(fileStore.getTotalSpace()), fileStore.getAttribute("totalSpace"));
+                assertEquals(Long.valueOf(fileStore.getUsableSpace()), fileStore.getAttribute("usableSpace"));
+                assertEquals(Long.valueOf(fileStore.getUnallocatedSpace()), fileStore.getAttribute("unallocatedSpace"));
+                assertThrows(UnsupportedOperationException.class, () -> fileStore.getAttribute("7z:type"));
+                assertThrows(UnsupportedOperationException.class, () -> fileStore.getAttribute("missing"));
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -151,6 +173,7 @@ public final class SevenZipArkivoFileSystemTest {
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
                 Path root = fileSystem.getPath("/");
                 BasicFileAttributes attributes = Files.readAttributes(root, BasicFileAttributes.class);
+                PosixFileAttributes posixAttributes = Files.readAttributes(root, PosixFileAttributes.class);
                 ArrayList<Path> children = new ArrayList<>();
 
                 try (DirectoryStream<Path> stream = Files.newDirectoryStream(root)) {
@@ -160,6 +183,17 @@ public final class SevenZipArkivoFileSystemTest {
                 }
 
                 assertEquals(true, attributes.isDirectory());
+                assertEquals("owner", posixAttributes.owner().getName());
+                assertEquals("group", posixAttributes.group().getName());
+                assertEquals(Set.of(
+                        PosixFilePermission.OWNER_READ,
+                        PosixFilePermission.OWNER_WRITE,
+                        PosixFilePermission.OWNER_EXECUTE,
+                        PosixFilePermission.GROUP_READ,
+                        PosixFilePermission.GROUP_EXECUTE,
+                        PosixFilePermission.OTHERS_READ,
+                        PosixFilePermission.OTHERS_EXECUTE
+                ), posixAttributes.permissions());
                 assertEquals(List.of(), children);
                 assertThrows(java.nio.file.NoSuchFileException.class, () -> Files.readAttributes(
                         fileSystem.getPath("/missing"),
@@ -175,6 +209,8 @@ public final class SevenZipArkivoFileSystemTest {
     @Test
     public void emptyEntries() throws IOException {
         Path archivePath = createTemporaryArchivePath("empty-entries-");
+        Path copiedDirectory = archivePath.getParent().resolve("copied-dir");
+        Path existingFile = archivePath.getParent().resolve("existing-file");
         Files.write(archivePath, archiveWithEmptyEntries());
 
         try {
@@ -201,8 +237,18 @@ public final class SevenZipArkivoFileSystemTest {
                 try (SeekableByteChannel channel = Files.newByteChannel(emptyFile)) {
                     assertEquals(0L, channel.size());
                 }
+
+                Files.copy(directory, copiedDirectory);
+                assertEquals(true, Files.isDirectory(copiedDirectory));
+                assertThrows(FileAlreadyExistsException.class, () -> Files.copy(directory, copiedDirectory));
+                Files.copy(directory, copiedDirectory, StandardCopyOption.REPLACE_EXISTING);
+                Files.writeString(existingFile, "existing", StandardCharsets.UTF_8);
+                Files.copy(directory, existingFile, StandardCopyOption.REPLACE_EXISTING);
+                assertEquals(true, Files.isDirectory(existingFile));
             }
         } finally {
+            Files.deleteIfExists(existingFile);
+            Files.deleteIfExists(copiedDirectory);
             deleteTemporaryArchive(archivePath);
         }
     }
@@ -300,6 +346,134 @@ public final class SevenZipArkivoFileSystemTest {
                 assertEquals(content.length - 1, channel.read(buffer));
                 assertArrayEquals(Arrays.copyOfRange(content, 1, content.length), buffer.array());
             }
+        }
+    }
+
+    /// Verifies that conventional 7z split volumes can be discovered from the first volume path.
+    @Test
+    public void splitVolumePathDiscovery() throws IOException {
+        byte[] content = "split volume path content body".getBytes(StandardCharsets.UTF_8);
+        byte[][] volumes = splitArchive(archiveWithCopyFile(content), 5);
+        Path firstVolume = createTemporaryArchivePath("split-7z-path-").resolveSibling("sample.7z.001");
+        Path secondVolume = firstVolume.resolveSibling("sample.7z.002");
+        Files.write(firstVolume, volumes[0]);
+        Files.write(secondVolume, volumes[1]);
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(firstVolume)) {
+                Path file = fileSystem.getPath("/hello.txt");
+
+                assertArrayEquals(content, Files.readAllBytes(file));
+                try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                    assertEquals(content.length, channel.size());
+                    channel.position(1);
+                    ByteBuffer buffer = ByteBuffer.allocate(content.length - 1);
+                    assertEquals(content.length - 1, channel.read(buffer));
+                    assertArrayEquals(Arrays.copyOfRange(content, 1, content.length), buffer.array());
+                }
+            }
+        } finally {
+            Files.deleteIfExists(secondVolume);
+            deleteTemporaryArchive(firstVolume);
+        }
+    }
+
+    /// Verifies that a 7z file named like a first split part ignores a stale second part when already complete.
+    @Test
+    public void staleSecondSplitVolumeDoesNotOverrideSingleArchivePath() throws IOException {
+        byte[] content = "single numbered 7z content".getBytes(StandardCharsets.UTF_8);
+        Path firstVolume = createTemporaryArchivePath("single-numbered-7z-").resolveSibling("sample.7z.001");
+        Path secondVolume = firstVolume.resolveSibling("sample.7z.002");
+        Files.write(firstVolume, archiveWithCopyFile(content));
+        Files.write(secondVolume, "stale".getBytes(StandardCharsets.UTF_8));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(firstVolume)) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/hello.txt")));
+            }
+        } finally {
+            Files.deleteIfExists(secondVolume);
+            deleteTemporaryArchive(firstVolume);
+        }
+    }
+
+    /// Verifies that 7z archives can be created through a forward-only writable file system.
+    @Test
+    public void createsEntriesAsWritableFileSystem() throws IOException {
+        byte[] content = "hello from writable 7z file system".getBytes(StandardCharsets.UTF_8);
+        byte[] channelContent = new byte[]{1, 2, 3};
+        Path archivePath = createTemporaryArchivePath("writable-7z-fs-");
+        Set<PosixFilePermission> directoryPermissions = PosixFilePermissions.fromString("rwxr-x---");
+        Set<PosixFilePermission> channelFilePermissions = PosixFilePermissions.fromString("rw-r-----");
+        Set<PosixFilePermission> linkPermissions = PosixFilePermissions.fromString("rwxr-xr--");
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE
+                )
+        );
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+                assertEquals(false, fileSystem.isReadOnly());
+                assertEquals(false, Files.getFileStore(fileSystem.getPath("/")).isReadOnly());
+
+                Path directory = fileSystem.getPath("/dir");
+                Files.createDirectory(directory, PosixFilePermissions.asFileAttribute(directoryPermissions));
+
+                Path file = fileSystem.getPath("/dir/hello.txt");
+                Files.write(file, content);
+                assertThrows(FileAlreadyExistsException.class, () -> Files.write(file, content));
+
+                Path channelFile = fileSystem.getPath("/channel.bin");
+                try (SeekableByteChannel channel =
+                             Files.newByteChannel(
+                                     channelFile,
+                                     Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE),
+                                     PosixFilePermissions.asFileAttribute(channelFilePermissions)
+                             )) {
+                    assertEquals(0L, channel.position());
+                    assertEquals(channelContent.length, channel.write(ByteBuffer.wrap(channelContent)));
+                    assertEquals(channelContent.length, channel.size());
+                    assertThrows(UnsupportedOperationException.class, () -> channel.position(0L));
+                }
+
+                Files.createSymbolicLink(
+                        fileSystem.getPath("/link"),
+                        Path.of("dir/hello.txt"),
+                        PosixFilePermissions.asFileAttribute(linkPermissions)
+                );
+                assertThrows(UnsupportedOperationException.class, () -> Files.readAllBytes(file));
+            }
+
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path directory = fileSystem.getPath("/dir");
+                Path channelFile = fileSystem.getPath("/channel.bin");
+                Path link = fileSystem.getPath("/link");
+                PosixFileAttributes directoryPosixAttributes = Files.readAttributes(directory, PosixFileAttributes.class);
+                PosixFileAttributes channelPosixAttributes = Files.readAttributes(channelFile, PosixFileAttributes.class);
+                BasicFileAttributes linkAttributes = Files.readAttributes(link, BasicFileAttributes.class);
+                PosixFileAttributes linkPosixAttributes = Files.readAttributes(link, PosixFileAttributes.class);
+
+                assertEquals(true, fileSystem.isReadOnly());
+                assertEquals(true, Files.isDirectory(directory));
+                assertEquals(directoryPermissions, directoryPosixAttributes.permissions());
+                assertEquals(0040750, Files.readAttributes(directory, SevenZipArkivoEntryAttributes.class).unixMode());
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/dir/hello.txt")));
+                assertArrayEquals(channelContent, Files.readAllBytes(channelFile));
+                assertEquals(channelFilePermissions, channelPosixAttributes.permissions());
+                assertEquals(0100640, Files.readAttributes(channelFile, SevenZipArkivoEntryAttributes.class).unixMode());
+                assertEquals(false, linkAttributes.isRegularFile());
+                assertEquals(true, linkAttributes.isSymbolicLink());
+                assertEquals(linkPermissions, linkPosixAttributes.permissions());
+                assertEquals(0120754, Files.readAttributes(link, SevenZipArkivoEntryAttributes.class).unixMode());
+                assertEquals(fileSystem.getPath("dir/hello.txt"), Files.readSymbolicLink(link));
+                assertEquals("dir/hello.txt", Files.readString(link, StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
         }
     }
 
@@ -842,8 +1016,24 @@ public final class SevenZipArkivoFileSystemTest {
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
                 Path file = fileSystem.getPath("/hello.txt");
                 BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+                PosixFileAttributes posixAttributes = Files.readAttributes(file, PosixFileAttributes.class);
                 SevenZipArkivoEntryAttributes sevenZipAttributes =
                         Files.readAttributes(file, SevenZipArkivoEntryAttributes.class);
+                FileOwnerAttributeView ownerView =
+                        Objects.requireNonNull(Files.getFileAttributeView(file, FileOwnerAttributeView.class));
+                PosixFileAttributeView posixView =
+                        Objects.requireNonNull(Files.getFileAttributeView(file, PosixFileAttributeView.class));
+                SevenZipArkivoEntryAttributeView sevenZipView =
+                        Objects.requireNonNull(Files.getFileAttributeView(
+                                file,
+                                SevenZipArkivoEntryAttributeView.class
+                        ));
+                Set<PosixFilePermission> expectedPermissions = Set.of(
+                        PosixFilePermission.OWNER_READ,
+                        PosixFilePermission.OWNER_WRITE,
+                        PosixFilePermission.GROUP_READ,
+                        PosixFilePermission.OTHERS_READ
+                );
                 Map<String, Object> namedAttributes = Files.readAttributes(
                         file,
                         "basic:creationTime,lastAccessTime,lastModifiedTime"
@@ -852,12 +1042,47 @@ public final class SevenZipArkivoFileSystemTest {
                         file,
                         "7z:path,windowsAttributes"
                 );
+                Map<String, Object> namedOwnerAttributes = Files.readAttributes(file, "owner:owner");
+                Map<String, Object> namedPosixAttributes = Files.readAttributes(
+                        file,
+                        "posix:owner,group,permissions,isRegularFile"
+                );
 
                 assertEquals(creationTime, attributes.creationTime());
                 assertEquals(lastAccessTime, attributes.lastAccessTime());
                 assertEquals(lastModifiedTime, attributes.lastModifiedTime());
+                assertEquals("owner", posixAttributes.owner().getName());
+                assertEquals("group", posixAttributes.group().getName());
+                assertEquals(expectedPermissions, posixAttributes.permissions());
+                assertEquals("owner", ownerView.name());
+                assertEquals("owner", ownerView.getOwner().getName());
+                assertThrows(ReadOnlyFileSystemException.class, () -> ownerView.setOwner(() -> "other"));
+                assertEquals("posix", posixView.name());
+                assertEquals(expectedPermissions, posixView.readAttributes().permissions());
+                assertEquals("owner", posixView.getOwner().getName());
+                assertThrows(ReadOnlyFileSystemException.class, () -> posixView.setGroup(() -> "other"));
+                assertThrows(
+                        ReadOnlyFileSystemException.class,
+                        () -> posixView.setPermissions(Set.of(PosixFilePermission.OWNER_READ))
+                );
                 assertEquals("hello.txt", sevenZipAttributes.path());
                 assertEquals(0x20, sevenZipAttributes.windowsAttributes());
+                assertEquals("7z", sevenZipView.name());
+                assertEquals("hello.txt", sevenZipView.readAttributes().path());
+                assertEquals(0x20, sevenZipView.readAttributes().windowsAttributes());
+                assertThrows(
+                        ReadOnlyFileSystemException.class,
+                        () -> sevenZipView.setTimes(lastModifiedTime, null, null)
+                );
+                assertEquals(
+                        true,
+                        Files.getFileStore(file).supportsFileAttributeView(SevenZipArkivoEntryAttributeView.class)
+                );
+                assertEquals(true, Files.getFileStore(file).supportsFileAttributeView(FileOwnerAttributeView.class));
+                assertEquals(true, Files.getFileStore(file).supportsFileAttributeView(PosixFileAttributeView.class));
+                assertEquals(true, Files.getFileStore(file).supportsFileAttributeView("owner"));
+                assertEquals(true, Files.getFileStore(file).supportsFileAttributeView("posix"));
+                assertEquals(true, Files.getFileStore(file).supportsFileAttributeView("7z"));
                 assertEquals(creationTime, namedAttributes.get("creationTime"));
                 assertEquals(lastAccessTime, namedAttributes.get("lastAccessTime"));
                 assertEquals(lastModifiedTime, namedAttributes.get("lastModifiedTime"));
@@ -866,6 +1091,11 @@ public final class SevenZipArkivoFileSystemTest {
                 assertEquals(0x20, namedSevenZipAttributes.get("windowsAttributes"));
                 assertEquals(false, namedSevenZipAttributes.containsKey("size"));
                 assertEquals(false, namedSevenZipAttributes.containsKey("lastModifiedTime"));
+                assertEquals("owner", ((UserPrincipal) namedOwnerAttributes.get("owner")).getName());
+                assertEquals("owner", ((UserPrincipal) namedPosixAttributes.get("owner")).getName());
+                assertEquals("group", ((GroupPrincipal) namedPosixAttributes.get("group")).getName());
+                assertEquals(expectedPermissions, namedPosixAttributes.get("permissions"));
+                assertEquals(true, namedPosixAttributes.get("isRegularFile"));
 
                 Map<String, Object> rootAttributes = Files.readAttributes(
                         fileSystem.getPath("/"),
@@ -874,7 +1104,61 @@ public final class SevenZipArkivoFileSystemTest {
                 assertEquals(0L, rootAttributes.get("size"));
                 assertEquals(true, rootAttributes.get("isDirectory"));
                 assertEquals(false, rootAttributes.containsKey("isRegularFile"));
+                assertNull(Files.getFileAttributeView(
+                        fileSystem.getPath("/"),
+                        SevenZipArkivoEntryAttributeView.class
+                ));
                 assertThrows(UnsupportedOperationException.class, () -> Files.readAttributes(file, "zip:size"));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that 7z Unix mode metadata exposes symbolic links and POSIX permissions.
+    @Test
+    public void unixModeSymbolicLinkAttributes() throws IOException {
+        byte[] target = "dir/hello.txt".getBytes(StandardCharsets.UTF_8);
+        int unixMode = 0120777;
+        int windowsAttributes = unixMode << 16;
+        Path archivePath = createTemporaryArchivePath("unix-mode-link-");
+        Files.write(archivePath, archiveWithCopyFile(target, null, null, null, windowsAttributes));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path link = fileSystem.getPath("/hello.txt");
+                BasicFileAttributes basicAttributes = Files.readAttributes(link, BasicFileAttributes.class);
+                PosixFileAttributes posixAttributes = Files.readAttributes(link, PosixFileAttributes.class);
+                SevenZipArkivoEntryAttributes sevenZipAttributes =
+                        Files.readAttributes(link, SevenZipArkivoEntryAttributes.class);
+                Map<String, Object> namedSevenZipAttributes =
+                        Files.readAttributes(link, "7z:path,windowsAttributes,unixMode,isSymbolicLink");
+
+                assertEquals(false, basicAttributes.isRegularFile());
+                assertEquals(false, basicAttributes.isDirectory());
+                assertEquals(true, basicAttributes.isSymbolicLink());
+                assertEquals(false, basicAttributes.isOther());
+                assertEquals(target.length, basicAttributes.size());
+                assertEquals(unixMode, sevenZipAttributes.unixMode());
+                assertEquals(windowsAttributes, sevenZipAttributes.windowsAttributes());
+                assertEquals(Set.of(
+                        PosixFilePermission.OWNER_READ,
+                        PosixFilePermission.OWNER_WRITE,
+                        PosixFilePermission.OWNER_EXECUTE,
+                        PosixFilePermission.GROUP_READ,
+                        PosixFilePermission.GROUP_WRITE,
+                        PosixFilePermission.GROUP_EXECUTE,
+                        PosixFilePermission.OTHERS_READ,
+                        PosixFilePermission.OTHERS_WRITE,
+                        PosixFilePermission.OTHERS_EXECUTE
+                ), posixAttributes.permissions());
+                assertEquals(fileSystem.getPath("dir/hello.txt"), Files.readSymbolicLink(link));
+                assertEquals("dir/hello.txt", Files.readString(link, StandardCharsets.UTF_8));
+                assertEquals("hello.txt", namedSevenZipAttributes.get("path"));
+                assertEquals(windowsAttributes, namedSevenZipAttributes.get("windowsAttributes"));
+                assertEquals(unixMode, namedSevenZipAttributes.get("unixMode"));
+                assertEquals(true, namedSevenZipAttributes.get("isSymbolicLink"));
+                assertThrows(NotLinkException.class, () -> Files.readSymbolicLink(fileSystem.getPath("/")));
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -2289,7 +2573,7 @@ public final class SevenZipArkivoFileSystemTest {
         if (lastModifiedTime != null) {
             writeTimeProperty(output, 0x14, lastModifiedTime);
         }
-        if (windowsAttributes >= 0) {
+        if (windowsAttributes != -1) {
             writeWindowsAttributesProperty(output, windowsAttributes);
         }
         output.write(0x00);

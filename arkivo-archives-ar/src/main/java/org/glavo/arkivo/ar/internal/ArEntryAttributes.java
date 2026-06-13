@@ -5,13 +5,19 @@ package org.glavo.arkivo.ar.internal;
 
 import org.glavo.arkivo.ar.ArArkivoEntryAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.GroupPrincipal;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
 import java.util.Objects;
+import java.util.Set;
 
 /// Stores parsed metadata for one AR archive member.
 @NotNullByDefault
-final class ArEntryAttributes implements ArArkivoEntryAttributes {
+final class ArEntryAttributes implements ArArkivoEntryAttributes, PosixFileAttributes {
     /// The decoded member path.
     private final String path;
 
@@ -106,25 +112,25 @@ final class ArEntryAttributes implements ArArkivoEntryAttributes {
     /// Returns whether this member is a regular file.
     @Override
     public boolean isRegularFile() {
-        return true;
+        return ArPosixSupport.isRegularFile(mode);
     }
 
     /// Returns whether this member is a directory.
     @Override
     public boolean isDirectory() {
-        return false;
+        return ArPosixSupport.isDirectory(mode);
     }
 
     /// Returns whether this member is a symbolic link.
     @Override
     public boolean isSymbolicLink() {
-        return false;
+        return ArPosixSupport.isSymbolicLink(mode);
     }
 
     /// Returns whether this member has another file type.
     @Override
     public boolean isOther() {
-        return false;
+        return ArPosixSupport.isOther(mode);
     }
 
     /// Returns the member data size.
@@ -137,5 +143,23 @@ final class ArEntryAttributes implements ArArkivoEntryAttributes {
     @Override
     public Object fileKey() {
         return path;
+    }
+
+    /// Returns the owner principal represented by the stored AR user identifier.
+    @Override
+    public UserPrincipal owner() {
+        return ArPosixSupport.owner(userId);
+    }
+
+    /// Returns the group principal represented by the stored AR group identifier.
+    @Override
+    public GroupPrincipal group() {
+        return ArPosixSupport.group(groupId);
+    }
+
+    /// Returns the POSIX permissions encoded by the stored AR mode bits.
+    @Override
+    public @Unmodifiable Set<PosixFilePermission> permissions() {
+        return ArPosixSupport.permissions(mode);
     }
 }

@@ -3,10 +3,15 @@
 
 package org.glavo.arkivo.zip.internal;
 
+import org.glavo.arkivo.internal.ArkivoFileStoreAttributes;
+import org.glavo.arkivo.zip.ZipArkivoEntryAttributeView;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.IOException;
 import java.nio.file.FileStore;
+import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.FileAttributeView;
 import java.nio.file.attribute.FileStoreAttributeView;
 import java.util.Objects;
 
@@ -65,16 +70,16 @@ final class StreamingZipFileStore extends FileStore {
 
     /// Returns whether this file store supports the given attribute view.
     @Override
-    public boolean supportsFileAttributeView(Class<? extends java.nio.file.attribute.FileAttributeView> type) {
+    public boolean supportsFileAttributeView(Class<? extends FileAttributeView> type) {
         Objects.requireNonNull(type, "type");
-        return false;
+        return type == BasicFileAttributeView.class || type == ZipArkivoEntryAttributeView.class;
     }
 
     /// Returns whether this file store supports the given attribute view.
     @Override
     public boolean supportsFileAttributeView(String name) {
         Objects.requireNonNull(name, "name");
-        return false;
+        return "basic".equals(name) || "zip".equals(name);
     }
 
     /// Returns no file store attribute view.
@@ -86,8 +91,7 @@ final class StreamingZipFileStore extends FileStore {
 
     /// Returns no file store attribute values.
     @Override
-    public Object getAttribute(String attribute) {
-        Objects.requireNonNull(attribute, "attribute");
-        throw new UnsupportedOperationException("Streaming ZIP file store attributes are not supported");
+    public Object getAttribute(String attribute) throws IOException {
+        return ArkivoFileStoreAttributes.get(this, attribute);
     }
 }

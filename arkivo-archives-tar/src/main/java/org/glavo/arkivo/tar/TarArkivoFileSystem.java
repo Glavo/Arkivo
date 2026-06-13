@@ -13,7 +13,7 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.Objects;
 
-/// Opens TAR archives as read-only NIO file systems.
+/// Opens TAR archives as NIO file systems.
 @NotNullByDefault
 public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permits TarArkivoFileSystemImpl {
     /// Creates a TAR archive file system base instance.

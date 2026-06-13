@@ -17,6 +17,7 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.PosixFileAttributes;
 import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -312,7 +313,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (attributes == null) {
             throw new IllegalStateException("RAR streaming reader is not positioned at an entry");
         }
-        if (type == BasicFileAttributes.class || type == RarArkivoEntryAttributes.class) {
+        if (type == BasicFileAttributes.class || type == RarArkivoEntryAttributes.class || type == PosixFileAttributes.class) {
             return type.cast(attributes);
         }
         throw new UnsupportedOperationException("Unsupported RAR streaming attributes type: " + type.getName());

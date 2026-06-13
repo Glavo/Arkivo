@@ -6,13 +6,19 @@ package org.glavo.arkivo.tar.internal;
 import org.glavo.arkivo.tar.TarArkivoEntryAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.GroupPrincipal;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
 import java.util.Objects;
+import java.util.Set;
 
 /// Stores parsed metadata for one TAR entry.
 @NotNullByDefault
-final class TarEntryAttributes implements TarArkivoEntryAttributes {
+final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAttributes {
     /// The TAR type flag for regular files.
     static final byte REGULAR_TYPE = '0';
 
@@ -214,6 +220,24 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes {
     @Override
     public Object fileKey() {
         return path;
+    }
+
+    /// Returns the owner principal represented by the stored TAR user name.
+    @Override
+    public UserPrincipal owner() {
+        return TarPosixSupport.owner(userName);
+    }
+
+    /// Returns the group principal represented by the stored TAR group name.
+    @Override
+    public GroupPrincipal group() {
+        return TarPosixSupport.group(groupName);
+    }
+
+    /// Returns the POSIX permissions encoded by the stored TAR mode bits.
+    @Override
+    public @Unmodifiable Set<PosixFilePermission> permissions() {
+        return TarPosixSupport.permissions(mode);
     }
 
     /// Returns the raw TAR body size.

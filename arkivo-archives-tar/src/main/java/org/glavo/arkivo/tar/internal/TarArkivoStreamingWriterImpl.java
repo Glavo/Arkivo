@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.tar.internal;
 
+import org.glavo.arkivo.tar.TarArkivoEntryAttributeView;
+import org.glavo.arkivo.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.tar.TarArkivoStreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -15,7 +17,6 @@ import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributeView;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttributeView;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.GroupPrincipal;
@@ -143,6 +144,9 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         Objects.requireNonNull(type, "type");
         PendingEntry entry = requirePendingEntry();
         if (type == BasicFileAttributeView.class) {
+            return type.cast(entry.attributes);
+        }
+        if (type == TarArkivoEntryAttributeView.class) {
             return type.cast(entry.attributes);
         }
         if (type == PosixFileAttributeView.class) {
@@ -282,6 +286,8 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
 
         PendingTarEntryAttributeView attributes = entry.attributes;
         int mode = attributes.mode(defaultMode);
+        long userId = attributes.userId();
+        long groupId = attributes.groupId();
         long modificationTime = headerEpochSecond(attributes.lastModifiedTime());
         @Nullable String userName = attributes.userName();
         @Nullable String groupName = attributes.groupName();
@@ -309,6 +315,17 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             paxRecords.put("ctime", paxTimestamp(attributes.creationTime()));
         }
 
+        long headerUserId = userId;
+        if (attributes.userIdConfigured() && userId > maxOctalValue(8)) {
+            paxRecords.put("uid", Long.toString(userId));
+            headerUserId = 0L;
+        }
+        long headerGroupId = groupId;
+        if (attributes.groupIdConfigured() && groupId > maxOctalValue(8)) {
+            paxRecords.put("gid", Long.toString(groupId));
+            headerGroupId = 0L;
+        }
+
         String headerUserName = userName != null ? userName : "";
         if (userName != null && utf8Length(userName) > 32) {
             paxRecords.put("uname", userName);
@@ -328,8 +345,8 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
                 pathFields.name,
                 pathFields.prefix,
                 mode,
-                0L,
-                0L,
+                headerUserId,
+                headerGroupId,
                 size,
                 modificationTime,
                 typeFlag,
@@ -714,7 +731,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
 
     /// Stores writable TAR entry metadata before a streaming entry is committed.
     @NotNullByDefault
-    private final class PendingTarEntryAttributeView implements BasicFileAttributeView {
+    private final class PendingTarEntryAttributeView implements TarArkivoEntryAttributeView {
         /// The entry configured by this view.
         private final PendingEntry entry;
 
@@ -739,6 +756,18 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         /// The requested POSIX mode bits, or `UNKNOWN_MODE` when defaults should be used.
         private int mode = UNKNOWN_MODE;
 
+        /// The requested numeric user identifier.
+        private long userId;
+
+        /// The requested numeric group identifier.
+        private long groupId;
+
+        /// Whether the numeric user identifier was explicitly configured.
+        private boolean userIdConfigured;
+
+        /// Whether the numeric group identifier was explicitly configured.
+        private boolean groupIdConfigured;
+
         /// The requested user name, or `null` when absent.
         private @Nullable String userName;
 
@@ -753,12 +782,12 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         /// Returns the attribute view name.
         @Override
         public String name() {
-            return "basic";
+            return "tar";
         }
 
         /// Reads the pending entry attributes.
         @Override
-        public BasicFileAttributes readAttributes() {
+        public TarArkivoEntryAttributes readAttributes() {
             return new PendingTarEntryAttributes(entry, this);
         }
 
@@ -789,10 +818,50 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             return mode != UNKNOWN_MODE ? mode : defaultMode;
         }
 
-        /// Sets the effective POSIX mode.
-        private void setMode(int mode) {
+        /// Sets the numeric user identifier stored by the TAR header.
+        @Override
+        public void setUserId(long userId) {
+            if (userId < 0L) {
+                throw new IllegalArgumentException("userId must not be negative");
+            }
+            entry.ensurePending();
+            this.userId = userId;
+            userIdConfigured = true;
+        }
+
+        /// Sets the numeric group identifier stored by the TAR header.
+        @Override
+        public void setGroupId(long groupId) {
+            if (groupId < 0L) {
+                throw new IllegalArgumentException("groupId must not be negative");
+            }
+            entry.ensurePending();
+            this.groupId = groupId;
+            groupIdConfigured = true;
+        }
+
+        /// Sets the POSIX mode bits stored by the TAR header.
+        @Override
+        public void setMode(int mode) {
+            if (mode < 0) {
+                throw new IllegalArgumentException("mode must not be negative");
+            }
             entry.ensurePending();
             this.mode = mode;
+        }
+
+        /// Sets the user name stored by the TAR header.
+        @Override
+        public void setUserName(@Nullable String userName) {
+            entry.ensurePending();
+            this.userName = userName;
+        }
+
+        /// Sets the group name stored by the TAR header.
+        @Override
+        public void setGroupName(@Nullable String groupName) {
+            entry.ensurePending();
+            this.groupName = groupName;
         }
 
         /// Returns the last modification time.
@@ -833,6 +902,26 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         /// Returns the requested group name.
         private @Nullable String groupName() {
             return groupName;
+        }
+
+        /// Returns the requested numeric user identifier.
+        private long userId() {
+            return userId;
+        }
+
+        /// Returns the requested numeric group identifier.
+        private long groupId() {
+            return groupId;
+        }
+
+        /// Returns whether the numeric user identifier was explicitly configured.
+        private boolean userIdConfigured() {
+            return userIdConfigured;
+        }
+
+        /// Returns whether the numeric group identifier was explicitly configured.
+        private boolean groupIdConfigured() {
+            return groupIdConfigured;
         }
 
         /// Returns the pending owner principal.
@@ -921,7 +1010,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
 
     /// Exposes a snapshot of pending TAR entry metadata.
     @NotNullByDefault
-    private static final class PendingTarEntryAttributes implements PosixFileAttributes {
+    private static final class PendingTarEntryAttributes implements PosixFileAttributes, TarArkivoEntryAttributes {
         /// The pending entry.
         private final PendingEntry entry;
 
@@ -932,6 +1021,65 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         private PendingTarEntryAttributes(PendingEntry entry, PendingTarEntryAttributeView attributes) {
             this.entry = Objects.requireNonNull(entry, "entry");
             this.attributes = Objects.requireNonNull(attributes, "attributes");
+        }
+
+        /// Returns the decoded archive entry path.
+        @Override
+        public String path() {
+            return entry.path;
+        }
+
+        /// Returns the raw TAR type flag byte.
+        @Override
+        public byte typeFlag() {
+            return switch (entry.type) {
+                case FILE -> TarEntryAttributes.REGULAR_TYPE;
+                case DIRECTORY -> TarEntryAttributes.DIRECTORY_TYPE;
+                case SYMBOLIC_LINK -> TarEntryAttributes.SYMBOLIC_LINK_TYPE;
+                case HARD_LINK -> TarEntryAttributes.HARD_LINK_TYPE;
+            };
+        }
+
+        /// Returns the POSIX mode bits stored by the TAR header.
+        @Override
+        public int mode() {
+            int defaultMode = switch (entry.type) {
+                case FILE -> DEFAULT_FILE_MODE;
+                case DIRECTORY -> DEFAULT_DIRECTORY_MODE;
+                case SYMBOLIC_LINK -> DEFAULT_SYMBOLIC_LINK_MODE;
+                case HARD_LINK -> DEFAULT_HARD_LINK_MODE;
+            };
+            return attributes.mode(defaultMode);
+        }
+
+        /// Returns the numeric user identifier stored by the TAR header.
+        @Override
+        public long userId() {
+            return attributes.userId();
+        }
+
+        /// Returns the numeric group identifier stored by the TAR header.
+        @Override
+        public long groupId() {
+            return attributes.groupId();
+        }
+
+        /// Returns the user name stored by the TAR header.
+        @Override
+        public @Nullable String userName() {
+            return attributes.userName();
+        }
+
+        /// Returns the group name stored by the TAR header.
+        @Override
+        public @Nullable String groupName() {
+            return attributes.groupName();
+        }
+
+        /// Returns the link target stored by the TAR header.
+        @Override
+        public @Nullable String linkName() {
+            return entry.linkTarget;
         }
 
         /// Returns the last modification time.
@@ -1003,13 +1151,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         /// Returns the pending permissions.
         @Override
         public Set<PosixFilePermission> permissions() {
-            int defaultMode = switch (entry.type) {
-                case FILE -> DEFAULT_FILE_MODE;
-                case DIRECTORY -> DEFAULT_DIRECTORY_MODE;
-                case SYMBOLIC_LINK -> DEFAULT_SYMBOLIC_LINK_MODE;
-                case HARD_LINK -> DEFAULT_HARD_LINK_MODE;
-            };
-            return modePermissions(attributes.mode(defaultMode));
+            return modePermissions(mode());
         }
     }
 

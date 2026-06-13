@@ -176,8 +176,14 @@ public final class RarArkivoFileSystemProvider extends FileSystemProvider {
 
         BasicFileAttributes attributes = readAttributes(source, BasicFileAttributes.class);
         if (attributes.isDirectory()) {
-            if (Files.exists(target) && !replaceExisting) {
-                throw new java.nio.file.FileAlreadyExistsException(target.toString());
+            if (Files.exists(target)) {
+                if (!replaceExisting) {
+                    throw new java.nio.file.FileAlreadyExistsException(target.toString());
+                }
+                if (Files.isDirectory(target)) {
+                    return;
+                }
+                Files.delete(target);
             }
             Files.createDirectories(target);
             return;

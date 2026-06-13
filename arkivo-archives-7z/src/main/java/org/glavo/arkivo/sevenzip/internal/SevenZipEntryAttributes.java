@@ -6,12 +6,21 @@ package org.glavo.arkivo.sevenzip.internal;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoEntryAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.GroupPrincipal;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
+import java.util.Set;
 
 /// Provides basic attributes for a parsed 7z entry.
 @NotNullByDefault
-final class SevenZipEntryAttributes implements SevenZipArkivoEntryAttributes {
+final class SevenZipEntryAttributes implements SevenZipArkivoEntryAttributes, PosixFileAttributes {
+    /// The Windows readonly attribute bit.
+    private static final int WINDOWS_ATTRIBUTE_READ_ONLY = 0x01;
+
     /// The epoch file time used until timestamp metadata parsing is implemented.
     private static final FileTime EPOCH = FileTime.fromMillis(0);
 
@@ -33,6 +42,12 @@ final class SevenZipEntryAttributes implements SevenZipArkivoEntryAttributes {
     @Override
     public int windowsAttributes() {
         return metadata.windowsAttributes();
+    }
+
+    /// Returns the stored Unix mode bits, or `UNKNOWN_UNIX_MODE` when not present.
+    @Override
+    public int unixMode() {
+        return SevenZipPosixSupport.unixMode(metadata.windowsAttributes());
     }
 
     /// Returns the last modified time.
@@ -59,7 +74,9 @@ final class SevenZipEntryAttributes implements SevenZipArkivoEntryAttributes {
     /// Returns whether this entry is a regular file.
     @Override
     public boolean isRegularFile() {
-        return !metadata.directory();
+        return !metadata.directory()
+                && !SevenZipPosixSupport.isSymbolicLink(metadata.windowsAttributes())
+                && !SevenZipPosixSupport.isOther(metadata.windowsAttributes());
     }
 
     /// Returns whether this entry is a directory.
@@ -71,13 +88,13 @@ final class SevenZipEntryAttributes implements SevenZipArkivoEntryAttributes {
     /// Returns whether this entry is a symbolic link.
     @Override
     public boolean isSymbolicLink() {
-        return false;
+        return !metadata.directory() && SevenZipPosixSupport.isSymbolicLink(metadata.windowsAttributes());
     }
 
     /// Returns whether this entry has another special type.
     @Override
     public boolean isOther() {
-        return false;
+        return !metadata.directory() && SevenZipPosixSupport.isOther(metadata.windowsAttributes());
     }
 
     /// Returns the entry size.
@@ -90,5 +107,34 @@ final class SevenZipEntryAttributes implements SevenZipArkivoEntryAttributes {
     @Override
     public @Nullable Object fileKey() {
         return null;
+    }
+
+    /// Returns the synthesized owner principal for this entry.
+    @Override
+    public UserPrincipal owner() {
+        return SevenZipPosixSupport.owner();
+    }
+
+    /// Returns the synthesized group principal for this entry.
+    @Override
+    public GroupPrincipal group() {
+        return SevenZipPosixSupport.group();
+    }
+
+    /// Returns synthesized POSIX permissions for this entry.
+    @Override
+    public @Unmodifiable Set<PosixFilePermission> permissions() {
+        return SevenZipPosixSupport.permissions(
+                metadata.directory(),
+                readOnlyWindowsAttribute(),
+                metadata.windowsAttributes()
+        );
+    }
+
+    /// Returns whether this entry is marked read-only by stored Windows attributes.
+    private boolean readOnlyWindowsAttribute() {
+        int windowsAttributes = metadata.windowsAttributes();
+        return windowsAttributes != UNKNOWN_WINDOWS_ATTRIBUTES
+                && (windowsAttributes & WINDOWS_ATTRIBUTE_READ_ONLY) != 0;
     }
 }

@@ -6,10 +6,12 @@ package org.glavo.arkivo.zip;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
 import org.apache.commons.compress.compressors.xz.XZCompressorOutputStream;
 import org.apache.commons.compress.compressors.zstandard.ZstdCompressorOutputStream;
+import org.glavo.arkivo.ArkivoCommitTarget;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.zip.internal.StreamingZipArkivoFileSystemImpl;
+import org.glavo.arkivo.zip.internal.StreamingZipArkivoReadFileSystemImpl;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemImpl;
 import org.tukaani.xz.LZMA2Options;
@@ -37,12 +39,19 @@ import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.ClosedFileSystemException;
+import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.DirectoryStream;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileStore;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.NotLinkException;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.FileTime;
@@ -50,6 +59,7 @@ import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.attribute.UserPrincipalNotFoundException;
@@ -173,6 +183,142 @@ public final class ZipArkivoFileSystemTest {
         } finally {
             deleteTemporaryArchive(archivePath);
         }
+    }
+
+    /// Verifies that a streaming ZIP writer can append entries to an existing archive.
+    @Test
+    public void streamingWriterAppend() throws IOException {
+        Path archivePath = createTemporaryArchivePath("stream-append-");
+        Map<String, Object> appendEnvironment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.APPEND, StandardOpenOption.WRITE)
+        );
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+                writer.beginFile("before.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("before".getBytes(StandardCharsets.UTF_8));
+                }
+            }
+
+            try (ZipArkivoStreamingWriter writer =
+                         ZipArkivoStreamingWriter.create(archivePath, appendEnvironment)) {
+                writer.beginFile("after.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("after".getBytes(StandardCharsets.UTF_8));
+                }
+                writer.beginFile("before.txt");
+                assertThrows(FileAlreadyExistsException.class, writer::openOutputStream);
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals("before", Files.readString(fileSystem.getPath("/before.txt"), StandardCharsets.UTF_8));
+                assertEquals("after", Files.readString(fileSystem.getPath("/after.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that the streaming ZIP writer emits ZIP64 end records when the entry count overflows ZIP32 fields.
+    @Test
+    public void streamingWriterZip64EndRecordForManyEntries() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+
+        try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(output)) {
+            for (int index = 0; index <= 0xffff; index++) {
+                writer.beginDirectory("dir-" + index);
+                writer.endEntry();
+            }
+        }
+
+        byte[] archive = output.toByteArray();
+        ByteBuffer buffer = ByteBuffer.wrap(archive).order(ByteOrder.LITTLE_ENDIAN);
+        int endOffset = archive.length - 22;
+        int locatorOffset = endOffset - 20;
+        int zip64EndOffset = Math.toIntExact(buffer.getLong(locatorOffset + 8));
+
+        assertEquals(0x07064b50, buffer.getInt(locatorOffset));
+        assertEquals(0x06064b50, buffer.getInt(zip64EndOffset));
+        assertEquals(44L, buffer.getLong(zip64EndOffset + 4));
+        assertEquals(0x1_0000L, buffer.getLong(zip64EndOffset + 24));
+        assertEquals(0x1_0000L, buffer.getLong(zip64EndOffset + 32));
+        assertEquals(0x06054b50, buffer.getInt(endOffset));
+        assertEquals(0xffff, Short.toUnsignedInt(buffer.getShort(endOffset + 8)));
+        assertEquals(0xffff, Short.toUnsignedInt(buffer.getShort(endOffset + 10)));
+    }
+
+    /// Verifies that central directory entries store oversized local header offsets in ZIP64 extra data.
+    @Test
+    public void streamingWriterZip64CentralDirectoryEntryForLargeOffset() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        StreamingZipArkivoFileSystemImpl fileSystem = new StreamingZipArkivoFileSystemImpl(
+                ZipArkivoFileSystemProvider.instance(),
+                output,
+                ZipArkivoFileSystemConfig.fromEnvironment(Map.of())
+        );
+        byte[] rawName = "large-offset.txt".getBytes(StandardCharsets.UTF_8);
+        Object metadata = zipEntryMetadata();
+        Object centralEntry = zipCentralEntry(
+                "large-offset.txt",
+                rawName,
+                0L,
+                0L,
+                0xffff_ffffL + 1L,
+                metadata
+        );
+
+        Method writeCentralDirectoryEntry = StreamingZipArkivoFileSystemImpl.class.getDeclaredMethod(
+                "writeCentralDirectoryEntry",
+                centralEntry.getClass()
+        );
+        writeCentralDirectoryEntry.setAccessible(true);
+        writeCentralDirectoryEntry.invoke(fileSystem, centralEntry);
+
+        byte[] centralDirectory = output.toByteArray();
+        ByteBuffer buffer = ByteBuffer.wrap(centralDirectory).order(ByteOrder.LITTLE_ENDIAN);
+        int extraOffset = 46 + rawName.length;
+
+        assertEquals(0x02014b50, buffer.getInt(0));
+        assertEquals(45, Short.toUnsignedInt(buffer.getShort(6)));
+        assertEquals(0, buffer.getInt(20));
+        assertEquals(0, buffer.getInt(24));
+        assertEquals(0xffff_ffffL, Integer.toUnsignedLong(buffer.getInt(42)));
+        assertEquals(rawName.length, Short.toUnsignedInt(buffer.getShort(28)));
+        assertEquals(12, Short.toUnsignedInt(buffer.getShort(30)));
+        assertEquals(0x0001, Short.toUnsignedInt(buffer.getShort(extraOffset)));
+        assertEquals(8, Short.toUnsignedInt(buffer.getShort(extraOffset + 2)));
+        assertEquals(0xffff_ffffL + 1L, buffer.getLong(extraOffset + 4));
+    }
+
+    /// Verifies that ZIP64 data descriptors use 64-bit size fields.
+    @Test
+    public void streamingWriterZip64DataDescriptor() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        StreamingZipArkivoFileSystemImpl fileSystem = new StreamingZipArkivoFileSystemImpl(
+                ZipArkivoFileSystemProvider.instance(),
+                output,
+                ZipArkivoFileSystemConfig.fromEnvironment(Map.of())
+        );
+        Method writeDataDescriptor = StreamingZipArkivoFileSystemImpl.class.getDeclaredMethod(
+                "writeDataDescriptor",
+                long.class,
+                long.class,
+                long.class,
+                boolean.class
+        );
+        writeDataDescriptor.setAccessible(true);
+
+        writeDataDescriptor.invoke(fileSystem, 0x1234_5678L, 0xffff_ffffL + 2L, 0xffff_ffffL + 1L, true);
+
+        byte[] descriptor = output.toByteArray();
+        ByteBuffer buffer = ByteBuffer.wrap(descriptor).order(ByteOrder.LITTLE_ENDIAN);
+        assertEquals(24, descriptor.length);
+        assertEquals(0x08074b50, buffer.getInt(0));
+        assertEquals(0x1234_5678L, Integer.toUnsignedLong(buffer.getInt(4)));
+        assertEquals(0xffff_ffffL + 2L, buffer.getLong(8));
+        assertEquals(0xffff_ffffL + 1L, buffer.getLong(16));
     }
 
     /// Verifies that a streaming ZIP writer can write BZIP2-compressed file entries.
@@ -1501,6 +1647,8 @@ public final class ZipArkivoFileSystemTest {
     @Test
     public void streamingWriterStoredEntryMetadata() throws IOException {
         Path archivePath = createTemporaryArchivePath("stream-write-stored-");
+        Path copiedDirectory = archivePath.getParent().resolve("copied-meta");
+        Path existingFile = archivePath.getParent().resolve("existing-file");
         byte[] content = "stored-content".getBytes(StandardCharsets.UTF_8);
         byte[] localExtraData = extraField(0x7070, new byte[]{1, 2, 3});
         byte[] centralExtraData = extraField(0x7071, new byte[]{4, 5});
@@ -1543,6 +1691,13 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals(ZipMethod.stored(), directoryAttributes.method());
                 assertArrayEquals(rawComment, directoryAttributes.rawComment());
                 assertEquals(lastModifiedTime, directoryAttributes.lastModifiedTime());
+                Files.copy(fileSystem.getPath("/meta"), copiedDirectory);
+                assertEquals(true, Files.isDirectory(copiedDirectory));
+                assertThrows(FileAlreadyExistsException.class, () -> Files.copy(fileSystem.getPath("/meta"), copiedDirectory));
+                Files.copy(fileSystem.getPath("/meta"), copiedDirectory, StandardCopyOption.REPLACE_EXISTING);
+                Files.writeString(existingFile, "existing", StandardCharsets.UTF_8);
+                Files.copy(fileSystem.getPath("/meta"), existingFile, StandardCopyOption.REPLACE_EXISTING);
+                assertEquals(true, Files.isDirectory(existingFile));
 
                 ZipArkivoEntryAttributes fileAttributes =
                         Files.readAttributes(fileSystem.getPath("/meta/stored.bin"), ZipArkivoEntryAttributes.class);
@@ -1558,12 +1713,16 @@ public final class ZipArkivoFileSystemTest {
                 assertArrayEquals(rawComment, fileAttributes.rawComment());
                 assertEquals(lastModifiedTime, fileAttributes.lastModifiedTime());
 
-                ZipArkivoEntryAttributes linkAttributes =
-                        Files.readAttributes(fileSystem.getPath("/meta/link"), ZipArkivoEntryAttributes.class);
+                Path link = fileSystem.getPath("/meta/link");
+                ZipArkivoEntryAttributes linkAttributes = Files.readAttributes(link, ZipArkivoEntryAttributes.class);
                 assertEquals(true, linkAttributes.isSymbolicLink());
-                assertEquals("stored.bin", Files.readString(fileSystem.getPath("/meta/link"), StandardCharsets.UTF_8));
+                assertEquals("stored.bin", Files.readString(link, StandardCharsets.UTF_8));
+                assertEquals(fileSystem.getPath("stored.bin"), Files.readSymbolicLink(link));
+                assertThrows(NotLinkException.class, () -> Files.readSymbolicLink(fileSystem.getPath("/meta/stored.bin")));
             }
         } finally {
+            Files.deleteIfExists(existingFile);
+            Files.deleteIfExists(copiedDirectory);
             deleteTemporaryArchive(archivePath);
         }
     }
@@ -2238,8 +2397,20 @@ public final class ZipArkivoFileSystemTest {
                                  )
                          )) {
                 assertEquals(false, fileSystem.isReadOnly());
-                Files.createDirectory(fileSystem.getPath("/dir"));
-                Files.writeString(fileSystem.getPath("/dir/hello.txt"), "hello", StandardCharsets.UTF_8);
+                Path missing = fileSystem.getPath("/missing.txt");
+                Path directory = fileSystem.getPath("/dir");
+                Path file = fileSystem.getPath("/dir/hello.txt");
+                Path link = fileSystem.getPath("/dir/link");
+                assertEquals(false, Files.exists(missing));
+                assertEquals(true, Files.notExists(missing));
+                assertEquals(false, Files.exists(directory));
+                Files.createDirectory(directory);
+                assertEquals(true, Files.exists(directory));
+                assertEquals(true, Files.isDirectory(directory));
+                Files.writeString(file, "hello", StandardCharsets.UTF_8);
+                assertEquals(true, Files.exists(file));
+                Files.createSymbolicLink(link, Path.of("hello.txt"));
+                assertEquals(true, Files.exists(link));
                 try (SeekableByteChannel channel = Files.newByteChannel(
                         fileSystem.getPath("/dir/channel.bin"),
                         Set.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE)
@@ -2248,12 +2419,708 @@ public final class ZipArkivoFileSystemTest {
                     assertEquals(7, channel.write(ByteBuffer.wrap("channel".getBytes(StandardCharsets.UTF_8))));
                     assertEquals(7, channel.position());
                 }
+                PosixFileAttributes directoryAttributes = Files.readAttributes(directory, PosixFileAttributes.class);
+                ZipArkivoEntryAttributes fileAttributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
+                ZipArkivoEntryAttributes linkAttributes = Files.readAttributes(link, ZipArkivoEntryAttributes.class);
+                ZipArkivoEntryAttributeView fileAttributeView =
+                        Files.getFileAttributeView(file, ZipArkivoEntryAttributeView.class);
+                Map<String, Object> namedAttributes = Files.readAttributes(file, "zip:size,compressedSize,method");
+                ArrayList<String> rootChildren = new ArrayList<>();
+                ArrayList<String> directoryChildren = new ArrayList<>();
+
+                assertEquals(true, directoryAttributes.isDirectory());
+                assertEquals(true, fileAttributes.isRegularFile());
+                assertEquals(5L, fileAttributes.size());
+                assertEquals(ZipMethod.deflated(), fileAttributes.method());
+                assertEquals(false, linkAttributes.isRegularFile());
+                assertEquals(true, linkAttributes.isSymbolicLink());
+                assertEquals(fileSystem.getPath("hello.txt"), Files.readSymbolicLink(link));
+                assertThrows(NotLinkException.class, () -> Files.readSymbolicLink(file));
+                assertNotNull(fileAttributeView);
+                assertEquals(5L, fileAttributeView.readAttributes().size());
+                assertEquals(Set.of("size", "compressedSize", "method"), namedAttributes.keySet());
+                assertEquals(5L, namedAttributes.get("size"));
+                assertEquals(ZipMethod.deflated(), namedAttributes.get("method"));
+
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(fileSystem.getPath("/"))) {
+                    for (Path child : stream) {
+                        rootChildren.add(child.toString());
+                    }
+                }
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(directory)) {
+                    for (Path child : stream) {
+                        directoryChildren.add(child.toString());
+                    }
+                }
+                assertEquals(List.of("/dir"), rootChildren);
+                assertEquals(List.of("/dir/channel.bin", "/dir/hello.txt", "/dir/link"), directoryChildren);
             }
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
                 assertEquals(true, Files.isDirectory(fileSystem.getPath("/dir")));
                 assertEquals("hello", Files.readString(fileSystem.getPath("/dir/hello.txt"), StandardCharsets.UTF_8));
                 assertEquals("channel", Files.readString(fileSystem.getPath("/dir/channel.bin"), StandardCharsets.UTF_8));
+                Path link = fileSystem.getPath("/dir/link");
+                ZipArkivoEntryAttributes linkAttributes = Files.readAttributes(link, ZipArkivoEntryAttributes.class);
+                assertEquals(false, linkAttributes.isRegularFile());
+                assertEquals(true, linkAttributes.isSymbolicLink());
+                assertEquals(0, linkAttributes.generalPurposeFlags() & (1 << 3));
+                assertEquals("hello.txt", Files.readString(link, StandardCharsets.UTF_8));
+                assertEquals(fileSystem.getPath("hello.txt"), Files.readSymbolicLink(link));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that ZIP entries can be copied into a writable ZIP file system target.
+    @Test
+    public void fileSystemCreateCopiesEntryIntoWritableArchive() throws IOException {
+        Path sourcePath = createTemporaryArchivePath("fs-copy-source-");
+        Path targetPath = sourcePath.getParent().resolve("copy-target.zip");
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(sourcePath)) {
+                writer.beginFile("hello.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("hello".getBytes(StandardCharsets.UTF_8));
+                }
+            }
+
+            try (ZipArkivoFileSystem sourceFileSystem = ZipArkivoFileSystem.open(sourcePath);
+                 ZipArkivoFileSystem targetFileSystem = ZipArkivoFileSystem.open(
+                         targetPath,
+                         Map.of(
+                                 ArkivoFileSystem.OPEN_OPTIONS.key(),
+                                 Set.of(
+                                         StandardOpenOption.CREATE,
+                                         StandardOpenOption.TRUNCATE_EXISTING,
+                                         StandardOpenOption.WRITE
+                                 )
+                         )
+                 )) {
+                Path target = targetFileSystem.getPath("/copied.txt");
+                assertEquals(false, Files.exists(target));
+                Files.copy(sourceFileSystem.getPath("/hello.txt"), target);
+                assertEquals(true, Files.exists(target));
+            }
+
+            try (ZipArkivoFileSystem targetFileSystem = ZipArkivoFileSystem.open(targetPath)) {
+                assertEquals(
+                        "hello",
+                        Files.readString(targetFileSystem.getPath("/copied.txt"), StandardCharsets.UTF_8)
+                );
+            }
+        } finally {
+            Files.deleteIfExists(targetPath);
+            deleteTemporaryArchive(sourcePath);
+        }
+    }
+
+    /// Verifies that ZIP copy follows symbolic links unless `NOFOLLOW_LINKS` is requested.
+    @Test
+    public void fileSystemCopySymbolicLinkIntoWritableArchive() throws IOException {
+        Path sourcePath = createTemporaryArchivePath("fs-copy-link-source-");
+        Path targetPath = sourcePath.getParent().resolve("copy-link-target.zip");
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(sourcePath)) {
+                writer.beginDirectory("dir");
+                writer.endEntry();
+                writer.beginFile("dir/target.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("target".getBytes(StandardCharsets.UTF_8));
+                }
+                writer.beginSymbolicLink("dir/link", "target.txt");
+                writer.endEntry();
+            }
+
+            try (ZipArkivoFileSystem sourceFileSystem = ZipArkivoFileSystem.open(sourcePath);
+                 ZipArkivoFileSystem targetFileSystem = ZipArkivoFileSystem.open(
+                         targetPath,
+                         Map.of(
+                                 ArkivoFileSystem.OPEN_OPTIONS.key(),
+                                 Set.of(
+                                         StandardOpenOption.CREATE,
+                                         StandardOpenOption.TRUNCATE_EXISTING,
+                                         StandardOpenOption.WRITE
+                                 )
+                         )
+                 )) {
+                Path sourceLink = sourceFileSystem.getPath("/dir/link");
+                Files.copy(sourceLink, targetFileSystem.getPath("/followed.txt"));
+                Files.copy(sourceLink, targetFileSystem.getPath("/link"), LinkOption.NOFOLLOW_LINKS);
+            }
+
+            try (ZipArkivoFileSystem targetFileSystem = ZipArkivoFileSystem.open(targetPath)) {
+                Path copiedLink = targetFileSystem.getPath("/link");
+                assertEquals(
+                        "target",
+                        Files.readString(targetFileSystem.getPath("/followed.txt"), StandardCharsets.UTF_8)
+                );
+                assertEquals(true, Files.readAttributes(copiedLink, ZipArkivoEntryAttributes.class).isSymbolicLink());
+                assertEquals("target.txt", Files.readString(copiedLink, StandardCharsets.UTF_8));
+                assertEquals(targetFileSystem.getPath("target.txt"), Files.readSymbolicLink(copiedLink));
+            }
+        } finally {
+            Files.deleteIfExists(targetPath);
+            deleteTemporaryArchive(sourcePath);
+        }
+    }
+
+    /// Verifies that writable ZIP file system symbolic links inherit the default encryption setting.
+    @Test
+    public void fileSystemCreateWritesEncryptedSymbolicLink() throws IOException {
+        Path archivePath = createTemporaryArchivePath("fs-create-encrypted-link-");
+        byte[] password = "secret".getBytes(StandardCharsets.UTF_8);
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE
+                ),
+                ZipArkivoFileSystem.PASSWORD.key(),
+                password,
+                ZipArkivoFileSystem.DEFAULT_ENCRYPTION.key(),
+                ZipEncryption.traditional()
+        );
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, environment)) {
+                Files.createSymbolicLink(fileSystem.getPath("/link"), Path.of("target.txt"));
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(ZipArkivoFileSystem.PASSWORD.key(), password)
+            )) {
+                Path link = fileSystem.getPath("/link");
+                ZipArkivoEntryAttributes linkAttributes = Files.readAttributes(link, ZipArkivoEntryAttributes.class);
+                assertEquals(true, linkAttributes.isSymbolicLink());
+                assertEquals(ZipEncryption.traditional(), linkAttributes.encryption());
+                assertEquals(0, linkAttributes.generalPurposeFlags() & (1 << 3));
+                assertEquals("target.txt", Files.readString(link, StandardCharsets.UTF_8));
+                assertEquals(fileSystem.getPath("target.txt"), Files.readSymbolicLink(link));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a writable ZIP file system stores initial POSIX permissions in external attributes.
+    @Test
+    public void fileSystemCreateWritesInitialPosixPermissions() throws IOException {
+        Path archivePath = createTemporaryArchivePath("fs-create-posix-");
+        Set<PosixFilePermission> directoryPermissions = Set.of(
+                PosixFilePermission.OWNER_READ,
+                PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE,
+                PosixFilePermission.GROUP_READ,
+                PosixFilePermission.GROUP_EXECUTE
+        );
+        Set<PosixFilePermission> filePermissions = Set.of(
+                PosixFilePermission.OWNER_READ,
+                PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE,
+                PosixFilePermission.GROUP_READ
+        );
+        Set<PosixFilePermission> linkPermissions = Set.of(
+                PosixFilePermission.OWNER_READ,
+                PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.OWNER_EXECUTE
+        );
+
+        try {
+            try (ZipArkivoFileSystem fileSystem =
+                         ZipArkivoFileSystem.open(
+                                 archivePath,
+                                 Map.of(
+                                         ArkivoFileSystem.OPEN_OPTIONS.key(),
+                                         Set.of(
+                                                 StandardOpenOption.CREATE,
+                                                 StandardOpenOption.TRUNCATE_EXISTING,
+                                                 StandardOpenOption.WRITE
+                                         )
+                                 )
+                         )) {
+                Files.createDirectory(
+                        fileSystem.getPath("/bin"),
+                        PosixFilePermissions.asFileAttribute(directoryPermissions)
+                );
+                try (SeekableByteChannel channel = Files.newByteChannel(
+                        fileSystem.getPath("/bin/tool.sh"),
+                        Set.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE),
+                        PosixFilePermissions.asFileAttribute(filePermissions)
+                )) {
+                    assertEquals(2, channel.write(ByteBuffer.wrap("ok".getBytes(StandardCharsets.UTF_8))));
+                }
+                Files.createSymbolicLink(
+                        fileSystem.getPath("/bin/latest"),
+                        Path.of("tool.sh"),
+                        PosixFilePermissions.asFileAttribute(linkPermissions)
+                );
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                Path directory = fileSystem.getPath("/bin");
+                Path file = fileSystem.getPath("/bin/tool.sh");
+                Path link = fileSystem.getPath("/bin/latest");
+                PosixFileAttributes directoryAttributes = Files.readAttributes(directory, PosixFileAttributes.class);
+                PosixFileAttributes fileAttributes = Files.readAttributes(file, PosixFileAttributes.class);
+                PosixFileAttributes linkAttributes = Files.readAttributes(link, PosixFileAttributes.class);
+
+                assertEquals(directoryPermissions, directoryAttributes.permissions());
+                assertEquals(filePermissions, fileAttributes.permissions());
+                assertEquals(true, linkAttributes.isSymbolicLink());
+                assertEquals(linkPermissions, linkAttributes.permissions());
+                assertEquals(fileSystem.getPath("tool.sh"), Files.readSymbolicLink(link));
+                assertEquals("ok", Files.readString(file, StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that streaming ZIP writes can publish assembled bytes through a fixed commit target.
+    @Test
+    public void fileSystemCreateWritesArchiveToCommitTarget() throws IOException {
+        Path sourcePath = createTemporaryArchivePath("fs-create-commit-source-");
+        Path targetPath = sourcePath.getParent().resolve("target.zip");
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
+                    sourcePath,
+                    Map.of(
+                            ArkivoFileSystem.OPEN_OPTIONS.key(),
+                            Set.of(
+                                    StandardOpenOption.CREATE,
+                                    StandardOpenOption.TRUNCATE_EXISTING,
+                                    StandardOpenOption.WRITE
+                            ),
+                            ArkivoFileSystem.COMMIT_TARGET.key(),
+                            ArkivoCommitTarget.writeTo(targetPath)
+                    )
+            )) {
+                Path committed = fileSystem.getPath("/committed.txt");
+                Files.writeString(committed, "committed", StandardCharsets.UTF_8);
+                var fileStore = Files.getFileStore(committed);
+                assertStreamingZipFileStoreAttributeViews(fileStore, false);
+                assertEquals(fileStore.name(), fileStore.getAttribute("name"));
+                assertEquals(fileStore.type(), fileStore.getAttribute("type"));
+                assertEquals(Boolean.valueOf(false), fileStore.getAttribute("readOnly"));
+                assertEquals(Long.valueOf(fileStore.getTotalSpace()), fileStore.getAttribute("basic:totalSpace"));
+                assertThrows(UnsupportedOperationException.class, () -> fileStore.getAttribute("zip:type"));
+            }
+
+            assertEquals(false, Files.exists(sourcePath));
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(targetPath)) {
+                assertEquals("committed", Files.readString(fileSystem.getPath("/committed.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            Files.deleteIfExists(targetPath);
+            deleteTemporaryArchive(sourcePath);
+        }
+    }
+
+    /// Verifies that append mode can publish an archive copy with new entries through a fixed commit target.
+    @Test
+    public void fileSystemAppendWritesArchiveToCommitTarget() throws IOException {
+        Path sourcePath = createTemporaryArchivePath("fs-append-commit-source-");
+        Path targetPath = sourcePath.getParent().resolve("append-target.zip");
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(sourcePath)) {
+                writer.beginFile("before.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("before".getBytes(StandardCharsets.UTF_8));
+                }
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
+                    sourcePath,
+                    Map.of(
+                            ArkivoFileSystem.OPEN_OPTIONS.key(),
+                            Set.of(StandardOpenOption.APPEND, StandardOpenOption.WRITE),
+                            ArkivoFileSystem.COMMIT_TARGET.key(),
+                            ArkivoCommitTarget.writeTo(targetPath)
+                    )
+            )) {
+                Files.writeString(fileSystem.getPath("/after.txt"), "after", StandardCharsets.UTF_8);
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(sourcePath)) {
+                assertEquals("before", Files.readString(fileSystem.getPath("/before.txt"), StandardCharsets.UTF_8));
+                assertThrows(
+                        NoSuchFileException.class,
+                        () -> Files.readString(fileSystem.getPath("/after.txt"), StandardCharsets.UTF_8)
+                );
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(targetPath)) {
+                assertEquals("before", Files.readString(fileSystem.getPath("/before.txt"), StandardCharsets.UTF_8));
+                assertEquals("after", Files.readString(fileSystem.getPath("/after.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            Files.deleteIfExists(targetPath);
+            deleteTemporaryArchive(sourcePath);
+        }
+    }
+
+    /// Verifies that append mode can replace an existing ZIP file entry with a new central directory record.
+    @Test
+    public void fileSystemAppendReplacesExistingEntry() throws IOException {
+        Path archivePath = createTemporaryArchivePath("fs-append-replace-");
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+                writer.beginFile("before.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("before".getBytes(StandardCharsets.UTF_8));
+                }
+                writer.beginFile("keep.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("keep".getBytes(StandardCharsets.UTF_8));
+                }
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(
+                            ArkivoFileSystem.OPEN_OPTIONS.key(),
+                            Set.of(StandardOpenOption.APPEND, StandardOpenOption.WRITE)
+                    )
+            )) {
+                Files.writeString(fileSystem.getPath("/before.txt"), "after", StandardCharsets.UTF_8);
+                assertThrows(
+                        FileAlreadyExistsException.class,
+                        () -> Files.writeString(
+                                fileSystem.getPath("/keep.txt"),
+                                "ignored",
+                                StandardCharsets.UTF_8,
+                                StandardOpenOption.CREATE_NEW,
+                                StandardOpenOption.WRITE
+                        )
+                );
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals("after", Files.readString(fileSystem.getPath("/before.txt"), StandardCharsets.UTF_8));
+                assertEquals("keep", Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that append replacement can publish the changed archive through a fixed commit target.
+    @Test
+    public void fileSystemAppendReplacesExistingEntryToCommitTarget() throws IOException {
+        Path sourcePath = createTemporaryArchivePath("fs-append-replace-commit-source-");
+        Path targetPath = sourcePath.getParent().resolve("append-replace-target.zip");
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(sourcePath)) {
+                writer.beginFile("before.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("before".getBytes(StandardCharsets.UTF_8));
+                }
+                writer.beginFile("keep.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("keep".getBytes(StandardCharsets.UTF_8));
+                }
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
+                    sourcePath,
+                    Map.of(
+                            ArkivoFileSystem.OPEN_OPTIONS.key(),
+                            Set.of(StandardOpenOption.APPEND, StandardOpenOption.WRITE),
+                            ArkivoFileSystem.COMMIT_TARGET.key(),
+                            ArkivoCommitTarget.writeTo(targetPath)
+                    )
+            )) {
+                Files.writeString(fileSystem.getPath("/before.txt"), "after", StandardCharsets.UTF_8);
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(sourcePath)) {
+                assertEquals("before", Files.readString(fileSystem.getPath("/before.txt"), StandardCharsets.UTF_8));
+                assertEquals("keep", Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8));
+            }
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(targetPath)) {
+                assertEquals("after", Files.readString(fileSystem.getPath("/before.txt"), StandardCharsets.UTF_8));
+                assertEquals("keep", Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            Files.deleteIfExists(targetPath);
+            deleteTemporaryArchive(sourcePath);
+        }
+    }
+
+    /// Verifies that append mode can delete existing entries from the final central directory view.
+    @Test
+    public void fileSystemAppendDeletesExistingEntries() throws IOException {
+        Path archivePath = createTemporaryArchivePath("fs-append-delete-");
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+                writer.beginDirectory("dir");
+                writer.endEntry();
+                writer.beginFile("dir/child.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("child".getBytes(StandardCharsets.UTF_8));
+                }
+                writer.beginDirectory("empty");
+                writer.endEntry();
+                writer.beginFile("remove.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("remove".getBytes(StandardCharsets.UTF_8));
+                }
+                writer.beginFile("recreate.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("before".getBytes(StandardCharsets.UTF_8));
+                }
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(
+                            ArkivoFileSystem.OPEN_OPTIONS.key(),
+                            Set.of(StandardOpenOption.APPEND, StandardOpenOption.WRITE)
+                    )
+            )) {
+                assertThrows(DirectoryNotEmptyException.class, () -> Files.delete(fileSystem.getPath("/dir")));
+                Files.delete(fileSystem.getPath("/remove.txt"));
+                Files.delete(fileSystem.getPath("/empty"));
+                Files.delete(fileSystem.getPath("/recreate.txt"));
+                Files.writeString(
+                        fileSystem.getPath("/recreate.txt"),
+                        "after",
+                        StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE_NEW,
+                        StandardOpenOption.WRITE
+                );
+                assertThrows(NoSuchFileException.class, () -> Files.delete(fileSystem.getPath("/missing.txt")));
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals("child", Files.readString(fileSystem.getPath("/dir/child.txt"), StandardCharsets.UTF_8));
+                assertEquals("after", Files.readString(fileSystem.getPath("/recreate.txt"), StandardCharsets.UTF_8));
+                assertThrows(NoSuchFileException.class, () -> Files.readString(
+                        fileSystem.getPath("/remove.txt"),
+                        StandardCharsets.UTF_8
+                ));
+                assertThrows(NoSuchFileException.class, () -> Files.readAttributes(
+                        fileSystem.getPath("/empty"),
+                        ZipArkivoEntryAttributes.class
+                ));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that read/write update mode can add, replace, and delete ZIP entries.
+    @Test
+    public void fileSystemUpdateAddsReplacesAndDeletesEntries() throws IOException {
+        Path archivePath = createTemporaryArchivePath("fs-update-");
+        Map<String, Object> updateEnvironment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+        );
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+                writer.beginFile("replace.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("before".getBytes(StandardCharsets.UTF_8));
+                }
+                writer.beginFile("remove.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("remove".getBytes(StandardCharsets.UTF_8));
+                }
+                writer.beginFile("keep.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("keep".getBytes(StandardCharsets.UTF_8));
+                }
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, updateEnvironment)) {
+                assertEquals(false, fileSystem.isReadOnly());
+                Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
+                Files.writeString(fileSystem.getPath("/replace.txt"), "after", StandardCharsets.UTF_8);
+                Files.delete(fileSystem.getPath("/remove.txt"));
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals("added", Files.readString(fileSystem.getPath("/added.txt"), StandardCharsets.UTF_8));
+                assertEquals("after", Files.readString(fileSystem.getPath("/replace.txt"), StandardCharsets.UTF_8));
+                assertEquals("keep", Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8));
+                assertThrows(NoSuchFileException.class, () -> Files.readString(
+                        fileSystem.getPath("/remove.txt"),
+                        StandardCharsets.UTF_8
+                ));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that append deletion can publish the changed archive through a fixed commit target.
+    @Test
+    public void fileSystemAppendDeletesExistingEntryToCommitTarget() throws IOException {
+        Path sourcePath = createTemporaryArchivePath("fs-append-delete-commit-source-");
+        Path targetPath = sourcePath.getParent().resolve("append-delete-target.zip");
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(sourcePath)) {
+                writer.beginFile("remove.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("remove".getBytes(StandardCharsets.UTF_8));
+                }
+                writer.beginFile("keep.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("keep".getBytes(StandardCharsets.UTF_8));
+                }
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
+                    sourcePath,
+                    Map.of(
+                            ArkivoFileSystem.OPEN_OPTIONS.key(),
+                            Set.of(StandardOpenOption.APPEND, StandardOpenOption.WRITE),
+                            ArkivoFileSystem.COMMIT_TARGET.key(),
+                            ArkivoCommitTarget.writeTo(targetPath)
+                    )
+            )) {
+                Files.delete(fileSystem.getPath("/remove.txt"));
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(sourcePath)) {
+                assertEquals("remove", Files.readString(fileSystem.getPath("/remove.txt"), StandardCharsets.UTF_8));
+                assertEquals("keep", Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8));
+            }
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(targetPath)) {
+                assertThrows(NoSuchFileException.class, () -> Files.readString(
+                        fileSystem.getPath("/remove.txt"),
+                        StandardCharsets.UTF_8
+                ));
+                assertEquals("keep", Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            Files.deleteIfExists(targetPath);
+            deleteTemporaryArchive(sourcePath);
+        }
+    }
+
+    /// Verifies that streaming ZIP read file stores expose supported attribute views.
+    @Test
+    public void streamingReadFileStoreSupportsAttributeViews() throws IOException {
+        try (StreamingZipArkivoReadFileSystemImpl fileSystem = new StreamingZipArkivoReadFileSystemImpl(
+                ZipArkivoFileSystemProvider.instance(),
+                InputStream.nullInputStream(),
+                ZipArkivoFileSystemConfig.DEFAULTS
+        )) {
+            FileStore fileStore = fileSystem.getFileStores().iterator().next();
+            assertStreamingZipFileStoreAttributeViews(fileStore, true);
+        }
+    }
+
+    /// Verifies that atomic commit targets leave the source path unchanged until close commits the archive.
+    @Test
+    public void fileSystemCreateAtomicallyReplacesSourceOnClose() throws IOException {
+        Path archivePath = createTemporaryArchivePath("fs-create-atomic-");
+        Path directory = archivePath.getParent();
+        byte[] original = "not yet replaced".getBytes(StandardCharsets.UTF_8);
+
+        try {
+            Files.write(archivePath, original);
+            ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(
+                            ArkivoFileSystem.OPEN_OPTIONS.key(),
+                            Set.of(
+                                    StandardOpenOption.TRUNCATE_EXISTING,
+                                    StandardOpenOption.WRITE
+                            ),
+                            ArkivoFileSystem.COMMIT_TARGET.key(),
+                            ArkivoCommitTarget.atomicReplace(directory)
+                    )
+            );
+            try (fileSystem) {
+                Files.writeString(fileSystem.getPath("/replacement.txt"), "replacement", StandardCharsets.UTF_8);
+                assertArrayEquals(original, Files.readAllBytes(archivePath));
+            }
+
+            try (ZipArkivoFileSystem reopenedFileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals(
+                        "replacement",
+                        Files.readString(reopenedFileSystem.getPath("/replacement.txt"), StandardCharsets.UTF_8)
+                );
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that ZIP file system writes create split output volumes.
+    @Test
+    public void fileSystemCreateWritesSplitVolumes() throws IOException {
+        Path archivePath = createTemporaryArchivePath("fs-create-split-");
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(
+                            ArkivoFileSystem.OPEN_OPTIONS.key(),
+                            Set.of(
+                                    StandardOpenOption.CREATE,
+                                    StandardOpenOption.TRUNCATE_EXISTING,
+                                    StandardOpenOption.WRITE
+                            ),
+                            ZipArkivoFileSystem.SPLIT_SIZE.key(),
+                            64L
+                    )
+            )) {
+                Files.writeString(fileSystem.getPath("/hello.txt"), "split file system", StandardCharsets.UTF_8);
+            }
+
+            List<Path> volumes = splitVolumePaths(archivePath);
+            assertEquals(true, volumes.size() > 1);
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(ArkivoVolumeSource.of(volumes))) {
+                assertEquals(
+                        "split file system",
+                        Files.readString(fileSystem.getPath("/hello.txt"), StandardCharsets.UTF_8)
+                );
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that ZIP streaming writer factories create split output volumes.
+    @Test
+    public void streamingWriterCreatesSplitVolumes() throws IOException {
+        Path archivePath = createTemporaryArchivePath("stream-write-split-");
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
+                    archivePath,
+                    Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), 64L)
+            )) {
+                writer.beginFile("stream.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("split streaming writer".getBytes(StandardCharsets.UTF_8));
+                }
+            }
+
+            List<Path> volumes = splitVolumePaths(archivePath);
+            assertEquals(true, volumes.size() > 1);
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(ArkivoVolumeSource.of(volumes))) {
+                assertEquals(
+                        "split streaming writer",
+                        Files.readString(fileSystem.getPath("/stream.txt"), StandardCharsets.UTF_8)
+                );
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -4833,7 +5700,16 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals(true, fileSystem.getPathMatcher("glob:**/*.txt").matches(file));
                 assertEquals(false, fileSystem.getPathMatcher("glob:**/*.bin").matches(file));
                 assertEquals(true, fileSystem.getPathMatcher("regex:.*/hello\\.txt").matches(file));
-                assertEquals("zip", Files.getFileStore(file).type());
+                var fileStore = Files.getFileStore(file);
+                assertEquals("zip", fileStore.type());
+                assertEquals(fileStore.name(), fileStore.getAttribute("name"));
+                assertEquals(fileStore.type(), fileStore.getAttribute("type"));
+                assertEquals(Boolean.valueOf(fileStore.isReadOnly()), fileStore.getAttribute("basic:readOnly"));
+                assertEquals(Long.valueOf(fileStore.getTotalSpace()), fileStore.getAttribute("totalSpace"));
+                assertEquals(Long.valueOf(fileStore.getUsableSpace()), fileStore.getAttribute("usableSpace"));
+                assertEquals(Long.valueOf(fileStore.getUnallocatedSpace()), fileStore.getAttribute("unallocatedSpace"));
+                assertThrows(UnsupportedOperationException.class, () -> fileStore.getAttribute("zip:type"));
+                assertThrows(UnsupportedOperationException.class, () -> fileStore.getAttribute("missing"));
 
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
                 assertEquals(5L, attributes.size());
@@ -5012,6 +5888,47 @@ public final class ZipArkivoFileSystemTest {
         } finally {
             Files.deleteIfExists(secondVolume);
             deleteTemporaryArchive(firstVolume);
+        }
+    }
+
+    /// Verifies that conventional ZIP split volumes can be discovered from the final archive path.
+    @Test
+    public void readSplitZipFromArchivePath() throws IOException {
+        Path archivePath = createTemporaryArchivePath("split-zip-path-");
+        Path firstVolume = splitVolumePath(archivePath, 0);
+        byte[][] volumes = splitZipArchive();
+        Files.write(firstVolume, volumes[0]);
+        Files.write(archivePath, volumes[1]);
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals("split", Files.readString(fileSystem.getPath("/hello.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that companion numbered files do not make a single-volume ZIP path open as split storage.
+    @Test
+    public void staleSplitCompanionDoesNotOverrideSingleArchivePath() throws IOException {
+        Path archivePath = createTemporaryArchivePath("single-zip-with-stale-split-");
+        Path staleVolume = splitVolumePath(archivePath, 0);
+
+        try {
+            Files.write(staleVolume, "stale".getBytes(StandardCharsets.UTF_8));
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+                writer.beginFile("single.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("single".getBytes(StandardCharsets.UTF_8));
+                }
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals("single", Files.readString(fileSystem.getPath("/single.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
         }
     }
 
@@ -5390,6 +6307,20 @@ public final class ZipArkivoFileSystemTest {
         return (SeekableByteChannel) constructor.newInstance(channel, expectedCrc32, expectedUncompressedSize);
     }
 
+    /// Verifies common streaming ZIP file store attribute view declarations.
+    private static void assertStreamingZipFileStoreAttributeViews(FileStore fileStore, boolean readOnly) {
+        assertEquals("zip-stream", fileStore.name());
+        assertEquals("zip", fileStore.type());
+        assertEquals(readOnly, fileStore.isReadOnly());
+        assertEquals(true, fileStore.supportsFileAttributeView(BasicFileAttributeView.class));
+        assertEquals(true, fileStore.supportsFileAttributeView(ZipArkivoEntryAttributeView.class));
+        assertEquals(false, fileStore.supportsFileAttributeView(PosixFileAttributeView.class));
+        assertEquals(true, fileStore.supportsFileAttributeView("basic"));
+        assertEquals(true, fileStore.supportsFileAttributeView("zip"));
+        assertEquals(false, fileStore.supportsFileAttributeView("owner"));
+        assertEquals(false, fileStore.supportsFileAttributeView("posix"));
+    }
+
     /// Replaces the streaming ZIP file system close action for close failure tests.
     private static void setStreamingZipCloseAction(
             StreamingZipArkivoFileSystemImpl fileSystem,
@@ -5398,6 +6329,83 @@ public final class ZipArkivoFileSystemTest {
         Field field = StreamingZipArkivoFileSystemImpl.class.getDeclaredField("closeAction");
         field.setAccessible(true);
         field.set(fileSystem, closeAction);
+    }
+
+    /// Creates streaming ZIP entry metadata through its private constructor.
+    private static Object zipEntryMetadata() throws ReflectiveOperationException {
+        Class<?> type = Class.forName(
+                "org.glavo.arkivo.zip.internal.StreamingZipArkivoFileSystemImpl$EntryMetadata"
+        );
+        Constructor<?> constructor = type.getDeclaredConstructor(
+                int.class,
+                ZipEncryption.class,
+                FileTime.class,
+                int.class,
+                int.class,
+                long.class,
+                long.class,
+                long.class,
+                byte[].class,
+                byte[].class,
+                byte[].class
+        );
+        constructor.setAccessible(true);
+        return constructor.newInstance(
+                ZipMethod.STORED_ID,
+                ZipEncryption.none(),
+                null,
+                20,
+                0,
+                0L,
+                0L,
+                0L,
+                new byte[0],
+                new byte[0],
+                null
+        );
+    }
+
+    /// Creates a streaming ZIP central directory entry through its private constructor.
+    private static Object zipCentralEntry(
+            String name,
+            byte[] rawName,
+            long compressedSize,
+            long uncompressedSize,
+            long localHeaderOffset,
+            Object metadata
+    ) throws ReflectiveOperationException {
+        Class<?> type = Class.forName(
+                "org.glavo.arkivo.zip.internal.StreamingZipArkivoFileSystemImpl$CentralEntry"
+        );
+        Constructor<?> constructor = type.getDeclaredConstructor(
+                String.class,
+                byte[].class,
+                int.class,
+                int.class,
+                int.class,
+                int.class,
+                long.class,
+                long.class,
+                long.class,
+                int.class,
+                long.class,
+                metadata.getClass()
+        );
+        constructor.setAccessible(true);
+        return constructor.newInstance(
+                name,
+                rawName,
+                1 << 11,
+                ZipMethod.STORED_ID,
+                0,
+                0,
+                0L,
+                compressedSize,
+                uncompressedSize,
+                0,
+                localHeaderOffset,
+                metadata
+        );
     }
 
     /// Returns the number of file systems currently registered in the provider.
@@ -7726,6 +8734,36 @@ public final class ZipArkivoFileSystemTest {
         return temporaryDirectory.resolve("sfx.zip");
     }
 
+    /// Returns the split volume paths that make up an archive written to the given final path.
+    private static List<Path> splitVolumePaths(Path archivePath) {
+        ArrayList<Path> volumes = new ArrayList<>();
+        for (int diskNumber = 0; ; diskNumber++) {
+            Path volumePath = splitVolumePath(archivePath, diskNumber);
+            if (!Files.exists(volumePath)) {
+                break;
+            }
+            volumes.add(volumePath);
+        }
+        volumes.add(archivePath);
+        return List.copyOf(volumes);
+    }
+
+    /// Returns the path for a numbered split volume.
+    private static Path splitVolumePath(Path archivePath, int diskNumber) {
+        String volumeNumber = Integer.toString(diskNumber + 1);
+        if (volumeNumber.length() == 1) {
+            volumeNumber = "0" + volumeNumber;
+        }
+        String fileName = archivePath.getFileName().toString();
+        String baseName = fileName.length() >= 4
+                && fileName.regionMatches(true, fileName.length() - 4, ".zip", 0, 4)
+                ? fileName.substring(0, fileName.length() - 4)
+                : fileName;
+        Path parent = archivePath.getParent();
+        Path volumeFileName = Path.of(baseName + ".z" + volumeNumber);
+        return parent != null ? parent.resolve(volumeFileName) : volumeFileName;
+    }
+
     /// Creates a temporary deflated ZIP archive under the module build directory.
     private static Path createDeflatedZipArchive() throws IOException {
         Path archivePath = createTemporaryArchivePath("real-zip-");
@@ -7742,6 +8780,11 @@ public final class ZipArkivoFileSystemTest {
 
     /// Deletes a temporary archive file and its containing directory.
     private static void deleteTemporaryArchive(Path archivePath) throws IOException {
+        for (int diskNumber = 0; ; diskNumber++) {
+            if (!Files.deleteIfExists(splitVolumePath(archivePath, diskNumber))) {
+                break;
+            }
+        }
         Files.deleteIfExists(archivePath);
         Files.deleteIfExists(archivePath.getParent());
     }

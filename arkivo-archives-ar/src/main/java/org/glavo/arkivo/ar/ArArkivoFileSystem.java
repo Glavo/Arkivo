@@ -13,7 +13,7 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.Objects;
 
-/// Opens AR archives as read-only NIO file systems.
+/// Opens AR archives as NIO file systems.
 @NotNullByDefault
 public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits ArArkivoFileSystemImpl {
     /// Creates an AR archive file system base instance.

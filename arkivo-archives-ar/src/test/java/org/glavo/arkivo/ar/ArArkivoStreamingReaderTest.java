@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.ar;
 
+import org.glavo.arkivo.ArkivoFileSystem;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -17,15 +18,24 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.DirectoryStream;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.ReadOnlyFileSystemException;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileOwnerAttributeView;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.GroupPrincipal;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.nio.file.attribute.UserPrincipal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -54,6 +64,7 @@ public final class ArArkivoStreamingReaderTest {
             assertEquals(true, reader.next());
             ArArkivoEntryAttributes firstAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
             BasicFileAttributes firstBasicAttributes = reader.readAttributes(BasicFileAttributes.class);
+            PosixFileAttributes firstPosixAttributes = reader.readAttributes(PosixFileAttributes.class);
             paths.add(firstAttributes.path());
             assertEquals("hello.txt", firstAttributes.path());
             assertEquals("hello.txt/", firstAttributes.identifier());
@@ -63,6 +74,17 @@ public final class ArArkivoStreamingReaderTest {
             assertEquals(first.length, firstAttributes.size());
             assertEquals(FileTime.fromMillis(1_700_000_000_000L), firstAttributes.lastModifiedTime());
             assertEquals(true, firstBasicAttributes.isRegularFile());
+            assertEquals("1000", firstPosixAttributes.owner().getName());
+            assertEquals("1001", firstPosixAttributes.group().getName());
+            assertEquals(
+                    Set.of(
+                            PosixFilePermission.OWNER_READ,
+                            PosixFilePermission.OWNER_WRITE,
+                            PosixFilePermission.GROUP_READ,
+                            PosixFilePermission.OTHERS_READ
+                    ),
+                    firstPosixAttributes.permissions()
+            );
             try (var input = reader.openInputStream()) {
                 assertArrayEquals(first, input.readAllBytes());
             }
@@ -80,6 +102,40 @@ public final class ArArkivoStreamingReaderTest {
         }
 
         assertEquals(List.of("hello.txt", "dir/file.bin"), paths);
+    }
+
+    /// Verifies that AR POSIX mode type bits are exposed through basic attributes.
+    @Test
+    public void readsPosixModeFileTypes() throws IOException {
+        byte[] target = "dir/hello.txt".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = archive(
+                member("link/", 0, 0, 0, 0120777, target),
+                member("fifo/", 0, 0, 0, 0010644, new byte[0])
+        );
+
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            assertEquals(true, reader.next());
+            ArArkivoEntryAttributes linkAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("link", linkAttributes.path());
+            assertEquals(false, linkAttributes.isRegularFile());
+            assertEquals(false, linkAttributes.isDirectory());
+            assertEquals(true, linkAttributes.isSymbolicLink());
+            assertEquals(false, linkAttributes.isOther());
+            assertEquals(target.length, linkAttributes.size());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(target, input.readAllBytes());
+            }
+
+            assertEquals(true, reader.next());
+            ArArkivoEntryAttributes fifoAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("fifo", fifoAttributes.path());
+            assertEquals(false, fifoAttributes.isRegularFile());
+            assertEquals(false, fifoAttributes.isDirectory());
+            assertEquals(false, fifoAttributes.isSymbolicLink());
+            assertEquals(true, fifoAttributes.isOther());
+
+            assertEquals(false, reader.next());
+        }
     }
 
     /// Verifies that the streaming writer creates readable AR members.
@@ -142,6 +198,205 @@ public final class ArArkivoStreamingReaderTest {
         }
     }
 
+    /// Verifies that the streaming writer creates symbolic link AR members.
+    @Test
+    public void writesSymbolicLinkMembers() throws IOException {
+        String target = "dir/hello.txt";
+        byte[] targetBytes = target.getBytes(StandardCharsets.UTF_8);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
+            writer.beginSymbolicLink("link", target);
+            ArArkivoEntryAttributeView attributes =
+                    Objects.requireNonNull(writer.attributeView(ArArkivoEntryAttributeView.class));
+            ArArkivoEntryAttributes pendingAttributes = attributes.readAttributes();
+            assertEquals("link", pendingAttributes.path());
+            assertEquals(0120777, pendingAttributes.mode());
+            assertEquals(targetBytes.length, pendingAttributes.size());
+            assertEquals(false, pendingAttributes.isRegularFile());
+            assertEquals(true, pendingAttributes.isSymbolicLink());
+            assertThrows(IllegalStateException.class, writer::openOutputStream);
+            writer.endEntry();
+        }
+
+        try (ArArkivoStreamingReader reader =
+                     ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertEquals(true, reader.next());
+            ArArkivoEntryAttributes attributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("link", attributes.path());
+            assertEquals("link/", attributes.identifier());
+            assertEquals(0120777, attributes.mode());
+            assertEquals(targetBytes.length, attributes.size());
+            assertEquals(false, attributes.isRegularFile());
+            assertEquals(true, attributes.isSymbolicLink());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(targetBytes, input.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that the streaming writer creates directory AR members.
+    @Test
+    public void writesDirectoryMembers() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
+            writer.beginDirectory("dir");
+            ArArkivoEntryAttributeView attributes =
+                    Objects.requireNonNull(writer.attributeView(ArArkivoEntryAttributeView.class));
+            ArArkivoEntryAttributes pendingAttributes = attributes.readAttributes();
+            assertEquals("dir", pendingAttributes.path());
+            assertEquals("dir/", pendingAttributes.identifier());
+            assertEquals(040755, pendingAttributes.mode());
+            assertEquals(0L, pendingAttributes.size());
+            assertEquals(false, pendingAttributes.isRegularFile());
+            assertEquals(true, pendingAttributes.isDirectory());
+            assertEquals(false, pendingAttributes.isSymbolicLink());
+            assertThrows(IllegalStateException.class, writer::openOutputStream);
+            writer.endEntry();
+
+            writer.beginDirectory("configured");
+            ArArkivoEntryAttributeView configuredAttributes =
+                    Objects.requireNonNull(writer.attributeView(ArArkivoEntryAttributeView.class));
+            assertThrows(IllegalArgumentException.class, () -> configuredAttributes.setMode(0100644));
+            assertThrows(IOException.class, () -> configuredAttributes.setSize(1L));
+            configuredAttributes.setMode(040700);
+            configuredAttributes.setSize(0L);
+            writer.endEntry();
+        }
+
+        try (ArArkivoStreamingReader reader =
+                     ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertEquals(true, reader.next());
+            ArArkivoEntryAttributes directoryAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("dir", directoryAttributes.path());
+            assertEquals("dir/", directoryAttributes.identifier());
+            assertEquals(040755, directoryAttributes.mode());
+            assertEquals(0L, directoryAttributes.size());
+            assertEquals(false, directoryAttributes.isRegularFile());
+            assertEquals(true, directoryAttributes.isDirectory());
+            assertEquals(false, directoryAttributes.isSymbolicLink());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(new byte[0], input.readAllBytes());
+            }
+
+            assertEquals(true, reader.next());
+            ArArkivoEntryAttributes configuredAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("configured", configuredAttributes.path());
+            assertEquals(040700, configuredAttributes.mode());
+            assertEquals(true, configuredAttributes.isDirectory());
+            assertEquals(false, configuredAttributes.isRegularFile());
+            assertEquals(false, configuredAttributes.isOther());
+
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that known-size members are written directly to the backing archive stream.
+    @Test
+    public void writesKnownSizeMembersDirectly() throws IOException {
+        byte[] first = "direct".getBytes(StandardCharsets.UTF_8);
+        byte[] second = "long-name-body".getBytes(StandardCharsets.UTF_8);
+        String longPath = "known-size-long-file-name-that-requires-bsd-inline-name.txt";
+        byte[] longPathBytes = longPath.getBytes(StandardCharsets.UTF_8);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
+            writer.beginFile("known.txt");
+            ArArkivoEntryAttributeView firstAttributes =
+                    Objects.requireNonNull(writer.attributeView(ArArkivoEntryAttributeView.class));
+            firstAttributes.setSize(first.length);
+            assertEquals(first.length, firstAttributes.readAttributes().size());
+            try (OutputStream body = writer.openOutputStream()) {
+                int bodyStart = output.size();
+                assertEquals(68, bodyStart);
+                body.write(first, 0, 2);
+                assertEquals(bodyStart + 2, output.size());
+                body.write(first, 2, first.length - 2);
+            }
+
+            writer.beginFile(longPath);
+            ArArkivoEntryAttributeView secondAttributes =
+                    Objects.requireNonNull(writer.attributeView(ArArkivoEntryAttributeView.class));
+            secondAttributes.setSize(second.length);
+            int beforeSecond = output.size();
+            try (OutputStream body = writer.openOutputStream()) {
+                int bodyStart = output.size();
+                assertEquals(beforeSecond + 60 + longPathBytes.length, bodyStart);
+                body.write(second[0]);
+                assertEquals(bodyStart + 1, output.size());
+                body.write(second, 1, second.length - 1);
+            }
+        }
+
+        try (ArArkivoStreamingReader reader =
+                     ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertEquals(true, reader.next());
+            ArArkivoEntryAttributes firstAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals("known.txt", firstAttributes.path());
+            assertEquals(first.length, firstAttributes.size());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(first, input.readAllBytes());
+            }
+
+            assertEquals(true, reader.next());
+            ArArkivoEntryAttributes secondAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals(longPath, secondAttributes.path());
+            assertEquals("#1/" + longPathBytes.length, secondAttributes.identifier());
+            assertEquals(second.length, secondAttributes.size());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(second, input.readAllBytes());
+            }
+
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that known-size members reject bodies shorter than the configured size.
+    @Test
+    public void knownSizeMemberRejectsShortBody() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output);
+        writer.beginFile("short.txt");
+        ArArkivoEntryAttributeView attributes =
+                Objects.requireNonNull(writer.attributeView(ArArkivoEntryAttributeView.class));
+        attributes.setSize(5);
+        OutputStream body = writer.openOutputStream();
+        body.write(new byte[]{1, 2});
+
+        IOException bodyException = assertThrows(IOException.class, body::close);
+        assertEquals(true, bodyException.getMessage().contains("does not match configured size"));
+
+        IOException writerException = assertThrows(IOException.class, writer::close);
+        assertEquals(true, writerException.getMessage().contains("does not match configured size"));
+    }
+
+    /// Verifies that known-size members reject bodies larger than the configured size.
+    @Test
+    public void knownSizeMemberRejectsOversizedBody() throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
+            writer.beginFile("one-byte.txt");
+            ArArkivoEntryAttributeView attributes =
+                    Objects.requireNonNull(writer.attributeView(ArArkivoEntryAttributeView.class));
+            attributes.setSize(1);
+            try (OutputStream body = writer.openOutputStream()) {
+                body.write('a');
+                IOException exception = assertThrows(IOException.class, () -> body.write('b'));
+                assertEquals(true, exception.getMessage().contains("exceeds configured size"));
+            }
+        }
+
+        try (ArArkivoStreamingReader reader =
+                     ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
+            assertEquals(true, reader.next());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(new byte[]{'a'}, input.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+    }
+
     /// Verifies that the streaming writer persists metadata configured through the AR attribute view.
     @Test
     public void writesConfiguredMemberMetadata() throws IOException {
@@ -172,6 +427,13 @@ public final class ArArkivoStreamingReaderTest {
             assertEquals(321, attributes.userId());
             assertEquals(654, attributes.groupId());
             assertEquals(0100600, attributes.mode());
+            PosixFileAttributes posixAttributes = reader.readAttributes(PosixFileAttributes.class);
+            assertEquals("321", posixAttributes.owner().getName());
+            assertEquals("654", posixAttributes.group().getName());
+            assertEquals(
+                    Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
+                    posixAttributes.permissions()
+            );
             try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
@@ -183,7 +445,14 @@ public final class ArArkivoStreamingReaderTest {
     @Test
     public void opensMembersAsReadOnlyFileSystem() throws IOException {
         byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
+        Set<PosixFilePermission> filePermissions = Set.of(
+                PosixFilePermission.OWNER_READ,
+                PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.GROUP_READ
+        );
         Path archivePath = createTemporaryArchivePath("ar-fs-");
+        Path copiedDirectory = archivePath.getParent().resolve("copied-dir");
+        Path existingFile = archivePath.getParent().resolve("existing-file");
         try {
             try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
                 writer.beginFile("dir/hello.txt");
@@ -198,6 +467,8 @@ public final class ArArkivoStreamingReaderTest {
                 }
                 writer.beginFile("root.bin");
                 writer.endEntry();
+                writer.beginSymbolicLink("dir/link", "hello.txt");
+                writer.endEntry();
             }
 
             ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath);
@@ -207,6 +478,13 @@ public final class ArArkivoStreamingReaderTest {
                 Path directory = fileSystem.getPath("/dir");
                 BasicFileAttributes directoryAttributes = Files.readAttributes(directory, BasicFileAttributes.class);
                 assertEquals(true, directoryAttributes.isDirectory());
+                Files.copy(directory, copiedDirectory);
+                assertEquals(true, Files.isDirectory(copiedDirectory));
+                assertThrows(FileAlreadyExistsException.class, () -> Files.copy(directory, copiedDirectory));
+                Files.copy(directory, copiedDirectory, StandardCopyOption.REPLACE_EXISTING);
+                Files.writeString(existingFile, "existing", StandardCharsets.UTF_8);
+                Files.copy(directory, existingFile, StandardCopyOption.REPLACE_EXISTING);
+                assertEquals(true, Files.isDirectory(existingFile));
 
                 ArrayList<String> children = new ArrayList<>();
                 try (DirectoryStream<Path> stream = Files.newDirectoryStream(fileSystem.getPath("/"))) {
@@ -225,6 +503,53 @@ public final class ArArkivoStreamingReaderTest {
                 assertEquals(content.length, fileAttributes.size());
                 assertArrayEquals(content, Files.readAllBytes(file));
 
+                Path link = fileSystem.getPath("/dir/link");
+                ArArkivoEntryAttributes linkAttributes = Files.readAttributes(link, ArArkivoEntryAttributes.class);
+                assertEquals(true, linkAttributes.isSymbolicLink());
+                assertEquals(false, linkAttributes.isRegularFile());
+                assertEquals(0120777, linkAttributes.mode());
+                assertEquals("hello.txt", Files.readString(link));
+                assertEquals("hello.txt", Files.readSymbolicLink(link).toString());
+
+                PosixFileAttributes posixAttributes = Files.readAttributes(file, PosixFileAttributes.class);
+                assertEquals("1000", posixAttributes.owner().getName());
+                assertEquals("1001", posixAttributes.group().getName());
+                assertEquals(filePermissions, posixAttributes.permissions());
+
+                FileOwnerAttributeView ownerView =
+                        Objects.requireNonNull(Files.getFileAttributeView(file, FileOwnerAttributeView.class));
+                assertEquals("owner", ownerView.name());
+                assertEquals("1000", ownerView.getOwner().getName());
+                assertThrows(ReadOnlyFileSystemException.class, () -> ownerView.setOwner(() -> "other-user"));
+
+                PosixFileAttributeView posixView =
+                        Objects.requireNonNull(Files.getFileAttributeView(file, PosixFileAttributeView.class));
+                assertEquals("posix", posixView.name());
+                assertEquals(filePermissions, posixView.readAttributes().permissions());
+                assertEquals("1000", posixView.getOwner().getName());
+                assertThrows(ReadOnlyFileSystemException.class, () -> posixView.setGroup(() -> "other-group"));
+                assertThrows(
+                        ReadOnlyFileSystemException.class,
+                        () -> posixView.setPermissions(Set.<PosixFilePermission>of())
+                );
+                var fileStore = Files.getFileStore(file);
+                assertEquals(fileStore.name(), fileStore.getAttribute("name"));
+                assertEquals(fileStore.type(), fileStore.getAttribute("type"));
+                assertEquals(Boolean.valueOf(fileStore.isReadOnly()), fileStore.getAttribute("basic:readOnly"));
+                assertEquals(Long.valueOf(fileStore.getTotalSpace()), fileStore.getAttribute("totalSpace"));
+                assertEquals(Long.valueOf(fileStore.getUsableSpace()), fileStore.getAttribute("usableSpace"));
+                assertEquals(Long.valueOf(fileStore.getUnallocatedSpace()), fileStore.getAttribute("unallocatedSpace"));
+                assertThrows(UnsupportedOperationException.class, () -> fileStore.getAttribute("ar:type"));
+                assertThrows(UnsupportedOperationException.class, () -> fileStore.getAttribute("missing"));
+                assertEquals(
+                        true,
+                        fileStore.supportsFileAttributeView(FileOwnerAttributeView.class)
+                );
+                assertEquals(
+                        true,
+                        fileStore.supportsFileAttributeView(PosixFileAttributeView.class)
+                );
+
                 Map<String, Object> selectedBasicAttributes = Files.readAttributes(file, "basic:size,isRegularFile");
                 assertEquals((long) content.length, selectedBasicAttributes.get("size"));
                 assertEquals(true, selectedBasicAttributes.get("isRegularFile"));
@@ -241,6 +566,16 @@ public final class ArArkivoStreamingReaderTest {
                 assertEquals(1001L, selectedArAttributes.get("groupId"));
                 assertEquals((long) content.length, selectedArAttributes.get("size"));
 
+                Map<String, Object> ownerNamedAttributes = Files.readAttributes(file, "owner:owner");
+                assertEquals("1000", ((UserPrincipal) ownerNamedAttributes.get("owner")).getName());
+
+                Map<String, Object> posixNamedAttributes =
+                        Files.readAttributes(file, "posix:owner,group,permissions,isRegularFile");
+                assertEquals("1000", ((UserPrincipal) posixNamedAttributes.get("owner")).getName());
+                assertEquals("1001", ((GroupPrincipal) posixNamedAttributes.get("group")).getName());
+                assertEquals(filePermissions, posixNamedAttributes.get("permissions"));
+                assertEquals(true, posixNamedAttributes.get("isRegularFile"));
+
                 try (SeekableByteChannel channel = Files.newByteChannel(file, StandardOpenOption.READ)) {
                     assertEquals(content.length, channel.size());
                     channel.position(1);
@@ -254,11 +589,102 @@ public final class ArArkivoStreamingReaderTest {
                 Map<String, Object> namedAttributes = Files.readAttributes(file, "ar:*");
                 assertEquals(0100640, namedAttributes.get("mode"));
                 assertEquals("dir/hello.txt/", namedAttributes.get("identifier"));
+                ArArkivoEntryAttributeView arView =
+                        Objects.requireNonNull(Files.getFileAttributeView(file, ArArkivoEntryAttributeView.class));
+                assertThrows(ReadOnlyFileSystemException.class, () -> arView.setSize(content.length));
                 assertThrows(UnsupportedOperationException.class, () -> Files.readAttributes(file, "zip:size"));
                 assertThrows(ReadOnlyFileSystemException.class, () -> Files.delete(file));
             }
 
             assertThrows(ClosedFileSystemException.class, () -> fileSystem.getPath("/dir"));
+        } finally {
+            Files.deleteIfExists(existingFile);
+            Files.deleteIfExists(copiedDirectory);
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that AR archives can be created through a forward-only writable file system.
+    @Test
+    public void createsMembersAsWritableFileSystem() throws IOException {
+        byte[] content = "hello from writable file system".getBytes(StandardCharsets.UTF_8);
+        byte[] channelContent = new byte[]{1, 2, 3};
+        Path archivePath = createTemporaryArchivePath("ar-writable-fs-");
+        Set<PosixFilePermission> directoryPermissions = PosixFilePermissions.fromString("rwxr-x---");
+        Set<PosixFilePermission> channelFilePermissions = PosixFilePermissions.fromString("rw-r-----");
+        Set<PosixFilePermission> linkPermissions = PosixFilePermissions.fromString("rwxr-xr--");
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE
+                )
+        );
+
+        try {
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, environment)) {
+                assertEquals(false, fileSystem.isReadOnly());
+
+                Path directory = fileSystem.getPath("/dir");
+                Files.createDirectory(directory, PosixFilePermissions.asFileAttribute(directoryPermissions));
+
+                Path file = fileSystem.getPath("/dir/hello.txt");
+                Files.write(file, content);
+                assertThrows(FileAlreadyExistsException.class, () -> Files.write(file, content));
+
+                Path channelFile = fileSystem.getPath("/channel.bin");
+                try (SeekableByteChannel channel =
+                             Files.newByteChannel(
+                                     channelFile,
+                                     Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE),
+                                     PosixFilePermissions.asFileAttribute(channelFilePermissions)
+                             )) {
+                    assertEquals(0L, channel.position());
+                    assertEquals(channelContent.length, channel.write(ByteBuffer.wrap(channelContent)));
+                    assertEquals(channelContent.length, channel.size());
+                    assertThrows(UnsupportedOperationException.class, () -> channel.position(0L));
+                }
+
+                Files.createSymbolicLink(
+                        fileSystem.getPath("/dir/link"),
+                        Path.of("hello.txt"),
+                        PosixFilePermissions.asFileAttribute(linkPermissions)
+                );
+                assertThrows(UnsupportedOperationException.class, () -> Files.readString(file, StandardCharsets.UTF_8));
+            }
+
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath)) {
+                Path directory = fileSystem.getPath("/dir");
+                ArArkivoEntryAttributes directoryAttributes =
+                        Files.readAttributes(directory, ArArkivoEntryAttributes.class);
+                PosixFileAttributes directoryPosixAttributes =
+                        Files.readAttributes(directory, PosixFileAttributes.class);
+                assertEquals(true, Files.isDirectory(directory));
+                assertEquals(040750, directoryAttributes.mode());
+                assertEquals(directoryPermissions, directoryPosixAttributes.permissions());
+
+                Path file = fileSystem.getPath("/dir/hello.txt");
+                assertArrayEquals(content, Files.readAllBytes(file));
+
+                Path channelFile = fileSystem.getPath("/channel.bin");
+                ArArkivoEntryAttributes channelFileAttributes =
+                        Files.readAttributes(channelFile, ArArkivoEntryAttributes.class);
+                PosixFileAttributes channelFilePosixAttributes =
+                        Files.readAttributes(channelFile, PosixFileAttributes.class);
+                assertArrayEquals(channelContent, Files.readAllBytes(channelFile));
+                assertEquals(0100640, channelFileAttributes.mode());
+                assertEquals(channelFilePermissions, channelFilePosixAttributes.permissions());
+
+                Path link = fileSystem.getPath("/dir/link");
+                ArArkivoEntryAttributes linkAttributes = Files.readAttributes(link, ArArkivoEntryAttributes.class);
+                PosixFileAttributes linkPosixAttributes = Files.readAttributes(link, PosixFileAttributes.class);
+                assertEquals(true, linkAttributes.isSymbolicLink());
+                assertEquals(0120754, linkAttributes.mode());
+                assertEquals(linkPermissions, linkPosixAttributes.permissions());
+                assertEquals("hello.txt", Files.readSymbolicLink(link).toString());
+                assertEquals("hello.txt", Files.readString(link));
+            }
         } finally {
             deleteTemporaryArchive(archivePath);
         }
@@ -305,15 +731,16 @@ public final class ArArkivoStreamingReaderTest {
         }
     }
 
-    /// Verifies that the streaming writer rejects unsafe paths and unsupported entry types.
+    /// Verifies that the streaming writer rejects unsafe paths.
     @Test
-    public void writerRejectsUnsafePathsAndUnsupportedEntryTypes() throws IOException {
+    public void writerRejectsUnsafePaths() throws IOException {
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(new ByteArrayOutputStream())) {
             assertThrows(IllegalArgumentException.class, () -> writer.beginFile("../evil.txt"));
             assertThrows(IllegalArgumentException.class, () -> writer.beginFile("/absolute.txt"));
             assertThrows(IllegalArgumentException.class, () -> writer.beginFile("C:/evil.txt"));
-            assertThrows(UnsupportedOperationException.class, () -> writer.beginDirectory("dir"));
-            assertThrows(UnsupportedOperationException.class, () -> writer.beginSymbolicLink("link", "target"));
+            assertThrows(IllegalArgumentException.class, () -> writer.beginDirectory("../dir"));
+            assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink("../link", "target"));
+            assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink("link", ""));
         }
     }
 

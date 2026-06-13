@@ -30,8 +30,23 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     /// The AR member header trailer.
     private static final byte @Unmodifiable [] MEMBER_TRAILER = new byte[]{'`', '\n'};
 
+    /// The empty AR member body.
+    private static final byte @Unmodifiable [] EMPTY_BODY = new byte[0];
+
     /// The default regular member mode.
     private static final int DEFAULT_FILE_MODE = 0100644;
+
+    /// The default directory member mode.
+    private static final int DEFAULT_DIRECTORY_MODE = 040755;
+
+    /// The default symbolic link member mode.
+    private static final int DEFAULT_SYMBOLIC_LINK_MODE = 0120777;
+
+    /// Sentinel used when the member body size is not known before writing.
+    private static final long UNKNOWN_SIZE = -1L;
+
+    /// The largest AR member size representable by the fixed-width header field.
+    private static final long MAX_MEMBER_SIZE = 9_999_999_999L;
 
     /// The backing archive output stream.
     private final OutputStream output;
@@ -48,8 +63,8 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     /// The pending member that has not yet been committed.
     private @Nullable PendingMember pendingMember;
 
-    /// The open member body stream that will commit a file member when closed.
-    private @Nullable MemberBodyOutputStream currentBody;
+    /// The open member body stream that will finish a file member when closed.
+    private @Nullable OutputStream currentBody;
 
     /// Creates a streaming AR writer.
     public ArArkivoStreamingWriterImpl(OutputStream output) {
@@ -66,24 +81,43 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         if (currentBody != null) {
             throw new IllegalStateException("An AR streaming member body is still open");
         }
-        pendingMember = new PendingMember(memberPathText(path));
+        pendingMember = new PendingMember(memberPathText(path), DEFAULT_FILE_MODE, MemberKind.REGULAR_FILE, null);
     }
 
-    /// AR archives do not represent directory entries.
+    /// Begins a pending directory AR member for the given logical archive path.
     @Override
     public void beginDirectory(String path) throws IOException {
         ensureOpen();
-        Objects.requireNonNull(path, "path");
-        throw new UnsupportedOperationException("AR streaming writer does not support directory members");
+        if (pendingMember != null) {
+            throw new IllegalStateException("An AR streaming member is already pending");
+        }
+        if (currentBody != null) {
+            throw new IllegalStateException("An AR streaming member body is still open");
+        }
+        pendingMember = new PendingMember(
+                memberPathText(path),
+                DEFAULT_DIRECTORY_MODE,
+                MemberKind.DIRECTORY,
+                EMPTY_BODY
+        );
     }
 
-    /// AR archives do not represent symbolic link entries.
+    /// Begins a pending symbolic link AR member for the given logical archive path and target path text.
     @Override
     public void beginSymbolicLink(String path, String target) throws IOException {
         ensureOpen();
-        Objects.requireNonNull(path, "path");
-        Objects.requireNonNull(target, "target");
-        throw new UnsupportedOperationException("AR streaming writer does not support symbolic link members");
+        if (pendingMember != null) {
+            throw new IllegalStateException("An AR streaming member is already pending");
+        }
+        if (currentBody != null) {
+            throw new IllegalStateException("An AR streaming member body is still open");
+        }
+        pendingMember = new PendingMember(
+                memberPathText(path),
+                DEFAULT_SYMBOLIC_LINK_MODE,
+                MemberKind.SYMBOLIC_LINK,
+                linkTargetText(target).getBytes(StandardCharsets.UTF_8)
+        );
     }
 
     /// Returns an attribute view used to configure the current pending entry before it is committed.
@@ -103,8 +137,10 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         ensureOpen();
         PendingMember member = requirePendingMember();
         member.ensurePending();
+        byte @Unmodifiable [] body = member.fixedBodyOrEmpty();
+        ensureMemberBodySize(member, body.length);
         pendingMember = null;
-        writeMember(member, new byte[0]);
+        writeMember(member, body);
     }
 
     /// Opens a writable channel for the current pending member and commits it when the channel is closed.
@@ -119,8 +155,21 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         ensureOpen();
         PendingMember member = requirePendingMember();
         member.ensurePending();
+        if (member.kind() != MemberKind.REGULAR_FILE) {
+            throw new IllegalStateException("AR " + member.kind().description() + " entries cannot open a body stream");
+        }
+        long expectedSize = member.attributes.expectedSize();
+        if (expectedSize != UNKNOWN_SIZE) {
+            MemberLayout layout = memberLayout(member, expectedSize);
+            pendingMember = null;
+            writeMemberPrefix(member, layout);
+            DirectMemberBodyOutputStream body = new DirectMemberBodyOutputStream(member, layout);
+            currentBody = body;
+            return body;
+        }
+
         pendingMember = null;
-        MemberBodyOutputStream body = new MemberBodyOutputStream(member);
+        BufferedMemberBodyOutputStream body = new BufferedMemberBodyOutputStream(member);
         currentBody = body;
         return body;
     }
@@ -133,7 +182,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         }
 
         IOException failure = null;
-        MemberBodyOutputStream body = currentBody;
+        OutputStream body = currentBody;
         if (body != null) {
             try {
                 body.close();
@@ -147,7 +196,9 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
             pendingMember = null;
             try {
                 member.ensurePending();
-                writeMember(member, new byte[0]);
+                byte @Unmodifiable [] memberBody = member.fixedBodyOrEmpty();
+                ensureMemberBodySize(member, memberBody.length);
+                writeMember(member, memberBody);
             } catch (IOException exception) {
                 pendingMember = member;
                 failure = exception;
@@ -188,31 +239,63 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         return member;
     }
 
+    /// Ensures that a pending member's actual body size matches any configured size.
+    private void ensureMemberBodySize(PendingMember member, long actualSize) throws IOException {
+        long expectedSize = member.attributes.expectedSize();
+        if (expectedSize != UNKNOWN_SIZE && expectedSize != actualSize) {
+            throw new IOException("AR member body size does not match configured size for " + member.path);
+        }
+    }
+
     /// Writes one AR member, including any inline BSD long name prefix.
     private void writeMember(PendingMember member, byte[] body) throws IOException {
-        member.committed = true;
-        ensureGlobalHeader();
-        byte[] pathBytes = member.path.getBytes(StandardCharsets.UTF_8);
-        String identifier = standardIdentifier(member.path);
-        byte[] storedBody = body;
-        if (identifier == null) {
-            identifier = "#1/" + pathBytes.length;
-            storedBody = new byte[pathBytes.length + body.length];
-            System.arraycopy(pathBytes, 0, storedBody, 0, pathBytes.length);
-            System.arraycopy(body, 0, storedBody, pathBytes.length, body.length);
+        MemberLayout layout = memberLayout(member, body.length);
+        writeMemberPrefix(member, layout);
+        output.write(body);
+        writeMemberPadding(layout.storedSize());
+    }
+
+    /// Calculates the AR header layout for a member body.
+    private MemberLayout memberLayout(PendingMember member, long bodySize) throws IOException {
+        if (bodySize < 0L) {
+            throw new IOException("AR member body size must not be negative");
         }
 
+        byte[] pathBytes = member.path.getBytes(StandardCharsets.UTF_8);
+        String identifier = standardIdentifier(member.path);
+        byte[] namePrefix = new byte[0];
+        long storedSize = bodySize;
+        if (identifier == null) {
+            identifier = "#1/" + pathBytes.length;
+            namePrefix = pathBytes;
+            storedSize = bodySize + pathBytes.length;
+            if (storedSize < bodySize) {
+                throw new IOException("AR member size field is too wide");
+            }
+        }
+        requireMemberSize(storedSize);
+        return new MemberLayout(identifier, namePrefix, bodySize, storedSize);
+    }
+
+    /// Writes the AR member header and any BSD inline long-name prefix.
+    private void writeMemberPrefix(PendingMember member, MemberLayout layout) throws IOException {
+        member.committed = true;
+        ensureGlobalHeader();
         PendingArEntryAttributeView attributes = member.attributes;
         writeMemberHeader(
-                identifier,
+                layout.identifier(),
                 timestampSeconds(attributes.lastModifiedTime()),
                 attributes.userId(),
                 attributes.groupId(),
                 attributes.mode(),
-                storedBody.length
+                layout.storedSize()
         );
-        output.write(storedBody);
-        if ((storedBody.length & 1) != 0) {
+        output.write(layout.namePrefix());
+    }
+
+    /// Writes the AR member padding byte when the stored member size is odd.
+    private void writeMemberPadding(long storedSize) throws IOException {
+        if ((storedSize & 1L) != 0L) {
             output.write('\n');
         }
     }
@@ -232,14 +315,14 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
             long userId,
             long groupId,
             int mode,
-            int size
+            long size
     ) throws IOException {
         writeField(identifier, 16, "identifier");
         writeField(Long.toString(timestamp), 12, "timestamp");
         writeField(Long.toString(userId), 6, "user id");
         writeField(Long.toString(groupId), 6, "group id");
         writeField(Integer.toOctalString(mode), 8, "mode");
-        writeField(Integer.toString(size), 10, "size");
+        writeField(Long.toString(size), 10, "size");
         output.write(MEMBER_TRAILER);
     }
 
@@ -252,6 +335,13 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         output.write(bytes);
         for (int index = bytes.length; index < width; index++) {
             output.write(' ');
+        }
+    }
+
+    /// Ensures that a stored AR member size fits the fixed-width size field.
+    private static void requireMemberSize(long size) throws IOException {
+        if (size > MAX_MEMBER_SIZE) {
+            throw new IOException("AR member size field is too wide");
         }
     }
 
@@ -312,6 +402,15 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         return builder.toString();
     }
 
+    /// Converts a symbolic link target to AR member body text.
+    private static String linkTargetText(String target) {
+        Objects.requireNonNull(target, "target");
+        if (target.isEmpty()) {
+            throw new IllegalArgumentException("AR symbolic link target is empty");
+        }
+        return target;
+    }
+
     /// Ensures this writer is still open.
     private void ensureOpen() throws IOException {
         if (!open) {
@@ -319,21 +418,76 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         }
     }
 
+    /// Stores the encoded header layout for one AR member.
+    ///
+    /// @param identifier the fixed-width header identifier
+    /// @param namePrefix the BSD inline long-name prefix bytes written before the logical body
+    /// @param bodySize   the logical member body size
+    /// @param storedSize the complete stored member size, including any inline name prefix
+    @NotNullByDefault
+    private record MemberLayout(
+            String identifier,
+            byte @Unmodifiable [] namePrefix,
+            long bodySize,
+            long storedSize
+    ) {
+        /// Creates an AR member layout.
+        private MemberLayout {
+            Objects.requireNonNull(identifier, "identifier");
+            namePrefix = Objects.requireNonNull(namePrefix, "namePrefix").clone();
+        }
+    }
+
+    /// Describes the logical kind of pending AR member.
+    @NotNullByDefault
+    private enum MemberKind {
+        /// A regular file member whose body can be streamed by callers.
+        REGULAR_FILE("regular file"),
+
+        /// A directory member with a fixed empty body.
+        DIRECTORY("directory"),
+
+        /// A symbolic link member whose body stores the link target text.
+        SYMBOLIC_LINK("symbolic link");
+
+        /// The phrase used in diagnostics for this member kind.
+        private final String description;
+
+        /// Creates a member kind.
+        MemberKind(String description) {
+            this.description = Objects.requireNonNull(description, "description");
+        }
+
+        /// Returns the phrase used in diagnostics for this member kind.
+        private String description() {
+            return description;
+        }
+    }
+
     /// Stores a pending AR member.
+    @NotNullByDefault
     private final class PendingMember {
         /// The normalized logical member path.
         private final String path;
 
+        /// The logical member kind.
+        private final MemberKind kind;
+
         /// The pending AR member attribute view.
         private final PendingArEntryAttributeView attributes;
+
+        /// The fixed member body, or `null` when callers stream the body.
+        private final byte @Nullable @Unmodifiable [] fixedBody;
 
         /// Whether this member has already been committed.
         private boolean committed;
 
         /// Creates a pending AR member.
-        private PendingMember(String path) {
+        private PendingMember(String path, int initialMode, MemberKind kind, byte @Nullable [] fixedBody) {
             this.path = Objects.requireNonNull(path, "path");
-            this.attributes = new PendingArEntryAttributeView(this);
+            this.kind = Objects.requireNonNull(kind, "kind");
+            this.attributes = new PendingArEntryAttributeView(this, initialMode);
+            this.fixedBody = fixedBody != null ? fixedBody.clone() : null;
         }
 
         /// Ensures this member can still be configured.
@@ -341,6 +495,28 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
             if (committed || pendingMember != this) {
                 throw new IllegalStateException("AR streaming member has already been committed");
             }
+        }
+
+        /// Returns whether this pending member has a fixed body.
+        private boolean hasFixedBody() {
+            return fixedBody != null;
+        }
+
+        /// Returns the logical member kind.
+        private MemberKind kind() {
+            return kind;
+        }
+
+        /// Returns the fixed member body size, or zero for streamable members.
+        private long fixedBodySize() {
+            byte @Nullable @Unmodifiable [] body = fixedBody;
+            return body != null ? body.length : 0L;
+        }
+
+        /// Returns the fixed member body, or an empty body for streamable members.
+        private byte @Unmodifiable [] fixedBodyOrEmpty() {
+            byte @Nullable @Unmodifiable [] body = fixedBody;
+            return body != null ? body : EMPTY_BODY;
         }
     }
 
@@ -360,11 +536,15 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         private long groupId;
 
         /// The member POSIX mode bits.
-        private int mode = DEFAULT_FILE_MODE;
+        private int mode;
+
+        /// The expected member body size, or the unknown-size sentinel.
+        private long expectedSize = UNKNOWN_SIZE;
 
         /// Creates a pending AR member attribute view.
-        private PendingArEntryAttributeView(PendingMember member) {
+        private PendingArEntryAttributeView(PendingMember member, int initialMode) {
             this.member = Objects.requireNonNull(member, "member");
+            this.mode = initialMode;
         }
 
         /// Reads the pending AR-specific member attributes.
@@ -413,7 +593,27 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
                 throw new IllegalArgumentException("mode must not be negative");
             }
             member.ensurePending();
+            if (member.kind() == MemberKind.DIRECTORY && !ArPosixSupport.isDirectory(mode)) {
+                throw new IllegalArgumentException("mode must describe an AR directory");
+            }
+            if (member.kind() == MemberKind.SYMBOLIC_LINK && !ArPosixSupport.isSymbolicLink(mode)) {
+                throw new IllegalArgumentException("mode must describe an AR symbolic link");
+            }
             this.mode = mode;
+        }
+
+        /// Sets the expected member data size before the body stream is opened.
+        @Override
+        public void setSize(long size) throws IOException {
+            if (size < 0L) {
+                throw new IllegalArgumentException("size must not be negative");
+            }
+            member.ensurePending();
+            if (member.hasFixedBody() && size != member.fixedBodySize()) {
+                throw new IOException("AR member body size does not match configured size for " + member.path);
+            }
+            memberLayout(member, size);
+            this.expectedSize = size;
         }
 
         /// Returns the member last modified timestamp.
@@ -434,6 +634,16 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         /// Returns the member POSIX mode bits.
         private int mode() {
             return mode;
+        }
+
+        /// Returns the configured expected member data size, or the unknown-size sentinel.
+        private long expectedSize() {
+            return expectedSize;
+        }
+
+        /// Returns the visible pending member data size.
+        private long size() {
+            return expectedSize == UNKNOWN_SIZE ? member.fixedBodySize() : expectedSize;
         }
     }
 
@@ -507,31 +717,31 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         /// Returns whether this pending member is a regular file.
         @Override
         public boolean isRegularFile() {
-            return true;
+            return ArPosixSupport.isRegularFile(attributes.mode());
         }
 
         /// Returns whether this pending member is a directory.
         @Override
         public boolean isDirectory() {
-            return false;
+            return ArPosixSupport.isDirectory(attributes.mode());
         }
 
         /// Returns whether this pending member is a symbolic link.
         @Override
         public boolean isSymbolicLink() {
-            return false;
+            return ArPosixSupport.isSymbolicLink(attributes.mode());
         }
 
         /// Returns whether this pending member has another file type.
         @Override
         public boolean isOther() {
-            return false;
+            return ArPosixSupport.isOther(attributes.mode());
         }
 
         /// Returns the pending member data size.
         @Override
         public long size() {
-            return 0L;
+            return attributes.size();
         }
 
         /// Returns no stable file key for a pending streaming member.
@@ -542,7 +752,8 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     }
 
     /// Buffers one member body before committing its AR header and body.
-    private final class MemberBodyOutputStream extends ByteArrayOutputStream {
+    @NotNullByDefault
+    private final class BufferedMemberBodyOutputStream extends ByteArrayOutputStream {
         /// The member metadata to commit.
         private final PendingMember member;
 
@@ -552,8 +763,8 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         /// Whether this stream has committed its body successfully.
         private boolean committed;
 
-        /// Creates a member body output stream.
-        private MemberBodyOutputStream(PendingMember member) {
+        /// Creates a buffered member body output stream.
+        private BufferedMemberBodyOutputStream(PendingMember member) {
             this.member = member;
         }
 
@@ -592,6 +803,90 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
             }
             if (closed) {
                 throw new IllegalStateException("AR member body stream is closed");
+            }
+        }
+    }
+
+    /// Writes a known-size member body directly to the archive output stream.
+    @NotNullByDefault
+    private final class DirectMemberBodyOutputStream extends OutputStream {
+        /// The member metadata being written.
+        private final PendingMember member;
+
+        /// The expected logical body size.
+        private final long expectedSize;
+
+        /// The complete stored member size, including any inline name prefix.
+        private final long storedSize;
+
+        /// The number of logical body bytes written so far.
+        private long written;
+
+        /// Whether this stream has been closed.
+        private boolean closed;
+
+        /// Whether this stream has finished its member successfully.
+        private boolean committed;
+
+        /// Creates a direct member body output stream.
+        private DirectMemberBodyOutputStream(PendingMember member, MemberLayout layout) {
+            this.member = Objects.requireNonNull(member, "member");
+            this.expectedSize = layout.bodySize();
+            this.storedSize = layout.storedSize();
+        }
+
+        /// Writes one body byte directly to the archive output.
+        @Override
+        public void write(int value) throws IOException {
+            ensureWritable();
+            if (written == expectedSize) {
+                throw memberTooLarge();
+            }
+            output.write(value);
+            written++;
+        }
+
+        /// Writes body bytes directly to the archive output.
+        @Override
+        public void write(byte[] bytes, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, bytes.length);
+            ensureWritable();
+            if (length > expectedSize - written) {
+                throw memberTooLarge();
+            }
+            output.write(bytes, offset, length);
+            written += length;
+        }
+
+        /// Closes this body stream and writes member padding after an exact-size body.
+        @Override
+        public void close() throws IOException {
+            if (committed) {
+                return;
+            }
+            closed = true;
+            if (written != expectedSize) {
+                throw new IOException("AR member body size does not match configured size for " + member.path);
+            }
+            writeMemberPadding(storedSize);
+            committed = true;
+            if (currentBody == this) {
+                currentBody = null;
+            }
+        }
+
+        /// Creates an exception for a body larger than the configured size.
+        private IOException memberTooLarge() {
+            return new IOException("AR member body exceeds configured size for " + member.path);
+        }
+
+        /// Ensures this body stream can still accept bytes.
+        private void ensureWritable() throws IOException {
+            if (!open) {
+                throw new IOException("AR streaming writer is closed");
+            }
+            if (closed) {
+                throw new IOException("AR member body stream is closed");
             }
         }
     }

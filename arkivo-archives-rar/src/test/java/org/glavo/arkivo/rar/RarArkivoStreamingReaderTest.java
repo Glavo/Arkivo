@@ -17,15 +17,23 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.DirectoryStream;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.ReadOnlyFileSystemException;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileOwnerAttributeView;
 import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.GroupPrincipal;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.UserPrincipal;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -78,6 +86,7 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals(true, reader.next());
             RarArkivoEntryAttributes file = reader.readAttributes(RarArkivoEntryAttributes.class);
             BasicFileAttributes basicFile = reader.readAttributes(BasicFileAttributes.class);
+            PosixFileAttributes posixFile = reader.readAttributes(PosixFileAttributes.class);
             paths.add(file.path());
             assertEquals("dir/hello.txt", file.path());
             assertEquals(true, file.isRegularFile());
@@ -94,6 +103,17 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals("staff", file.groupName());
             assertEquals(1000, file.userId());
             assertEquals(1001, file.groupId());
+            assertEquals("alice", posixFile.owner().getName());
+            assertEquals("staff", posixFile.group().getName());
+            assertEquals(
+                    Set.of(
+                            PosixFilePermission.OWNER_READ,
+                            PosixFilePermission.OWNER_WRITE,
+                            PosixFilePermission.GROUP_READ,
+                            PosixFilePermission.OTHERS_READ
+                    ),
+                    posixFile.permissions()
+            );
             try (var input = reader.openInputStream()) {
                 assertArrayEquals(first, input.readAllBytes());
             }
@@ -273,6 +293,12 @@ public final class RarArkivoStreamingReaderTest {
     public void opensStoredEntriesAsReadOnlyFileSystem() throws IOException {
         byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
         byte[] backslashContent = "backslash path".getBytes(StandardCharsets.UTF_8);
+        Set<PosixFilePermission> filePermissions = Set.of(
+                PosixFilePermission.OWNER_READ,
+                PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.GROUP_READ,
+                PosixFilePermission.OTHERS_READ
+        );
         byte[] splitFirstPart = "split ".getBytes(StandardCharsets.UTF_8);
         byte[] splitSecondPart = "content".getBytes(StandardCharsets.UTF_8);
         byte[] splitContent = concatenate(splitFirstPart, splitSecondPart);
@@ -282,6 +308,8 @@ public final class RarArkivoStreamingReaderTest {
             hash[index] = (byte) index;
         }
         Path archivePath = createTemporaryArchivePath("rar-fs-");
+        Path copiedDirectory = archivePath.getParent().resolve("copied-dir");
+        Path existingFile = archivePath.getParent().resolve("existing-file");
         Files.write(archivePath, archive(
                 directory("dir/", 1_700_000_000L, 040755),
                 storedFile(
@@ -345,12 +373,66 @@ public final class RarArkivoStreamingReaderTest {
             Path directory = fileSystem.getPath("/dir");
             BasicFileAttributes directoryAttributes = Files.readAttributes(directory, BasicFileAttributes.class);
             assertEquals(true, directoryAttributes.isDirectory());
+            Files.copy(directory, copiedDirectory);
+            assertEquals(true, Files.isDirectory(copiedDirectory));
+            assertThrows(FileAlreadyExistsException.class, () -> Files.copy(directory, copiedDirectory));
+            Files.copy(directory, copiedDirectory, StandardCopyOption.REPLACE_EXISTING);
+            Files.writeString(existingFile, "existing", StandardCharsets.UTF_8);
+            Files.copy(directory, existingFile, StandardCopyOption.REPLACE_EXISTING);
+            assertEquals(true, Files.isDirectory(existingFile));
 
             Path file = fileSystem.getPath("/dir/hello.txt");
             RarArkivoEntryAttributes fileAttributes = Files.readAttributes(file, RarArkivoEntryAttributes.class);
+            RarArkivoEntryAttributeView rarView = Objects.requireNonNull(Files.getFileAttributeView(
+                    file,
+                    RarArkivoEntryAttributeView.class
+            ));
             assertEquals(true, fileAttributes.isRegularFile());
             assertEquals(content.length, fileAttributes.size());
             assertEquals("alice", fileAttributes.userName());
+            assertEquals("rar", rarView.name());
+            assertEquals("dir/hello.txt", rarView.readAttributes().path());
+            assertEquals("alice", rarView.readAttributes().userName());
+            assertArrayEquals(hash, rarView.readAttributes().blake2spHash());
+            PosixFileAttributes posixAttributes = Files.readAttributes(file, PosixFileAttributes.class);
+            assertEquals("alice", posixAttributes.owner().getName());
+            assertEquals("staff", posixAttributes.group().getName());
+            assertEquals(filePermissions, posixAttributes.permissions());
+            FileOwnerAttributeView ownerView =
+                    Objects.requireNonNull(Files.getFileAttributeView(file, FileOwnerAttributeView.class));
+            assertEquals("owner", ownerView.name());
+            assertEquals("alice", ownerView.getOwner().getName());
+            assertThrows(ReadOnlyFileSystemException.class, () -> ownerView.setOwner(() -> "other-user"));
+            PosixFileAttributeView posixView =
+                    Objects.requireNonNull(Files.getFileAttributeView(file, PosixFileAttributeView.class));
+            assertEquals("posix", posixView.name());
+            assertEquals(filePermissions, posixView.readAttributes().permissions());
+            assertEquals("alice", posixView.getOwner().getName());
+            assertThrows(ReadOnlyFileSystemException.class, () -> posixView.setGroup(() -> "other-group"));
+            assertThrows(
+                    ReadOnlyFileSystemException.class,
+                    () -> posixView.setPermissions(Set.<PosixFilePermission>of())
+            );
+            assertThrows(ReadOnlyFileSystemException.class, () -> rarView.setTimes(
+                    FileTime.fromMillis(1_700_000_030_000L),
+                    null,
+                    null
+            ));
+            var fileStore = Files.getFileStore(file);
+            assertEquals(fileStore.name(), fileStore.getAttribute("name"));
+            assertEquals(fileStore.type(), fileStore.getAttribute("type"));
+            assertEquals(Boolean.valueOf(fileStore.isReadOnly()), fileStore.getAttribute("basic:readOnly"));
+            assertEquals(Long.valueOf(fileStore.getTotalSpace()), fileStore.getAttribute("totalSpace"));
+            assertEquals(Long.valueOf(fileStore.getUsableSpace()), fileStore.getAttribute("usableSpace"));
+            assertEquals(Long.valueOf(fileStore.getUnallocatedSpace()), fileStore.getAttribute("unallocatedSpace"));
+            assertThrows(UnsupportedOperationException.class, () -> fileStore.getAttribute("rar:type"));
+            assertThrows(UnsupportedOperationException.class, () -> fileStore.getAttribute("missing"));
+            assertEquals(true, fileStore.supportsFileAttributeView(RarArkivoEntryAttributeView.class));
+            assertEquals(true, fileStore.supportsFileAttributeView(FileOwnerAttributeView.class));
+            assertEquals(true, fileStore.supportsFileAttributeView(PosixFileAttributeView.class));
+            assertEquals(true, fileStore.supportsFileAttributeView("rar"));
+            assertEquals(true, fileStore.supportsFileAttributeView("owner"));
+            assertEquals(true, fileStore.supportsFileAttributeView("posix"));
             assertArrayEquals(content, Files.readAllBytes(file));
 
             Path backslashFile = fileSystem.getPath("/windows/path/backslash.txt");
@@ -398,6 +480,16 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals("staff", selectedRarAttributes.get("groupName"));
             assertEquals(1000L, selectedRarAttributes.get("userId"));
             assertEquals(1001L, selectedRarAttributes.get("groupId"));
+
+            Map<String, Object> ownerNamedAttributes = Files.readAttributes(file, "owner:owner");
+            assertEquals("alice", ((UserPrincipal) ownerNamedAttributes.get("owner")).getName());
+
+            Map<String, Object> posixNamedAttributes =
+                    Files.readAttributes(file, "posix:owner,group,permissions,isRegularFile");
+            assertEquals("alice", ((UserPrincipal) posixNamedAttributes.get("owner")).getName());
+            assertEquals("staff", ((GroupPrincipal) posixNamedAttributes.get("group")).getName());
+            assertEquals(filePermissions, posixNamedAttributes.get("permissions"));
+            assertEquals(true, posixNamedAttributes.get("isRegularFile"));
 
             byte[] namedHash = Objects.requireNonNull(
                     (byte[]) Files.readAttributes(file, "rar:blake2spHash").get("blake2spHash"),
@@ -468,6 +560,8 @@ public final class RarArkivoStreamingReaderTest {
         }
 
         assertThrows(ClosedFileSystemException.class, () -> fileSystem.getPath("/dir"));
+        Files.deleteIfExists(existingFile);
+        Files.deleteIfExists(copiedDirectory);
         deleteTemporaryArchive(archivePath);
     }
 
@@ -518,6 +612,159 @@ public final class RarArkivoStreamingReaderTest {
                 assertEquals(true, attributes.continuesInNextVolume());
                 assertThrows(UnsupportedOperationException.class, splitFile::toUri);
 
+                assertArrayEquals(
+                        "after".getBytes(StandardCharsets.UTF_8),
+                        Files.readAllBytes(fileSystem.getPath("/after.txt"))
+                );
+            }
+        } finally {
+            Files.deleteIfExists(secondVolume);
+            deleteTemporaryArchive(firstVolume);
+        }
+    }
+
+    /// Verifies that stored RAR4 entries split across explicit archive volumes can be read.
+    @Test
+    public void opensStoredRar4SplitEntryFromVolumeSource() throws IOException {
+        byte[] firstPart = "rar4 volume ".getBytes(StandardCharsets.UTF_8);
+        byte[] secondPart = "source".getBytes(StandardCharsets.UTF_8);
+        byte[] content = concatenate(firstPart, secondPart);
+        long contentCrc32 = crc32(content);
+        Path firstVolume = createTemporaryArchivePath("rar4-volumes-");
+        Path secondVolume = firstVolume.getParent().resolve("sample.part2.rar");
+        Files.write(firstVolume, rar4ArchiveVolume(false, splitStoredFilePart(
+                "split.txt",
+                1_700_000_000L,
+                0100644,
+                content.length,
+                contentCrc32,
+                firstPart,
+                false,
+                true
+        )));
+        Files.write(secondVolume, rar4ArchiveVolume(
+                true,
+                splitStoredFilePart(
+                        "split.txt",
+                        1_700_000_000L,
+                        0100644,
+                        content.length,
+                        contentCrc32,
+                        secondPart,
+                        true,
+                        false
+                ),
+                storedFile("after.txt", 1_700_000_001L, 0100644, "after".getBytes(StandardCharsets.UTF_8), null)
+        ));
+
+        try {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(ArkivoVolumeSource.of(List.of(
+                    firstVolume,
+                    secondVolume
+            )))) {
+                Path splitFile = fileSystem.getPath("/split.txt");
+                assertArrayEquals(content, Files.readAllBytes(splitFile));
+                RarArkivoEntryAttributes attributes = Files.readAttributes(splitFile, RarArkivoEntryAttributes.class);
+                assertEquals(firstPart.length, attributes.packedSize());
+                assertEquals(content.length, attributes.unpackedSize());
+                assertEquals(true, attributes.continuesInNextVolume());
+
+                assertArrayEquals(
+                        "after".getBytes(StandardCharsets.UTF_8),
+                        Files.readAllBytes(fileSystem.getPath("/after.txt"))
+                );
+            }
+        } finally {
+            Files.deleteIfExists(secondVolume);
+            deleteTemporaryArchive(firstVolume);
+        }
+    }
+
+    /// Verifies that stored RAR5 entries can be read from conventional `partN.rar` paths.
+    @Test
+    public void opensStoredSplitEntryFromPartPath() throws IOException {
+        byte[] firstPart = "part path ".getBytes(StandardCharsets.UTF_8);
+        byte[] secondPart = "source".getBytes(StandardCharsets.UTF_8);
+        byte[] content = concatenate(firstPart, secondPart);
+        long contentCrc32 = crc32(content);
+        Path firstVolume = createTemporaryArchivePath("rar-part-path-").resolveSibling("sample.part1.rar");
+        Path secondVolume = firstVolume.resolveSibling("sample.part2.rar");
+        Files.write(firstVolume, archiveVolume(false, splitStoredFilePart(
+                "split.txt",
+                1_700_000_000L,
+                0100644,
+                content.length,
+                contentCrc32,
+                firstPart,
+                false,
+                true
+        )));
+        Files.write(secondVolume, archiveVolume(
+                true,
+                splitStoredFilePart(
+                        "split.txt",
+                        1_700_000_000L,
+                        0100644,
+                        content.length,
+                        contentCrc32,
+                        secondPart,
+                        true,
+                        false
+                ),
+                storedFile("after.txt", 1_700_000_001L, 0100644, "after".getBytes(StandardCharsets.UTF_8), null)
+        ));
+
+        try {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(firstVolume)) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/split.txt")));
+                assertArrayEquals(
+                        "after".getBytes(StandardCharsets.UTF_8),
+                        Files.readAllBytes(fileSystem.getPath("/after.txt"))
+                );
+            }
+        } finally {
+            Files.deleteIfExists(secondVolume);
+            deleteTemporaryArchive(firstVolume);
+        }
+    }
+
+    /// Verifies that stored RAR4 entries can be read from legacy `.rar` and `.r00` paths.
+    @Test
+    public void opensStoredRar4SplitEntryFromLegacyPath() throws IOException {
+        byte[] firstPart = "rar4 legacy ".getBytes(StandardCharsets.UTF_8);
+        byte[] secondPart = "path".getBytes(StandardCharsets.UTF_8);
+        byte[] content = concatenate(firstPart, secondPart);
+        long contentCrc32 = crc32(content);
+        Path firstVolume = createTemporaryArchivePath("rar4-legacy-path-");
+        Path secondVolume = firstVolume.resolveSibling("sample.r00");
+        Files.write(firstVolume, rar4ArchiveVolume(false, splitStoredFilePart(
+                "split.txt",
+                1_700_000_000L,
+                0100644,
+                content.length,
+                contentCrc32,
+                firstPart,
+                false,
+                true
+        )));
+        Files.write(secondVolume, rar4ArchiveVolume(
+                true,
+                splitStoredFilePart(
+                        "split.txt",
+                        1_700_000_000L,
+                        0100644,
+                        content.length,
+                        contentCrc32,
+                        secondPart,
+                        true,
+                        false
+                ),
+                storedFile("after.txt", 1_700_000_001L, 0100644, "after".getBytes(StandardCharsets.UTF_8), null)
+        ));
+
+        try {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(firstVolume)) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/split.txt")));
                 assertArrayEquals(
                         "after".getBytes(StandardCharsets.UTF_8),
                         Files.readAllBytes(fileSystem.getPath("/after.txt"))
@@ -799,13 +1046,20 @@ public final class RarArkivoStreamingReaderTest {
 
     /// Creates one RAR4 archive.
     private static byte[] rar4Archive(Member... members) throws IOException {
+        return rar4ArchiveVolume(true, members);
+    }
+
+    /// Creates one RAR4 archive volume.
+    private static byte[] rar4ArchiveVolume(boolean includeEndHeader, Member... members) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         output.write(RAR4_SIGNATURE);
         writeRar4Block(output, 0x73, 0, new byte[6], new byte[0]);
         for (Member member : members) {
             writeRar4Member(output, member);
         }
-        writeRar4Block(output, 0x7b, 0, new byte[0], new byte[0]);
+        if (includeEndHeader) {
+            writeRar4Block(output, 0x7b, 0, new byte[0], new byte[0]);
+        }
         return output.toByteArray();
     }
 

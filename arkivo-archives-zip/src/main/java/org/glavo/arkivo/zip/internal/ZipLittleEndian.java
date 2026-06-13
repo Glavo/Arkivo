@@ -89,6 +89,19 @@ final class ZipLittleEndian {
         output.write((int) ((value >>> 24) & 0xff));
     }
 
+    /// Writes a little-endian unsigned 64-bit value representable by a Java `long`.
+    static void writeLong(OutputStream output, long value) throws IOException {
+        requireUInt64(value, "long value");
+        output.write((int) (value & 0xff));
+        output.write((int) ((value >>> 8) & 0xff));
+        output.write((int) ((value >>> 16) & 0xff));
+        output.write((int) ((value >>> 24) & 0xff));
+        output.write((int) ((value >>> 32) & 0xff));
+        output.write((int) ((value >>> 40) & 0xff));
+        output.write((int) ((value >>> 48) & 0xff));
+        output.write((int) ((value >>> 56) & 0xff));
+    }
+
     /// Requires a value to fit in an unsigned 16-bit ZIP field.
     static void requireUInt16(long value, String name) {
         if (value < 0 || value > ZipConstants.UINT16_MAX) {
@@ -100,6 +113,13 @@ final class ZipLittleEndian {
     static void requireUInt32(long value, String name) {
         if (value < 0 || value > ZipConstants.UINT32_MAX) {
             throw new IllegalArgumentException(name + " is out of ZIP32 range");
+        }
+    }
+
+    /// Requires a value to fit in an unsigned 64-bit ZIP field representable by a Java `long`.
+    static void requireUInt64(long value, String name) {
+        if (value < 0) {
+            throw new IllegalArgumentException(name + " is out of ZIP64 range");
         }
     }
 }
