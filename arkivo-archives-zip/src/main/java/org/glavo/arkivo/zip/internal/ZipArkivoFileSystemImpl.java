@@ -32,7 +32,6 @@ import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
-import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.ClosedFileSystemException;
@@ -72,6 +71,7 @@ import java.util.zip.InflaterInputStream;
 
 import static org.glavo.arkivo.zip.internal.ZipConstants.CENTRAL_DIRECTORY_HEADER_SIGNATURE;
 import static org.glavo.arkivo.zip.internal.ZipConstants.DATA_DESCRIPTOR_FLAG;
+import static org.glavo.arkivo.zip.internal.ZipConstants.DATA_DESCRIPTOR_SIGNATURE;
 import static org.glavo.arkivo.zip.internal.ZipConstants.ENCRYPTED_FLAG;
 import static org.glavo.arkivo.zip.internal.ZipConstants.END_OF_CENTRAL_DIRECTORY_SIGNATURE;
 import static org.glavo.arkivo.zip.internal.ZipConstants.LZMA_EOS_MARKER_FLAG;
@@ -111,6 +111,9 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
 
     /// The buffer size used when scanning for the first local file header.
     private static final int ZIP_LOCAL_FILE_HEADER_SCAN_BUFFER_SIZE = 8192;
+
+    /// The largest supported ZIP data descriptor size, including its optional signature.
+    private static final int ZIP_DATA_DESCRIPTOR_MAX_SIZE = 24;
 
     /// The minimum ZIP end of central directory record size.
     private static final int ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE = 22;
@@ -882,7 +885,14 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 return new CentralDirectorySnapshot(
                         index.storageEntries.size(),
                         index.entries.keySet(),
-                        centralDirectoryEntrySnapshots(centralDirectory, config.entryNameEncoding())
+                        centralDirectoryEntrySnapshots(
+                                centralDirectory,
+                                config.entryNameEncoding(),
+                                index,
+                                channel
+                        ),
+                        fileSystem.preambleSize(),
+                        endRecord.archiveComment
                 );
             }
         }
@@ -891,7 +901,9 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Reads raw central directory entries together with their normalized keys.
     private static @Unmodifiable List<CentralDirectoryEntrySnapshot> centralDirectoryEntrySnapshots(
             ByteBuffer centralDirectory,
-            ZipEntryNameEncoding entryNameEncoding
+            ZipEntryNameEncoding entryNameEncoding,
+            ZipIndex index,
+            SeekableByteChannel channel
     ) throws IOException {
         ByteBuffer buffer = centralDirectory.duplicate().order(ByteOrder.LITTLE_ENDIAN);
         ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(entryNameEncoding);
@@ -927,10 +939,133 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             if (key.isEmpty()) {
                 throw new IOException("ZIP entry is missing a path");
             }
-            entries.add(new CentralDirectoryEntrySnapshot(key, readBytes(buffer, offset, nextOffset - offset)));
+            ZipEntryRecord indexedEntry = index.entries.get(key);
+            if (indexedEntry == null) {
+                throw new IOException("ZIP central directory entry is missing from the parsed index: " + decodedPath);
+            }
+            entries.add(new CentralDirectoryEntrySnapshot(
+                    key,
+                    readBytes(buffer, offset, nextOffset - offset),
+                    indexedEntry.localHeaderOffset,
+                    localRecordSize(channel, indexedEntry)
+            ));
             buffer.position(nextOffset);
         }
         return List.copyOf(entries);
+    }
+
+    /// Returns the exact byte size of an entry local header, compressed data, and optional data descriptor.
+    private static long localRecordSize(SeekableByteChannel channel, ZipEntryRecord entry) throws IOException {
+        ByteBuffer header = ByteBuffer.allocate(ZIP_LOCAL_FILE_HEADER_MIN_SIZE).order(ByteOrder.LITTLE_ENDIAN);
+        readFully(channel, entry.localHeaderOffset, header);
+        header.flip();
+        if (header.getInt(0) != LOCAL_FILE_HEADER_SIGNATURE) {
+            throw new IOException("Invalid ZIP local file header");
+        }
+
+        int nameLength = Short.toUnsignedInt(header.getShort(ZIP_LOCAL_FILE_HEADER_NAME_LENGTH_OFFSET));
+        int extraLength = Short.toUnsignedInt(header.getShort(ZIP_LOCAL_FILE_HEADER_EXTRA_LENGTH_OFFSET));
+        long dataOffset = localHeaderVariableOffset(entry.localHeaderOffset, nameLength, "local file data offset");
+        dataOffset = checkedZipOffsetAdd(dataOffset, extraLength, "local file data offset");
+        long recordEnd = checkedZipOffsetAdd(dataOffset, entry.compressedSize, "local file data end");
+        if ((entry.generalPurposeFlags & DATA_DESCRIPTOR_FLAG) != 0) {
+            recordEnd = checkedZipOffsetAdd(
+                    recordEnd,
+                    dataDescriptorSize(channel, recordEnd, entry),
+                    "local record end"
+            );
+        }
+        if (recordEnd > channel.size()) {
+            throw new IOException("ZIP local record extends beyond archive storage");
+        }
+        return recordEnd - entry.localHeaderOffset;
+    }
+
+    /// Returns the exact size of a ZIP32 or ZIP64 data descriptor at the given offset.
+    private static int dataDescriptorSize(
+            SeekableByteChannel channel,
+            long offset,
+            ZipEntryRecord entry
+    ) throws IOException {
+        long remaining = channel.size() - offset;
+        if (remaining < 12) {
+            throw new IOException("ZIP data descriptor is truncated");
+        }
+        int readSize = (int) Math.min(remaining, ZIP_DATA_DESCRIPTOR_MAX_SIZE);
+        ByteBuffer descriptor = ByteBuffer.allocate(readSize).order(ByteOrder.LITTLE_ENDIAN);
+        readFully(channel, offset, descriptor);
+        descriptor.flip();
+
+        boolean preferZip64 = entry.compressedSize > UINT32_MAX
+                || entry.uncompressedSize > UINT32_MAX
+                || ZipExtraFields.find(
+                entry.localExtraData,
+                ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID
+        ) != null;
+        int size;
+        if (preferZip64) {
+            size = matchingDataDescriptorSize(descriptor, entry, true, true);
+            if (size < 0) {
+                size = matchingDataDescriptorSize(descriptor, entry, false, true);
+            }
+            if (size < 0) {
+                size = matchingDataDescriptorSize(descriptor, entry, true, false);
+            }
+            if (size < 0) {
+                size = matchingDataDescriptorSize(descriptor, entry, false, false);
+            }
+        } else {
+            size = matchingDataDescriptorSize(descriptor, entry, true, false);
+            if (size < 0) {
+                size = matchingDataDescriptorSize(descriptor, entry, false, false);
+            }
+            if (size < 0) {
+                size = matchingDataDescriptorSize(descriptor, entry, true, true);
+            }
+            if (size < 0) {
+                size = matchingDataDescriptorSize(descriptor, entry, false, true);
+            }
+        }
+        if (size < 0) {
+            if (entry.directory && entry.compressedSize == 0 && entry.uncompressedSize == 0) {
+                return 0;
+            }
+            throw new IOException(
+                    "ZIP data descriptor does not match central directory metadata: " + entry.path
+            );
+        }
+        return size;
+    }
+
+    /// Returns a matching data descriptor size, or `-1` when the selected layout does not match.
+    private static int matchingDataDescriptorSize(
+            ByteBuffer descriptor,
+            ZipEntryRecord entry,
+            boolean signature,
+            boolean zip64
+    ) {
+        int size = (signature ? Integer.BYTES : 0)
+                + Integer.BYTES
+                + (zip64 ? Long.BYTES * 2 : Integer.BYTES * 2);
+        if (descriptor.remaining() < size) {
+            return -1;
+        }
+
+        ByteBuffer candidate = descriptor.duplicate().order(ByteOrder.LITTLE_ENDIAN);
+        if (signature && candidate.getInt() != DATA_DESCRIPTOR_SIGNATURE) {
+            return -1;
+        }
+        long crc32 = Integer.toUnsignedLong(candidate.getInt());
+        long compressedSize = zip64 ? candidate.getLong() : Integer.toUnsignedLong(candidate.getInt());
+        long uncompressedSize = zip64 ? candidate.getLong() : Integer.toUnsignedLong(candidate.getInt());
+        if (compressedSize < 0 || uncompressedSize < 0) {
+            return -1;
+        }
+        return crc32 == entry.crc32
+                && compressedSize == entry.compressedSize
+                && uncompressedSize == entry.uncompressedSize
+                ? size
+                : -1;
     }
 
     /// Returns an entry record for a path key or throws when the entry is absent.
@@ -1459,8 +1594,13 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             long centralDirectoryOffset = Integer.toUnsignedLong(
                     buffer.getInt(index + ZIP_END_OF_CENTRAL_DIRECTORY_OFFSET_OFFSET)
             );
+            byte[] archiveComment = readBytes(
+                    buffer,
+                    index + ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE,
+                    commentLength
+            );
             if (centralDirectorySize == UINT32_MAX || centralDirectoryOffset == UINT32_MAX) {
-                return readZip64EndRecord(channel, searchOffset + index);
+                return readZip64EndRecord(channel, searchOffset + index, archiveComment);
             }
 
             int centralDirectoryDiskNumber = Short.toUnsignedInt(buffer.getShort(index + 6));
@@ -1477,7 +1617,8 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                     centralDirectorySize,
                     centralDirectoryOffset,
                     actualCentralDirectoryOffset,
-                    actualCentralDirectoryOffset - storedCentralDirectoryOffset
+                    actualCentralDirectoryOffset - storedCentralDirectoryOffset,
+                    archiveComment
             );
         }
 
@@ -1493,7 +1634,11 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     }
 
     /// Reads ZIP64 central directory location from the ZIP64 end records.
-    private static ZipEndRecord readZip64EndRecord(ArchiveChannel channel, long eocdOffset) throws IOException {
+    private static ZipEndRecord readZip64EndRecord(
+            ArchiveChannel channel,
+            long eocdOffset,
+            byte[] archiveComment
+    ) throws IOException {
         long locatorOffset = eocdOffset - ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE;
         if (locatorOffset < 0) {
             throw new IOException("ZIP64 end of central directory locator not found");
@@ -1547,7 +1692,8 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 centralDirectorySize,
                 centralDirectoryOffset,
                 actualCentralDirectoryOffset,
-                actualCentralDirectoryOffset - storedCentralDirectoryOffset
+                actualCentralDirectoryOffset - storedCentralDirectoryOffset,
+                archiveComment
         );
     }
 
@@ -2171,15 +2317,26 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// @param entryCount the number of central directory entries
     /// @param entryNames the normalized entry names already present in the archive
     /// @param entries the raw central directory entries keyed by normalized entry name
+    /// @param preambleSize the number of bytes before the first ZIP local record
+    /// @param archiveComment the raw end of central directory comment bytes
     record CentralDirectorySnapshot(
             long entryCount,
             @Unmodifiable Set<String> entryNames,
-            @Unmodifiable List<CentralDirectoryEntrySnapshot> entries
+            @Unmodifiable List<CentralDirectoryEntrySnapshot> entries,
+            long preambleSize,
+            byte @Unmodifiable [] archiveComment
     ) {
         /// Creates a central directory snapshot.
         CentralDirectorySnapshot {
             entryNames = Set.copyOf(Objects.requireNonNull(entryNames, "entryNames"));
             entries = List.copyOf(Objects.requireNonNull(entries, "entries"));
+            archiveComment = Objects.requireNonNull(archiveComment, "archiveComment").clone();
+        }
+
+        /// Returns a copy of the raw end of central directory comment bytes.
+        @Override
+        public byte @Unmodifiable [] archiveComment() {
+            return archiveComment.clone();
         }
     }
 
@@ -2187,9 +2344,13 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     ///
     /// @param entryName the normalized entry name
     /// @param bytes the raw central directory entry bytes
+    /// @param localHeaderOffset the actual local header offset in physical storage
+    /// @param localRecordSize the exact size of the local header, data, and optional descriptor
     record CentralDirectoryEntrySnapshot(
             String entryName,
-            byte @Unmodifiable [] bytes
+            byte @Unmodifiable [] bytes,
+            long localHeaderOffset,
+            long localRecordSize
     ) {
         /// Creates a central directory entry snapshot.
         CentralDirectoryEntrySnapshot {
@@ -2218,17 +2379,22 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         /// The offset added to ZIP-relative offsets to produce physical storage offsets.
         private final long offsetAdjustment;
 
+        /// The raw end of central directory comment bytes.
+        private final byte @Unmodifiable [] archiveComment;
+
         /// Creates parsed ZIP end record values.
         private ZipEndRecord(
                 long centralDirectorySize,
                 long centralDirectoryOffset,
                 long actualCentralDirectoryOffset,
-                long offsetAdjustment
+                long offsetAdjustment,
+                byte[] archiveComment
         ) {
             this.centralDirectorySize = centralDirectorySize;
             this.centralDirectoryOffset = centralDirectoryOffset;
             this.actualCentralDirectoryOffset = actualCentralDirectoryOffset;
             this.offsetAdjustment = offsetAdjustment;
+            this.archiveComment = Objects.requireNonNull(archiveComment, "archiveComment").clone();
         }
     }
 

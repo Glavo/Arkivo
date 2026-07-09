@@ -66,6 +66,7 @@ import java.nio.file.attribute.UserPrincipalNotFoundException;
 import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -73,7 +74,11 @@ import java.util.Set;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
+import java.util.zip.ZipEntry;
 import java.util.zip.ZipException;
+import java.util.zip.ZipFile;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 
 import javax.crypto.Cipher;
 import javax.crypto.Mac;
@@ -216,6 +221,10 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals("before", Files.readString(fileSystem.getPath("/before.txt"), StandardCharsets.UTF_8));
                 assertEquals("after", Files.readString(fileSystem.getPath("/after.txt"), StandardCharsets.UTF_8));
             }
+            assertEquals(
+                    Map.of("before.txt", "before", "after.txt", "after"),
+                    readSequentialTextEntries(archivePath)
+            );
         } finally {
             deleteTemporaryArchive(archivePath);
         }
@@ -2960,6 +2969,166 @@ public final class ZipArkivoFileSystemTest {
                         fileSystem.getPath("/remove.txt"),
                         StandardCharsets.UTF_8
                 ));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that update mode physically removes deleted, replaced, and transient local records.
+    @Test
+    public void fileSystemUpdateFullyRemovesLocalRecords() throws IOException {
+        Path archivePath = createTemporaryArchivePath("fs-update-compact-");
+        byte[] removedContent = "removed-local-record-secret".getBytes(StandardCharsets.UTF_8);
+        byte[] replacedContent = "replaced-local-record-secret".getBytes(StandardCharsets.UTF_8);
+
+        try {
+            try (ZipOutputStream output = new ZipOutputStream(Files.newOutputStream(archivePath))) {
+                writeStoredZipEntry(output, "replace.txt", replacedContent, null, null);
+                writeStoredZipEntry(output, "remove.txt", removedContent, null, null);
+                writeStoredZipEntry(output, "keep.txt", "keep".getBytes(StandardCharsets.UTF_8), null, null);
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(
+                            ArkivoFileSystem.OPEN_OPTIONS.key(),
+                            Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+                    )
+            )) {
+                Files.writeString(fileSystem.getPath("/replace.txt"), "after", StandardCharsets.UTF_8);
+                Files.delete(fileSystem.getPath("/remove.txt"));
+                Files.writeString(fileSystem.getPath("/transient.txt"), "transient", StandardCharsets.UTF_8);
+                Files.delete(fileSystem.getPath("/transient.txt"));
+                Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
+            }
+
+            assertEquals(
+                    Map.of(
+                            "replace.txt", "after",
+                            "keep.txt", "keep",
+                            "added.txt", "added"
+                    ),
+                    readSequentialTextEntries(archivePath)
+            );
+            byte[] archive = Files.readAllBytes(archivePath);
+            assertEquals(false, containsBytes(archive, removedContent));
+            assertEquals(false, containsBytes(archive, replacedContent));
+            assertEquals(false, containsBytes(archive, "remove.txt".getBytes(StandardCharsets.UTF_8)));
+            assertEquals(false, containsBytes(archive, "transient.txt".getBytes(StandardCharsets.UTF_8)));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that update mode removes orphan records left before a later appended central directory.
+    @Test
+    public void fileSystemUpdateRemovesPriorAppendResidue() throws IOException {
+        Path archivePath = createTemporaryArchivePath("fs-update-residue-");
+        byte[] obsoleteContent = "obsolete-prefix-record-secret".getBytes(StandardCharsets.UTF_8);
+
+        try {
+            byte[] obsoleteArchive = singleStoredZipArchive("obsolete.txt", obsoleteContent);
+            byte[] currentArchive = singleStoredZipArchive(
+                    "keep.txt",
+                    "keep".getBytes(StandardCharsets.UTF_8)
+            );
+            Files.write(archivePath, appendStandaloneZip(obsoleteArchive, currentArchive));
+
+            assertEquals(Map.of("obsolete.txt", "obsolete-prefix-record-secret"), readSequentialTextEntries(archivePath));
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals("keep", Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8));
+                assertThrows(NoSuchFileException.class, () -> Files.readAllBytes(fileSystem.getPath("/obsolete.txt")));
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(
+                            ArkivoFileSystem.OPEN_OPTIONS.key(),
+                            Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+                    )
+            )) {
+                Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
+            }
+
+            assertEquals(
+                    Map.of("keep.txt", "keep", "added.txt", "added"),
+                    readSequentialTextEntries(archivePath)
+            );
+            byte[] rewrittenArchive = Files.readAllBytes(archivePath);
+            assertEquals(false, containsBytes(rewrittenArchive, obsoleteContent));
+            assertEquals(false, containsBytes(
+                    rewrittenArchive,
+                    "obsolete.txt".getBytes(StandardCharsets.UTF_8)
+            ));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a full update rewrite preserves preamble bytes and existing ZIP metadata.
+    @Test
+    public void fileSystemUpdatePreservesPreambleAndZipMetadata() throws IOException {
+        Path archivePath = createTemporaryArchivePath("fs-update-preamble-");
+        byte[] preamble = new byte[]{1, 3, 5, 7, 9};
+        byte[] extraData = new byte[]{0x34, 0x12, 0x02, 0x00, 0x55, 0x66};
+        String entryComment = "entry-comment";
+        String archiveComment = "archive-comment";
+
+        try {
+            ByteArrayOutputStream zipBody = new ByteArrayOutputStream();
+            try (ZipOutputStream output = new ZipOutputStream(zipBody, StandardCharsets.UTF_8)) {
+                output.setComment(archiveComment);
+                writeStoredZipEntry(
+                        output,
+                        "keep.txt",
+                        "keep".getBytes(StandardCharsets.UTF_8),
+                        extraData,
+                        entryComment
+                );
+                writeStoredZipEntry(
+                        output,
+                        "remove.txt",
+                        "remove".getBytes(StandardCharsets.UTF_8),
+                        null,
+                        null
+                );
+            }
+            ByteArrayOutputStream sourceArchive = new ByteArrayOutputStream();
+            sourceArchive.write(preamble);
+            zipBody.writeTo(sourceArchive);
+            Files.write(archivePath, sourceArchive.toByteArray());
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(
+                            ArkivoFileSystem.OPEN_OPTIONS.key(),
+                            Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+                    )
+            )) {
+                Files.delete(fileSystem.getPath("/remove.txt"));
+                Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
+            }
+
+            byte[] rewrittenArchive = Files.readAllBytes(archivePath);
+            assertArrayEquals(preamble, Arrays.copyOf(rewrittenArchive, preamble.length));
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals(preamble.length, fileSystem.preambleSize());
+                assertPreambleContent(preamble, fileSystem);
+                assertEquals("keep", Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8));
+                assertEquals("added", Files.readString(fileSystem.getPath("/added.txt"), StandardCharsets.UTF_8));
+                ZipArkivoEntryAttributes attributes =
+                        Files.readAttributes(fileSystem.getPath("/keep.txt"), ZipArkivoEntryAttributes.class);
+                assertArrayEquals(extraData, attributes.localExtraData());
+                assertArrayEquals(extraData, attributes.centralDirectoryExtraData());
+                assertEquals(entryComment, attributes.comment());
+            }
+            try (ZipFile zipFile = new ZipFile(archivePath.toFile(), StandardCharsets.UTF_8)) {
+                assertEquals(archiveComment, zipFile.getComment());
+                assertEquals(entryComment, zipFile.getEntry("keep.txt").getComment());
+                assertArrayEquals(extraData, zipFile.getEntry("keep.txt").getExtra());
+                assertNull(zipFile.getEntry("remove.txt"));
+                assertNotNull(zipFile.getEntry("added.txt"));
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -6224,6 +6393,110 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Reads all sequential ZIP entries as UTF-8 text through the JDK local-record reader.
+    private static Map<String, String> readSequentialTextEntries(Path archivePath) throws IOException {
+        LinkedHashMap<String, String> entries = new LinkedHashMap<>();
+        try (ZipInputStream input = new ZipInputStream(
+                Files.newInputStream(archivePath),
+                StandardCharsets.UTF_8
+        )) {
+            ZipEntry entry;
+            while ((entry = input.getNextEntry()) != null) {
+                String previous = entries.put(
+                        entry.getName(),
+                        new String(input.readAllBytes(), StandardCharsets.UTF_8)
+                );
+                if (previous != null) {
+                    throw new IOException("Duplicate sequential ZIP entry: " + entry.getName());
+                }
+                input.closeEntry();
+            }
+        }
+        return Map.copyOf(entries);
+    }
+
+    /// Writes one stored JDK ZIP entry with optional extra data and comment metadata.
+    private static void writeStoredZipEntry(
+            ZipOutputStream output,
+            String name,
+            byte[] content,
+            byte @Nullable [] extraData,
+            @Nullable String comment
+    ) throws IOException {
+        CRC32 crc32 = new CRC32();
+        crc32.update(content);
+        ZipEntry entry = new ZipEntry(name);
+        entry.setMethod(ZipEntry.STORED);
+        entry.setSize(content.length);
+        entry.setCompressedSize(content.length);
+        entry.setCrc(crc32.getValue());
+        if (extraData != null) {
+            entry.setExtra(extraData);
+        }
+        if (comment != null) {
+            entry.setComment(comment);
+        }
+        output.putNextEntry(entry);
+        output.write(content);
+        output.closeEntry();
+    }
+
+    /// Returns a complete single-entry stored ZIP archive.
+    private static byte[] singleStoredZipArchive(String name, byte[] content) throws IOException {
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        try (ZipOutputStream output = new ZipOutputStream(archive, StandardCharsets.UTF_8)) {
+            writeStoredZipEntry(output, name, content, null, null);
+        }
+        return archive.toByteArray();
+    }
+
+    /// Appends a standalone ZIP and adjusts its central offsets to the combined physical archive.
+    private static byte[] appendStandaloneZip(byte[] prefix, byte[] appendedArchive) throws IOException {
+        byte[] adjustedArchive = appendedArchive.clone();
+        ByteBuffer buffer = ByteBuffer.wrap(adjustedArchive).order(ByteOrder.LITTLE_ENDIAN);
+        int endOffset = adjustedArchive.length - 22;
+        if (endOffset < 0 || buffer.getInt(endOffset) != 0x06054b50) {
+            throw new IOException("Test ZIP end record not found");
+        }
+        int centralDirectorySize = buffer.getInt(endOffset + 12);
+        int centralDirectoryOffset = buffer.getInt(endOffset + 16);
+        int centralDirectoryEnd = centralDirectoryOffset + centralDirectorySize;
+        for (int offset = centralDirectoryOffset; offset < centralDirectoryEnd; ) {
+            if (buffer.getInt(offset) != 0x02014b50) {
+                throw new IOException("Test ZIP central directory entry not found");
+            }
+            int nameLength = Short.toUnsignedInt(buffer.getShort(offset + 28));
+            int extraLength = Short.toUnsignedInt(buffer.getShort(offset + 30));
+            int commentLength = Short.toUnsignedInt(buffer.getShort(offset + 32));
+            long localHeaderOffset = Integer.toUnsignedLong(buffer.getInt(offset + 42));
+            buffer.putInt(offset + 42, Math.toIntExact(prefix.length + localHeaderOffset));
+            offset += 46 + nameLength + extraLength + commentLength;
+        }
+        buffer.putInt(endOffset + 16, Math.addExact(prefix.length, centralDirectoryOffset));
+
+        byte[] combined = Arrays.copyOf(prefix, prefix.length + adjustedArchive.length);
+        System.arraycopy(adjustedArchive, 0, combined, prefix.length, adjustedArchive.length);
+        return combined;
+    }
+
+    /// Returns whether a byte array contains the given exact byte sequence.
+    private static boolean containsBytes(byte[] bytes, byte[] expected) {
+        if (expected.length == 0) {
+            return true;
+        }
+        int lastStart = bytes.length - expected.length;
+        for (int start = 0; start <= lastStart; start++) {
+            int index = 0;
+            while (index < expected.length && bytes[start + index] == expected[index]) {
+                index++;
+            }
+            if (index == expected.length) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /// Asserts that a read-only channel reports closed state consistently after close.
     private static void assertClosedReadOnlyChannel(SeekableByteChannel channel) throws IOException {
         assertEquals(true, channel.isOpen());
@@ -6386,10 +6659,11 @@ public final class ZipArkivoFileSystemTest {
                 int.class,
                 long.class,
                 long.class,
-                long.class,
-                int.class,
-                long.class,
-                metadata.getClass()
+                 long.class,
+                 int.class,
+                 long.class,
+                 long.class,
+                 metadata.getClass()
         );
         constructor.setAccessible(true);
         return constructor.newInstance(
@@ -6402,9 +6676,10 @@ public final class ZipArkivoFileSystemTest {
                 0L,
                 compressedSize,
                 uncompressedSize,
-                0,
-                localHeaderOffset,
-                metadata
+                 0,
+                 localHeaderOffset,
+                 0L,
+                 metadata
         );
     }
 
