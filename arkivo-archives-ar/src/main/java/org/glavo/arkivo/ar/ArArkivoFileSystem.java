@@ -19,6 +19,8 @@ import java.util.Objects;
 /// Closing a changed update session atomically replaces the source by default; `ArkivoFileSystem.COMMIT_TARGET` can
 /// select another publication policy. AR symbol indexes are omitted from rewritten archives because member offsets
 /// change; callers that require a linker index must rebuild it with a platform tool such as `ranlib`.
+/// Indexed read and update sessions stage member bodies through `ArkivoFileSystem.EDIT_STORAGE`, using temporary files
+/// under the system temporary directory by default. The file system owns and closes the selected edit storage.
 @NotNullByDefault
 public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits ArArkivoFileSystemImpl {
     /// Creates an AR archive file system base instance.
@@ -34,6 +36,7 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
     /// Opens an AR archive file system with environment options.
     ///
     /// `READ` and `WRITE` select update mode. `CREATE` additionally allows a missing source archive.
+    /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for indexed member bodies in read and update modes.
     public static ArArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");

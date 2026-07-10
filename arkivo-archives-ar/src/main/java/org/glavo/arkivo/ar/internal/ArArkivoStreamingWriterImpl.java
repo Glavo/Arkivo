@@ -13,7 +13,9 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributeView;
@@ -121,10 +123,19 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     }
 
     /// Writes an indexed AR member snapshot while preserving its metadata and body.
-    void writeSnapshot(ArArkivoEntryAttributes attributes, byte @Unmodifiable [] body) throws IOException {
+    void writeSnapshot(
+            ArArkivoEntryAttributes attributes,
+            @Nullable ReadableByteChannel body,
+            long bodySize
+    ) throws IOException {
         ensureOpen();
         Objects.requireNonNull(attributes, "attributes");
-        Objects.requireNonNull(body, "body");
+        if (bodySize < 0L) {
+            throw new IllegalArgumentException("AR snapshot body size must not be negative");
+        }
+        if (bodySize > 0L && body == null) {
+            throw new IllegalArgumentException("AR snapshot body channel is required for non-empty content");
+        }
         if (pendingMember != null) {
             throw new IllegalStateException("An AR streaming member is already pending");
         }
@@ -143,11 +154,35 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
             member.attributes.setTimes(attributes.lastModifiedTime(), null, null);
             member.attributes.setUserId(attributes.userId());
             member.attributes.setGroupId(attributes.groupId());
-            member.attributes.setSize(body.length);
+            member.attributes.setSize(bodySize);
         } finally {
             pendingMember = null;
         }
-        writeMember(member, body);
+        MemberLayout layout = memberLayout(member, bodySize);
+        writeMemberPrefix(member, layout);
+        if (bodySize > 0L) {
+            writeBody(Objects.requireNonNull(body, "body"), bodySize);
+        }
+        writeMemberPadding(layout.storedSize());
+    }
+
+    /// Copies exactly one indexed member body to the archive output using bounded memory.
+    private void writeBody(ReadableByteChannel body, long size) throws IOException {
+        ByteBuffer buffer = ByteBuffer.allocate(64 * 1024);
+        long remaining = size;
+        while (remaining > 0L) {
+            buffer.clear();
+            buffer.limit((int) Math.min(remaining, buffer.capacity()));
+            int count = body.read(buffer);
+            if (count < 0) {
+                throw new IOException("AR snapshot body ended before its declared size");
+            }
+            if (count == 0) {
+                continue;
+            }
+            output.write(buffer.array(), 0, count);
+            remaining -= count;
+        }
     }
 
     /// Returns an attribute view used to configure the current pending entry before it is committed.

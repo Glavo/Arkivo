@@ -5,8 +5,10 @@ package org.glavo.arkivo.ar.internal;
 
 import org.glavo.arkivo.ArkivoCommitOutput;
 import org.glavo.arkivo.ArkivoCommitTarget;
+import org.glavo.arkivo.ArkivoEditStorage;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.ArkivoStoredContent;
 import org.glavo.arkivo.ar.ArArkivoEntryAttributeView;
 import org.glavo.arkivo.ar.ArArkivoEntryAttributes;
 import org.glavo.arkivo.ar.ArArkivoFileSystem;
@@ -18,9 +20,9 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -62,11 +64,11 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -83,6 +85,9 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// The marker used when no initial AR mode was requested.
     private static final int UNKNOWN_MODE = -1;
+
+    /// The largest AR member size representable by the fixed-width header field.
+    private static final long MAX_MEMBER_SIZE = 9_999_999_999L;
 
     /// The file system provider that owns this file system.
     private final ArArkivoFileSystemProvider provider;
@@ -104,6 +109,12 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Entry nodes by normalized archive path.
     private final Map<String, Node> nodes;
+
+    /// The storage that owns indexed member bodies, or `null` in forward-only write mode.
+    private final @Nullable ArkivoEditStorage editStorage;
+
+    /// Indexed member bodies owned by this file system.
+    private final Set<ArkivoStoredContent> ownedContents;
 
     /// The streaming writer used by forward-only write mode, or `null` in read and update modes.
     private final @Nullable ArArkivoStreamingWriter writer;
@@ -132,6 +143,12 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// Whether this file system is open.
     private volatile boolean open = true;
 
+    /// Whether the indexed content storage has been closed.
+    private boolean editStorageClosed;
+
+    /// Whether the provider close action has completed.
+    private boolean closeActionCompleted;
+
     /// Creates an AR file system instance.
     private ArArkivoFileSystemImpl(
             ArArkivoFileSystemProvider provider,
@@ -139,6 +156,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             URI archiveUri,
             ArkivoFileSystemThreadSafety threadSafety,
             Map<String, Node> nodes,
+            @Nullable ArkivoEditStorage editStorage,
+            Set<ArkivoStoredContent> ownedContents,
             @Nullable ArArkivoStreamingWriter writer,
             boolean readOnly,
             boolean updateMode,
@@ -151,12 +170,15 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         this.archiveUri = Objects.requireNonNull(archiveUri, "archiveUri");
         this.closeAction = Objects.requireNonNull(closeAction, "closeAction");
         this.nodes = updateMode ? new LinkedHashMap<>(nodes) : Map.copyOf(nodes);
+        this.editStorage = editStorage;
+        this.ownedContents = ownedContents;
         this.writer = writer;
         this.commitTarget = commitTarget;
         this.readOnly = readOnly;
         this.updateMode = updateMode;
         this.rootPath = ArArkivoPath.root(this);
         this.writtenDirectories.add("");
+        this.editStorageClosed = editStorage == null;
     }
 
     /// Opens an AR file system from an archive path.
@@ -178,41 +200,47 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         );
         if (isArchiveUpdateOpen(openOptions)) {
             validateArchiveUpdateOptions(openOptions);
-            if (ArkivoFileSystem.EDIT_STORAGE.isPresent(environment)) {
-                throw new UnsupportedOperationException("AR update mode does not use configurable edit storage");
-            }
             if (ArkivoFileSystem.SOURCE_MUTATION_POLICY.isPresent(environment)) {
                 throw new UnsupportedOperationException("AR update mode always performs a complete archive rewrite");
             }
-            boolean newArchive = !Files.exists(archivePath);
-            Map<String, Node> nodes;
-            if (!newArchive) {
-                try (InputStream input = Files.newInputStream(archivePath, StandardOpenOption.READ)) {
-                    nodes = readNodes(input);
+            ArkivoEditStorage editStorage = editStorage(environment);
+            Set<ArkivoStoredContent> ownedContents = identityContentSet();
+            try {
+                boolean newArchive = !Files.exists(archivePath);
+                Map<String, Node> nodes;
+                if (!newArchive) {
+                    try (InputStream input = Files.newInputStream(archivePath, StandardOpenOption.READ)) {
+                        nodes = readNodes(input, editStorage, ownedContents);
+                    }
+                } else if (openOptions.contains(StandardOpenOption.CREATE)) {
+                    nodes = rootNodes();
+                } else {
+                    throw new NoSuchFileException(archivePath.toString());
                 }
-            } else if (openOptions.contains(StandardOpenOption.CREATE)) {
-                nodes = rootNodes();
-            } else {
-                throw new NoSuchFileException(archivePath.toString());
+                @Nullable ArkivoCommitTarget commitTarget = ArkivoFileSystem.COMMIT_TARGET.read(environment);
+                if (commitTarget == null) {
+                    commitTarget = ArkivoCommitTarget.atomicReplace(defaultCommitDirectory(archivePath));
+                }
+                ArArkivoFileSystemImpl fileSystem = new ArArkivoFileSystemImpl(
+                        provider,
+                        archivePath,
+                        archiveUri,
+                        threadSafety,
+                        nodes,
+                        editStorage,
+                        ownedContents,
+                        null,
+                        false,
+                        true,
+                        commitTarget,
+                        closeAction
+                );
+                fileSystem.dirty = newArchive;
+                return fileSystem;
+            } catch (IOException | RuntimeException | Error exception) {
+                closeOpenedStorage(editStorage, ownedContents, exception);
+                throw exception;
             }
-            @Nullable ArkivoCommitTarget commitTarget = ArkivoFileSystem.COMMIT_TARGET.read(environment);
-            if (commitTarget == null) {
-                commitTarget = ArkivoCommitTarget.atomicReplace(defaultCommitDirectory(archivePath));
-            }
-            ArArkivoFileSystemImpl fileSystem = new ArArkivoFileSystemImpl(
-                    provider,
-                    archivePath,
-                    archiveUri,
-                    threadSafety,
-                    nodes,
-                    null,
-                    false,
-                    true,
-                    commitTarget,
-                    closeAction
-            );
-            fileSystem.dirty = newArchive;
-            return fileSystem;
         }
         if (isWriteArchiveOpen(openOptions)) {
             validateArchiveWriteOptions(openOptions);
@@ -226,6 +254,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     archiveUri,
                     threadSafety,
                     rootNodes(),
+                    null,
+                    identityContentSet(),
                     ArArkivoStreamingWriter.open(output),
                     false,
                     false,
@@ -235,19 +265,30 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
 
         validateArchiveReadOptions(openOptions);
-        try (InputStream input = Files.newInputStream(archivePath, openOptions.toArray(OpenOption[]::new))) {
+        ArkivoEditStorage editStorage = editStorage(environment);
+        Set<ArkivoStoredContent> ownedContents = identityContentSet();
+        try {
+            Map<String, Node> nodes;
+            try (InputStream input = Files.newInputStream(archivePath, openOptions.toArray(OpenOption[]::new))) {
+                nodes = readNodes(input, editStorage, ownedContents);
+            }
             return new ArArkivoFileSystemImpl(
                     provider,
                     archivePath,
                     archiveUri,
                     threadSafety,
-                    readNodes(input),
+                    nodes,
+                    editStorage,
+                    ownedContents,
                     null,
                     true,
                     false,
                     null,
                     closeAction
             );
+        } catch (IOException | RuntimeException | Error exception) {
+            closeOpenedStorage(editStorage, ownedContents, exception);
+            throw exception;
         }
     }
 
@@ -261,40 +302,69 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     @Override
     public void close() throws IOException {
         try (CloseOperation ignored = beginCloseOperation()) {
-            if (open) {
-                Throwable failure = null;
-                @Nullable UpdateMemberByteChannel updateChannel = activeUpdateChannel;
-                if (updateChannel != null) {
-                    try {
-                        updateChannel.close();
-                    } catch (IOException | RuntimeException | Error exception) {
-                        failure = exception;
+            if (open || !ownedContents.isEmpty() || !editStorageClosed || !closeActionCompleted) {
+                @Nullable Throwable failure = null;
+                if (open) {
+                    @Nullable UpdateMemberByteChannel updateChannel = activeUpdateChannel;
+                    if (updateChannel != null) {
+                        try {
+                            updateChannel.close();
+                        } catch (IOException | RuntimeException | Error exception) {
+                            failure = exception;
+                        }
                     }
-                }
-                @Nullable ArArkivoStreamingWriter currentWriter = writer;
-                if (failure == null && currentWriter != null) {
-                    try {
-                        currentWriter.close();
-                    } catch (IOException | RuntimeException | Error exception) {
-                        failure = exception;
+                    @Nullable ArArkivoStreamingWriter currentWriter = writer;
+                    if (failure == null && currentWriter != null) {
+                        try {
+                            currentWriter.close();
+                        } catch (IOException | RuntimeException | Error exception) {
+                            failure = exception;
+                        }
                     }
-                }
-                if (failure == null && updateMode && dirty) {
-                    try {
-                        commitUpdate();
-                    } catch (IOException | RuntimeException | Error exception) {
-                        failure = exception;
+                    if (failure == null && updateMode && dirty) {
+                        try {
+                            commitUpdate();
+                        } catch (IOException | RuntimeException | Error exception) {
+                            failure = exception;
+                        }
                     }
+                    open = false;
                 }
-                open = false;
-                try {
-                    closeAction.run();
-                } catch (RuntimeException | Error exception) {
-                    failure = appendFailure(failure, exception);
+                failure = closeIndexedStorage(failure);
+                if (!closeActionCompleted) {
+                    try {
+                        closeAction.run();
+                        closeActionCompleted = true;
+                    } catch (RuntimeException | Error exception) {
+                        failure = appendFailure(failure, exception);
+                    }
                 }
                 throwFailure(failure);
             }
         }
+    }
+
+    /// Closes indexed member bodies and their owning storage, retaining failed resources for a later close retry.
+    private @Nullable Throwable closeIndexedStorage(@Nullable Throwable failure) {
+        Iterator<ArkivoStoredContent> iterator = ownedContents.iterator();
+        while (iterator.hasNext()) {
+            ArkivoStoredContent content = iterator.next();
+            try {
+                content.close();
+                iterator.remove();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        if (!editStorageClosed) {
+            try {
+                Objects.requireNonNull(editStorage, "editStorage").close();
+                editStorageClosed = true;
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        return failure;
     }
 
     /// Returns whether this file system is open.
@@ -406,7 +476,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             if (node.directory()) {
                 throw new FileSystemException(path.toString(), null, "AR entry is a directory");
             }
-            return manageInputStream(new ByteArrayInputStream(node.content()));
+            return manageInputStream(openContentInputStream(node.content()));
         }
     }
 
@@ -443,7 +513,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         if (node.directory()) {
             throw new FileSystemException(path.toString(), null, "AR entry is a directory");
         }
-        return new ByteArraySeekableByteChannel(node.content());
+        return openContentChannel(node.content());
     }
 
     /// Opens an output stream for a writable member.
@@ -504,7 +574,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     entryPath,
                     defaultAttributes(entryPath, effectiveMode, 0L),
                     true,
-                    new byte[0],
+                    null,
                     false
             ));
             return;
@@ -536,11 +606,12 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         int mode = initialMode(false, true, attributes);
         if (updateMode) {
             String entryPath = prepareUpdateMember(link);
-            byte[] content = targetText.getBytes(StandardCharsets.UTF_8);
+            byte[] targetBytes = targetText.getBytes(StandardCharsets.UTF_8);
+            ArkivoStoredContent content = storeBytes(entryPath, targetBytes);
             int effectiveMode = mode != UNKNOWN_MODE ? mode : 0120777;
             addUpdateNode(new Node(
                     entryPath,
-                    defaultAttributes(entryPath, effectiveMode, content.length),
+                    defaultAttributes(entryPath, effectiveMode, targetBytes.length),
                     false,
                     content,
                     false
@@ -650,7 +721,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             }
             @Nullable String movedPath = movedPaths.get(node.path());
             String newPath = movedPath != null ? movedPath : node.path();
-            ArArkivoEntryAttributes attributes = copyAttributes(node.attributes(), newPath, node.content().length);
+            ArArkivoEntryAttributes attributes = copyAttributes(node.attributes(), newPath, node.contentSize());
             rebuilt.put(newPath, new Node(
                     newPath,
                     attributes,
@@ -789,7 +860,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         if (!node.attributes().isSymbolicLink()) {
             throw new NotLinkException(link.toString());
         }
-        return getPath(new String(node.content(), StandardCharsets.UTF_8));
+        return getPath(readUtf8(node.content()));
     }
 
     /// Returns an attribute view for a path.
@@ -1224,21 +1295,50 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
         int mode = initialMode(false, false, attributes);
         boolean truncate = writable && options.contains(StandardOpenOption.TRUNCATE_EXISTING);
-        byte[] initialContent = existing != null && !truncate ? existing.content() : new byte[0];
-        UpdateMemberByteChannel channel = new UpdateMemberByteChannel(
-                entryPath,
-                existing,
-                mode,
-                initialContent,
-                readable,
-                writable,
-                append,
-                writable && (existing == null || truncate)
-        );
-        if (writable) {
-            activeUpdateChannel = channel;
+        long expectedSize = existing != null && !truncate ? existing.contentSize() : 0L;
+        ArkivoStoredContent pendingContent = requireEditStorage().createContent(entryPath, expectedSize);
+        @Nullable SeekableByteChannel storageChannel = null;
+        try {
+            if (existing != null && !truncate) {
+                copyContent(existing.content(), pendingContent);
+            }
+            LinkedHashSet<OpenOption> storageOptions = new LinkedHashSet<>();
+            if (readable) {
+                storageOptions.add(StandardOpenOption.READ);
+            }
+            if (writable) {
+                storageOptions.add(StandardOpenOption.WRITE);
+            }
+            if (existing == null || truncate) {
+                storageOptions.add(StandardOpenOption.TRUNCATE_EXISTING);
+            }
+            storageChannel = pendingContent.openChannel(Set.copyOf(storageOptions));
+            UpdateMemberByteChannel channel = new UpdateMemberByteChannel(
+                    entryPath,
+                    existing,
+                    mode,
+                    pendingContent,
+                    storageChannel,
+                    readable,
+                    writable,
+                    append,
+                    writable && (existing == null || truncate)
+            );
+            if (writable) {
+                activeUpdateChannel = channel;
+            }
+            return channel;
+        } catch (IOException | RuntimeException | Error exception) {
+            if (storageChannel != null) {
+                try {
+                    storageChannel.close();
+                } catch (IOException | RuntimeException | Error cleanupFailure) {
+                    exception.addSuppressed(cleanupFailure);
+                }
+            }
+            releaseStoredContent(pendingContent);
+            throw exception;
         }
-        return channel;
     }
 
     /// Prepares a previously absent path for an update-mode member.
@@ -1267,7 +1367,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Commits staged member content into the update index.
-    private void commitUpdatedMember(UpdateMemberByteChannel channel, byte @Unmodifiable [] content)
+    private void commitUpdatedMember(UpdateMemberByteChannel channel, ArkivoStoredContent content)
             throws IOException {
         if (activeUpdateChannel == channel) {
             activeUpdateChannel = null;
@@ -1277,9 +1377,10 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             throw new FileSystemException(channel.path(), null, "AR member changed while its update channel was open");
         }
 
+        long size = content.size();
         ArArkivoEntryAttributes base = existing != null
                 ? existing.attributes()
-                : defaultAttributes(channel.path(), 0100644, content.length);
+                : defaultAttributes(channel.path(), 0100644, size);
         int mode = existing == null && channel.initialMode() != UNKNOWN_MODE
                 ? channel.initialMode()
                 : base.mode();
@@ -1289,7 +1390,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 base.userId(),
                 base.groupId(),
                 mode,
-                content.length,
+                size,
                 base.lastModifiedTime()
         );
         Node replacement = new Node(channel.path(), attributes, false, content, false);
@@ -1298,7 +1399,42 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         } else {
             nodes.put(channel.path(), replacement);
         }
+        ownedContents.add(content);
         dirty = true;
+    }
+
+    /// Copies indexed content into newly allocated writable storage.
+    private static void copyContent(
+            @Nullable ArkivoStoredContent source,
+            ArkivoStoredContent destination
+    ) throws IOException {
+        try (SeekableByteChannel output = destination.openChannel(Set.of(
+                StandardOpenOption.TRUNCATE_EXISTING,
+                StandardOpenOption.WRITE
+        ))) {
+            if (source == null) {
+                return;
+            }
+            try (SeekableByteChannel input = source.openChannel(Set.of(StandardOpenOption.READ))) {
+                ByteBuffer buffer = ByteBuffer.allocate(64 * 1024);
+                while (input.read(buffer) >= 0) {
+                    buffer.flip();
+                    while (buffer.hasRemaining()) {
+                        output.write(buffer);
+                    }
+                    buffer.clear();
+                }
+            }
+        }
+    }
+
+    /// Releases uncommitted stored content or retains it for close-time cleanup retry.
+    private void releaseStoredContent(ArkivoStoredContent content) {
+        try {
+            content.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            ownedContents.add(content);
+        }
     }
 
     /// Returns default metadata for a newly created update-mode member.
@@ -1351,7 +1487,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     private static Node replaceNodeAttributes(
             Node node,
             ArArkivoEntryAttributes attributes,
-            byte @Unmodifiable [] content
+            @Nullable ArkivoStoredContent content
     ) {
         Node replacement = new Node(
                 node.path(),
@@ -1582,8 +1718,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Sets the stored AR member body size.
     private void setSize(Path path, long size) throws IOException {
-        if (size < 0L || size > Integer.MAX_VALUE) {
-            throw new IllegalArgumentException("AR member size must be between 0 and " + Integer.MAX_VALUE);
+        if (size < 0L || size > MAX_MEMBER_SIZE) {
+            throw new IllegalArgumentException("AR member size must be between 0 and " + MAX_MEMBER_SIZE);
         }
         requireUpdateMode();
         requireNoActiveUpdateChannel(path);
@@ -1594,17 +1730,39 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         if (node.directory()) {
             throw new FileSystemException(path.toString(), null, "AR directory bodies cannot be resized");
         }
-        byte[] content = Arrays.copyOf(node.content(), (int) size);
-        ArArkivoEntryAttributes attributes = copyWithMetadata(
-                node.attributes(),
-                node.attributes().userId(),
-                node.attributes().groupId(),
-                node.attributes().mode(),
-                size,
-                node.attributes().lastModifiedTime()
-        );
-        nodes.put(node.path(), replaceNodeAttributes(node, attributes, content));
-        dirty = true;
+        if (node.contentSize() == size) {
+            return;
+        }
+        ArkivoStoredContent content = requireEditStorage().createContent(node.path(), size);
+        try {
+            copyContent(node.content(), content);
+            try (SeekableByteChannel channel = content.openChannel(Set.of(StandardOpenOption.WRITE))) {
+                long currentSize = channel.size();
+                if (size < currentSize) {
+                    channel.truncate(size);
+                } else if (size > currentSize) {
+                    channel.position(size - 1L);
+                    ByteBuffer zero = ByteBuffer.wrap(new byte[]{0});
+                    while (zero.hasRemaining()) {
+                        channel.write(zero);
+                    }
+                }
+            }
+            ArArkivoEntryAttributes attributes = copyWithMetadata(
+                    node.attributes(),
+                    node.attributes().userId(),
+                    node.attributes().groupId(),
+                    node.attributes().mode(),
+                    size,
+                    node.attributes().lastModifiedTime()
+            );
+            nodes.put(node.path(), replaceNodeAttributes(node, attributes, content));
+            ownedContents.add(content);
+            dirty = true;
+        } catch (IOException | RuntimeException | Error exception) {
+            releaseStoredContent(content);
+            throw exception;
+        }
     }
 
     /// Returns whether two AR modes describe the same member file type.
@@ -1765,7 +1923,147 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Returns a node map containing only the synthetic root directory.
     private static Map<String, Node> rootNodes() {
-        return Map.of("", new Node("", syntheticDirectoryAttributes("/"), true, new byte[0], true));
+        return Map.of("", new Node("", syntheticDirectoryAttributes("/"), true, null, true));
+    }
+
+    /// Returns identity-based content ownership storage for an indexed file system.
+    private static Set<ArkivoStoredContent> identityContentSet() {
+        return Collections.newSetFromMap(new IdentityHashMap<>());
+    }
+
+    /// Returns configured indexed-content storage or the default temporary-file storage.
+    private static ArkivoEditStorage editStorage(Map<String, ?> environment) {
+        @Nullable ArkivoEditStorage configured = ArkivoFileSystem.EDIT_STORAGE.read(environment);
+        return configured != null
+                ? configured
+                : ArkivoEditStorage.temporaryFiles(defaultEditStorageDirectory());
+    }
+
+    /// Returns the directory used by default indexed-content storage.
+    private static Path defaultEditStorageDirectory() {
+        return Path.of(System.getProperty("java.io.tmpdir", ".")).toAbsolutePath().normalize();
+    }
+
+    /// Closes resources allocated while opening an indexed file system and suppresses cleanup failures.
+    private static void closeOpenedStorage(
+            ArkivoEditStorage editStorage,
+            Set<ArkivoStoredContent> ownedContents,
+            Throwable failure
+    ) {
+        for (ArkivoStoredContent content : ownedContents) {
+            try {
+                content.close();
+            } catch (IOException | RuntimeException | Error cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+        }
+        try {
+            editStorage.close();
+        } catch (IOException | RuntimeException | Error cleanupFailure) {
+            failure.addSuppressed(cleanupFailure);
+        }
+    }
+
+    /// Streams one archive member body into newly allocated indexed content storage.
+    private static ArkivoStoredContent storeInput(
+            ArkivoEditStorage editStorage,
+            Set<ArkivoStoredContent> ownedContents,
+            String path,
+            long expectedSize,
+            InputStream input
+    ) throws IOException {
+        ArkivoStoredContent content = editStorage.createContent(path, expectedSize);
+        try {
+            try (SeekableByteChannel output = content.openChannel(Set.of(
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE
+            ))) {
+                copy(input, output);
+            }
+            ownedContents.add(content);
+            return content;
+        } catch (IOException | RuntimeException | Error exception) {
+            try {
+                content.close();
+            } catch (IOException | RuntimeException | Error cleanupFailure) {
+                ownedContents.add(content);
+                exception.addSuppressed(cleanupFailure);
+            }
+            throw exception;
+        }
+    }
+
+    /// Copies an input stream to a seekable channel using bounded memory.
+    private static void copy(InputStream input, SeekableByteChannel output) throws IOException {
+        byte[] buffer = new byte[64 * 1024];
+        ByteBuffer bytes = ByteBuffer.wrap(buffer);
+        while (true) {
+            int count = input.read(buffer);
+            if (count < 0) {
+                return;
+            }
+            bytes.clear();
+            bytes.limit(count);
+            while (bytes.hasRemaining()) {
+                output.write(bytes);
+            }
+        }
+    }
+
+    /// Opens a stream over indexed content, or an empty stream when the member has no body.
+    private static InputStream openContentInputStream(@Nullable ArkivoStoredContent content) throws IOException {
+        return content != null
+                ? Channels.newInputStream(content.openChannel(Set.of(StandardOpenOption.READ)))
+                : InputStream.nullInputStream();
+    }
+
+    /// Opens a seekable channel over indexed content, or an empty channel when the member has no body.
+    private static SeekableByteChannel openContentChannel(@Nullable ArkivoStoredContent content) throws IOException {
+        return content != null
+                ? content.openChannel(Set.of(StandardOpenOption.READ))
+                : new ByteArraySeekableByteChannel(new byte[0]);
+    }
+
+    /// Returns the indexed-content storage required outside forward-only write mode.
+    private ArkivoEditStorage requireEditStorage() {
+        return Objects.requireNonNull(editStorage, "editStorage");
+    }
+
+    /// Stores a generated member body in indexed content storage.
+    private ArkivoStoredContent storeBytes(String path, byte @Unmodifiable [] bytes) throws IOException {
+        ArkivoStoredContent content = requireEditStorage().createContent(path, bytes.length);
+        try {
+            try (SeekableByteChannel output = content.openChannel(Set.of(
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE
+            ))) {
+                ByteBuffer source = ByteBuffer.wrap(bytes);
+                while (source.hasRemaining()) {
+                    output.write(source);
+                }
+            }
+            ownedContents.add(content);
+            return content;
+        } catch (IOException | RuntimeException | Error exception) {
+            releaseStoredContent(content);
+            throw exception;
+        }
+    }
+
+    /// Reads a UTF-8 member body as path text without an intermediate whole-body byte array.
+    private static String readUtf8(@Nullable ArkivoStoredContent content) throws IOException {
+        StringBuilder text = new StringBuilder();
+        try (InputStream input = openContentInputStream(content);
+             InputStreamReader reader = new InputStreamReader(input, StandardCharsets.UTF_8)) {
+            char[] buffer = new char[1024];
+            while (true) {
+                int count = reader.read(buffer);
+                if (count < 0) {
+                    return text.toString();
+                }
+                text.append(buffer, 0, count);
+            }
+        }
     }
 
     /// Publishes all surviving update nodes through a complete AR rewrite.
@@ -1785,7 +2083,13 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     if (node.path().isEmpty() || node.syntheticDirectory()) {
                         continue;
                     }
-                    archiveWriter.writeSnapshot(node.attributes(), node.content());
+                    @Nullable ArkivoStoredContent content = node.content();
+                    @Nullable SeekableByteChannel body = content != null
+                            ? content.openChannel(Set.of(StandardOpenOption.READ))
+                            : null;
+                    try (body) {
+                        archiveWriter.writeSnapshot(node.attributes(), body, node.contentSize());
+                    }
                 }
             }
         } catch (IOException | RuntimeException | Error exception) {
@@ -1838,9 +2142,13 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Reads all entry nodes from an AR stream.
-    private static Map<String, Node> readNodes(InputStream input) throws IOException {
+    private static Map<String, Node> readNodes(
+            InputStream input,
+            ArkivoEditStorage editStorage,
+            Set<ArkivoStoredContent> ownedContents
+    ) throws IOException {
         LinkedHashMap<String, Node> nodes = new LinkedHashMap<>();
-        Node root = new Node("", syntheticDirectoryAttributes("/"), true, new byte[0], true);
+        Node root = new Node("", syntheticDirectoryAttributes("/"), true, null, true);
         nodes.put("", root);
 
         try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(input)) {
@@ -1848,11 +2156,14 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 ArArkivoEntryAttributes attributes = reader.readAttributes(ArArkivoEntryAttributes.class);
                 String path = normalizeEntryPath(attributes.path());
                 ensureParents(nodes, path);
-                byte[] content;
-                try (InputStream entryInput = reader.openInputStream()) {
-                    content = entryInput.readAllBytes();
+                @Nullable ArkivoStoredContent content = null;
+                if (attributes.size() > 0L) {
+                    try (InputStream entryInput = reader.openInputStream()) {
+                        content = storeInput(editStorage, ownedContents, path, attributes.size(), entryInput);
+                    }
                 }
-                ArArkivoEntryAttributes nodeAttributes = copyAttributes(attributes, path, content.length);
+                long contentSize = content != null ? content.size() : 0L;
+                ArArkivoEntryAttributes nodeAttributes = copyAttributes(attributes, path, contentSize);
                 putNode(nodes, new Node(path, nodeAttributes, nodeAttributes.isDirectory(), content, false));
             }
         }
@@ -1866,7 +2177,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             String parent = path.substring(0, separator);
             if (!parent.isEmpty() && !nodes.containsKey(parent)) {
                 ensureParents(nodes, parent);
-                putNode(nodes, new Node(parent, syntheticDirectoryAttributes(parent), true, new byte[0], true));
+                putNode(nodes, new Node(parent, syntheticDirectoryAttributes(parent), true, null, true));
             }
             separator = path.indexOf('/', separator + 1);
         }
@@ -1978,7 +2289,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         private final boolean directory;
 
         /// The cached member content.
-        private final byte @Unmodifiable [] content;
+        private final @Nullable ArkivoStoredContent content;
 
         /// Whether this is an implicit directory.
         private final boolean syntheticDirectory;
@@ -1991,13 +2302,13 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 String path,
                 ArArkivoEntryAttributes attributes,
                 boolean directory,
-                byte @Unmodifiable [] content,
+                @Nullable ArkivoStoredContent content,
                 boolean syntheticDirectory
         ) {
             this.path = Objects.requireNonNull(path, "path");
             this.attributes = Objects.requireNonNull(attributes, "attributes");
             this.directory = directory;
-            this.content = Objects.requireNonNull(content, "content").clone();
+            this.content = content;
             this.syntheticDirectory = syntheticDirectory;
         }
 
@@ -2017,8 +2328,13 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
 
         /// Returns the cached member content.
-        private byte @Unmodifiable [] content() {
+        private @Nullable ArkivoStoredContent content() {
             return content;
+        }
+
+        /// Returns the cached member content size.
+        private long contentSize() throws IOException {
+            return content != null ? content.size() : 0L;
         }
 
         /// Returns whether this is an implicit directory.
@@ -2440,14 +2756,11 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         /// Whether every write is forced to the current end.
         private final boolean append;
 
-        /// The staged member bytes.
-        private byte[] data;
+        /// The pending stored body transferred to the archive index after a successful close.
+        private final ArkivoStoredContent content;
 
-        /// The logical staged size.
-        private int size;
-
-        /// The current channel position.
-        private int position;
+        /// The seekable channel opened over the pending stored body.
+        private final SeekableByteChannel channel;
 
         /// Whether closing this channel must update the archive index.
         private boolean changed;
@@ -2460,21 +2773,24 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 String path,
                 @Nullable Node originalNode,
                 int initialMode,
-                byte @Unmodifiable [] initialContent,
+                ArkivoStoredContent content,
+                SeekableByteChannel channel,
                 boolean readable,
                 boolean writable,
                 boolean append,
                 boolean forceCommit
-        ) {
+        ) throws IOException {
             this.path = Objects.requireNonNull(path, "path");
             this.originalNode = originalNode;
             this.initialMode = initialMode;
+            this.content = Objects.requireNonNull(content, "content");
+            this.channel = Objects.requireNonNull(channel, "channel");
             this.readable = readable;
             this.writable = writable;
             this.append = append;
-            this.data = Arrays.copyOf(initialContent, Math.max(initialContent.length, 32));
-            this.size = initialContent.length;
-            this.position = append ? size : 0;
+            if (append) {
+                channel.position(channel.size());
+            }
             this.changed = forceCommit;
         }
 
@@ -2501,13 +2817,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             if (!readable) {
                 throw new NonReadableChannelException();
             }
-            if (position >= size) {
-                return -1;
-            }
-            int count = Math.min(destination.remaining(), size - position);
-            destination.put(data, position, count);
-            position += count;
-            return count;
+            return channel.read(destination);
         }
 
         /// Writes staged bytes at the current position or end in append mode.
@@ -2519,14 +2829,13 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 throw new NonWritableChannelException();
             }
             if (append) {
-                position = size;
+                channel.position(channel.size());
             }
-            int count = source.remaining();
-            int end = checkedArrayPosition((long) position + count);
-            ensureCapacity(end);
-            source.get(data, position, count);
-            position = end;
-            size = Math.max(size, end);
+            long position = channel.position();
+            if (position > MAX_MEMBER_SIZE - source.remaining()) {
+                throw new IOException("AR member exceeds the maximum representable size");
+            }
+            int count = channel.write(source);
             changed |= count != 0;
             return count;
         }
@@ -2535,14 +2844,14 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         @Override
         public long position() throws IOException {
             ensureChannelOpen();
-            return position;
+            return channel.position();
         }
 
         /// Changes the current staged position.
         @Override
         public SeekableByteChannel position(long newPosition) throws IOException {
             ensureChannelOpen();
-            position = checkedArrayPosition(newPosition);
+            channel.position(newPosition);
             return this;
         }
 
@@ -2550,7 +2859,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         @Override
         public long size() throws IOException {
             ensureChannelOpen();
-            return size;
+            return channel.size();
         }
 
         /// Truncates staged content.
@@ -2560,12 +2869,9 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             if (!writable) {
                 throw new NonWritableChannelException();
             }
-            int checkedSize = checkedArrayPosition(newSize);
-            if (checkedSize < size) {
-                size = checkedSize;
-                if (position > size) {
-                    position = size;
-                }
+            long previousSize = channel.size();
+            channel.truncate(newSize);
+            if (newSize < previousSize) {
                 changed = true;
             }
             return this;
@@ -2584,40 +2890,28 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 return;
             }
             channelOpen = false;
-            if (!writable) {
-                return;
+            @Nullable Throwable failure = null;
+            try {
+                channel.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
             }
-            if (changed) {
-                commitUpdatedMember(this, Arrays.copyOf(data, size));
-            } else if (activeUpdateChannel == this) {
+            if (activeUpdateChannel == this) {
                 activeUpdateChannel = null;
             }
-        }
-
-        /// Ensures enough staged array capacity.
-        private void ensureCapacity(int requiredCapacity) throws IOException {
-            if (requiredCapacity <= data.length) {
-                return;
+            boolean transferred = false;
+            if (failure == null && writable && changed) {
+                try {
+                    commitUpdatedMember(this, content);
+                    transferred = true;
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = exception;
+                }
             }
-            long grown = Math.max((long) requiredCapacity, (long) data.length * 2L);
-            if (grown > Integer.MAX_VALUE) {
-                grown = Integer.MAX_VALUE;
+            if (!transferred) {
+                releaseStoredContent(content);
             }
-            if (grown < requiredCapacity) {
-                throw new IOException("AR member is too large for update storage");
-            }
-            data = Arrays.copyOf(data, (int) grown);
-        }
-
-        /// Converts a staged position to the array-backed index domain.
-        private int checkedArrayPosition(long value) throws IOException {
-            if (value < 0L) {
-                throw new IllegalArgumentException("AR member position must not be negative");
-            }
-            if (value > Integer.MAX_VALUE) {
-                throw new IOException("AR member is too large for update storage");
-            }
-            return (int) value;
+            throwFailure(failure);
         }
 
         /// Ensures this channel is open.
