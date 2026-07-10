@@ -7,6 +7,8 @@ import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoFileSystem;
+import org.glavo.arkivo.sevenzip.SevenZipCompression;
+import org.glavo.arkivo.sevenzip.SevenZipCompressionMethod;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -34,6 +36,7 @@ public final class SevenZipArkivoFileSystemConfigTest {
         SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of());
 
         assertEquals(true, config.archiveWritable());
+        assertEquals(SevenZipCompression.copy(), config.compression());
         assertEquals(
                 Set.of(
                         StandardOpenOption.CREATE,
@@ -48,6 +51,7 @@ public final class SevenZipArkivoFileSystemConfigTest {
     @Test
     public void sevenZipOptionKeysUseSevenZipNamespace() {
         assertEquals("arkivo.7z.passwordProvider", SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key());
+        assertEquals("arkivo.7z.compression", SevenZipArkivoFileSystem.COMPRESSION.key());
         assertEquals("arkivo.7z.splitSize", SevenZipArkivoFileSystem.SPLIT_SIZE.key());
         assertEquals("arkivo.7z.encryptHeaders", SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key());
         assertEquals("arkivo.threadSafety", ArkivoFileSystem.THREAD_SAFETY.key());
@@ -60,11 +64,13 @@ public final class SevenZipArkivoFileSystemConfigTest {
         ArkivoFileSystem.THREAD_SAFETY.putString(environment, "strict");
         SevenZipArkivoFileSystem.SPLIT_SIZE.putString(environment, "1024");
         SevenZipArkivoFileSystem.ENCRYPT_HEADERS.putString(environment, "true");
+        SevenZipArkivoFileSystem.COMPRESSION.putString(environment, "lzma2");
 
-        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromEnvironment(environment);
+        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(environment);
 
         assertEquals(1024L, config.splitSize());
         assertEquals(true, config.encryptHeaders());
+        assertEquals(SevenZipCompression.lzma2(), config.compression());
         assertEquals(ArkivoFileSystemThreadSafety.STRICT, config.threadSafety());
     }
 
@@ -80,6 +86,37 @@ public final class SevenZipArkivoFileSystemConfigTest {
         SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromEnvironment(environment);
 
         assertSame(passwordProvider, config.passwordProvider());
+    }
+
+    /// Verifies typed compression methods and complete configurations are normalized from environment values.
+    @Test
+    public void compressionValues() {
+        SevenZipArkivoFileSystemConfig methodConfig = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+                SevenZipArkivoFileSystem.COMPRESSION.key(),
+                SevenZipCompressionMethod.BZIP2
+        ));
+        SevenZipCompression customCompression = SevenZipCompression.deflate(2);
+        SevenZipArkivoFileSystemConfig completeConfig = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+                SevenZipArkivoFileSystem.COMPRESSION.key(),
+                customCompression
+        ));
+
+        assertEquals(SevenZipCompression.bzip2(), methodConfig.compression());
+        assertSame(customCompression, completeConfig.compression());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+                        SevenZipArkivoFileSystem.COMPRESSION.key(),
+                        "zstd"
+                ))
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+                        SevenZipArkivoFileSystem.COMPRESSION.key(),
+                        SevenZipCompression.lzma2()
+                ))
+        );
     }
 
     /// Verifies that the removed fixed password option is rejected with migration guidance.

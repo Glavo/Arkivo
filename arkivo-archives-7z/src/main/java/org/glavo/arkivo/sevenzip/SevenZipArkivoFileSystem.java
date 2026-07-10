@@ -30,6 +30,18 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     public static final ArkivoFileSystemOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArkivoFileSystemOption.of("arkivo.7z", "passwordProvider", ArkivoPasswordProvider.class);
 
+    /// The environment option for the default `SevenZipCompression` used by non-empty output entries.
+    ///
+    /// Values may be a complete compression object, a `SevenZipCompressionMethod`, or a stable method name string.
+    /// The default remains `SevenZipCompression.copy()`.
+    public static final ArkivoFileSystemOption<SevenZipCompression> COMPRESSION =
+            ArkivoFileSystemOption.of(
+                    "arkivo.7z",
+                    "compression",
+                    SevenZipCompression.class,
+                    SevenZipArkivoFileSystem::compressionOptionValue
+            );
+
     /// The environment option for the maximum `Long` byte size of each numbered output volume.
     ///
     /// Path-backed split output requires a conventional first-volume path such as `archive.7z.001`.
@@ -173,6 +185,22 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
         }
         throw new IllegalArgumentException(
                 "Expected Long, compatible integral number, or String for key: " + SPLIT_SIZE.key()
+        );
+    }
+
+    /// Converts a raw compression option value.
+    private static SevenZipCompression compressionOptionValue(Object value) {
+        if (value instanceof SevenZipCompression compression) {
+            return compression;
+        }
+        if (value instanceof SevenZipCompressionMethod method) {
+            return SevenZipCompression.of(method);
+        }
+        if (value instanceof String stringValue) {
+            return SevenZipCompression.of(SevenZipCompressionMethod.parse(stringValue));
+        }
+        throw new IllegalArgumentException(
+                "Expected SevenZipCompression, SevenZipCompressionMethod, or String for key: " + COMPRESSION.key()
         );
     }
 

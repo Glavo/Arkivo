@@ -9,6 +9,7 @@ import org.glavo.arkivo.sevenzip.SevenZipArkivoEntryAttributeView;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoFileSystemProvider;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoStreamingWriter;
+import org.glavo.arkivo.sevenzip.SevenZipCompression;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -470,6 +471,9 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
         /// The requested raw Windows attributes.
         private int windowsAttributes;
 
+        /// The entry-specific compression, or `null` to use the writer default.
+        private @Nullable SevenZipCompression compression;
+
         /// Creates a pending 7z metadata view.
         private PendingSevenZipEntryAttributeView(PendingEntry entry) {
             this.entry = Objects.requireNonNull(entry, "entry");
@@ -525,6 +529,19 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
             }
         }
 
+        /// Sets the entry-specific compression override.
+        @Override
+        public void setCompression(SevenZipCompression compression) {
+            Objects.requireNonNull(compression, "compression");
+            lock();
+            try {
+                entry.ensurePending();
+                this.compression = compression;
+            } finally {
+                unlock();
+            }
+        }
+
         /// Sets POSIX permissions while preserving low Windows attribute bits.
         private void setPermissions(Set<PosixFilePermission> permissions) {
             Objects.requireNonNull(permissions, "permissions");
@@ -551,7 +568,8 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
                     lastModifiedTime,
                     lastAccessTime,
                     creationTime,
-                    windowsAttributes
+                    windowsAttributes,
+                    compression
             );
         }
     }

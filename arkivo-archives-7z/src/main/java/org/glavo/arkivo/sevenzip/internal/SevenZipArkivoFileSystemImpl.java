@@ -4,7 +4,6 @@
 package org.glavo.arkivo.sevenzip.internal;
 
 import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
-import org.apache.commons.compress.archivers.sevenz.SevenZMethod;
 import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.ArkivoVolumeTarget;
@@ -13,6 +12,7 @@ import org.glavo.arkivo.sevenzip.SevenZipArkivoEntryAttributeView;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoFileSystemProvider;
+import org.glavo.arkivo.sevenzip.SevenZipCompression;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -235,7 +235,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 WriterResources writerResources = openArchiveWriter(password.characters());
                 openedWriter = writerResources.writer();
                 openedSplitOutput = writerResources.splitOutput();
-                openedWriter.setContentCompression(SevenZMethod.COPY);
+                SevenZipCompressionSupport.applyTo(openedWriter, config.compression());
             } catch (IOException | RuntimeException | Error exception) {
                 closeWriterAfterConstructionFailure(exception, openedWriter);
                 closeSplitOutputAfterConstructionFailure(exception, openedSplitOutput);
@@ -1749,6 +1749,13 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         /// Rejects Windows attribute mutation.
         @Override
         public void setWindowsAttributes(int windowsAttributes) {
+            throw new ReadOnlyFileSystemException();
+        }
+
+        /// Rejects compression mutation.
+        @Override
+        public void setCompression(SevenZipCompression compression) {
+            Objects.requireNonNull(compression, "compression");
             throw new ReadOnlyFileSystemException();
         }
     }

@@ -6,6 +6,7 @@ package org.glavo.arkivo.sevenzip.internal;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoPasswordProvider;
+import org.glavo.arkivo.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoFileSystem;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -36,6 +37,7 @@ public final class SevenZipArkivoFileSystemConfig {
     public static final SevenZipArkivoFileSystemConfig DEFAULTS = new SevenZipArkivoFileSystemConfig(
             DEFAULT_READ_OPEN_OPTIONS,
             null,
+            SevenZipCompression.copy(),
             NO_SPLIT_SIZE,
             false,
             ArkivoFileSystemThreadSafety.CONCURRENT_READ
@@ -46,6 +48,9 @@ public final class SevenZipArkivoFileSystemConfig {
 
     /// The provider used to decrypt encrypted 7z content and metadata or encrypt newly written content.
     private final @Nullable ArkivoPasswordProvider passwordProvider;
+
+    /// The default compression applied to non-empty output entries.
+    private final SevenZipCompression compression;
 
     /// The maximum size of each output volume, or `NO_SPLIT_SIZE` when split output is disabled.
     private final long splitSize;
@@ -60,6 +65,7 @@ public final class SevenZipArkivoFileSystemConfig {
     public SevenZipArkivoFileSystemConfig(
             Set<? extends OpenOption> openOptions,
             @Nullable ArkivoPasswordProvider passwordProvider,
+            SevenZipCompression compression,
             long splitSize,
             boolean encryptHeaders,
             ArkivoFileSystemThreadSafety threadSafety
@@ -69,6 +75,7 @@ public final class SevenZipArkivoFileSystemConfig {
         }
         this.openOptions = normalizeOpenOptions(Objects.requireNonNull(openOptions, "openOptions"));
         this.passwordProvider = passwordProvider;
+        this.compression = Objects.requireNonNull(compression, "compression");
         this.splitSize = splitSize;
         this.encryptHeaders = encryptHeaders;
         this.threadSafety = Objects.requireNonNull(threadSafety, "threadSafety");
@@ -100,9 +107,10 @@ public final class SevenZipArkivoFileSystemConfig {
             return DEFAULTS;
         }
 
-        return new SevenZipArkivoFileSystemConfig(
+        SevenZipArkivoFileSystemConfig config = new SevenZipArkivoFileSystemConfig(
                 ArkivoFileSystem.OPEN_OPTIONS.readOrDefault(environment, Set.copyOf(defaultOpenOptions)),
                 passwordProvider(environment),
+                SevenZipArkivoFileSystem.COMPRESSION.readOrDefault(environment, SevenZipCompression.copy()),
                 splitSize(environment),
                 SevenZipArkivoFileSystem.ENCRYPT_HEADERS.readOrDefault(environment, false),
                 ArkivoFileSystem.THREAD_SAFETY.readOrDefault(
@@ -110,6 +118,10 @@ public final class SevenZipArkivoFileSystemConfig {
                         ArkivoFileSystemThreadSafety.CONCURRENT_READ
                 )
         );
+        if (!config.archiveWritable() && SevenZipArkivoFileSystem.COMPRESSION.isPresent(environment)) {
+            throw new IllegalArgumentException("7z compression requires write archive options");
+        }
+        return config;
     }
 
     /// Returns the open options used to open the backing archive path.
@@ -125,6 +137,11 @@ public final class SevenZipArkivoFileSystemConfig {
     /// Returns the provider used to decrypt encrypted 7z content and metadata or encrypt newly written content.
     public @Nullable ArkivoPasswordProvider passwordProvider() {
         return passwordProvider;
+    }
+
+    /// Returns the default compression applied to non-empty output entries.
+    public SevenZipCompression compression() {
+        return compression;
     }
 
     /// Returns the maximum size of each output volume, or `NO_SPLIT_SIZE` when split output is disabled.

@@ -996,6 +996,201 @@ public final class SevenZipArkivoFileSystemTest {
         assertEquals(true, encryptedHeaderOutput.closed());
     }
 
+    /// Verifies every configurable compression method through Arkivo and Commons Compress readers.
+    @Test
+    public void createsArchivesWithAllCompressionMethods() throws IOException {
+        List<SevenZipCompression> compressions = List.of(
+                SevenZipCompression.copy(),
+                SevenZipCompression.lzma(64 * 1024),
+                SevenZipCompression.lzma2(64 * 1024),
+                SevenZipCompression.bzip2(1),
+                SevenZipCompression.deflate(1)
+        );
+        List<SevenZMethod> expectedMethods = List.of(
+                SevenZMethod.COPY,
+                SevenZMethod.LZMA,
+                SevenZMethod.LZMA2,
+                SevenZMethod.BZIP2,
+                SevenZMethod.DEFLATE
+        );
+        byte[] content = new byte[64 * 1024];
+        Arrays.fill(content, (byte) 'A');
+
+        for (int index = 0; index < compressions.size(); index++) {
+            SevenZipCompression compression = compressions.get(index);
+            Path archivePath = createTemporaryArchivePath("compression-" + compression.method().optionName() + "-");
+            try {
+                try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
+                        archivePath,
+                        Map.of(SevenZipArkivoFileSystem.COMPRESSION.key(), compression)
+                )) {
+                    writeStreamingContent(writer, content);
+                }
+
+                try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                    assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/content.bin")));
+                }
+                try (SevenZFile sevenZFile = SevenZFile.builder().setPath(archivePath).get()) {
+                    SevenZArchiveEntry entry = Objects.requireNonNull(sevenZFile.getNextEntry());
+                    assertEquals(List.of(expectedMethods.get(index)), commonsContentMethods(entry));
+                    Object coderOptions = entry.getContentMethods().iterator().next().getOptions();
+                    if (compression.method() == SevenZipCompressionMethod.LZMA) {
+                        assertEquals(compression.parameter(), ((LZMA2Options) coderOptions).getDictSize());
+                    } else if (compression.method() == SevenZipCompressionMethod.LZMA2) {
+                        assertEquals(compression.parameter(), ((Number) coderOptions).intValue());
+                    }
+                    try (var input = sevenZFile.getInputStream(entry)) {
+                        assertArrayEquals(content, input.readAllBytes());
+                    }
+                }
+                if (compression.method() != SevenZipCompressionMethod.COPY) {
+                    assertEquals(true, Files.size(archivePath) < content.length);
+                }
+            } finally {
+                deleteTemporaryArchive(archivePath);
+            }
+        }
+    }
+
+    /// Verifies an output-stream writer applies its configured default compression.
+    @Test
+    public void createsCompressedArchiveInOutputStream() throws IOException {
+        byte[] content = "output stream bzip2 content ".repeat(512).getBytes(StandardCharsets.UTF_8);
+        TrackingOutputStream archiveOutput = new TrackingOutputStream();
+
+        try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
+                archiveOutput,
+                Map.of(
+                        SevenZipArkivoFileSystem.COMPRESSION.key(),
+                        SevenZipCompression.bzip2(2)
+                )
+        )) {
+            writeStreamingContent(writer, content);
+        }
+
+        assertEquals(true, archiveOutput.closed());
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                new SplitVolumeSource(new byte[][]{archiveOutput.toByteArray()})
+        )) {
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/content.bin")));
+        }
+        try (SevenZFile sevenZFile = SevenZFile.builder()
+                .setSeekableByteChannel(new MemorySeekableByteChannel(archiveOutput.toByteArray(), false))
+                .get()) {
+            assertEquals(
+                    List.of(SevenZMethod.BZIP2),
+                    commonsContentMethods(Objects.requireNonNull(sevenZFile.getNextEntry()))
+            );
+        }
+    }
+
+    /// Verifies streaming entries can override the writer default through the 7z attribute view.
+    @Test
+    public void overridesCompressionPerStreamingEntry() throws IOException {
+        byte[] content = "entry compression override ".repeat(128).getBytes(StandardCharsets.UTF_8);
+        TrackingOutputStream archiveOutput = new TrackingOutputStream();
+        WritableByteChannel archiveChannel = Channels.newChannel(archiveOutput);
+
+        try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
+                archiveChannel,
+                Map.of(
+                        SevenZipArkivoFileSystem.COMPRESSION.key(),
+                        SevenZipCompression.lzma2(64 * 1024)
+                )
+        )) {
+            writer.beginFile("copy.bin");
+            Objects.requireNonNull(writer.attributeView(SevenZipArkivoEntryAttributeView.class))
+                    .setCompression(SevenZipCompression.copy());
+            try (OutputStream output = writer.openOutputStream()) {
+                output.write(content);
+            }
+
+            writer.beginFile("default.bin");
+            try (OutputStream output = writer.openOutputStream()) {
+                output.write(content);
+            }
+
+            writer.beginFile("deflate.bin");
+            Objects.requireNonNull(writer.attributeView(SevenZipArkivoEntryAttributeView.class))
+                    .setCompression(SevenZipCompression.deflate(2));
+            try (OutputStream output = writer.openOutputStream()) {
+                output.write(content);
+            }
+        }
+
+        assertEquals(false, archiveChannel.isOpen());
+        byte[] archive = archiveOutput.toByteArray();
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                new SplitVolumeSource(new byte[][]{archive})
+        )) {
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/copy.bin")));
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/default.bin")));
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/deflate.bin")));
+        }
+        try (SevenZFile sevenZFile = SevenZFile.builder()
+                .setSeekableByteChannel(new MemorySeekableByteChannel(archive, false))
+                .get()) {
+            assertEquals(
+                    List.of(SevenZMethod.COPY),
+                    commonsContentMethods(Objects.requireNonNull(sevenZFile.getNextEntry()))
+            );
+            assertEquals(
+                    List.of(SevenZMethod.LZMA2),
+                    commonsContentMethods(Objects.requireNonNull(sevenZFile.getNextEntry()))
+            );
+            assertEquals(
+                    List.of(SevenZMethod.DEFLATE),
+                    commonsContentMethods(Objects.requireNonNull(sevenZFile.getNextEntry()))
+            );
+        }
+    }
+
+    /// Verifies LZMA2 compression composes with AES encryption and transactional split output.
+    @Test
+    public void createsCompressedEncryptedSplitArchive() throws IOException {
+        byte[] password = "compressed-password".getBytes(StandardCharsets.UTF_16LE);
+        char[] passwordCharacters = "compressed-password".toCharArray();
+        byte[] content = new byte[2048];
+        for (int index = 0; index < content.length; index++) {
+            content[index] = (byte) (index * 47);
+        }
+        TestVolumeTarget target = new TestVolumeTarget(-1L, false);
+
+        try {
+            try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
+                    target,
+                    128L,
+                    Map.of(
+                            SevenZipArkivoFileSystem.COMPRESSION.key(),
+                            SevenZipCompression.lzma2(64 * 1024),
+                            SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                            ArkivoPasswordProvider.fixed(password)
+                    )
+            )) {
+                writeStreamingContent(writer, content);
+            }
+
+            byte[][] volumes = target.committedVolumes();
+            assertEquals(true, volumes.length > 1);
+            assertEncryptedContent(volumes, password, content);
+
+            try (SevenZFile sevenZFile = SevenZFile.builder()
+                    .setSeekableByteChannel(new MemorySeekableByteChannel(concatenateAll(volumes), false))
+                    .setPassword(passwordCharacters)
+                    .get()) {
+                SevenZArchiveEntry entry = Objects.requireNonNull(sevenZFile.getNextEntry());
+                List<SevenZMethod> methods = commonsContentMethods(entry);
+                assertEquals(true, methods.contains(SevenZMethod.AES256SHA256));
+                assertEquals(true, methods.contains(SevenZMethod.LZMA2));
+                try (var input = sevenZFile.getInputStream(entry)) {
+                    assertArrayEquals(content, input.readAllBytes());
+                }
+            }
+        } finally {
+            Arrays.fill(passwordCharacters, '\0');
+        }
+    }
+
     /// Verifies that path-backed 7z writes produce conventional bounded split volumes that can be reopened.
     @Test
     public void createsPathBackedSplitArchive() throws IOException {
@@ -4599,6 +4794,15 @@ public final class SevenZipArkivoFileSystemTest {
         try (OutputStream output = writer.openOutputStream()) {
             output.write(content);
         }
+    }
+
+    /// Returns the Commons Compress method sequence declared for one entry.
+    private static @Unmodifiable List<SevenZMethod> commonsContentMethods(SevenZArchiveEntry entry) {
+        ArrayList<SevenZMethod> methods = new ArrayList<>();
+        for (var configuration : entry.getContentMethods()) {
+            methods.add(configuration.getMethod());
+        }
+        return List.copyOf(methods);
     }
 
     /// Verifies encrypted split-volume content through the Arkivo reader.

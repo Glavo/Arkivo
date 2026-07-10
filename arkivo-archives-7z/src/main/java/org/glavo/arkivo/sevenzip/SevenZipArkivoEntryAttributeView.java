@@ -25,4 +25,9 @@ public interface SevenZipArkivoEntryAttributeView extends BasicFileAttributeView
     ///
     /// Passing `UNKNOWN_WINDOWS_ATTRIBUTES` clears the property. Unix mode bits occupy the high 16 bits.
     void setWindowsAttributes(int windowsAttributes) throws IOException;
+
+    /// Sets the compression used by this pending streaming entry instead of the writer default.
+    ///
+    /// Compression is applied only when the entry has a non-empty data stream.
+    void setCompression(SevenZipCompression compression) throws IOException;
 }
