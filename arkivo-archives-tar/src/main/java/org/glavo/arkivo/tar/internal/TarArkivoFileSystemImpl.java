@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.tar.internal;
 
+import org.glavo.arkivo.ArkivoCommitOutput;
+import org.glavo.arkivo.ArkivoCommitTarget;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.internal.ArkivoFileStoreAttributes;
@@ -22,12 +24,16 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonReadableChannelException;
+import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.AccessMode;
 import java.nio.file.ClosedFileSystemException;
+import java.nio.file.CopyOption;
 import java.nio.file.DirectoryIteratorException;
+import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileStore;
@@ -40,6 +46,7 @@ import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.nio.file.ReadOnlyFileSystemException;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -53,23 +60,29 @@ import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-/// Implements a TAR archive file system backed by either an in-memory read index or a forward-only writer.
+/// Implements a TAR archive file system backed by an in-memory index or a forward-only writer.
 @NotNullByDefault
 public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// The supported file attribute view names.
     private static final @Unmodifiable Set<String> SUPPORTED_ATTRIBUTE_VIEWS = Set.of("basic", "owner", "posix", "tar");
+
+    /// The Unix epoch timestamp used for new update-mode entries.
+    private static final FileTime UNIX_EPOCH = FileTime.fromMillis(0L);
 
     /// The file system provider that owns this file system.
     private final TarArkivoFileSystemProvider provider;
@@ -90,13 +103,25 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private final TarFileStore fileStore = new TarFileStore();
 
     /// Entry nodes by normalized archive path.
-    private final @Unmodifiable Map<String, Node> nodes;
+    private final Map<String, Node> nodes;
 
     /// The streaming writer used by forward-only write mode, or `null` in read mode.
     private final @Nullable TarArkivoStreamingWriter writer;
 
+    /// The target used to publish a rewritten update-mode archive, or `null` outside update mode.
+    private final @Nullable ArkivoCommitTarget commitTarget;
+
     /// Whether this file system is read-only.
     private final boolean readOnly;
+
+    /// Whether this file system edits an existing archive through complete rewrite.
+    private final boolean updateMode;
+
+    /// The active update-mode entry channel, or `null` when no entry is being changed.
+    private @Nullable UpdateEntryByteChannel activeUpdateChannel;
+
+    /// Whether update mode has changed the indexed archive.
+    private boolean dirty;
 
     /// Archive paths already emitted by forward-only write mode.
     private final HashSet<String> writtenEntries = new HashSet<>();
@@ -116,6 +141,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             Map<String, Node> nodes,
             @Nullable TarArkivoStreamingWriter writer,
             boolean readOnly,
+            boolean updateMode,
+            @Nullable ArkivoCommitTarget commitTarget,
             Runnable closeAction
     ) {
         super(threadSafety);
@@ -123,9 +150,11 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         this.archivePath = Objects.requireNonNull(archivePath, "archivePath");
         this.archiveUri = Objects.requireNonNull(archiveUri, "archiveUri");
         this.closeAction = Objects.requireNonNull(closeAction, "closeAction");
-        this.nodes = Map.copyOf(nodes);
+        this.nodes = updateMode ? new LinkedHashMap<>(nodes) : Map.copyOf(nodes);
         this.writer = writer;
         this.readOnly = readOnly;
+        this.updateMode = updateMode;
+        this.commitTarget = commitTarget;
         this.rootPath = TarArkivoPath.root(this);
         this.writtenDirectories.add("");
     }
@@ -147,6 +176,44 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 environment,
                 Set.of(StandardOpenOption.READ)
         );
+        if (isArchiveUpdateOpen(openOptions)) {
+            validateArchiveUpdateOptions(openOptions);
+            if (ArkivoFileSystem.EDIT_STORAGE.isPresent(environment)) {
+                throw new UnsupportedOperationException("TAR update mode does not use configurable edit storage");
+            }
+            if (ArkivoFileSystem.SOURCE_MUTATION_POLICY.isPresent(environment)) {
+                throw new UnsupportedOperationException("TAR update mode always performs a complete archive rewrite");
+            }
+            Map<String, Node> nodes;
+            boolean newArchive = !Files.exists(archivePath);
+            if (!newArchive) {
+                try (InputStream input = Files.newInputStream(archivePath, StandardOpenOption.READ)) {
+                    nodes = readNodes(input);
+                }
+            } else if (openOptions.contains(StandardOpenOption.CREATE)) {
+                nodes = rootNodes();
+            } else {
+                throw new NoSuchFileException(archivePath.toString());
+            }
+            @Nullable ArkivoCommitTarget commitTarget = ArkivoFileSystem.COMMIT_TARGET.read(environment);
+            if (commitTarget == null) {
+                commitTarget = ArkivoCommitTarget.atomicReplace(defaultCommitDirectory(archivePath));
+            }
+            TarArkivoFileSystemImpl fileSystem = new TarArkivoFileSystemImpl(
+                    provider,
+                    archivePath,
+                    archiveUri,
+                    threadSafety,
+                    nodes,
+                    null,
+                    false,
+                    true,
+                    commitTarget,
+                    closeAction
+            );
+            fileSystem.dirty = newArchive;
+            return fileSystem;
+        }
         if (isWriteArchiveOpen(openOptions)) {
             validateArchiveWriteOptions(openOptions);
             if (ArkivoFileSystem.COMMIT_TARGET.read(environment) != null) {
@@ -161,6 +228,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     rootNodes(),
                     TarArkivoStreamingWriter.open(output),
                     false,
+                    false,
+                    null,
                     closeAction
             );
         }
@@ -175,6 +244,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     readNodes(input),
                     null,
                     true,
+                    false,
+                    null,
                     closeAction
             );
         }
@@ -190,16 +261,31 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     @Override
     public void close() throws IOException {
         if (open) {
-            open = false;
             Throwable failure = null;
-            TarArkivoStreamingWriter currentWriter = writer;
-            if (currentWriter != null) {
+            @Nullable UpdateEntryByteChannel updateChannel = activeUpdateChannel;
+            if (updateChannel != null) {
+                try {
+                    updateChannel.close();
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = exception;
+                }
+            }
+            @Nullable TarArkivoStreamingWriter currentWriter = writer;
+            if (failure == null && currentWriter != null) {
                 try {
                     currentWriter.close();
                 } catch (IOException | RuntimeException | Error exception) {
                     failure = exception;
                 }
             }
+            if (failure == null && updateMode && dirty) {
+                try {
+                    commitUpdate();
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = exception;
+                }
+            }
+            open = false;
             try {
                 closeAction.run();
             } catch (RuntimeException | Error exception) {
@@ -310,6 +396,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             FileAttribute<?>... attributes
     ) throws IOException {
         Objects.requireNonNull(attributes, "attributes");
+        if (updateMode && requestsWrite(options)) {
+            return newUpdateByteChannel(path, options, attributes);
+        }
         if (!readOnly && requestsWrite(options)) {
             return new WritableEntryByteChannel(newOutputStream(path, options, attributes));
         }
@@ -337,6 +426,20 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         Objects.requireNonNull(options, "options");
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
+        if (updateMode) {
+            if (options.contains(StandardOpenOption.READ)) {
+                throw new UnsupportedOperationException("TAR output streams do not support READ");
+            }
+            LinkedHashSet<OpenOption> channelOptions = new LinkedHashSet<>(options);
+            if (channelOptions.isEmpty()) {
+                channelOptions.add(StandardOpenOption.CREATE);
+                channelOptions.add(StandardOpenOption.TRUNCATE_EXISTING);
+                channelOptions.add(StandardOpenOption.WRITE);
+            } else if (!channelOptions.contains(StandardOpenOption.APPEND)) {
+                channelOptions.add(StandardOpenOption.WRITE);
+            }
+            return Channels.newOutputStream(newUpdateByteChannel(path, channelOptions, attributes));
+        }
         validateEntryWriteOptions(options);
         @Nullable Set<PosixFilePermission> permissions = initialPosixPermissions(attributes);
         String entryPath = prepareWritableEntry(path, false);
@@ -351,6 +454,18 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
         @Nullable Set<PosixFilePermission> permissions = initialPosixPermissions(attributes);
+        if (updateMode) {
+            String entryPath = prepareUpdateEntry(directory);
+            TarEntryAttributes entryAttributes = defaultAttributes(
+                    entryPath,
+                    TarEntryAttributes.DIRECTORY_TYPE,
+                    permissions != null ? permissionsMode(permissions) : 0755,
+                    null,
+                    0L
+            );
+            addUpdateNode(new Node(entryPath, entryAttributes, true, new byte[0], false));
+            return;
+        }
         String entryPath = prepareWritableEntry(directory, true);
         TarArkivoStreamingWriter currentWriter = requireWriter();
         currentWriter.beginDirectory(entryPath);
@@ -365,6 +480,18 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
         @Nullable Set<PosixFilePermission> permissions = initialPosixPermissions(attributes);
+        if (updateMode) {
+            String entryPath = prepareUpdateEntry(link);
+            TarEntryAttributes entryAttributes = defaultAttributes(
+                    entryPath,
+                    TarEntryAttributes.SYMBOLIC_LINK_TYPE,
+                    permissions != null ? permissionsMode(permissions) : 0777,
+                    archivePathText(target),
+                    0L
+            );
+            addUpdateNode(new Node(entryPath, entryAttributes, false, new byte[0], false));
+            return;
+        }
         String entryPath = prepareWritableEntry(link, false);
         TarArkivoStreamingWriter currentWriter = requireWriter();
         currentWriter.beginSymbolicLink(entryPath, archivePathText(target));
@@ -377,6 +504,23 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     public void createLink(Path link, Path existing) throws IOException {
         Objects.requireNonNull(existing, "existing");
         requireWritableFileSystem();
+        if (updateMode) {
+            String entryPath = prepareUpdateEntry(link);
+            Node target = requireNode(existing);
+            if (!target.attributes().isRegularFile() || target.directory()) {
+                throw new FileSystemException(existing.toString(), null, "TAR hard link target is not a regular file");
+            }
+            String targetPath = normalizedNodePath(existing);
+            TarEntryAttributes entryAttributes = defaultAttributes(
+                    entryPath,
+                    TarEntryAttributes.HARD_LINK_TYPE,
+                    target.attributes().mode(),
+                    targetPath,
+                    target.content().length
+            );
+            addUpdateNode(new Node(entryPath, entryAttributes, false, target.content(), false));
+            return;
+        }
         String entryPath = prepareWritableEntry(link, false);
         String targetPath = normalizedNodePath(existing);
         if (!writtenEntries.contains(targetPath) || writtenDirectories.contains(targetPath)) {
@@ -386,6 +530,136 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         currentWriter.beginHardLink(entryPath, targetPath);
         currentWriter.endEntry();
         recordWrittenEntry(entryPath, false);
+    }
+
+    /// Deletes one entry from an update-mode archive.
+    public void delete(Path path) throws IOException {
+        requireUpdateMode();
+        requireNoActiveUpdateChannel(path);
+        String entryPath = normalizedNodePath(path);
+        if (entryPath.isEmpty()) {
+            throw new FileSystemException(path.toString(), null, "The TAR root cannot be deleted");
+        }
+        Node node = requireNode(path);
+        if (node.directory() && !node.children().isEmpty()) {
+            throw new DirectoryNotEmptyException(path.toString());
+        }
+
+        materializeHardLinksTo(entryPath);
+        nodes.remove(entryPath);
+        @Nullable Node parent = nodes.get(parentPath(entryPath));
+        if (parent != null) {
+            parent.children().remove(fileName(entryPath));
+        }
+        dirty = true;
+    }
+
+    /// Moves one entry and any descendants inside an update-mode archive.
+    public void move(Path source, Path target, CopyOption... options) throws IOException {
+        requireUpdateMode();
+        requireNoActiveUpdateChannel(source);
+        boolean replaceExisting = false;
+        for (CopyOption option : options) {
+            if (option == StandardCopyOption.REPLACE_EXISTING) {
+                replaceExisting = true;
+            } else if (option != StandardCopyOption.ATOMIC_MOVE) {
+                throw new UnsupportedOperationException("Unsupported TAR move option: " + option);
+            }
+        }
+
+        String sourcePath = normalizedNodePath(source);
+        String targetPath = normalizedNodePath(target);
+        if (sourcePath.isEmpty() || targetPath.isEmpty()) {
+            throw new FileSystemException(source.toString(), target.toString(), "The TAR root cannot be moved");
+        }
+        if (sourcePath.equals(targetPath)) {
+            return;
+        }
+        Node sourceNode = requireNode(source);
+        if (sourceNode.directory() && targetPath.startsWith(sourcePath + "/")) {
+            throw new FileSystemException(source.toString(), target.toString(), "A directory cannot be moved below itself");
+        }
+        ensureExistingParentDirectory(targetPath);
+
+        @Nullable Node targetNode = nodes.get(targetPath);
+        if (targetNode != null) {
+            if (!replaceExisting) {
+                throw new FileAlreadyExistsException(target.toString());
+            }
+            if (sourceNode.directory() != targetNode.directory()) {
+                throw new FileSystemException(source.toString(), target.toString(), "Source and target entry types differ");
+            }
+            if (targetNode.directory() && !targetNode.children().isEmpty()) {
+                throw new DirectoryNotEmptyException(target.toString());
+            }
+        }
+        if (targetNode != null && !targetNode.directory()) {
+            materializeHardLinksTo(targetPath);
+        }
+
+        LinkedHashMap<String, String> movedPaths = new LinkedHashMap<>();
+        for (String path : nodes.keySet()) {
+            if (path.equals(sourcePath) || path.startsWith(sourcePath + "/")) {
+                movedPaths.put(path, targetPath + path.substring(sourcePath.length()));
+            }
+        }
+        for (String movedPath : movedPaths.values()) {
+            @Nullable Node collision = nodes.get(movedPath);
+            if (collision != null && !movedPaths.containsKey(movedPath) && !movedPath.equals(targetPath)) {
+                throw new FileAlreadyExistsException(movedPath);
+            }
+        }
+
+        LinkedHashMap<String, Node> rebuilt = new LinkedHashMap<>();
+        for (Node node : nodes.values()) {
+            if (targetNode != null && node.path().equals(targetPath) && !movedPaths.containsKey(node.path())) {
+                continue;
+            }
+            @Nullable String movedPath = movedPaths.get(node.path());
+            String newPath = movedPath != null ? movedPath : node.path();
+            TarArkivoEntryAttributes attributes = node.attributes();
+            @Nullable String linkName = movedHardLinkTarget(attributes, movedPaths);
+            TarEntryAttributes newAttributes = copyAttributes(
+                    attributes,
+                    newPath,
+                    attributes.typeFlag(),
+                    linkName,
+                    node.content().length
+            );
+            Node replacement = new Node(
+                    newPath,
+                    newAttributes,
+                    node.directory(),
+                    node.content(),
+                    node.syntheticDirectory()
+            );
+            rebuilt.put(newPath, replacement);
+        }
+        rebuildChildren(rebuilt);
+        nodes.clear();
+        nodes.putAll(rebuilt);
+        dirty = true;
+    }
+
+    /// Updates one named entry attribute in update mode.
+    public void setAttribute(Path path, String attribute, @Nullable Object value, LinkOption... options) throws IOException {
+        Objects.requireNonNull(attribute, "attribute");
+        Objects.requireNonNull(options, "options");
+        int separator = attribute.indexOf(':');
+        String view = separator >= 0 ? attribute.substring(0, separator) : "basic";
+        String name = separator >= 0 ? attribute.substring(separator + 1) : attribute;
+        switch (view) {
+            case "basic" -> setBasicAttribute(path, name, value);
+            case "owner" -> {
+                if (!"owner".equals(name) || !(value instanceof UserPrincipal owner)) {
+                    throw new IllegalArgumentException("Unsupported TAR owner attribute: " + name);
+                }
+                setOwner(path, owner);
+            }
+            case "posix" -> setPosixAttribute(path, name, value);
+            case "tar" -> setTarAttribute(path, name, value);
+            default -> throw new UnsupportedOperationException("Unsupported TAR attribute view: " + view);
+        }
     }
 
     /// Opens a directory stream for an entry.
@@ -414,6 +688,10 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Checks access to an entry.
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
+        if (updateMode) {
+            requireNode(path);
+            return;
+        }
         if (!readOnly) {
             checkWritableAccess(path, modes);
             return;
@@ -428,7 +706,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Returns this archive's file store.
     public FileStore fileStore(Path path) throws IOException {
-        if (readOnly) {
+        if (readOnly || updateMode) {
             requireNode(path);
         } else {
             requireWritableKnownPath(path);
@@ -440,7 +718,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     public Path readSymbolicLink(Path link) throws IOException {
         requireReadableFileSystem();
         Node node = requireNode(link);
-        String linkName = node.attributes().linkName();
+        @Nullable String linkName = node.attributes().linkName();
         if (!node.attributes().isSymbolicLink() || linkName == null) {
             throw new NotLinkException(link.toString());
         }
@@ -622,6 +900,15 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 || options.contains(StandardOpenOption.APPEND);
     }
 
+    /// Returns whether archive open options request read/write update mode.
+    private static boolean isArchiveUpdateOpen(Set<? extends OpenOption> options) {
+        return options.contains(StandardOpenOption.READ)
+                && options.contains(StandardOpenOption.WRITE)
+                && !options.contains(StandardOpenOption.TRUNCATE_EXISTING)
+                && !options.contains(StandardOpenOption.CREATE_NEW)
+                && !options.contains(StandardOpenOption.APPEND);
+    }
+
     /// Validates archive open options for read mode.
     private static void validateArchiveReadOptions(Set<? extends OpenOption> options) {
         for (OpenOption option : options) {
@@ -656,6 +943,17 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
     }
 
+    /// Validates archive open options for complete rewrite update mode.
+    private static void validateArchiveUpdateOptions(Set<? extends OpenOption> options) {
+        for (OpenOption option : options) {
+            if (option != StandardOpenOption.READ
+                    && option != StandardOpenOption.WRITE
+                    && option != StandardOpenOption.CREATE) {
+                throw new UnsupportedOperationException("Unsupported TAR archive update option: " + option);
+            }
+        }
+    }
+
     /// Returns whether entry open options request write access.
     private static boolean requestsWrite(Set<? extends OpenOption> options) {
         return options.contains(StandardOpenOption.WRITE)
@@ -679,6 +977,26 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     && option != StandardOpenOption.CREATE_NEW
                     && option != StandardOpenOption.TRUNCATE_EXISTING) {
                 throw new UnsupportedOperationException("Unsupported TAR entry write option: " + option);
+            }
+        }
+    }
+
+    /// Validates options for a random-access update entry channel.
+    private static void validateUpdateEntryOptions(Set<? extends OpenOption> options) {
+        if (options.contains(StandardOpenOption.APPEND) && options.contains(StandardOpenOption.READ)) {
+            throw new IllegalArgumentException("TAR entry APPEND cannot be combined with READ");
+        }
+        if (options.contains(StandardOpenOption.APPEND) && options.contains(StandardOpenOption.TRUNCATE_EXISTING)) {
+            throw new IllegalArgumentException("TAR entry APPEND cannot be combined with TRUNCATE_EXISTING");
+        }
+        for (OpenOption option : options) {
+            if (option != StandardOpenOption.READ
+                    && option != StandardOpenOption.WRITE
+                    && option != StandardOpenOption.APPEND
+                    && option != StandardOpenOption.CREATE
+                    && option != StandardOpenOption.CREATE_NEW
+                    && option != StandardOpenOption.TRUNCATE_EXISTING) {
+                throw new UnsupportedOperationException("Unsupported TAR entry update option: " + option);
             }
         }
     }
@@ -733,7 +1051,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Requires this file system to be in read mode.
     private void requireReadableFileSystem() {
-        if (!readOnly) {
+        ensureOpen();
+        if (!readOnly && !updateMode) {
             throw new UnsupportedOperationException("Forward-only TAR write file systems do not expose reads");
         }
     }
@@ -748,11 +1067,529 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Returns the writer for write mode.
     private TarArkivoStreamingWriter requireWriter() {
-        TarArkivoStreamingWriter currentWriter = writer;
+        @Nullable TarArkivoStreamingWriter currentWriter = writer;
         if (currentWriter == null) {
             throw new ReadOnlyFileSystemException();
         }
         return currentWriter;
+    }
+
+    /// Requires this file system to be in complete rewrite update mode.
+    private void requireUpdateMode() {
+        ensureOpen();
+        if (!updateMode) {
+            if (readOnly) {
+                throw new ReadOnlyFileSystemException();
+            }
+            throw new UnsupportedOperationException("Forward-only TAR write file systems do not support mutations");
+        }
+    }
+
+    /// Opens a seekable channel that stages one update-mode regular file body.
+    private SeekableByteChannel newUpdateByteChannel(
+            Path path,
+            Set<? extends OpenOption> options,
+            FileAttribute<?>... attributes
+    ) throws IOException {
+        requireUpdateMode();
+        validateUpdateEntryOptions(options);
+        if (activeUpdateChannel != null) {
+            throw new FileSystemException(path.toString(), null, "Another TAR entry update channel is already open");
+        }
+
+        String entryPath = normalizedNodePath(path);
+        if (entryPath.isEmpty()) {
+            throw new FileSystemException(path.toString(), null, "The TAR root cannot be opened as a file");
+        }
+        @Nullable Node existing = nodes.get(entryPath);
+        boolean create = options.contains(StandardOpenOption.CREATE) || options.contains(StandardOpenOption.CREATE_NEW);
+        boolean createNew = options.contains(StandardOpenOption.CREATE_NEW);
+        if (existing == null && !create) {
+            throw new NoSuchFileException(path.toString());
+        }
+        if (existing != null && createNew) {
+            throw new FileAlreadyExistsException(path.toString());
+        }
+        if (existing != null && existing.directory()) {
+            throw new FileSystemException(path.toString(), null, "TAR entry is a directory");
+        }
+        if (existing == null) {
+            ensureParents(nodes, entryPath);
+        }
+
+        @Nullable Set<PosixFilePermission> permissions = initialPosixPermissions(attributes);
+        boolean append = options.contains(StandardOpenOption.APPEND);
+        boolean writable = options.contains(StandardOpenOption.WRITE) || append;
+        boolean readable = options.contains(StandardOpenOption.READ);
+        if (!readable && !writable) {
+            throw new IllegalArgumentException("TAR entry update channel requires READ, WRITE, or APPEND");
+        }
+        boolean truncate = writable && options.contains(StandardOpenOption.TRUNCATE_EXISTING);
+        byte[] initialContent = existing != null && !truncate ? existing.content() : new byte[0];
+        UpdateEntryByteChannel channel = new UpdateEntryByteChannel(
+                entryPath,
+                existing,
+                permissions,
+                initialContent,
+                readable,
+                writable,
+                append,
+                writable && (existing == null || truncate)
+        );
+        if (writable) {
+            activeUpdateChannel = channel;
+        }
+        return channel;
+    }
+
+    /// Prepares a previously absent path for an update-mode entry.
+    private String prepareUpdateEntry(Path path) throws IOException {
+        requireUpdateMode();
+        requireNoActiveUpdateChannel(path);
+        String entryPath = normalizedNodePath(path);
+        if (entryPath.isEmpty() || nodes.containsKey(entryPath)) {
+            throw new FileAlreadyExistsException(path.toString());
+        }
+        ensureParents(nodes, entryPath);
+        return entryPath;
+    }
+
+    /// Adds a new update-mode node and marks the archive dirty.
+    private void addUpdateNode(Node node) throws IOException {
+        putNode(nodes, node);
+        dirty = true;
+    }
+
+    /// Rejects a mutation while an update entry channel is open.
+    private void requireNoActiveUpdateChannel(Path path) throws IOException {
+        if (activeUpdateChannel != null) {
+            throw new FileSystemException(path.toString(), null, "A TAR entry update channel is still open");
+        }
+    }
+
+    /// Commits staged regular file content into the update index.
+    private void commitUpdatedEntry(UpdateEntryByteChannel channel, byte @Unmodifiable [] content) throws IOException {
+        if (activeUpdateChannel == channel) {
+            activeUpdateChannel = null;
+        }
+        @Nullable Node existing = nodes.get(channel.path());
+        if (existing != channel.originalNode()) {
+            throw new FileSystemException(channel.path(), null, "TAR entry changed while its update channel was open");
+        }
+
+        TarArkivoEntryAttributes base = existing != null
+                ? existing.attributes()
+                : defaultAttributes(channel.path(), TarEntryAttributes.REGULAR_TYPE, 0644, null, content.length);
+        int mode = existing == null && channel.initialPermissions() != null
+                ? permissionsMode(channel.initialPermissions())
+                : base.mode();
+        TarEntryAttributes attributes = new TarEntryAttributes(
+                channel.path(),
+                TarEntryAttributes.REGULAR_TYPE,
+                mode,
+                base.userId(),
+                base.groupId(),
+                base.userName(),
+                base.groupName(),
+                null,
+                content.length,
+                base.lastModifiedTime(),
+                base.lastAccessTime(),
+                base.creationTime()
+        );
+        Node replacement = new Node(channel.path(), attributes, false, content, false);
+        if (existing == null) {
+            putNode(nodes, replacement);
+        } else {
+            nodes.put(channel.path(), replacement);
+        }
+        refreshHardLinkContents(channel.path(), content);
+        dirty = true;
+    }
+
+    /// Refreshes cached content for hard links that transitively depend on a changed entry.
+    private void refreshHardLinkContents(String changedPath, byte @Unmodifiable [] content) throws IOException {
+        ArrayDeque<String> changedPaths = new ArrayDeque<>();
+        changedPaths.add(changedPath);
+        while (!changedPaths.isEmpty()) {
+            String targetPath = changedPaths.removeFirst();
+            for (Node node : List.copyOf(nodes.values())) {
+                TarArkivoEntryAttributes attributes = node.attributes();
+                @Nullable String linkName = attributes.linkName();
+                if (!attributes.isHardLink() || linkName == null) {
+                    continue;
+                }
+                requireArchiveLocalPath(linkName, "TAR hard link target");
+                if (!normalizeEntryPath(linkName).equals(targetPath)) {
+                    continue;
+                }
+                Node replacement = replaceNodeAttributes(
+                        node,
+                        copyAttributes(attributes, node.path(), attributes.typeFlag(), linkName, content.length),
+                        content
+                );
+                nodes.put(node.path(), replacement);
+                changedPaths.addLast(node.path());
+            }
+        }
+    }
+
+    /// Returns default metadata for a newly created update-mode entry.
+    private static TarEntryAttributes defaultAttributes(
+            String path,
+            byte typeFlag,
+            int mode,
+            @Nullable String linkName,
+            long size
+    ) {
+        return new TarEntryAttributes(
+                path,
+                typeFlag,
+                mode,
+                0L,
+                0L,
+                null,
+                null,
+                linkName,
+                size,
+                UNIX_EPOCH,
+                UNIX_EPOCH,
+                UNIX_EPOCH
+        );
+    }
+
+    /// Returns copied metadata with changed path, type, link target, and body size.
+    private static TarEntryAttributes copyAttributes(
+            TarArkivoEntryAttributes attributes,
+            String path,
+            byte typeFlag,
+            @Nullable String linkName,
+            long size
+    ) {
+        return new TarEntryAttributes(
+                path,
+                typeFlag,
+                attributes.mode(),
+                attributes.userId(),
+                attributes.groupId(),
+                attributes.userName(),
+                attributes.groupName(),
+                linkName,
+                size,
+                attributes.lastModifiedTime(),
+                attributes.lastAccessTime(),
+                attributes.creationTime()
+        );
+    }
+
+    /// Returns a replacement node while preserving its directory index and synthetic marker.
+    private static Node replaceNodeAttributes(
+            Node node,
+            TarArkivoEntryAttributes attributes,
+            byte @Unmodifiable [] content
+    ) {
+        Node replacement = new Node(
+                node.path(),
+                attributes,
+                attributes.isDirectory(),
+                content,
+                node.syntheticDirectory()
+        );
+        replacement.children().putAll(node.children());
+        return replacement;
+    }
+
+    /// Returns POSIX permission bits for the given permission set.
+    private static int permissionsMode(Set<PosixFilePermission> permissions) {
+        int mode = 0;
+        for (PosixFilePermission permission : permissions) {
+            switch (permission) {
+                case OWNER_READ -> mode |= 0400;
+                case OWNER_WRITE -> mode |= 0200;
+                case OWNER_EXECUTE -> mode |= 0100;
+                case GROUP_READ -> mode |= 0040;
+                case GROUP_WRITE -> mode |= 0020;
+                case GROUP_EXECUTE -> mode |= 0010;
+                case OTHERS_READ -> mode |= 0004;
+                case OTHERS_WRITE -> mode |= 0002;
+                case OTHERS_EXECUTE -> mode |= 0001;
+            }
+        }
+        return mode;
+    }
+
+    /// Converts hard links that target a deleted entry into independent regular files.
+    private void materializeHardLinksTo(String deletedPath) throws IOException {
+        ArrayDeque<String> deletedTargets = new ArrayDeque<>();
+        deletedTargets.add(deletedPath);
+        while (!deletedTargets.isEmpty()) {
+            String targetPath = deletedTargets.removeFirst();
+            for (Node node : List.copyOf(nodes.values())) {
+                TarArkivoEntryAttributes attributes = node.attributes();
+                @Nullable String linkName = attributes.linkName();
+                if (!attributes.isHardLink() || linkName == null) {
+                    continue;
+                }
+                requireArchiveLocalPath(linkName, "TAR hard link target");
+                if (!normalizeEntryPath(linkName).equals(targetPath)) {
+                    continue;
+                }
+                TarEntryAttributes materialized = copyAttributes(
+                        attributes,
+                        node.path(),
+                        TarEntryAttributes.REGULAR_TYPE,
+                        null,
+                        node.content().length
+                );
+                nodes.put(node.path(), replaceNodeAttributes(node, materialized, node.content()));
+                deletedTargets.addLast(node.path());
+            }
+        }
+    }
+
+    /// Returns a hard link target rewritten for moved archive paths.
+    private static @Nullable String movedHardLinkTarget(
+            TarArkivoEntryAttributes attributes,
+            Map<String, String> movedPaths
+    ) throws IOException {
+        @Nullable String linkName = attributes.linkName();
+        if (!attributes.isHardLink() || linkName == null) {
+            return linkName;
+        }
+        requireArchiveLocalPath(linkName, "TAR hard link target");
+        return movedPaths.getOrDefault(normalizeEntryPath(linkName), linkName);
+    }
+
+    /// Requires a path's parent to exist as a directory.
+    private void ensureExistingParentDirectory(String path) throws IOException {
+        @Nullable Node parent = nodes.get(parentPath(path));
+        if (parent == null) {
+            throw new NoSuchFileException(parentPath(path));
+        }
+        if (!parent.directory()) {
+            throw new FileSystemException(path, parent.path(), "TAR parent entry is not a directory");
+        }
+    }
+
+    /// Rebuilds child indexes after paths have been moved.
+    private static void rebuildChildren(Map<String, Node> rebuilt) throws IOException {
+        for (Node node : rebuilt.values()) {
+            node.children().clear();
+        }
+        for (Node node : rebuilt.values()) {
+            if (node.path().isEmpty()) {
+                continue;
+            }
+            @Nullable Node parent = rebuilt.get(parentPath(node.path()));
+            if (parent == null || !parent.directory()) {
+                throw new IOException("TAR parent entry is missing after move: " + node.path());
+            }
+            parent.children().put(fileName(node.path()), node.path());
+        }
+    }
+    /// Sets one basic timestamp attribute.
+    private void setBasicAttribute(Path path, String name, @Nullable Object value) throws IOException {
+        if (!(value instanceof FileTime time)) {
+            throw new IllegalArgumentException("TAR basic timestamp value must be FileTime: " + name);
+        }
+        switch (name) {
+            case "lastModifiedTime" -> setTimes(path, time, null, null);
+            case "lastAccessTime" -> setTimes(path, null, time, null);
+            case "creationTime" -> setTimes(path, null, null, time);
+            default -> throw new UnsupportedOperationException("Unsupported writable TAR basic attribute: " + name);
+        }
+    }
+
+    /// Sets one POSIX attribute.
+    private void setPosixAttribute(Path path, String name, @Nullable Object value) throws IOException {
+        switch (name) {
+            case "lastModifiedTime", "lastAccessTime", "creationTime" -> setBasicAttribute(path, name, value);
+            case "owner" -> {
+                if (!(value instanceof UserPrincipal owner)) {
+                    throw new IllegalArgumentException("TAR POSIX owner value must be UserPrincipal");
+                }
+                setOwner(path, owner);
+            }
+            case "group" -> {
+                if (!(value instanceof GroupPrincipal group)) {
+                    throw new IllegalArgumentException("TAR POSIX group value must be GroupPrincipal");
+                }
+                setGroup(path, group);
+            }
+            case "permissions" -> {
+                if (!(value instanceof Set<?> values)) {
+                    throw new IllegalArgumentException("TAR POSIX permissions value must be Set");
+                }
+                EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
+                for (Object item : values) {
+                    if (!(item instanceof PosixFilePermission permission)) {
+                        throw new IllegalArgumentException("TAR POSIX permissions contain an invalid value");
+                    }
+                    permissions.add(permission);
+                }
+                setPermissions(path, permissions);
+            }
+            default -> throw new UnsupportedOperationException("Unsupported writable TAR POSIX attribute: " + name);
+        }
+    }
+
+    /// Sets one TAR-specific metadata attribute.
+    private void setTarAttribute(Path path, String name, @Nullable Object value) throws IOException {
+        switch (name) {
+            case "lastModifiedTime", "lastAccessTime", "creationTime" -> setBasicAttribute(path, name, value);
+            case "userId" -> {
+                if (!(value instanceof Number number)) {
+                    throw new IllegalArgumentException("TAR userId value must be numeric");
+                }
+                setUserId(path, number.longValue());
+            }
+            case "groupId" -> {
+                if (!(value instanceof Number number)) {
+                    throw new IllegalArgumentException("TAR groupId value must be numeric");
+                }
+                setGroupId(path, number.longValue());
+            }
+            case "mode" -> {
+                if (!(value instanceof Number number)) {
+                    throw new IllegalArgumentException("TAR mode value must be numeric");
+                }
+                setMode(path, number.intValue());
+            }
+            case "userName" -> setUserName(path, nullableString(value, "userName"));
+            case "groupName" -> setGroupName(path, nullableString(value, "groupName"));
+            default -> throw new UnsupportedOperationException("Unsupported writable TAR attribute: " + name);
+        }
+    }
+
+    /// Converts a nullable string attribute value.
+    private static @Nullable String nullableString(@Nullable Object value, String name) {
+        if (value == null || value instanceof String) {
+            return (String) value;
+        }
+        throw new IllegalArgumentException("TAR " + name + " value must be String or null");
+    }
+
+
+    /// Sets entry timestamps in update mode.
+    private void setTimes(
+            Path path,
+            @Nullable FileTime lastModifiedTime,
+            @Nullable FileTime lastAccessTime,
+            @Nullable FileTime creationTime
+    ) throws IOException {
+        mutateAttributes(path, attributes -> new TarEntryAttributes(
+                attributes.path(),
+                attributes.typeFlag(),
+                attributes.mode(),
+                attributes.userId(),
+                attributes.groupId(),
+                attributes.userName(),
+                attributes.groupName(),
+                attributes.linkName(),
+                attributes.size(),
+                lastModifiedTime != null ? lastModifiedTime : attributes.lastModifiedTime(),
+                lastAccessTime != null ? lastAccessTime : attributes.lastAccessTime(),
+                creationTime != null ? creationTime : attributes.creationTime()
+        ));
+    }
+
+    /// Sets the entry owner name in update mode.
+    private void setOwner(Path path, UserPrincipal owner) throws IOException {
+        setUserName(path, Objects.requireNonNull(owner, "owner").getName());
+    }
+
+    /// Sets the entry group name in update mode.
+    private void setGroup(Path path, GroupPrincipal group) throws IOException {
+        setGroupName(path, Objects.requireNonNull(group, "group").getName());
+    }
+
+    /// Sets entry permission bits in update mode.
+    private void setPermissions(Path path, Set<PosixFilePermission> permissions) throws IOException {
+        Objects.requireNonNull(permissions, "permissions");
+        mutateAttributes(
+                path,
+                attributes -> copyWithMode(attributes, (attributes.mode() & ~0777) | permissionsMode(permissions))
+        );
+    }
+
+    /// Sets the numeric TAR user identifier in update mode.
+    private void setUserId(Path path, long userId) throws IOException {
+        if (userId < 0L) {
+            throw new IllegalArgumentException("userId must not be negative");
+        }
+        mutateAttributes(path, attributes -> new TarEntryAttributes(
+                attributes.path(), attributes.typeFlag(), attributes.mode(), userId, attributes.groupId(),
+                attributes.userName(), attributes.groupName(), attributes.linkName(), attributes.size(),
+                attributes.lastModifiedTime(), attributes.lastAccessTime(), attributes.creationTime()
+        ));
+    }
+
+    /// Sets the numeric TAR group identifier in update mode.
+    private void setGroupId(Path path, long groupId) throws IOException {
+        if (groupId < 0L) {
+            throw new IllegalArgumentException("groupId must not be negative");
+        }
+        mutateAttributes(path, attributes -> new TarEntryAttributes(
+                attributes.path(), attributes.typeFlag(), attributes.mode(), attributes.userId(), groupId,
+                attributes.userName(), attributes.groupName(), attributes.linkName(), attributes.size(),
+                attributes.lastModifiedTime(), attributes.lastAccessTime(), attributes.creationTime()
+        ));
+    }
+
+    /// Sets the raw TAR mode in update mode.
+    private void setMode(Path path, int mode) throws IOException {
+        if (mode < 0) {
+            throw new IllegalArgumentException("mode must not be negative");
+        }
+        mutateAttributes(path, attributes -> copyWithMode(attributes, mode));
+    }
+
+    /// Returns copied metadata with a changed mode.
+    private static TarEntryAttributes copyWithMode(TarArkivoEntryAttributes attributes, int mode) {
+        return new TarEntryAttributes(
+                attributes.path(), attributes.typeFlag(), mode, attributes.userId(), attributes.groupId(),
+                attributes.userName(), attributes.groupName(), attributes.linkName(), attributes.size(),
+                attributes.lastModifiedTime(), attributes.lastAccessTime(), attributes.creationTime()
+        );
+    }
+
+    /// Sets the TAR user name in update mode.
+    private void setUserName(Path path, @Nullable String userName) throws IOException {
+        mutateAttributes(path, attributes -> new TarEntryAttributes(
+                attributes.path(), attributes.typeFlag(), attributes.mode(), attributes.userId(), attributes.groupId(),
+                userName, attributes.groupName(), attributes.linkName(), attributes.size(),
+                attributes.lastModifiedTime(), attributes.lastAccessTime(), attributes.creationTime()
+        ));
+    }
+
+    /// Sets the TAR group name in update mode.
+    private void setGroupName(Path path, @Nullable String groupName) throws IOException {
+        mutateAttributes(path, attributes -> new TarEntryAttributes(
+                attributes.path(), attributes.typeFlag(), attributes.mode(), attributes.userId(), attributes.groupId(),
+                attributes.userName(), groupName, attributes.linkName(), attributes.size(),
+                attributes.lastModifiedTime(), attributes.lastAccessTime(), attributes.creationTime()
+        ));
+    }
+
+    /// Replaces one entry's metadata through an update function.
+    private void mutateAttributes(Path path, AttributeMutation mutation) throws IOException {
+        requireUpdateMode();
+        requireNoActiveUpdateChannel(path);
+        Node node = requireNode(path);
+        if (node.path().isEmpty() || node.syntheticDirectory()) {
+            throw new FileSystemException(path.toString(), null, "Synthetic TAR directory metadata cannot be changed");
+        }
+        TarArkivoEntryAttributes attributes = mutation.apply(node.attributes());
+        nodes.put(node.path(), replaceNodeAttributes(node, attributes, node.content()));
+        dirty = true;
+    }
+
+    /// Changes an immutable entry metadata snapshot.
+    @FunctionalInterface
+    @NotNullByDefault
+    private interface AttributeMutation {
+        /// Returns replacement metadata.
+        TarArkivoEntryAttributes apply(TarArkivoEntryAttributes attributes);
     }
 
     /// Prepares a new archive entry path for forward-only writing.
@@ -820,7 +1657,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private Node requireNode(Path path) throws IOException {
         ensureOpen();
         String normalizedPath = normalizedNodePath(path);
-        Node node = nodes.get(normalizedPath);
+        @Nullable Node node = nodes.get(normalizedPath);
         if (node == null) {
             throw new NoSuchFileException(path.toString());
         }
@@ -846,6 +1683,53 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Returns a node map containing only the synthetic root directory.
     private static Map<String, Node> rootNodes() {
         return Map.of("", new Node("", syntheticDirectoryAttributes("/"), true, new byte[0], true));
+    }
+
+    /// Publishes all surviving update nodes through a complete TAR rewrite.
+    private void commitUpdate() throws IOException {
+        ArkivoCommitTarget target = Objects.requireNonNull(commitTarget, "commitTarget");
+        ArkivoCommitOutput output = target.openOutput(archivePath);
+        Throwable failure = null;
+        try {
+            try (SeekableByteChannel channel = output.openChannel(Set.of(
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE
+            ));
+                 TarArkivoStreamingWriterImpl archiveWriter =
+                         new TarArkivoStreamingWriterImpl(Channels.newOutputStream(channel))) {
+                for (Node node : nodes.values()) {
+                    if (node.path().isEmpty() || node.syntheticDirectory()) {
+                        continue;
+                    }
+                    archiveWriter.writeSnapshot(node.attributes(), node.content());
+                }
+            }
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+        }
+        try {
+            if (failure == null) {
+                output.commit();
+            } else {
+                output.rollback();
+            }
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = appendFailure(failure, exception);
+        }
+        try {
+            output.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = appendFailure(failure, exception);
+        }
+        throwFailure(failure);
+    }
+
+    /// Returns the directory used for default atomic update output.
+    private static Path defaultCommitDirectory(Path archivePath) {
+        Path absolutePath = archivePath.toAbsolutePath();
+        @Nullable Path parent = absolutePath.getParent();
+        return parent != null ? parent : absolutePath.getFileSystem().getPath(".").toAbsolutePath();
     }
 
     /// Adds a secondary failure as suppressed when a primary failure already exists.
@@ -884,17 +1768,25 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 byte[] content = new byte[0];
                 if (attributes.isHardLink()) {
                     String targetPath = normalizeHardLinkTargetPath(attributes);
-                    Node target = nodes.get(targetPath);
+                    @Nullable Node target = nodes.get(targetPath);
                     if (target == null || !target.attributes().isRegularFile()) {
                         throw new IOException("TAR hard link target is not available: " + targetPath);
                     }
                     content = target.content();
                     nodeAttributes = attributesWithSize(attributes, content.length);
-                } else if (attributes.isRegularFile()) {
+                } else if (attributes instanceof TarEntryAttributes internalAttributes
+                        && internalAttributes.bodySize() > 0L) {
                     try (InputStream entryInput = reader.openInputStream()) {
                         content = entryInput.readAllBytes();
                     }
                 }
+                nodeAttributes = copyAttributes(
+                        nodeAttributes,
+                        path,
+                        nodeAttributes.typeFlag(),
+                        nodeAttributes.linkName(),
+                        content.length
+                );
                 putNode(nodes, new Node(path, nodeAttributes, nodeAttributes.isDirectory(), content, false));
             }
         }
@@ -903,7 +1795,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Normalizes the archive-local target path for a TAR hard link.
     private static String normalizeHardLinkTargetPath(TarArkivoEntryAttributes attributes) throws IOException {
-        String linkName = attributes.linkName();
+        @Nullable String linkName = attributes.linkName();
         if (linkName == null) {
             throw new IOException("TAR hard link entry is missing a link target: " + attributes.path());
         }
@@ -935,7 +1827,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         while (separator >= 0) {
             String parent = path.substring(0, separator);
             if (!parent.isEmpty()) {
-                Node existing = nodes.get(parent);
+                @Nullable Node existing = nodes.get(parent);
                 if (existing == null) {
                     ensureParents(nodes, parent);
                     putNode(nodes, new Node(parent, syntheticDirectoryAttributes(parent), true, new byte[0], true));
@@ -949,13 +1841,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Adds or replaces one node in the node map.
     private static void putNode(Map<String, Node> nodes, Node node) throws IOException {
-        Node existing = nodes.get(node.path());
+        @Nullable Node existing = nodes.get(node.path());
         if (existing != null && !(existing.syntheticDirectory() && node.directory())) {
             throw new IOException("Duplicate TAR entry path: " + node.path());
         }
         @Nullable LinkedHashMap<String, String> existingChildren = existing != null ? existing.children() : null;
         if (!node.path().isEmpty()) {
-            Node parent = nodes.get(parentPath(node.path()));
+            @Nullable Node parent = nodes.get(parentPath(node.path()));
             if (parent != null) {
                 if (!parent.directory()) {
                     throw new IOException("TAR parent entry is not a directory: " + parent.path());
@@ -1146,7 +2038,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
     }
 
-    /// Implements a read-only basic attribute view.
+    /// Implements a basic attribute view for read and update modes.
     @NotNullByDefault
     private final class BasicView implements BasicFileAttributeView {
         /// The path whose attributes are exposed.
@@ -1169,18 +2061,18 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             return TarArkivoFileSystemImpl.this.readAttributes(path, BasicFileAttributes.class);
         }
 
-        /// TAR attributes are read-only.
+        /// Sets this path's timestamps in update mode.
         @Override
         public void setTimes(
                 @Nullable FileTime lastModifiedTime,
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
-        ) {
-            throw new ReadOnlyFileSystemException();
+        ) throws IOException {
+            TarArkivoFileSystemImpl.this.setTimes(path, lastModifiedTime, lastAccessTime, createTime);
         }
     }
 
-    /// Implements a read-only TAR attribute view.
+    /// Implements a TAR attribute view for read and update modes.
     @NotNullByDefault
     private final class TarView implements TarArkivoEntryAttributeView {
         /// The path whose attributes are exposed.
@@ -1197,48 +2089,48 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             return TarArkivoFileSystemImpl.this.readAttributes(path, TarArkivoEntryAttributes.class);
         }
 
-        /// TAR attributes are read-only.
+        /// Sets this path's timestamps in update mode.
         @Override
         public void setTimes(
                 @Nullable FileTime lastModifiedTime,
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
-        ) {
-            throw new ReadOnlyFileSystemException();
+        ) throws IOException {
+            TarArkivoFileSystemImpl.this.setTimes(path, lastModifiedTime, lastAccessTime, createTime);
         }
 
-        /// TAR attributes are read-only.
+        /// Sets this path's numeric user identifier in update mode.
         @Override
-        public void setUserId(long userId) {
-            throw new ReadOnlyFileSystemException();
+        public void setUserId(long userId) throws IOException {
+            TarArkivoFileSystemImpl.this.setUserId(path, userId);
         }
 
-        /// TAR attributes are read-only.
+        /// Sets this path's numeric group identifier in update mode.
         @Override
-        public void setGroupId(long groupId) {
-            throw new ReadOnlyFileSystemException();
+        public void setGroupId(long groupId) throws IOException {
+            TarArkivoFileSystemImpl.this.setGroupId(path, groupId);
         }
 
-        /// TAR attributes are read-only.
+        /// Sets this path's raw TAR mode in update mode.
         @Override
-        public void setMode(int mode) {
-            throw new ReadOnlyFileSystemException();
+        public void setMode(int mode) throws IOException {
+            TarArkivoFileSystemImpl.this.setMode(path, mode);
         }
 
-        /// TAR attributes are read-only.
+        /// Sets this path's TAR user name in update mode.
         @Override
-        public void setUserName(@Nullable String userName) {
-            throw new ReadOnlyFileSystemException();
+        public void setUserName(@Nullable String userName) throws IOException {
+            TarArkivoFileSystemImpl.this.setUserName(path, userName);
         }
 
-        /// TAR attributes are read-only.
+        /// Sets this path's TAR group name in update mode.
         @Override
-        public void setGroupName(@Nullable String groupName) {
-            throw new ReadOnlyFileSystemException();
+        public void setGroupName(@Nullable String groupName) throws IOException {
+            TarArkivoFileSystemImpl.this.setGroupName(path, groupName);
         }
     }
 
-    /// Implements a read-only owner attribute view.
+    /// Implements an owner attribute view for read and update modes.
     @NotNullByDefault
     private final class OwnerView implements FileOwnerAttributeView {
         /// The path whose owner is exposed.
@@ -1261,15 +2153,14 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             return TarArkivoFileSystemImpl.this.readAttributes(path, PosixFileAttributes.class).owner();
         }
 
-        /// TAR attributes are read-only.
+        /// Sets this path's owner in update mode.
         @Override
-        public void setOwner(UserPrincipal owner) {
-            Objects.requireNonNull(owner, "owner");
-            throw new ReadOnlyFileSystemException();
+        public void setOwner(UserPrincipal owner) throws IOException {
+            TarArkivoFileSystemImpl.this.setOwner(path, owner);
         }
     }
 
-    /// Implements a read-only POSIX attribute view.
+    /// Implements a POSIX attribute view for read and update modes.
     @NotNullByDefault
     private final class PosixView implements PosixFileAttributeView {
         /// The path whose POSIX attributes are exposed.
@@ -1298,35 +2189,32 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             return readAttributes().owner();
         }
 
-        /// TAR attributes are read-only.
+        /// Sets this path's timestamps in update mode.
         @Override
         public void setTimes(
                 @Nullable FileTime lastModifiedTime,
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
-        ) {
-            throw new ReadOnlyFileSystemException();
+        ) throws IOException {
+            TarArkivoFileSystemImpl.this.setTimes(path, lastModifiedTime, lastAccessTime, createTime);
         }
 
-        /// TAR attributes are read-only.
+        /// Sets this path's owner in update mode.
         @Override
-        public void setOwner(UserPrincipal owner) {
-            Objects.requireNonNull(owner, "owner");
-            throw new ReadOnlyFileSystemException();
+        public void setOwner(UserPrincipal owner) throws IOException {
+            TarArkivoFileSystemImpl.this.setOwner(path, owner);
         }
 
-        /// TAR attributes are read-only.
+        /// Sets this path's group in update mode.
         @Override
-        public void setGroup(GroupPrincipal group) {
-            Objects.requireNonNull(group, "group");
-            throw new ReadOnlyFileSystemException();
+        public void setGroup(GroupPrincipal group) throws IOException {
+            TarArkivoFileSystemImpl.this.setGroup(path, group);
         }
 
-        /// TAR attributes are read-only.
+        /// Sets this path's permissions in update mode.
         @Override
-        public void setPermissions(Set<PosixFilePermission> permissions) {
-            Objects.requireNonNull(permissions, "permissions");
-            throw new ReadOnlyFileSystemException();
+        public void setPermissions(Set<PosixFilePermission> permissions) throws IOException {
+            TarArkivoFileSystemImpl.this.setPermissions(path, permissions);
         }
     }
 
@@ -1394,6 +2282,215 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         @Override
         public Object getAttribute(String attribute) throws IOException {
             return ArkivoFileStoreAttributes.get(this, attribute);
+        }
+    }
+
+    /// Implements a staged random-access channel for one update-mode regular file.
+    @NotNullByDefault
+    private final class UpdateEntryByteChannel implements SeekableByteChannel {
+        /// The normalized entry path.
+        private final String path;
+
+        /// The node present when this channel opened, or `null` for a new entry.
+        private final @Nullable Node originalNode;
+
+        /// Initial permissions applied only when a new entry is committed.
+        private final @Nullable @Unmodifiable Set<PosixFilePermission> initialPermissions;
+
+        /// Whether reads are allowed.
+        private final boolean readable;
+
+        /// Whether writes are allowed.
+        private final boolean writable;
+
+        /// Whether every write is forced to the current end.
+        private final boolean append;
+
+        /// The staged entry bytes.
+        private byte[] data;
+
+        /// The logical staged size.
+        private int size;
+
+        /// The current channel position.
+        private int position;
+
+        /// Whether closing this channel must update the archive index.
+        private boolean changed;
+
+        /// Whether this channel is open.
+        private boolean channelOpen = true;
+
+        /// Creates a staged update entry channel.
+        private UpdateEntryByteChannel(
+                String path,
+                @Nullable Node originalNode,
+                @Nullable Set<PosixFilePermission> initialPermissions,
+                byte @Unmodifiable [] initialContent,
+                boolean readable,
+                boolean writable,
+                boolean append,
+                boolean forceCommit
+        ) {
+            this.path = Objects.requireNonNull(path, "path");
+            this.originalNode = originalNode;
+            this.initialPermissions = initialPermissions != null ? Set.copyOf(initialPermissions) : null;
+            this.readable = readable;
+            this.writable = writable;
+            this.append = append;
+            this.data = Arrays.copyOf(initialContent, Math.max(initialContent.length, 32));
+            this.size = initialContent.length;
+            this.position = append ? size : 0;
+            this.changed = forceCommit;
+        }
+
+        /// Returns the normalized entry path.
+        private String path() {
+            return path;
+        }
+
+        /// Returns the node present when this channel opened.
+        private @Nullable Node originalNode() {
+            return originalNode;
+        }
+
+        /// Returns initial permissions for a new entry.
+        private @Nullable @Unmodifiable Set<PosixFilePermission> initialPermissions() {
+            return initialPermissions;
+        }
+
+        /// Reads staged bytes from the current position.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            Objects.requireNonNull(destination, "destination");
+            ensureChannelOpen();
+            if (!readable) {
+                throw new NonReadableChannelException();
+            }
+            if (position >= size) {
+                return -1;
+            }
+            int count = Math.min(destination.remaining(), size - position);
+            destination.put(data, position, count);
+            position += count;
+            return count;
+        }
+
+        /// Writes staged bytes at the current position or end in append mode.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            ensureChannelOpen();
+            if (!writable) {
+                throw new NonWritableChannelException();
+            }
+            if (append) {
+                position = size;
+            }
+            int count = source.remaining();
+            int end = checkedArrayPosition((long) position + count);
+            ensureCapacity(end);
+            source.get(data, position, count);
+            position = end;
+            size = Math.max(size, end);
+            changed |= count != 0;
+            return count;
+        }
+
+        /// Returns the current staged position.
+        @Override
+        public long position() throws IOException {
+            ensureChannelOpen();
+            return position;
+        }
+
+        /// Changes the current staged position.
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            ensureChannelOpen();
+            position = checkedArrayPosition(newPosition);
+            return this;
+        }
+
+        /// Returns the current staged size.
+        @Override
+        public long size() throws IOException {
+            ensureChannelOpen();
+            return size;
+        }
+
+        /// Truncates staged content.
+        @Override
+        public SeekableByteChannel truncate(long newSize) throws IOException {
+            ensureChannelOpen();
+            if (!writable) {
+                throw new NonWritableChannelException();
+            }
+            int checkedSize = checkedArrayPosition(newSize);
+            if (checkedSize < size) {
+                size = checkedSize;
+                if (position > size) {
+                    position = size;
+                }
+                changed = true;
+            }
+            return this;
+        }
+
+        /// Returns whether this channel is open.
+        @Override
+        public boolean isOpen() {
+            return channelOpen;
+        }
+
+        /// Closes this channel and commits changed staged bytes to the update index.
+        @Override
+        public void close() throws IOException {
+            if (!channelOpen) {
+                return;
+            }
+            channelOpen = false;
+            if (!writable) {
+                return;
+            }
+            if (changed) {
+                commitUpdatedEntry(this, Arrays.copyOf(data, size));
+            } else if (activeUpdateChannel == this) {
+                activeUpdateChannel = null;
+            }
+        }
+
+        /// Ensures enough staged array capacity.
+        private void ensureCapacity(int requiredCapacity) throws IOException {
+            if (requiredCapacity <= data.length) {
+                return;
+            }
+            long grown = Math.max((long) requiredCapacity, (long) data.length * 2L);
+            if (grown > Integer.MAX_VALUE) {
+                grown = Integer.MAX_VALUE;
+            }
+            if (grown < requiredCapacity) {
+                throw new IOException("TAR entry is too large for update storage");
+            }
+            data = Arrays.copyOf(data, (int) grown);
+        }
+
+        /// Converts a staged position to the array-backed index domain.
+        private int checkedArrayPosition(long value) throws IOException {
+            if (value < 0L) {
+                throw new IllegalArgumentException("TAR entry position must not be negative");
+            }
+            if (value > Integer.MAX_VALUE) {
+                throw new IOException("TAR entry is too large for update storage");
+            }
+            return (int) value;
+        }
+
+        /// Ensures this channel is open.
+        private void ensureChannelOpen() throws ClosedChannelException {
+            if (!channelOpen) {
+                throw new ClosedChannelException();
+            }
         }
     }
 

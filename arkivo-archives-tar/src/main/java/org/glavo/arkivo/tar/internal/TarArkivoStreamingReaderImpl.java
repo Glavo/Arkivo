@@ -163,7 +163,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             throw new IOException("TAR entry body has already been opened");
         }
         currentBodyOpened = true;
-        if (!attributes.hasDataBody()) {
+        if (attributes.bodySize() == 0L) {
             return Channels.newChannel(InputStream.nullInputStream());
         }
         return Channels.newChannel(new EntryInputStream());

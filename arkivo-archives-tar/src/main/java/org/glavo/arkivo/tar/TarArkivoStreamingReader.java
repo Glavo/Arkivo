@@ -13,6 +13,8 @@ import java.nio.channels.ReadableByteChannel;
 import java.util.Objects;
 
 /// Reads TAR entries from a forward-only stream.
+///
+/// Entry body channels expose the declared body of regular and format-specific entry types.
 @NotNullByDefault
 public abstract sealed class TarArkivoStreamingReader extends ArkivoStreamingReader
         permits TarArkivoStreamingReaderImpl {

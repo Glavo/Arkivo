@@ -3,8 +3,10 @@
 
 package org.glavo.arkivo.tar;
 
+import org.glavo.arkivo.ArkivoCommitTarget;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
@@ -539,6 +541,283 @@ public final class TarArkivoStreamingReaderTest {
             deleteTemporaryArchive(archivePath);
         }
     }
+
+    /// Verifies that update mode rewrites additions, replacements, deletions, moves, links, and metadata.
+    @Test
+    public void updatesExistingArchiveThroughCompleteRewrite() throws IOException {
+        byte[] keepContent = "abcdef".getBytes(StandardCharsets.UTF_8);
+        byte[] linkedContent = "linked-content".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("tar-update-");
+        try {
+            try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
+                writeStreamingFile(writer, "keep.txt", keepContent);
+                writeStreamingFile(writer, "remove.txt", "remove".getBytes(StandardCharsets.UTF_8));
+                writer.beginDirectory("dir");
+                writer.endEntry();
+                writeStreamingFile(writer, "dir/child.txt", "child".getBytes(StandardCharsets.UTF_8));
+                writeStreamingFile(writer, "source.txt", linkedContent);
+                writer.beginHardLink("hard.txt", "source.txt");
+                writer.endEntry();
+                writeStreamingFile(writer, "target.txt", "old-target".getBytes(StandardCharsets.UTF_8));
+                writer.beginHardLink("target-hard.txt", "target.txt");
+                writer.endEntry();
+                writeStreamingFile(writer, "replacement.txt", "new-target".getBytes(StandardCharsets.UTF_8));
+            }
+
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+            );
+            FileTime modifiedTime = FileTime.from(Instant.parse("2032-03-04T05:06:07.125Z"));
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, environment)) {
+                assertEquals(false, fileSystem.isReadOnly());
+                Path keep = fileSystem.getPath("/keep.txt");
+                assertArrayEquals(keepContent, Files.readAllBytes(keep));
+                try (SeekableByteChannel channel = Files.newByteChannel(
+                        keep,
+                        Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+                )) {
+                    channel.position(2L);
+                    assertEquals(2, channel.write(ByteBuffer.wrap("ZZ".getBytes(StandardCharsets.UTF_8))));
+                    channel.truncate(5L);
+                    channel.position(0L);
+                    ByteBuffer updated = ByteBuffer.allocate(5);
+                    assertEquals(5, channel.read(updated));
+                    assertArrayEquals("abZZe".getBytes(StandardCharsets.UTF_8), updated.array());
+                }
+
+                TarArkivoEntryAttributeView tarView =
+                        Objects.requireNonNull(Files.getFileAttributeView(keep, TarArkivoEntryAttributeView.class));
+                tarView.setTimes(modifiedTime, modifiedTime, modifiedTime);
+                tarView.setUserId(1234L);
+                tarView.setGroupId(5678L);
+                tarView.setMode(0640);
+                tarView.setUserName("update-user");
+                tarView.setGroupName("update-group");
+                Files.move(
+                        fileSystem.getPath("/replacement.txt"),
+                        fileSystem.getPath("/target.txt"),
+                        StandardCopyOption.REPLACE_EXISTING
+                );
+
+                Files.delete(fileSystem.getPath("/remove.txt"));
+                Files.delete(fileSystem.getPath("/source.txt"));
+                Files.move(fileSystem.getPath("/dir"), fileSystem.getPath("/renamed"));
+                Files.writeString(fileSystem.getPath("/new.txt"), "new", StandardCharsets.UTF_8);
+            }
+
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath)) {
+                Path keep = fileSystem.getPath("/keep.txt");
+                assertArrayEquals("abZZe".getBytes(StandardCharsets.UTF_8), Files.readAllBytes(keep));
+                TarArkivoEntryAttributes attributes = Files.readAttributes(keep, TarArkivoEntryAttributes.class);
+                assertEquals(modifiedTime, attributes.lastModifiedTime());
+                assertEquals(1234L, attributes.userId());
+                assertEquals(5678L, attributes.groupId());
+                assertEquals(0640, attributes.mode());
+                assertEquals("update-user", attributes.userName());
+                assertEquals("update-group", attributes.groupName());
+
+                assertEquals(false, Files.exists(fileSystem.getPath("/remove.txt")));
+                assertEquals(false, Files.exists(fileSystem.getPath("/source.txt")));
+                assertArrayEquals(
+                        linkedContent,
+                        Files.readAllBytes(fileSystem.getPath("/hard.txt"))
+                );
+                assertEquals(
+                        false,
+                        Files.readAttributes(
+                                fileSystem.getPath("/hard.txt"),
+                                TarArkivoEntryAttributes.class
+                        ).isHardLink()
+                );
+                assertEquals(
+                        "new-target",
+                        Files.readString(fileSystem.getPath("/target.txt"), StandardCharsets.UTF_8)
+                );
+                Path targetHardLink = fileSystem.getPath("/target-hard.txt");
+                assertEquals(
+                        "old-target",
+                        Files.readString(targetHardLink, StandardCharsets.UTF_8)
+                );
+                assertEquals(
+                        false,
+                        Files.readAttributes(targetHardLink, TarArkivoEntryAttributes.class).isHardLink()
+                );
+                assertEquals(
+                        "child",
+                        Files.readString(fileSystem.getPath("/renamed/child.txt"), StandardCharsets.UTF_8)
+                );
+                assertEquals("new", Files.readString(fileSystem.getPath("/new.txt"), StandardCharsets.UTF_8));
+            }
+
+            ArrayList<String> physicalEntries = new ArrayList<>();
+            try (TarArkivoStreamingReader reader =
+                         TarArkivoStreamingReader.open(Files.newInputStream(archivePath))) {
+                while (reader.next()) {
+                    physicalEntries.add(reader.readAttributes(TarArkivoEntryAttributes.class).path());
+                }
+            }
+            assertEquals(
+                    List.of(
+                            "keep.txt",
+                            "renamed/",
+                            "renamed/child.txt",
+                            "hard.txt",
+                            "target-hard.txt",
+                            "target.txt",
+                            "new.txt"
+                    ),
+                    physicalEntries
+            );
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that an explicit commit target can publish an updated derivative without changing the source.
+    @Test
+    public void updateCommitTargetCanPublishDerivedArchive() throws IOException {
+        Path archivePath = createTemporaryArchivePath("tar-update-source-");
+        Path derivedPath = createTemporaryArchivePath("tar-update-derived-");
+        Files.deleteIfExists(derivedPath);
+        try {
+            try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
+                writeStreamingFile(writer, "value.txt", "before".getBytes(StandardCharsets.UTF_8));
+            }
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.COMMIT_TARGET.key(),
+                    ArkivoCommitTarget.writeTo(derivedPath)
+            );
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, environment)) {
+                Files.writeString(fileSystem.getPath("/value.txt"), "after", StandardCharsets.UTF_8);
+            }
+
+            try (TarArkivoFileSystem source = TarArkivoFileSystem.open(archivePath);
+                 TarArkivoFileSystem derived = TarArkivoFileSystem.open(derivedPath)) {
+                assertEquals(
+                        "before",
+                        Files.readString(source.getPath("/value.txt"), StandardCharsets.UTF_8)
+                );
+                assertEquals(
+                        "after",
+                        Files.readString(derived.getPath("/value.txt"), StandardCharsets.UTF_8)
+                );
+            }
+        } finally {
+            Files.deleteIfExists(derivedPath);
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that commit setup failure leaves the original TAR bytes untouched.
+    @Test
+    public void failedUpdateCommitLeavesOriginalArchiveUntouched() throws IOException {
+        Path archivePath = createTemporaryArchivePath("tar-update-failure-");
+        try {
+            try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
+                writeStreamingFile(writer, "value.txt", "before".getBytes(StandardCharsets.UTF_8));
+            }
+            byte[] originalArchive = Files.readAllBytes(archivePath);
+            ArkivoCommitTarget failingTarget = sourcePath -> {
+                throw new IOException("commit target failed");
+            };
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.COMMIT_TARGET.key(),
+                    failingTarget
+            );
+
+            TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, environment);
+            Files.writeString(fileSystem.getPath("/value.txt"), "after", StandardCharsets.UTF_8);
+            IOException exception = assertThrows(IOException.class, fileSystem::close);
+            assertEquals("commit target failed", exception.getMessage());
+            assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that closing an unchanged update session does not rewrite archive bytes.
+    @Test
+    public void unchangedUpdateLeavesArchiveBytesUntouched() throws IOException {
+        Path archivePath = createTemporaryArchivePath("tar-update-unchanged-");
+        try {
+            try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
+                writeStreamingFile(writer, "value.txt", "value".getBytes(StandardCharsets.UTF_8));
+            }
+            byte[] originalArchive = Files.readAllBytes(archivePath);
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+            );
+            try (TarArkivoFileSystem ignored = TarArkivoFileSystem.open(archivePath, environment)) {
+            }
+            assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that update mode with CREATE publishes a valid empty archive for a missing source.
+    @Test
+    public void updateCreateModeCreatesMissingArchive() throws IOException {
+        Path archivePath = createTemporaryArchivePath("tar-update-create-");
+        Files.deleteIfExists(archivePath);
+        try {
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
+            );
+            try (TarArkivoFileSystem ignored = TarArkivoFileSystem.open(archivePath, environment)) {
+            }
+            assertEquals(true, Files.exists(archivePath));
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath);
+                 DirectoryStream<Path> entries = Files.newDirectoryStream(fileSystem.getPath("/"))) {
+                assertEquals(false, entries.iterator().hasNext());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that unknown TAR entry bodies survive a rewrite and remain stream-readable.
+    @Test
+    public void updatePreservesUnknownEntryBodies() throws IOException {
+        byte[] extensionBody = "extension-data".getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        writeHeader(archive, "extension.bin", 0600, 1, 2, extensionBody.length, 'V', "", "u", "g");
+        writeBody(archive, extensionBody);
+        archive.write(new byte[1024]);
+
+        Path archivePath = createTemporaryArchivePath("tar-update-extension-");
+        try {
+            Files.write(archivePath, archive.toByteArray());
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+            );
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, environment)) {
+                Files.writeString(fileSystem.getPath("/new.txt"), "new", StandardCharsets.UTF_8);
+            }
+
+            try (TarArkivoStreamingReader reader =
+                         TarArkivoStreamingReader.open(Files.newInputStream(archivePath))) {
+                assertEquals(true, reader.next());
+                TarArkivoEntryAttributes extension = reader.readAttributes(TarArkivoEntryAttributes.class);
+                assertEquals(true, extension.isOther());
+                assertArrayEquals(extensionBody, reader.openInputStream().readAllBytes());
+                assertEquals(true, reader.next());
+                assertEquals("new.txt", reader.readAttributes(TarArkivoEntryAttributes.class).path());
+                assertEquals(false, reader.next());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
 
     /// Verifies that provider URI entry points register and unregister TAR file systems.
     @Test
@@ -1250,6 +1529,18 @@ public final class TarArkivoStreamingReaderTest {
     }
 
     /// Creates a temporary TAR archive path under the build directory.
+    /// Writes one regular file through a TAR streaming writer.
+    private static void writeStreamingFile(
+            TarArkivoStreamingWriter writer,
+            String path,
+            byte @Unmodifiable [] content
+    ) throws IOException {
+        writer.beginFile(path);
+        try (OutputStream output = writer.openOutputStream()) {
+            output.write(content);
+        }
+    }
+
     private static Path createTemporaryArchivePath(String prefix) throws IOException {
         Path temporaryRoot = Path.of("build", "tmp", "arkivo-tar-tests");
         Files.createDirectories(temporaryRoot);

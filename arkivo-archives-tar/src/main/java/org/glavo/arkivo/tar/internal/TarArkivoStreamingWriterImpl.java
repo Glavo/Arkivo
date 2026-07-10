@@ -8,6 +8,7 @@ import org.glavo.arkivo.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.tar.TarArkivoStreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -124,6 +125,88 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     @Override
     public void beginHardLink(String path, String target) throws IOException {
         beginEntry(path, EntryType.HARD_LINK, hardLinkTargetText(target));
+    }
+
+    /// Writes an indexed TAR entry snapshot while preserving its type and metadata.
+    void writeSnapshot(TarArkivoEntryAttributes attributes, byte @Unmodifiable [] body)
+            throws IOException {
+        ensureOpen();
+        Objects.requireNonNull(attributes, "attributes");
+        Objects.requireNonNull(body, "body");
+        if (pendingEntry != null) {
+            throw new IllegalStateException("A TAR streaming entry is already pending");
+        }
+        if (currentBody != null) {
+            throw new IllegalStateException("A TAR streaming entry body is still open");
+        }
+
+        byte typeFlag = attributes.typeFlag();
+        boolean storesBody = typeFlag == TarEntryAttributes.REGULAR_TYPE
+                || typeFlag == TarEntryAttributes.OLD_REGULAR_TYPE
+                || attributes.isOther();
+        long size = storesBody ? body.length : 0L;
+        String path = entryPathText(attributes.path(), attributes.isDirectory());
+        String linkName = attributes.linkName() != null ? attributes.linkName() : "";
+
+        LinkedHashMap<String, String> paxRecords = new LinkedHashMap<>();
+        @Nullable HeaderPathFields pathFields = headerPathFields(path);
+        if (pathFields == null) {
+            paxRecords.put("path", path);
+            pathFields = new HeaderPathFields("arkivo-pax-entry", "");
+        }
+
+        String headerLinkName = linkName;
+        if (!linkName.isEmpty() && utf8Length(linkName) > 100) {
+            paxRecords.put("linkpath", linkName);
+            headerLinkName = "";
+        }
+
+        paxRecords.put("mtime", paxTimestamp(attributes.lastModifiedTime()));
+        paxRecords.put("atime", paxTimestamp(attributes.lastAccessTime()));
+        paxRecords.put("ctime", paxTimestamp(attributes.creationTime()));
+
+        long headerUserId = attributes.userId();
+        if (headerUserId > maxOctalValue(8)) {
+            paxRecords.put("uid", Long.toString(headerUserId));
+            headerUserId = 0L;
+        }
+        long headerGroupId = attributes.groupId();
+        if (headerGroupId > maxOctalValue(8)) {
+            paxRecords.put("gid", Long.toString(headerGroupId));
+            headerGroupId = 0L;
+        }
+
+        String userName = attributes.userName() != null ? attributes.userName() : "";
+        String headerUserName = userName;
+        if (utf8Length(userName) > 32) {
+            paxRecords.put("uname", userName);
+            headerUserName = "";
+        }
+        String groupName = attributes.groupName() != null ? attributes.groupName() : "";
+        String headerGroupName = groupName;
+        if (utf8Length(groupName) > 32) {
+            paxRecords.put("gname", groupName);
+            headerGroupName = "";
+        }
+
+        writePaxHeader(paxRecords);
+        writeHeader(
+                pathFields.name,
+                pathFields.prefix,
+                attributes.mode(),
+                headerUserId,
+                headerGroupId,
+                size,
+                headerEpochSecond(attributes.lastModifiedTime()),
+                typeFlag,
+                headerLinkName,
+                headerUserName,
+                headerGroupName
+        );
+        if (size > 0L) {
+            output.write(body);
+            writePadding(size);
+        }
     }
 
     /// Begins a pending TAR entry for the given logical archive path and type.
@@ -293,7 +376,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         @Nullable String groupName = attributes.groupName();
 
         LinkedHashMap<String, String> paxRecords = new LinkedHashMap<>();
-        HeaderPathFields pathFields = headerPathFields(entry.path);
+        @Nullable HeaderPathFields pathFields = headerPathFields(entry.path);
         if (pathFields == null) {
             paxRecords.put("path", entry.path);
             pathFields = new HeaderPathFields("arkivo-pax-entry", "");
