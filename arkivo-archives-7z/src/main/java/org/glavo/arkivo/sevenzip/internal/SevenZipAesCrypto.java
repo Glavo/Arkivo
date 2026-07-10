@@ -16,9 +16,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
+import java.util.Arrays;
 import java.util.Objects;
 
-/// Implements the 7z AES-256/SHA-256 decryption filter.
+/// Implements shared 7z AES-256/SHA-256 key derivation and decryption.
 @NotNullByDefault
 final class SevenZipAesCrypto {
     /// The AES key size used by the 7zAES method.
@@ -50,26 +51,44 @@ final class SevenZipAesCrypto {
             throw new IOException("7z AES encrypted data requires a password");
         }
 
-        byte[] key = deriveKey(parsedProperties, password);
         try {
-            Cipher cipher = Cipher.getInstance("AES/CBC/NoPadding");
-            cipher.init(
-                    Cipher.DECRYPT_MODE,
-                    new SecretKeySpec(key, "AES"),
-                    new IvParameterSpec(parsedProperties.initializationVector())
-            );
-            return new CipherInputStream(input, cipher);
-        } catch (GeneralSecurityException exception) {
-            throw new IOException("Failed to initialize 7z AES decryption", exception);
+            byte[] key = deriveKey(parsedProperties.cyclePower(), parsedProperties.salt(), password);
+            try {
+                Cipher cipher = Cipher.getInstance("AES/CBC/NoPadding");
+                cipher.init(
+                        Cipher.DECRYPT_MODE,
+                        new SecretKeySpec(key, "AES"),
+                        new IvParameterSpec(parsedProperties.initializationVector())
+                );
+                return new CipherInputStream(input, cipher);
+            } catch (GeneralSecurityException exception) {
+                throw new IOException("Failed to initialize 7z AES decryption", exception);
+            } finally {
+                Arrays.fill(key, (byte) 0);
+            }
+        } finally {
+            Arrays.fill(password, (byte) 0);
         }
     }
 
-    /// Derives a 7zAES key from parsed coder properties and password bytes.
-    private static byte[] deriveKey(AesProperties properties, byte[] password) throws IOException {
-        if (properties.cyclePower() == COPY_KEY_CYCLE_POWER) {
+    /// Derives a 7zAES key from a cycle power, salt, and UTF-16LE password bytes.
+    static byte[] deriveKey(
+            int cyclePower,
+            byte @Unmodifiable [] salt,
+            byte @Unmodifiable [] password
+    ) throws IOException {
+        Objects.requireNonNull(salt, "salt");
+        Objects.requireNonNull(password, "password");
+        if (cyclePower < 0
+                || (cyclePower > MAX_SUPPORTED_CYCLE_POWER && cyclePower != COPY_KEY_CYCLE_POWER)) {
+            throw new IOException("Unsupported 7z AES cycle power: " + cyclePower);
+        }
+        if (salt.length > AES_BLOCK_SIZE) {
+            throw new IOException("7z AES salt is too large");
+        }
+        if (cyclePower == COPY_KEY_CYCLE_POWER) {
             byte[] key = new byte[KEY_SIZE];
-            byte[] salt = properties.salt();
-            int position = Math.min(salt.length, key.length);
+            int position = salt.length;
             System.arraycopy(salt, 0, key, 0, position);
             int passwordLength = Math.min(password.length, key.length - position);
             System.arraycopy(password, 0, key, position, passwordLength);
@@ -78,9 +97,8 @@ final class SevenZipAesCrypto {
 
         try {
             MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
-            byte[] salt = properties.salt();
             byte[] counter = new byte[Long.BYTES];
-            long rounds = 1L << properties.cyclePower();
+            long rounds = 1L << cyclePower;
             for (long round = 0; round < rounds; round++) {
                 sha256.update(salt);
                 sha256.update(password);

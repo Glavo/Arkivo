@@ -24,8 +24,10 @@ public final class SevenZipWritePasswordTest {
     public void absentProviderDisablesEncryption() throws IOException {
         SevenZipWritePassword password = SevenZipWritePassword.open(null);
 
+        assertNull(password.bytes());
         assertNull(password.characters());
         password.close();
+        assertThrows(IllegalStateException.class, password::bytes);
         assertThrows(IllegalStateException.class, password::characters);
     }
 
@@ -33,13 +35,15 @@ public final class SevenZipWritePasswordTest {
     @Test
     public void decodesAndClearsPassword() throws IOException {
         String text = "p\u00e4ss-\u5bc6\u7801";
-        SevenZipWritePassword password = SevenZipWritePassword.open(
-                ArkivoPasswordProvider.fixed(text.getBytes(StandardCharsets.UTF_16LE))
-        );
+        byte[] suppliedBytes = text.getBytes(StandardCharsets.UTF_16LE);
+        SevenZipWritePassword password = SevenZipWritePassword.open(() -> suppliedBytes);
+        byte[] bytes = Objects.requireNonNull(password.bytes());
         char[] characters = Objects.requireNonNull(password.characters());
 
+        assertArrayEquals(suppliedBytes, bytes);
         assertArrayEquals(text.toCharArray(), characters);
         password.close();
+        assertArrayEquals(new byte[bytes.length], bytes);
         assertArrayEquals(new char[characters.length], characters);
         password.close();
     }
@@ -48,8 +52,10 @@ public final class SevenZipWritePasswordTest {
     @Test
     public void acceptsEmptyPassword() throws IOException {
         SevenZipWritePassword password = SevenZipWritePassword.open(ArkivoPasswordProvider.fixed(new byte[0]));
+        byte[] bytes = Objects.requireNonNull(password.bytes());
         char[] characters = Objects.requireNonNull(password.characters());
 
+        assertArrayEquals(new byte[0], bytes);
         assertArrayEquals(new char[0], characters);
         password.close();
     }
@@ -68,13 +74,17 @@ public final class SevenZipWritePasswordTest {
     /// Verifies that malformed and truncated UTF-16LE byte sequences are rejected.
     @Test
     public void rejectsInvalidUtf16Le() {
+        byte[] oddLength = new byte[]{1};
+        byte[] truncatedSurrogate = new byte[]{0, (byte) 0xd8};
         assertThrows(
                 IOException.class,
-                () -> SevenZipWritePassword.open(ArkivoPasswordProvider.fixed(new byte[]{1}))
+                () -> SevenZipWritePassword.open(() -> oddLength)
         );
         assertThrows(
                 IOException.class,
-                () -> SevenZipWritePassword.open(ArkivoPasswordProvider.fixed(new byte[]{0, (byte) 0xd8}))
+                () -> SevenZipWritePassword.open(() -> truncatedSurrogate)
         );
+        assertArrayEquals(new byte[oddLength.length], oddLength);
+        assertArrayEquals(new byte[truncatedSurrogate.length], truncatedSurrogate);
     }
 }

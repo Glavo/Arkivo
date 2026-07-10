@@ -132,6 +132,9 @@ public final class SevenZipArkivoFileSystemConfig {
         if (!config.archiveWritable() && SevenZipArkivoFileSystem.FILTER.isPresent(environment)) {
             throw new IllegalArgumentException("7z filter requires write archive options");
         }
+        if (!config.archiveWritable() && SevenZipArkivoFileSystem.ENCRYPT_HEADERS.isPresent(environment)) {
+            throw new IllegalArgumentException("7z encrypted headers require write archive options");
+        }
         return config;
     }
 

@@ -67,8 +67,8 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
 
     /// The environment option for whether new archives should encrypt metadata headers.
     ///
-    /// Content encryption through `PASSWORD_PROVIDER` is supported, but current forward-only writes reject encrypted
-    /// headers.
+    /// Header encryption requires `PASSWORD_PROVIDER` and hides entry names and other metadata in an AES-encrypted
+    /// encoded header. Non-empty entry data remains encrypted by the same password provider.
     public static final ArkivoFileSystemOption<Boolean> ENCRYPT_HEADERS =
             ArkivoFileSystemOption.of(
                     "arkivo.7z",

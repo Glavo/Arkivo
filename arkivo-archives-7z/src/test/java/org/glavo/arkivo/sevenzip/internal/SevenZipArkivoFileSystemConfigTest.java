@@ -157,6 +157,24 @@ public final class SevenZipArkivoFileSystemConfigTest {
         );
     }
 
+    /// Verifies that encrypted headers are accepted only for write configurations.
+    @Test
+    public void encryptedHeadersRequireWriteOptions() {
+        SevenZipArkivoFileSystemConfig writerConfig = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+                SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(),
+                true
+        ));
+
+        assertEquals(true, writerConfig.encryptHeaders());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+                        SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(),
+                        true
+                ))
+        );
+    }
+
     /// Verifies that the removed fixed password option is rejected with migration guidance.
     @Test
     public void legacyFixedPasswordOptionIsRejected() {

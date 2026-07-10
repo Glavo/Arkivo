@@ -116,6 +116,15 @@ final class SevenZipSplitArchiveOutput {
         return writer;
     }
 
+    /// Replaces the completed temporary archive's plain next header with an encrypted encoded header.
+    void encryptHeader(SevenZipHeaderEncryption encryption) throws IOException {
+        Objects.requireNonNull(encryption, "encryption");
+        if (finishStarted) {
+            throw new IllegalStateException("7z split output publication has already started");
+        }
+        encryption.applyTo(temporaryArchivePath);
+    }
+
     /// Publishes the completed temporary archive as split volumes.
     void commit() throws IOException {
         if (cleanupComplete) {

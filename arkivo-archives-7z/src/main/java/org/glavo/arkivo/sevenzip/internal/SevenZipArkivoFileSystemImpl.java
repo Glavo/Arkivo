@@ -118,6 +118,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// The staged split output published after the writer closes, or `null` for direct path writes and read mode.
     private final @Nullable SevenZipSplitArchiveOutput splitOutput;
 
+    /// The pending encoded-header encryption state, or `null` when header encryption is disabled.
+    private final @Nullable SevenZipHeaderEncryption headerEncryption;
+
     /// Absolute archive paths emitted by forward-only write mode.
     private final HashSet<String> writtenEntries = new HashSet<>();
 
@@ -138,6 +141,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// Whether the writer has been closed.
     private boolean writerClosed;
+
+    /// Whether encoded-header encryption has completed or its key has been cleared.
+    private boolean headerEncryptionClosed;
 
     /// Whether split output publication or rollback has completed.
     private boolean splitOutputClosed;
@@ -232,7 +238,15 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             validateWriteFeatures();
             @Nullable SevenZOutputFile openedWriter = null;
             @Nullable SevenZipSplitArchiveOutput openedSplitOutput = null;
+            @Nullable SevenZipHeaderEncryption openedHeaderEncryption = null;
             try (SevenZipWritePassword password = SevenZipWritePassword.open(config.passwordProvider())) {
+                if (config.encryptHeaders()) {
+                    byte @Nullable [] passwordBytes = password.bytes();
+                    if (passwordBytes == null) {
+                        throw new IOException("7z encrypted header write requires a password");
+                    }
+                    openedHeaderEncryption = SevenZipHeaderEncryption.create(passwordBytes);
+                }
                 WriterResources writerResources = openArchiveWriter(password.characters());
                 openedWriter = writerResources.writer();
                 openedSplitOutput = writerResources.splitOutput();
@@ -240,11 +254,16 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             } catch (IOException | RuntimeException | Error exception) {
                 closeWriterAfterConstructionFailure(exception, openedWriter);
                 closeSplitOutputAfterConstructionFailure(exception, openedSplitOutput);
+                if (openedHeaderEncryption != null) {
+                    openedHeaderEncryption.close();
+                }
                 closeAfterConstructionFailure(exception);
                 throw exception;
             }
             this.writer = openedWriter;
             this.splitOutput = openedSplitOutput;
+            this.headerEncryption = openedHeaderEncryption;
+            this.headerEncryptionClosed = openedHeaderEncryption == null;
             this.fileStore = SevenZipFileStore.WRITABLE;
             this.signatureHeader = WRITE_MODE_SIGNATURE_HEADER;
             this.entries = Map.of();
@@ -252,6 +271,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         } else {
             this.writer = null;
             this.splitOutput = null;
+            this.headerEncryption = null;
+            this.headerEncryptionClosed = true;
             this.fileStore = SevenZipFileStore.READ_ONLY;
             SevenZipArchiveMetadata archiveMetadata;
             try {
@@ -361,7 +382,12 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Closes this file system.
     @Override
     public void close() throws IOException {
-        if (!open && writerClosed && splitOutputClosed && volumesClosed && closeActionCompleted) {
+        if (!open
+                && writerClosed
+                && headerEncryptionClosed
+                && splitOutputClosed
+                && volumesClosed
+                && closeActionCompleted) {
             return;
         }
         open = false;
@@ -374,6 +400,30 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 writerClosed = true;
             } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
+            }
+        }
+        if (!headerEncryptionClosed && writerClosed) {
+            SevenZipHeaderEncryption encryption = Objects.requireNonNull(
+                    headerEncryption,
+                    "headerEncryption"
+            );
+            try {
+                if (failure == null) {
+                    if (splitOutput != null) {
+                        splitOutput.encryptHeader(encryption);
+                    } else {
+                        encryption.applyTo(Objects.requireNonNull(archivePath, "archivePath"));
+                    }
+                }
+            } catch (IOException | RuntimeException | Error exception) {
+                if (failure != null) {
+                    failure.addSuppressed(exception);
+                } else {
+                    failure = exception;
+                }
+            } finally {
+                encryption.close();
+                headerEncryptionClosed = true;
             }
         }
         if (!splitOutputClosed) {
@@ -916,9 +966,6 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             SevenZipSplitVolumePaths.requireFirstVolumePath(
                     Objects.requireNonNull(archivePath, "archivePath")
             );
-        }
-        if (config.encryptHeaders()) {
-            throw new UnsupportedOperationException("7z encrypted header writes are not supported");
         }
     }
 

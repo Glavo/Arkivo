@@ -37,10 +37,16 @@ public interface ArkivoPasswordProvider {
         return fixed(bytes);
     }
 
-    /// Returns the archive-level password.
+    /// Returns caller-owned archive-level password bytes, or `null` when no password is available.
+    ///
+    /// Callers may clear the returned array after use. Implementations that retain credentials must return a defensive
+    /// copy.
     byte @Nullable [] passwordForArchive() throws IOException;
 
-    /// Returns the entry-level password.
+    /// Returns caller-owned entry-level password bytes, or `null` when no password is available.
+    ///
+    /// Callers may clear the returned array after use. Implementations that retain credentials must return a defensive
+    /// copy.
     default byte @Nullable [] passwordForEntry(Path path) throws IOException {
         Objects.requireNonNull(path, "path");
         return passwordForArchive();

@@ -18,6 +18,9 @@ import java.util.Arrays;
 /// Holds a temporary decoded password while a 7z AES writer is initialized.
 @NotNullByDefault
 final class SevenZipWritePassword implements AutoCloseable {
+    /// The temporary UTF-16LE password bytes, or `null` when encryption is disabled.
+    private final byte @Nullable [] bytes;
+
     /// The decoded password characters, or `null` when encryption is disabled.
     private final char @Nullable [] characters;
 
@@ -25,20 +28,34 @@ final class SevenZipWritePassword implements AutoCloseable {
     private boolean closed;
 
     /// Creates a temporary decoded password.
-    private SevenZipWritePassword(char @Nullable [] characters) {
+    private SevenZipWritePassword(byte @Nullable [] bytes, char @Nullable [] characters) {
+        this.bytes = bytes;
         this.characters = characters;
     }
 
     /// Obtains and strictly decodes the archive password, or disables encryption when the provider is absent.
     static SevenZipWritePassword open(@Nullable ArkivoPasswordProvider passwordProvider) throws IOException {
         if (passwordProvider == null) {
-            return new SevenZipWritePassword(null);
+            return new SevenZipWritePassword(null, null);
         }
         byte @Nullable [] password = passwordProvider.passwordForArchive();
         if (password == null) {
             throw new IOException("7z encrypted archive write requires a password");
         }
-        return new SevenZipWritePassword(decodeUtf16Le(password));
+        try {
+            return new SevenZipWritePassword(password, decodeUtf16Le(password));
+        } catch (IOException | RuntimeException | Error exception) {
+            Arrays.fill(password, (byte) 0);
+            throw exception;
+        }
+    }
+
+    /// Returns the temporary UTF-16LE bytes for immediate header-key derivation.
+    byte @Nullable [] bytes() {
+        if (closed) {
+            throw new IllegalStateException("7z write password has been cleared");
+        }
+        return bytes;
     }
 
     /// Returns the temporary characters for immediate writer initialization.
@@ -57,6 +74,9 @@ final class SevenZipWritePassword implements AutoCloseable {
         }
         if (characters != null) {
             Arrays.fill(characters, '\0');
+        }
+        if (bytes != null) {
+            Arrays.fill(bytes, (byte) 0);
         }
         closed = true;
     }

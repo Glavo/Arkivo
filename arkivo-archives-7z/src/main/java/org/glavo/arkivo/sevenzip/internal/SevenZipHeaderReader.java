@@ -28,7 +28,10 @@ public final class SevenZipHeaderReader {
 
     /// Reads and validates the fixed 7z signature header.
     public static SevenZipSignatureHeader readSignatureHeader(SeekableByteChannel channel) throws IOException {
-        return readArchiveMetadata(channel).signatureHeader();
+        Objects.requireNonNull(channel, "channel");
+        SevenZipSignatureHeader signatureHeader = readFixedSignatureHeader(channel);
+        validateNextHeader(channel, signatureHeader);
+        return signatureHeader;
     }
 
     /// Reads and validates 7z archive metadata.
@@ -42,6 +45,20 @@ public final class SevenZipHeaderReader {
             @Nullable ArkivoPasswordProvider passwordProvider
     ) throws IOException {
         Objects.requireNonNull(channel, "channel");
+        SevenZipSignatureHeader signatureHeader = readSignatureHeader(channel);
+        byte[] nextHeader = readNextHeader(channel, signatureHeader);
+        return new SevenZipArchiveMetadata(
+                signatureHeader,
+                SevenZipHeaderParser.parseEntries(
+                        nextHeader,
+                        (offset, size) -> openPackedStream(channel, offset, size),
+                        passwordProvider
+                )
+        );
+    }
+
+    /// Reads and validates only the fixed signature bytes and start-header CRC-32.
+    private static SevenZipSignatureHeader readFixedSignatureHeader(SeekableByteChannel channel) throws IOException {
         ByteBuffer buffer = ByteBuffer.allocate(SevenZipSignatureHeader.SIZE).order(ByteOrder.LITTLE_ENDIAN);
         channel.position(0);
         readFully(channel, buffer);
@@ -68,22 +85,12 @@ public final class SevenZipHeaderReader {
         long nextHeaderOffset = readUnsignedLong(buffer, "next header offset");
         long nextHeaderSize = readUnsignedLong(buffer, "next header size");
         long nextHeaderCrc32 = Integer.toUnsignedLong(buffer.getInt());
-        SevenZipSignatureHeader signatureHeader = new SevenZipSignatureHeader(
+        return new SevenZipSignatureHeader(
                 majorVersion,
                 minorVersion,
                 nextHeaderOffset,
                 nextHeaderSize,
                 nextHeaderCrc32
-        );
-        validateNextHeader(channel, signatureHeader);
-        byte[] nextHeader = readNextHeader(channel, signatureHeader);
-        return new SevenZipArchiveMetadata(
-                signatureHeader,
-                SevenZipHeaderParser.parseEntries(
-                        nextHeader,
-                        (offset, size) -> openPackedStream(channel, offset, size),
-                        passwordProvider
-                )
         );
     }
 
