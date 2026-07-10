@@ -214,18 +214,20 @@ public final class SevenZipArkivoFileSystemConfigTest {
         );
     }
 
-    /// Verifies that 7z read/write update mode remains unsupported.
+    /// Verifies that 7z read/write options select complete-rewrite update mode.
     @Test
-    public void updateModeIsUnsupported() {
-        UnsupportedOperationException exception = assertThrows(
-                UnsupportedOperationException.class,
-                () -> SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
-                        ArkivoFileSystem.OPEN_OPTIONS.key(),
-                        Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
-                ))
-        );
+    public void updateModeOpenOptions() {
+        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+        ));
 
-        assertEquals("7z archive read/write update mode is not supported", exception.getMessage());
+        assertEquals(true, config.archiveWritable());
+        assertEquals(true, config.archiveUpdate());
+        assertEquals(
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                config.openOptions()
+        );
     }
 
     /// Verifies that 7z write mode requires a creation or truncation boundary.

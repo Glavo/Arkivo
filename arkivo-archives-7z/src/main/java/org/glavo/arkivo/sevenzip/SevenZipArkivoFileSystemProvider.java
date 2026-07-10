@@ -26,7 +26,6 @@ import java.nio.file.LinkOption;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.ProviderMismatchException;
-import java.nio.file.ReadOnlyFileSystemException;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
@@ -165,10 +164,10 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
         sevenZipFileSystem(link).createSymbolicLink(link, target, attributes);
     }
 
-    /// Deletes a path inside a 7z archive file system.
+    /// Deletes a path inside an update-mode 7z archive file system.
     @Override
-    public void delete(Path path) {
-        throw new ReadOnlyFileSystemException();
+    public void delete(Path path) throws IOException {
+        sevenZipFileSystem(path).delete(path);
     }
 
     /// Copies a path inside or across 7z archive file systems.
@@ -210,10 +209,10 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
         }
     }
 
-    /// Moves a path inside or across 7z archive file systems.
+    /// Moves a path inside an update-mode 7z archive file system.
     @Override
-    public void move(Path source, Path target, CopyOption... options) {
-        throw new ReadOnlyFileSystemException();
+    public void move(Path source, Path target, CopyOption... options) throws IOException {
+        sevenZipFileSystem(source).move(source, target, options);
     }
 
     /// Returns whether two 7z archive paths refer to the same file.
@@ -276,10 +275,11 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
         return sevenZipFileSystem(link).readSymbolicLink(link);
     }
 
-    /// Sets a named file attribute for a 7z archive path.
+    /// Sets a named file attribute for an update-mode 7z archive path.
     @Override
-    public void setAttribute(Path path, String attribute, Object value, LinkOption... options) {
-        throw new ReadOnlyFileSystemException();
+    public void setAttribute(Path path, String attribute, @Nullable Object value, LinkOption... options)
+            throws IOException {
+        sevenZipFileSystem(path).setAttribute(path, attribute, value, options);
     }
 
     /// Returns the 7z file system implementation that owns a path.

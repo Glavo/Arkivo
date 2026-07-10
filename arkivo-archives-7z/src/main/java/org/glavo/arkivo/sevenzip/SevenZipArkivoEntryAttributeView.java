@@ -21,21 +21,21 @@ public interface SevenZipArkivoEntryAttributeView extends BasicFileAttributeView
     @Override
     SevenZipArkivoEntryAttributes readAttributes() throws IOException;
 
-    /// Sets the raw Windows file attributes stored for a pending streaming entry.
+    /// Sets the raw Windows file attributes stored for a pending streaming or update entry.
     ///
     /// Passing `UNKNOWN_WINDOWS_ATTRIBUTES` clears the property. Unix mode bits occupy the high 16 bits.
     void setWindowsAttributes(int windowsAttributes) throws IOException;
 
-    /// Sets the compression used by this pending streaming entry instead of the writer default.
+    /// Sets the compression used by this pending streaming or update entry instead of the writer default.
     ///
     /// Compression is applied only when the entry has a non-empty data stream.
     void setCompression(SevenZipCompression compression) throws IOException;
 
-    /// Sets a preprocessing filter for this pending streaming entry instead of the writer default.
+    /// Sets a preprocessing filter for this pending streaming or update entry instead of the writer default.
     ///
     /// The filter is applied only when the entry has a non-empty data stream.
     void setFilter(SevenZipFilter filter) throws IOException;
 
-    /// Disables the writer's default preprocessing filter for this pending streaming entry.
+    /// Disables the default preprocessing filter for this pending streaming or update entry.
     void clearFilter() throws IOException;
 }

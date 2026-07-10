@@ -8,6 +8,7 @@ import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
 import org.apache.commons.compress.archivers.sevenz.SevenZFile;
 import org.apache.commons.compress.archivers.sevenz.SevenZMethod;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
+import org.glavo.arkivo.ArkivoCommitTarget;
 import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ArkivoVolumeOutput;
 import org.glavo.arkivo.ArkivoVolumeSource;
@@ -505,6 +506,448 @@ public final class SevenZipArkivoFileSystemTest {
         } finally {
             deleteTemporaryArchive(archivePath);
         }
+    }
+
+    /// Verifies complete-rewrite updates for content, structure, metadata, links, and output methods.
+    @Test
+    public void updatesExistingArchiveThroughCompleteRewrite() throws IOException {
+        Path archivePath = createTemporaryArchivePath("update-7z-");
+        FileTime modifiedTime = FileTime.from(Instant.parse("2033-04-05T06:07:08.123Z"));
+        FileTime accessTime = FileTime.from(Instant.parse("2033-05-06T07:08:09.234Z"));
+        FileTime creationTime = FileTime.from(Instant.parse("2033-06-07T08:09:10.345Z"));
+        Set<PosixFilePermission> permissions = PosixFilePermissions.fromString("rw-r-----");
+        try {
+            createUpdateFixture(archivePath);
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    SevenZipArkivoFileSystem.COMPRESSION.key(),
+                    SevenZipCompression.deflate()
+            );
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+                assertEquals(false, fileSystem.isReadOnly());
+                Path keep = fileSystem.getPath("/keep.txt");
+                try (SeekableByteChannel channel = Files.newByteChannel(
+                        keep,
+                        Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+                )) {
+                    channel.position(2L);
+                    assertEquals(2, channel.write(ByteBuffer.wrap("ZZ".getBytes(StandardCharsets.UTF_8))));
+                    channel.truncate(5L);
+                }
+
+                SevenZipArkivoEntryAttributeView sevenZipView = Objects.requireNonNull(
+                        Files.getFileAttributeView(keep, SevenZipArkivoEntryAttributeView.class)
+                );
+                sevenZipView.setTimes(modifiedTime, accessTime, creationTime);
+                sevenZipView.setWindowsAttributes(0x20);
+                sevenZipView.setCompression(SevenZipCompression.lzma2(SevenZipCompression.MIN_DICTIONARY_SIZE));
+                sevenZipView.setFilter(SevenZipFilter.delta());
+                Objects.requireNonNull(Files.getFileAttributeView(keep, PosixFileAttributeView.class))
+                        .setPermissions(permissions);
+
+                Files.delete(fileSystem.getPath("/remove.txt"));
+                Files.move(fileSystem.getPath("/dir"), fileSystem.getPath("/renamed"));
+                Files.move(
+                        fileSystem.getPath("/replacement.txt"),
+                        fileSystem.getPath("/target.txt"),
+                        StandardCopyOption.REPLACE_EXISTING
+                );
+                Files.writeString(fileSystem.getPath("/new.txt"), "new", StandardCharsets.UTF_8);
+            }
+
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path keep = fileSystem.getPath("/keep.txt");
+                assertEquals("abZZe", Files.readString(keep, StandardCharsets.UTF_8));
+                SevenZipArkivoEntryAttributes attributes =
+                        Files.readAttributes(keep, SevenZipArkivoEntryAttributes.class);
+                assertEquals(modifiedTime, attributes.lastModifiedTime());
+                assertEquals(accessTime, attributes.lastAccessTime());
+                assertEquals(creationTime, attributes.creationTime());
+                assertEquals(0x20, attributes.windowsAttributes() & 0xffff);
+                assertEquals(0100640, attributes.unixMode());
+                assertEquals(permissions, Files.readAttributes(keep, PosixFileAttributes.class).permissions());
+
+                assertEquals(false, Files.exists(fileSystem.getPath("/remove.txt")));
+                assertEquals(
+                        "child",
+                        Files.readString(fileSystem.getPath("/renamed/child.txt"), StandardCharsets.UTF_8)
+                );
+                assertEquals(
+                        "new-target",
+                        Files.readString(fileSystem.getPath("/target.txt"), StandardCharsets.UTF_8)
+                );
+                assertEquals("keep.txt", Files.readSymbolicLink(fileSystem.getPath("/link")).toString());
+                assertEquals("new", Files.readString(fileSystem.getPath("/new.txt"), StandardCharsets.UTF_8));
+            }
+
+            ArrayList<String> names = new ArrayList<>();
+            try (SevenZFile archive = SevenZFile.builder().setFile(archivePath.toFile()).get()) {
+                SevenZArchiveEntry entry;
+                while ((entry = archive.getNextEntry()) != null) {
+                    names.add(entry.getName());
+                }
+            }
+            assertEquals(
+                    List.of("keep.txt", "renamed", "renamed/child.txt", "link", "target.txt", "new.txt"),
+                    names
+            );
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that an explicit commit target publishes a derivative without changing the source.
+    @Test
+    public void updateCommitTargetCanPublishDerivedArchive() throws IOException {
+        Path archivePath = createTemporaryArchivePath("update-source-7z-");
+        Path derivedPath = createTemporaryArchivePath("update-derived-7z-");
+        try {
+            createUpdateFixture(archivePath);
+            byte[] originalArchive = Files.readAllBytes(archivePath);
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.COMMIT_TARGET.key(),
+                    ArkivoCommitTarget.writeTo(derivedPath)
+            );
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+                Files.writeString(fileSystem.getPath("/keep.txt"), "derived", StandardCharsets.UTF_8);
+            }
+
+            assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
+            try (SevenZipArkivoFileSystem source = SevenZipArkivoFileSystem.open(archivePath);
+                 SevenZipArkivoFileSystem derived = SevenZipArkivoFileSystem.open(derivedPath)) {
+                assertEquals("abcdef", Files.readString(source.getPath("/keep.txt"), StandardCharsets.UTF_8));
+                assertEquals("derived", Files.readString(derived.getPath("/keep.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchive(derivedPath);
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that commit setup failure leaves the original 7z archive untouched.
+    @Test
+    public void failedUpdateCommitLeavesOriginalArchiveUntouched() throws IOException {
+        Path archivePath = createTemporaryArchivePath("update-failure-7z-");
+        try {
+            createUpdateFixture(archivePath);
+            byte[] originalArchive = Files.readAllBytes(archivePath);
+            ArkivoCommitTarget failingTarget = sourcePath -> {
+                throw new IOException("commit target failed");
+            };
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.COMMIT_TARGET.key(),
+                    failingTarget
+            );
+            SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment);
+            Files.writeString(fileSystem.getPath("/keep.txt"), "after", StandardCharsets.UTF_8);
+            IOException exception = assertThrows(IOException.class, fileSystem::close);
+            assertEquals("commit target failed", exception.getMessage());
+            assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that source decode failure rolls back staged output and preserves the original archive.
+    @Test
+    public void failedUpdateDecodeLeavesOriginalArchiveUntouched() throws IOException {
+        byte[] content = "bad source crc".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("update-decode-failure-7z-");
+        Files.write(archivePath, archiveWithMismatchedFolderCrc(content));
+        byte[] originalArchive = Files.readAllBytes(archivePath);
+
+        try {
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+            );
+            SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment);
+            Files.writeString(fileSystem.getPath("/new.txt"), "new", StandardCharsets.UTF_8);
+            assertThrows(IOException.class, fileSystem::close);
+            assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that an unchanged update session does not rewrite archive bytes.
+    @Test
+    public void unchangedUpdateLeavesArchiveBytesUntouched() throws IOException {
+        Path archivePath = createTemporaryArchivePath("update-unchanged-7z-");
+        try {
+            createUpdateFixture(archivePath);
+            byte[] originalArchive = Files.readAllBytes(archivePath);
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+            );
+            try (SevenZipArkivoFileSystem ignored = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+            }
+            assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that update mode with CREATE publishes a valid empty archive for a missing source.
+    @Test
+    public void updateCreateModeCreatesMissingArchive() throws IOException {
+        Path archivePath = createTemporaryArchivePath("update-create-7z-");
+        Files.deleteIfExists(archivePath);
+        try {
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
+            );
+            try (SevenZipArkivoFileSystem ignored = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+            }
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath);
+                 DirectoryStream<Path> entries = Files.newDirectoryStream(fileSystem.getPath("/"))) {
+                assertEquals(false, entries.iterator().hasNext());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a surviving entry from a shared source folder is decoded independently during rewrite.
+    @Test
+    public void updatePreservesSurvivingSolidSubstream() throws IOException {
+        byte[] first = "one".getBytes(StandardCharsets.UTF_8);
+        byte[] second = "two!".getBytes(StandardCharsets.UTF_8);
+        byte[] content = new byte[first.length + second.length];
+        System.arraycopy(first, 0, content, 0, first.length);
+        System.arraycopy(second, 0, content, first.length, second.length);
+        Path archivePath = createTemporaryArchivePath("update-substreams-7z-");
+        Files.write(archivePath, archiveWithCopySubStreams(content, first.length));
+
+        try {
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    SevenZipArkivoFileSystem.COMPRESSION.key(),
+                    SevenZipCompression.lzma2(SevenZipCompression.MIN_DICTIONARY_SIZE)
+            );
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+                Files.delete(fileSystem.getPath("/one.txt"));
+                Files.writeString(fileSystem.getPath("/new.txt"), "new", StandardCharsets.UTF_8);
+            }
+
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                assertEquals(false, Files.exists(fileSystem.getPath("/one.txt")));
+                assertArrayEquals(second, Files.readAllBytes(fileSystem.getPath("/two.txt")));
+                assertEquals("new", Files.readString(fileSystem.getPath("/new.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that encrypted data and headers can be decoded and re-encrypted during an update.
+    @Test
+    public void updatesEncryptedArchiveWithEncryptedHeaders() throws IOException {
+        Path archivePath = createTemporaryArchivePath("update-encrypted-7z-");
+        byte[] password = "update-password".getBytes(StandardCharsets.UTF_16LE);
+        try {
+            Map<String, Object> writeEnvironment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(
+                            StandardOpenOption.CREATE,
+                            StandardOpenOption.TRUNCATE_EXISTING,
+                            StandardOpenOption.WRITE
+                    ),
+                    SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                    RecordingPasswordProvider.supplying(password),
+                    SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(),
+                    true
+            );
+            try (SevenZipArkivoFileSystem fileSystem =
+                         SevenZipArkivoFileSystem.open(archivePath, writeEnvironment)) {
+                Files.writeString(fileSystem.getPath("/secret.txt"), "before", StandardCharsets.UTF_8);
+            }
+
+            Map<String, Object> updateEnvironment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                    RecordingPasswordProvider.supplying(password),
+                    SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(),
+                    true,
+                    SevenZipArkivoFileSystem.COMPRESSION.key(),
+                    SevenZipCompression.lzma2(SevenZipCompression.MIN_DICTIONARY_SIZE)
+            );
+            try (SevenZipArkivoFileSystem fileSystem =
+                         SevenZipArkivoFileSystem.open(archivePath, updateEnvironment)) {
+                assertEquals(
+                        "before",
+                        Files.readString(fileSystem.getPath("/secret.txt"), StandardCharsets.UTF_8)
+                );
+                Files.writeString(fileSystem.getPath("/secret.txt"), "after", StandardCharsets.UTF_8);
+                Files.writeString(fileSystem.getPath("/new.txt"), "encrypted-new", StandardCharsets.UTF_8);
+            }
+
+            assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(
+                            SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                            RecordingPasswordProvider.supplying(password)
+                    )
+            )) {
+                assertEquals(
+                        "after",
+                        Files.readString(fileSystem.getPath("/secret.txt"), StandardCharsets.UTF_8)
+                );
+                assertEquals(
+                        "encrypted-new",
+                        Files.readString(fileSystem.getPath("/new.txt"), StandardCharsets.UTF_8)
+                );
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that path-backed updates preserve an existing split layout by default.
+    @Test
+    public void updatePreservesPathBackedSplitOutput() throws IOException {
+        Path firstVolume = createTemporaryArchivePath("update-split-7z-").resolveSibling("sample.7z.001");
+        Path secondVolume = firstVolume.resolveSibling("sample.7z.002");
+        byte[] initialContent = new byte[512];
+        Arrays.fill(initialContent, (byte) 7);
+        try {
+            Map<String, Object> writeEnvironment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(
+                            StandardOpenOption.CREATE,
+                            StandardOpenOption.TRUNCATE_EXISTING,
+                            StandardOpenOption.WRITE
+                    ),
+                    SevenZipArkivoFileSystem.SPLIT_SIZE.key(),
+                    96L
+            );
+            try (SevenZipArkivoFileSystem fileSystem =
+                         SevenZipArkivoFileSystem.open(firstVolume, writeEnvironment)) {
+                Files.write(fileSystem.getPath("/value.bin"), initialContent);
+            }
+            assertEquals(true, Files.exists(secondVolume));
+
+            Map<String, Object> updateEnvironment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+            );
+            byte[] updatedContent = new byte[400];
+            Arrays.fill(updatedContent, (byte) 9);
+            try (SevenZipArkivoFileSystem fileSystem =
+                         SevenZipArkivoFileSystem.open(firstVolume, updateEnvironment)) {
+                Files.write(fileSystem.getPath("/value.bin"), updatedContent);
+                Files.writeString(fileSystem.getPath("/new.txt"), "split-new", StandardCharsets.UTF_8);
+            }
+
+            assertEquals(true, Files.exists(secondVolume));
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(firstVolume)) {
+                assertArrayEquals(updatedContent, Files.readAllBytes(fileSystem.getPath("/value.bin")));
+                assertEquals(
+                        "split-new",
+                        Files.readString(fileSystem.getPath("/new.txt"), StandardCharsets.UTF_8)
+                );
+            }
+        } finally {
+            deleteTemporaryArchiveDirectory(firstVolume);
+        }
+    }
+
+    /// Verifies that an explicit no-split update merges existing numbered volumes transactionally.
+    @Test
+    public void updateCanMergePathBackedSplitOutput() throws IOException {
+        Path firstVolume = createTemporaryArchivePath("update-merge-7z-").resolveSibling("sample.7z.001");
+        Path secondVolume = firstVolume.resolveSibling("sample.7z.002");
+        byte[] content = new byte[320];
+        Arrays.fill(content, (byte) 11);
+        try {
+            Map<String, Object> writeEnvironment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(
+                            StandardOpenOption.CREATE,
+                            StandardOpenOption.TRUNCATE_EXISTING,
+                            StandardOpenOption.WRITE
+                    ),
+                    SevenZipArkivoFileSystem.SPLIT_SIZE.key(),
+                    80L
+            );
+            try (SevenZipArkivoFileSystem fileSystem =
+                         SevenZipArkivoFileSystem.open(firstVolume, writeEnvironment)) {
+                Files.write(fileSystem.getPath("/value.bin"), content);
+            }
+            assertEquals(true, Files.exists(secondVolume));
+
+            Map<String, Object> updateEnvironment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    SevenZipArkivoFileSystem.SPLIT_SIZE.key(),
+                    SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE
+            );
+            try (SevenZipArkivoFileSystem fileSystem =
+                         SevenZipArkivoFileSystem.open(firstVolume, updateEnvironment)) {
+                Files.writeString(fileSystem.getPath("/new.txt"), "merged", StandardCharsets.UTF_8);
+            }
+
+            assertEquals(true, Files.exists(firstVolume));
+            assertEquals(false, Files.exists(secondVolume));
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(firstVolume)) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/value.bin")));
+                assertEquals("merged", Files.readString(fileSystem.getPath("/new.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchiveDirectory(firstVolume);
+        }
+    }
+
+    /// Verifies complete-rewrite updates from an explicit volume source to a transactional volume target.
+    @Test
+    public void updatesExplicitVolumeSourceToTarget() throws IOException {
+        byte[] originalContent = "volume-source".getBytes(StandardCharsets.UTF_8);
+        SplitVolumeSource source = new SplitVolumeSource(splitArchive(archiveWithCopyFile(originalContent), 17));
+        TestVolumeTarget target = new TestVolumeTarget(-1L, false);
+
+        try (SevenZipArkivoFileSystem fileSystem =
+                     SevenZipArkivoFileSystem.update(source, target, 23L)) {
+            Files.writeString(fileSystem.getPath("/hello.txt"), "volume-updated", StandardCharsets.UTF_8);
+            Files.writeString(fileSystem.getPath("/new.txt"), "new", StandardCharsets.UTF_8);
+        }
+
+        byte[][] committedVolumes = target.committedVolumes();
+        assertEquals(true, committedVolumes.length > 1);
+        try (SevenZipArkivoFileSystem fileSystem =
+                     SevenZipArkivoFileSystem.open(new SplitVolumeSource(committedVolumes))) {
+            assertEquals(
+                    "volume-updated",
+                    Files.readString(fileSystem.getPath("/hello.txt"), StandardCharsets.UTF_8)
+            );
+            assertEquals("new", Files.readString(fileSystem.getPath("/new.txt"), StandardCharsets.UTF_8));
+        }
+        assertEquals(true, target.allOpenedChannelsClosed());
+    }
+
+    /// Verifies that explicit multi-volume publication failure rolls back all output.
+    @Test
+    public void failedExplicitVolumeUpdateRollsBackOutput() throws IOException {
+        byte[] originalContent = "volume-source".getBytes(StandardCharsets.UTF_8);
+        SplitVolumeSource source = new SplitVolumeSource(splitArchive(archiveWithCopyFile(originalContent), 17));
+        TestVolumeTarget target = new TestVolumeTarget(-1L, true);
+        SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.update(source, target, 23L);
+        Files.writeString(fileSystem.getPath("/hello.txt"), "volume-updated", StandardCharsets.UTF_8);
+
+        IOException exception = assertThrows(IOException.class, fileSystem::close);
+        assertEquals("volume commit failed", exception.getMessage());
+        assertEquals(1, target.rollbackCount());
+        assertEquals(0, target.committedVolumes().length);
+        assertEquals(true, target.allOpenedChannelsClosed());
     }
 
     /// Verifies that the 7z streaming writer creates every supported entry type and preserves writable metadata.
@@ -3032,6 +3475,27 @@ public final class SevenZipArkivoFileSystemTest {
         Path archivePath = createTemporaryArchivePath("minimal-");
         Files.write(archivePath, minimalArchive());
         return archivePath;
+    }
+
+    /// Creates the standard path-backed fixture used by complete-rewrite update tests.
+    private static void createUpdateFixture(Path archivePath) throws IOException {
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE
+                )
+        );
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+            Files.writeString(fileSystem.getPath("/keep.txt"), "abcdef", StandardCharsets.UTF_8);
+            Files.writeString(fileSystem.getPath("/remove.txt"), "remove", StandardCharsets.UTF_8);
+            Files.createDirectory(fileSystem.getPath("/dir"));
+            Files.writeString(fileSystem.getPath("/dir/child.txt"), "child", StandardCharsets.UTF_8);
+            Files.createSymbolicLink(fileSystem.getPath("/link"), Path.of("keep.txt"));
+            Files.writeString(fileSystem.getPath("/target.txt"), "old-target", StandardCharsets.UTF_8);
+            Files.writeString(fileSystem.getPath("/replacement.txt"), "new-target", StandardCharsets.UTF_8);
+        }
     }
 
     /// Creates a temporary archive path under the module build directory.

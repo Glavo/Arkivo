@@ -5,6 +5,8 @@ package org.glavo.arkivo.sevenzip.internal;
 
 import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
 import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile;
+import org.glavo.arkivo.ArkivoCommitOutput;
+import org.glavo.arkivo.ArkivoCommitTarget;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.ArkivoVolumeTarget;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
@@ -27,21 +29,26 @@ import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonReadableChannelException;
+import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.AccessMode;
 import java.nio.file.ClosedFileSystemException;
+import java.nio.file.CopyOption;
+import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileStore;
+import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.NotLinkException;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.nio.file.ReadOnlyFileSystemException;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.WatchService;
 import java.nio.file.attribute.BasicFileAttributeView;
@@ -57,18 +64,20 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-/// Implements a 7z archive file system backed by either a read index or a forward-only writer.
+/// Implements a 7z archive file system backed by a read/update index or a forward-only writer.
 @NotNullByDefault
 public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem {
     /// The supported file attribute view names.
@@ -112,11 +121,29 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Child paths by absolute parent path text.
     private final Map<String, List<Path>> children;
 
-    /// The writer used by forward-only write mode, or `null` in read mode.
+    /// Decoded bodies staged by update mode, keyed by absolute path text.
+    private final Map<String, byte @Unmodifiable []> stagedContents;
+
+    /// Entry-specific output settings changed by update mode.
+    private final Map<String, UpdateOutputSettings> updateOutputSettings;
+
+    /// The writer used by forward-only write mode, or `null` in read and update modes.
     private final @Nullable SevenZOutputFile writer;
 
-    /// The staged split output published after the writer closes, or `null` for direct path writes and read mode.
+    /// The staged split output published after the writer closes, or `null` for direct path writes and read/update modes.
     private final @Nullable SevenZipSplitArchiveOutput splitOutput;
+
+    /// Whether this file system performs a complete archive rewrite on update.
+    private final boolean updateMode;
+
+    /// The split size used by update output, or `NO_SPLIT_SIZE` for single-volume output.
+    private final long updateSplitSize;
+
+    /// The active random-access update channel, or `null` when no body is being changed.
+    private @Nullable UpdateEntryByteChannel activeUpdateChannel;
+
+    /// Whether update mode has changed the archive index or content.
+    private boolean dirty;
 
     /// The pending encoded-header encryption state, or `null` when header encryption is disabled.
     private final @Nullable SevenZipHeaderEncryption headerEncryption;
@@ -201,6 +228,17 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         this(provider, null, null, outputTarget, splitSize, config, null);
     }
 
+    /// Creates a complete-rewrite 7z update file system over explicit volume input and output.
+    public SevenZipArkivoFileSystemImpl(
+            SevenZipArkivoFileSystemProvider provider,
+            ArkivoVolumeSource volumes,
+            ArkivoVolumeTarget outputTarget,
+            long splitSize,
+            SevenZipArkivoFileSystemConfig config
+    ) throws IOException {
+        this(provider, null, volumes, outputTarget, splitSize, config, null);
+    }
+
     /// Creates a 7z file system implementation with one input or output backing.
     private SevenZipArkivoFileSystemImpl(
             SevenZipArkivoFileSystemProvider provider,
@@ -212,11 +250,22 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             @Nullable Runnable closeAction
     ) throws IOException {
         super(Objects.requireNonNull(config, "config").threadSafety());
-        int backingCount = (archivePath != null ? 1 : 0)
-                + (volumes != null ? 1 : 0)
-                + (outputTarget != null ? 1 : 0);
-        if (backingCount != 1) {
-            throw new IllegalArgumentException("exactly one archive path, volume source, or volume target must be provided");
+        boolean updateMode = config.archiveUpdate();
+        int sourceCount = (archivePath != null ? 1 : 0) + (volumes != null ? 1 : 0);
+        if (updateMode) {
+            if (sourceCount != 1) {
+                throw new IllegalArgumentException("7z update mode requires exactly one archive path or volume source");
+            }
+            if (volumes != null && outputTarget == null) {
+                throw new IllegalArgumentException("7z volume-source updates require a transactional volume target");
+            }
+        } else {
+            int backingCount = sourceCount + (outputTarget != null ? 1 : 0);
+            if (backingCount != 1) {
+                throw new IllegalArgumentException(
+                        "exactly one archive path, volume source, or volume target must be provided"
+                );
+            }
         }
         if (outputTarget != null && !config.archiveWritable()) {
             throw new IllegalArgumentException("7z volume targets require write archive options");
@@ -232,9 +281,52 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         this.outputSplitSize = outputSplitSize;
         this.config = config;
         this.closeAction = closeAction;
+        this.updateMode = updateMode;
         this.root = SevenZipArkivoPath.root(this);
         this.writtenDirectories.add("/");
-        if (config.archiveWritable()) {
+
+        if (updateMode) {
+            this.writer = null;
+            this.splitOutput = null;
+            this.headerEncryption = null;
+            this.headerEncryptionClosed = true;
+            this.fileStore = SevenZipFileStore.WRITABLE;
+            boolean newArchive = this.archivePath != null && !Files.exists(this.archivePath);
+            SevenZipArchiveMetadata archiveMetadata;
+            Map<String, SevenZipEntryMetadata> parsedEntries;
+            Map<String, List<Path>> parsedChildren;
+            long resolvedSplitSize;
+            try {
+                validateUpdateFeatures();
+                if (newArchive) {
+                    if (!config.openOptions().contains(StandardOpenOption.CREATE)) {
+                        throw new NoSuchFileException(this.archivePath.toString());
+                    }
+                    archiveMetadata = new SevenZipArchiveMetadata(WRITE_MODE_SIGNATURE_HEADER, List.of());
+                } else {
+                    archiveMetadata = readArchiveMetadata();
+                }
+                resolvedSplitSize = resolveUpdateSplitSize();
+                if (resolvedSplitSize != SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE
+                        && config.commitTarget() != null) {
+                    throw new IllegalArgumentException(
+                            "7z split updates do not support single-file commit targets"
+                    );
+                }
+                parsedEntries = entriesByPath(archiveMetadata.entries());
+                parsedChildren = childrenByPath(parsedEntries);
+            } catch (IOException | RuntimeException | Error exception) {
+                closeAfterConstructionFailure(exception);
+                throw exception;
+            }
+            this.updateSplitSize = resolvedSplitSize;
+            this.signatureHeader = archiveMetadata.signatureHeader();
+            this.entries = new LinkedHashMap<>(parsedEntries);
+            this.children = new LinkedHashMap<>(parsedChildren);
+            this.stagedContents = new LinkedHashMap<>();
+            this.updateOutputSettings = new LinkedHashMap<>();
+            this.dirty = newArchive;
+        } else if (config.archiveWritable()) {
             validateWriteFeatures();
             @Nullable SevenZOutputFile openedWriter = null;
             @Nullable SevenZipSplitArchiveOutput openedSplitOutput = null;
@@ -268,6 +360,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             this.signatureHeader = WRITE_MODE_SIGNATURE_HEADER;
             this.entries = Map.of();
             this.children = Map.of("/", List.of());
+            this.stagedContents = Map.of();
+            this.updateOutputSettings = Map.of();
+            this.updateSplitSize = SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE;
         } else {
             this.writer = null;
             this.splitOutput = null;
@@ -284,6 +379,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             this.signatureHeader = archiveMetadata.signatureHeader();
             this.entries = entriesByPath(archiveMetadata.entries());
             this.children = childrenByPath(this.entries);
+            this.stagedContents = Map.of();
+            this.updateOutputSettings = Map.of();
+            this.updateSplitSize = SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE;
         }
     }
 
@@ -382,6 +480,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Closes this file system.
     @Override
     public void close() throws IOException {
+        if (updateMode) {
+            closeUpdate();
+            return;
+        }
         if (!open
                 && writerClosed
                 && headerEncryptionClosed
@@ -483,6 +585,57 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
+    /// Closes update mode after publishing changed content transactionally.
+    private void closeUpdate() throws IOException {
+        if (!open && volumesClosed && closeActionCompleted) {
+            return;
+        }
+
+        @Nullable Throwable failure = null;
+        if (open) {
+            @Nullable UpdateEntryByteChannel channel = activeUpdateChannel;
+            if (channel != null) {
+                try {
+                    channel.close();
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = exception;
+                }
+            }
+            if (failure == null && dirty) {
+                try {
+                    commitUpdate();
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = exception;
+                }
+            }
+            open = false;
+            writerClosed = true;
+            headerEncryptionClosed = true;
+            splitOutputClosed = true;
+        }
+        if (!volumesClosed) {
+            try {
+                if (volumes != null) {
+                    volumes.close();
+                }
+                volumesClosed = true;
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        if (!closeActionCompleted) {
+            try {
+                if (closeAction != null) {
+                    closeAction.run();
+                }
+                closeActionCompleted = true;
+            } catch (RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        throwFailure(failure);
+    }
+
     /// Returns whether this file system is open.
     @Override
     public boolean isOpen() {
@@ -492,7 +645,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Returns whether this file system is read-only.
     @Override
     public boolean isReadOnly() {
-        return writer == null;
+        return writer == null && !updateMode;
     }
 
     /// Returns the path separator.
@@ -556,6 +709,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             FileAttribute<?>... attributes
     ) throws IOException {
         Objects.requireNonNull(attributes, "attributes");
+        if (updateMode && requestsWrite(options)) {
+            return newUpdateByteChannel(path, options, attributes);
+        }
         if (!isReadOnly() && requestsWrite(options)) {
             return new WritableEntryByteChannel(newOutputStream(path, options, attributes));
         }
@@ -565,6 +721,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         SevenZipEntryMetadata metadata = requireEntry(path);
         if (metadata.directory()) {
             throw new java.nio.file.FileSystemException(path.toString(), null, "Is a directory");
+        }
+        String pathText = normalizedPathText(path);
+        if (updateMode && stagedContents.containsKey(pathText)) {
+            return new SevenZipByteChannel(stagedContents.get(pathText));
         }
         if (metadata.dataOffset() == SevenZipEntryMetadata.NO_DATA_OFFSET) {
             return new SevenZipByteChannel(new byte[0]);
@@ -588,7 +748,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         return new SevenZipByteChannel(readDecodedEntry(metadata));
     }
 
-    /// Opens an output stream for a new forward-only file entry.
+    /// Opens an output stream for a writable file entry.
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
         return newOutputStream(path, Set.of(options));
     }
@@ -602,7 +762,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         return new WrittenEntryOutputStream(pathText);
     }
 
-    /// Opens an output stream for a new forward-only file entry.
+    /// Opens an output stream for a writable file entry.
     private OutputStream newOutputStream(
             Path path,
             Set<? extends OpenOption> options,
@@ -611,6 +771,20 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         Objects.requireNonNull(options, "options");
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
+        if (updateMode) {
+            if (options.contains(StandardOpenOption.READ)) {
+                throw new UnsupportedOperationException("7z output streams do not support READ");
+            }
+            LinkedHashSet<OpenOption> channelOptions = new LinkedHashSet<>(options);
+            if (channelOptions.isEmpty()) {
+                channelOptions.add(StandardOpenOption.CREATE);
+                channelOptions.add(StandardOpenOption.TRUNCATE_EXISTING);
+                channelOptions.add(StandardOpenOption.WRITE);
+            } else if (!channelOptions.contains(StandardOpenOption.APPEND)) {
+                channelOptions.add(StandardOpenOption.WRITE);
+            }
+            return Channels.newOutputStream(newUpdateByteChannel(path, channelOptions, attributes));
+        }
         validateEntryWriteOptions(options);
         SevenZipEntryWriteMetadata metadata = initialEntryMetadata(false, false, attributes);
         String pathText = prepareWritableEntry(path, false);
@@ -618,11 +792,16 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         return new WrittenEntryOutputStream(pathText);
     }
 
-    /// Creates a new forward-only directory entry.
+    /// Creates a new directory entry in a writable archive.
     public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
         SevenZipEntryWriteMetadata metadata = initialEntryMetadata(true, false, attributes);
+        if (updateMode) {
+            String pathText = prepareUpdateEntry(directory);
+            addUpdateEntry(pathText, newMetadata(pathText, true, 0L, metadata), new byte[0]);
+            return;
+        }
         String pathText = prepareWritableEntry(directory, true);
         beginWritableEntry(pathText, true, metadata);
         closeWritableEntry(pathText, true);
@@ -637,15 +816,24 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         closeWritableEntry(pathText, true);
     }
 
-    /// Creates a new forward-only symbolic link entry.
+    /// Creates a new symbolic link entry in a writable archive.
     public void createSymbolicLink(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
         SevenZipEntryWriteMetadata metadata = initialEntryMetadata(false, true, attributes);
+        byte[] targetBytes = archivePathText(target).getBytes(StandardCharsets.UTF_8);
+        if (updateMode) {
+            String pathText = prepareUpdateEntry(link);
+            addUpdateEntry(
+                    pathText,
+                    newMetadata(pathText, false, targetBytes.length, metadata),
+                    targetBytes
+            );
+            return;
+        }
         String pathText = prepareWritableEntry(link, false);
         beginWritableEntry(pathText, false, metadata);
-        byte[] targetBytes = archivePathText(target).getBytes(StandardCharsets.UTF_8);
         requireWriter().write(targetBytes, 0, targetBytes.length);
         closeWritableEntry(pathText, false);
     }
@@ -662,6 +850,140 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         closeWritableEntry(pathText, false);
     }
 
+    /// Deletes one entry from an update-mode archive.
+    public void delete(Path path) throws IOException {
+        requireUpdateMode();
+        requireNoActiveUpdateChannel(path);
+        String pathText = requireExistingPath(path);
+        if ("/".equals(pathText)) {
+            throw new java.nio.file.FileSystemException(path.toString(), null, "The 7z root cannot be deleted");
+        }
+        @Nullable SevenZipEntryMetadata metadata = entries.get(pathText);
+        boolean directory = metadata == null || metadata.directory();
+        if (directory && !children.getOrDefault(pathText, List.of()).isEmpty()) {
+            throw new DirectoryNotEmptyException(path.toString());
+        }
+        if (metadata == null) {
+            throw new NoSuchFileException(path.toString());
+        }
+
+        entries.remove(pathText);
+        stagedContents.remove(pathText);
+        updateOutputSettings.remove(pathText);
+        rebuildUpdateChildren();
+        dirty = true;
+    }
+
+    /// Moves one entry and any descendants inside an update-mode archive.
+    public void move(Path source, Path target, CopyOption... options) throws IOException {
+        requireUpdateMode();
+        requireNoActiveUpdateChannel(source);
+        boolean replaceExisting = false;
+        for (CopyOption option : options) {
+            if (option == StandardCopyOption.REPLACE_EXISTING) {
+                replaceExisting = true;
+            } else if (option != StandardCopyOption.ATOMIC_MOVE) {
+                throw new UnsupportedOperationException("Unsupported 7z move option: " + option);
+            }
+        }
+
+        String sourcePath = requireExistingPath(source);
+        String targetPath = normalizedPathText(target);
+        if ("/".equals(sourcePath) || "/".equals(targetPath)) {
+            throw new java.nio.file.FileSystemException(
+                    source.toString(),
+                    target.toString(),
+                    "The 7z root cannot be moved"
+            );
+        }
+        if (sourcePath.equals(targetPath)) {
+            return;
+        }
+
+        @Nullable SevenZipEntryMetadata sourceMetadata = entries.get(sourcePath);
+        boolean sourceDirectory = sourceMetadata == null || sourceMetadata.directory();
+        if (sourceDirectory && targetPath.startsWith(sourcePath + "/")) {
+            throw new java.nio.file.FileSystemException(
+                    source.toString(),
+                    target.toString(),
+                    "A directory cannot be moved below itself"
+            );
+        }
+        ensureExistingParentDirectory(targetPath);
+
+        boolean targetExists = entries.containsKey(targetPath) || children.containsKey(targetPath);
+        @Nullable SevenZipEntryMetadata targetMetadata = entries.get(targetPath);
+        boolean targetDirectory = targetExists && (targetMetadata == null || targetMetadata.directory());
+        if (targetExists) {
+            if (!replaceExisting) {
+                throw new FileAlreadyExistsException(target.toString());
+            }
+            if (sourceDirectory != targetDirectory) {
+                throw new java.nio.file.FileSystemException(
+                        source.toString(),
+                        target.toString(),
+                        "Source and target entry types differ"
+                );
+            }
+            if (targetDirectory && !children.getOrDefault(targetPath, List.of()).isEmpty()) {
+                throw new DirectoryNotEmptyException(target.toString());
+            }
+        }
+
+        LinkedHashMap<String, String> movedPaths = new LinkedHashMap<>();
+        for (String pathText : entries.keySet()) {
+            if (pathText.equals(sourcePath) || pathText.startsWith(sourcePath + "/")) {
+                movedPaths.put(pathText, targetPath + pathText.substring(sourcePath.length()));
+            }
+        }
+        if (movedPaths.isEmpty()) {
+            throw new NoSuchFileException(source.toString());
+        }
+        for (String movedPath : movedPaths.values()) {
+            if (entries.containsKey(movedPath)
+                    && !movedPaths.containsKey(movedPath)
+                    && !movedPath.equals(targetPath)) {
+                throw new FileAlreadyExistsException(movedPath);
+            }
+        }
+
+        LinkedHashMap<String, SevenZipEntryMetadata> rebuiltEntries = new LinkedHashMap<>();
+        for (Map.Entry<String, SevenZipEntryMetadata> entry : entries.entrySet()) {
+            String oldPath = entry.getKey();
+            if (targetExists && oldPath.equals(targetPath) && !movedPaths.containsKey(oldPath)) {
+                continue;
+            }
+            @Nullable String movedPath = movedPaths.get(oldPath);
+            String newPath = movedPath != null ? movedPath : oldPath;
+            rebuiltEntries.put(newPath, copyMetadata(entry.getValue(), newPath, entry.getValue().size()));
+        }
+
+        remapUpdateMap(stagedContents, movedPaths, targetPath, targetExists);
+        remapUpdateMap(updateOutputSettings, movedPaths, targetPath, targetExists);
+        entries.clear();
+        entries.putAll(rebuiltEntries);
+        rebuildUpdateChildren();
+        dirty = true;
+    }
+
+    /// Updates one named entry attribute in update mode.
+    public void setAttribute(Path path, String attribute, @Nullable Object value, LinkOption... options)
+            throws IOException {
+        Objects.requireNonNull(attribute, "attribute");
+        Objects.requireNonNull(options, "options");
+        requireUpdateMode();
+        int separator = attribute.indexOf(':');
+        String view = separator >= 0 ? attribute.substring(0, separator) : "basic";
+        String name = separator >= 0 ? attribute.substring(separator + 1) : attribute;
+        switch (view) {
+            case "basic" -> setBasicAttribute(path, name, value);
+            case "owner" -> throw new UnsupportedOperationException("7z does not store owner principals");
+            case "posix" -> setPosixAttribute(path, name, value);
+            case "7z" -> setSevenZipAttribute(path, name, value);
+            default -> throw new UnsupportedOperationException("Unsupported 7z attribute view: " + view);
+        }
+    }
+
     /// Opens an input stream for an entry.
     public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
         requireReadableFileSystem();
@@ -669,6 +991,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         SevenZipEntryMetadata metadata = requireEntry(path);
         if (metadata.directory()) {
             throw new java.nio.file.FileSystemException(path.toString(), null, "Is a directory");
+        }
+        String pathText = normalizedPathText(path);
+        if (updateMode && stagedContents.containsKey(pathText)) {
+            return new ByteArrayInputStream(stagedContents.get(pathText));
         }
         if (metadata.dataOffset() == SevenZipEntryMetadata.NO_DATA_OFFSET) {
             return new ByteArrayInputStream(new byte[0]);
@@ -744,6 +1070,16 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// Checks access to a path.
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
+        if (updateMode) {
+            requireExistingPath(path);
+            for (AccessMode mode : modes) {
+                Objects.requireNonNull(mode, "mode");
+                if (mode == AccessMode.EXECUTE) {
+                    throw new AccessDeniedException(path.toString());
+                }
+            }
+            return;
+        }
         if (!isReadOnly()) {
             checkWritableAccess(path, modes);
             return;
@@ -771,7 +1107,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Returns a file attribute view for a path.
     public <V extends FileAttributeView> @Nullable V getFileAttributeView(Path path, Class<V> type) {
         Objects.requireNonNull(type, "type");
-        if (!isReadOnly()) {
+        if (!isReadOnly() && !updateMode) {
             return null;
         }
         String pathText;
@@ -781,32 +1117,16 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             return null;
         }
         if (type == BasicFileAttributeView.class) {
-            try {
-                return type.cast(new BasicAttributeView(readAttributes(path, BasicFileAttributes.class)));
-            } catch (IOException exception) {
-                return null;
-            }
+            return type.cast(new BasicAttributeView(path));
         }
         if (type == FileOwnerAttributeView.class) {
-            try {
-                return type.cast(new OwnerAttributeView(readAttributes(path, PosixFileAttributes.class)));
-            } catch (IOException exception) {
-                return null;
-            }
+            return type.cast(new OwnerAttributeView(path));
         }
         if (type == PosixFileAttributeView.class) {
-            try {
-                return type.cast(new PosixAttributeView(readAttributes(path, PosixFileAttributes.class)));
-            } catch (IOException exception) {
-                return null;
-            }
+            return type.cast(new PosixAttributeView(path));
         }
         if (type == SevenZipArkivoEntryAttributeView.class && entries.containsKey(pathText)) {
-            try {
-                return type.cast(new SevenZipAttributeView(readAttributes(path, SevenZipArkivoEntryAttributes.class)));
-            } catch (IOException exception) {
-                return null;
-            }
+            return type.cast(new SevenZipAttributeView(path));
         }
         return null;
     }
@@ -950,6 +1270,57 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
+    /// Validates 7z update-mode backing and output combinations.
+    private void validateUpdateFeatures() {
+        if (outputTarget != null) {
+            if (outputSplitSize <= 0) {
+                throw new IllegalArgumentException("splitSize must be positive");
+            }
+            if (config.splitSize() != SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
+                throw new IllegalArgumentException("Explicit 7z volume targets must provide splitSize separately");
+            }
+            if (config.commitTarget() != null) {
+                throw new IllegalArgumentException("7z volume updates do not support single-file commit targets");
+            }
+        } else if (config.splitSize() != SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
+            SevenZipSplitVolumePaths.requireFirstVolumePath(
+                    Objects.requireNonNull(archivePath, "archivePath")
+            );
+        }
+    }
+
+    /// Resolves the split size for update output, preserving an existing path-backed split layout by default.
+    private long resolveUpdateSplitSize() throws IOException {
+        if (outputTarget != null) {
+            return outputSplitSize;
+        }
+        if (config.commitTarget() != null) {
+            return SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE;
+        }
+        if (config.splitSizeConfigured()
+                && config.splitSize() != SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
+            return config.splitSize();
+        }
+        @Nullable Path currentArchivePath = archivePath;
+        @Nullable List<Path> splitVolumePaths = currentArchivePath != null
+                ? SevenZipSplitVolumePaths.discover(currentArchivePath)
+                : null;
+        if (config.splitSizeConfigured()) {
+            if (splitVolumePaths != null && config.commitTarget() == null) {
+                return Long.MAX_VALUE;
+            }
+            return SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE;
+        }
+        if (splitVolumePaths != null) {
+            long splitSize = Files.size(splitVolumePaths.get(0));
+            if (splitSize <= 0L) {
+                throw new IOException("Existing 7z first volume is empty");
+            }
+            return splitSize;
+        }
+        return SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE;
+    }
+
     /// Validates 7z write-mode backing and feature combinations.
     private void validateWriteFeatures() {
         if (volumes != null) {
@@ -1003,6 +1374,216 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
+    /// Publishes all surviving update entries through a complete 7z rewrite.
+    private void commitUpdate() throws IOException {
+        if (updateSplitSize != SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
+            commitSplitUpdate();
+        } else {
+            commitSingleVolumeUpdate();
+        }
+    }
+
+    /// Publishes a single-volume updated archive through an Arkivo commit transaction.
+    private void commitSingleVolumeUpdate() throws IOException {
+        Path sourcePath = Objects.requireNonNull(archivePath, "archivePath");
+        @Nullable ArkivoCommitTarget configuredTarget = config.commitTarget();
+        ArkivoCommitTarget target = configuredTarget != null
+                ? configuredTarget
+                : ArkivoCommitTarget.atomicReplace(defaultCommitDirectory(sourcePath));
+        ArkivoCommitOutput output = target.openOutput(sourcePath);
+        @Nullable Throwable failure = null;
+        @Nullable SevenZipHeaderEncryption encryption = null;
+        try (SevenZipWritePassword password = SevenZipWritePassword.open(config.passwordProvider())) {
+            if (config.encryptHeaders()) {
+                byte @Nullable [] passwordBytes = password.bytes();
+                if (passwordBytes == null) {
+                    throw new IOException("7z encrypted header write requires a password");
+                }
+                encryption = SevenZipHeaderEncryption.create(passwordBytes);
+            }
+            try (SeekableByteChannel channel = output.openChannel(Set.of(
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE
+            ));
+                 SevenZOutputFile archiveWriter = password.characters() != null
+                         ? new SevenZOutputFile(channel, password.characters())
+                         : new SevenZOutputFile(channel)) {
+                writeUpdatedArchive(archiveWriter);
+            }
+            if (encryption != null) {
+                encryption.applyTo(output.path());
+            }
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+        } finally {
+            if (encryption != null) {
+                encryption.close();
+            }
+        }
+
+        try {
+            if (failure == null) {
+                output.commit();
+            } else {
+                output.rollback();
+            }
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = appendFailure(failure, exception);
+        }
+        try {
+            output.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = appendFailure(failure, exception);
+        }
+        throwFailure(failure);
+    }
+
+    /// Publishes a split updated archive through a transactional volume target.
+    private void commitSplitUpdate() throws IOException {
+        ArkivoVolumeTarget target;
+        if (outputTarget != null) {
+            target = outputTarget;
+        } else {
+            target = new SevenZipPathVolumeTarget(
+                    Objects.requireNonNull(archivePath, "archivePath"),
+                    config.openOptions()
+            );
+        }
+
+        @Nullable Throwable failure = null;
+        @Nullable SevenZipSplitArchiveOutput output = null;
+        @Nullable SevenZipHeaderEncryption encryption = null;
+        try (SevenZipWritePassword password = SevenZipWritePassword.open(config.passwordProvider())) {
+            if (config.encryptHeaders()) {
+                byte @Nullable [] passwordBytes = password.bytes();
+                if (passwordBytes == null) {
+                    throw new IOException("7z encrypted header write requires a password");
+                }
+                encryption = SevenZipHeaderEncryption.create(passwordBytes);
+            }
+            output = SevenZipSplitArchiveOutput.open(target, updateSplitSize, password.characters());
+            SevenZOutputFile archiveWriter = output.writer();
+            @Nullable Throwable writerFailure = null;
+            try {
+                writeUpdatedArchive(archiveWriter);
+            } catch (IOException | RuntimeException | Error exception) {
+                writerFailure = exception;
+            }
+            try {
+                archiveWriter.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                writerFailure = appendFailure(writerFailure, exception);
+            }
+            throwFailure(writerFailure);
+            if (encryption != null) {
+                output.encryptHeader(encryption);
+            }
+            output.commit();
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+        } finally {
+            if (encryption != null) {
+                encryption.close();
+            }
+        }
+
+        if (failure != null && output != null) {
+            try {
+                output.rollback();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        throwFailure(failure);
+    }
+
+    /// Writes every indexed entry to a newly opened 7z writer.
+    private void writeUpdatedArchive(SevenZOutputFile archiveWriter) throws IOException {
+        SevenZipContentMethodsSupport.applyTo(archiveWriter, config.compression(), config.filter());
+        byte[] transferBuffer = new byte[64 * 1024];
+        for (Map.Entry<String, SevenZipEntryMetadata> indexedEntry : entries.entrySet()) {
+            String pathText = indexedEntry.getKey();
+            SevenZipEntryMetadata metadata = indexedEntry.getValue();
+            UpdateOutputSettings settings =
+                    updateOutputSettings.getOrDefault(pathText, UpdateOutputSettings.DEFAULTS);
+            SevenZipEntryWriteMetadata writeMetadata = new SevenZipEntryWriteMetadata(
+                    metadata.lastModifiedTime(),
+                    metadata.lastAccessTime(),
+                    metadata.creationTime(),
+                    metadata.windowsAttributes(),
+                    settings.compression(),
+                    settings.filterConfigured(),
+                    settings.filter()
+            );
+
+            SevenZArchiveEntry archiveEntry = new SevenZArchiveEntry();
+            archiveEntry.setName(writableEntryName(pathText));
+            archiveEntry.setDirectory(metadata.directory());
+            writeMetadata.applyTo(archiveEntry, config.compression(), config.filter());
+            archiveWriter.putArchiveEntry(archiveEntry);
+
+            @Nullable Throwable entryFailure = null;
+            try {
+                if (!metadata.directory()) {
+                    if (stagedContents.containsKey(pathText)) {
+                        byte[] content = stagedContents.get(pathText);
+                        archiveWriter.write(content, 0, content.length);
+                    } else if (metadata.size() > 0L) {
+                        try (InputStream input = newInputStream(getPath(pathText))) {
+                            while (true) {
+                                int read = input.read(transferBuffer);
+                                if (read < 0) {
+                                    break;
+                                }
+                                archiveWriter.write(transferBuffer, 0, read);
+                            }
+                        }
+                    }
+                }
+            } catch (IOException | RuntimeException | Error exception) {
+                entryFailure = exception;
+            }
+            try {
+                archiveWriter.closeArchiveEntry();
+            } catch (IOException | RuntimeException | Error exception) {
+                entryFailure = appendFailure(entryFailure, exception);
+            }
+            throwFailure(entryFailure);
+        }
+    }
+
+    /// Returns the directory used for default atomic update output.
+    private static Path defaultCommitDirectory(Path archivePath) {
+        Path absolutePath = archivePath.toAbsolutePath();
+        @Nullable Path parent = absolutePath.getParent();
+        return parent != null ? parent : absolutePath.getFileSystem().getPath(".").toAbsolutePath();
+    }
+
+    /// Adds a secondary failure as suppressed when a primary failure already exists.
+    private static Throwable appendFailure(@Nullable Throwable failure, Throwable exception) {
+        if (failure == null) {
+            return exception;
+        }
+        if (failure != exception) {
+            failure.addSuppressed(exception);
+        }
+        return failure;
+    }
+
+    /// Throws an accumulated failure with its original category.
+    private static void throwFailure(@Nullable Throwable failure) throws IOException {
+        if (failure instanceof IOException exception) {
+            throw exception;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure instanceof Error exception) {
+            throw exception;
+        }
+    }
+
     /// Stores an opened archive writer and its optional split publisher.
     ///
     /// @param writer the seekable 7z archive writer
@@ -1018,10 +1599,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
-    /// Requires this file system to be in read mode.
+    /// Requires this file system to be in read or update mode.
     private void requireReadableFileSystem() {
         ensureOpen();
-        if (!isReadOnly()) {
+        if (!isReadOnly() && !updateMode) {
             throw new UnsupportedOperationException("Forward-only 7z write file systems do not expose reads");
         }
     }
@@ -1034,13 +1615,24 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
-    /// Returns the writer for write mode.
+    /// Returns the writer for forward-only write mode.
     private SevenZOutputFile requireWriter() {
-        SevenZOutputFile currentWriter = writer;
+        @Nullable SevenZOutputFile currentWriter = writer;
         if (currentWriter == null) {
             throw new ReadOnlyFileSystemException();
         }
         return currentWriter;
+    }
+
+    /// Requires this file system to be in complete-rewrite update mode.
+    private void requireUpdateMode() {
+        ensureOpen();
+        if (!updateMode) {
+            if (isReadOnly()) {
+                throw new ReadOnlyFileSystemException();
+            }
+            throw new UnsupportedOperationException("Forward-only 7z write file systems do not support mutations");
+        }
     }
 
     /// Returns whether entry open options request write access.
@@ -1067,6 +1659,27 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     && option != StandardOpenOption.CREATE_NEW
                     && option != StandardOpenOption.TRUNCATE_EXISTING) {
                 throw new UnsupportedOperationException("Unsupported 7z entry write option: " + option);
+            }
+        }
+    }
+
+    /// Validates options for a random-access update entry channel.
+    private static void validateUpdateEntryOptions(Set<? extends OpenOption> options) {
+        if (options.contains(StandardOpenOption.APPEND) && options.contains(StandardOpenOption.READ)) {
+            throw new IllegalArgumentException("7z entry APPEND cannot be combined with READ");
+        }
+        if (options.contains(StandardOpenOption.APPEND)
+                && options.contains(StandardOpenOption.TRUNCATE_EXISTING)) {
+            throw new IllegalArgumentException("7z entry APPEND cannot be combined with TRUNCATE_EXISTING");
+        }
+        for (OpenOption option : options) {
+            if (option != StandardOpenOption.READ
+                    && option != StandardOpenOption.WRITE
+                    && option != StandardOpenOption.APPEND
+                    && option != StandardOpenOption.CREATE
+                    && option != StandardOpenOption.CREATE_NEW
+                    && option != StandardOpenOption.TRUNCATE_EXISTING) {
+                throw new UnsupportedOperationException("Unsupported 7z entry update option: " + option);
             }
         }
     }
@@ -1124,6 +1737,513 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             permissions.add(permission);
         }
         return permissions;
+    }
+
+    /// Opens a seekable channel that stages one update-mode entry body.
+    private SeekableByteChannel newUpdateByteChannel(
+            Path path,
+            Set<? extends OpenOption> options,
+            FileAttribute<?>... attributes
+    ) throws IOException {
+        requireUpdateMode();
+        validateUpdateEntryOptions(options);
+        if (activeUpdateChannel != null) {
+            throw new java.nio.file.FileSystemException(
+                    path.toString(),
+                    null,
+                    "Another 7z entry update channel is already open"
+            );
+        }
+
+        boolean append = options.contains(StandardOpenOption.APPEND);
+        boolean writable = options.contains(StandardOpenOption.WRITE) || append;
+        boolean readable = options.contains(StandardOpenOption.READ);
+        if (!readable && !writable) {
+            throw new IllegalArgumentException("7z entry update channel requires READ, WRITE, or APPEND");
+        }
+
+        String pathText = normalizedPathText(path);
+        if ("/".equals(pathText)) {
+            throw new java.nio.file.FileSystemException(path.toString(), null, "The 7z root is a directory");
+        }
+        @Nullable SevenZipEntryMetadata existing = entries.get(pathText);
+        boolean syntheticDirectory = existing == null && children.containsKey(pathText);
+        boolean create = writable
+                && (options.contains(StandardOpenOption.CREATE) || options.contains(StandardOpenOption.CREATE_NEW));
+        boolean createNew = options.contains(StandardOpenOption.CREATE_NEW);
+        if (existing == null && !syntheticDirectory && !create) {
+            throw new NoSuchFileException(path.toString());
+        }
+        if ((existing != null || syntheticDirectory) && createNew) {
+            throw new FileAlreadyExistsException(path.toString());
+        }
+        if (syntheticDirectory || existing != null && existing.directory()) {
+            throw new java.nio.file.FileSystemException(path.toString(), null, "Is a directory");
+        }
+        if (existing == null) {
+            ensureExistingParentDirectory(pathText);
+        }
+
+        SevenZipEntryWriteMetadata initialMetadata = initialEntryMetadata(false, false, attributes);
+        boolean truncate = writable && options.contains(StandardOpenOption.TRUNCATE_EXISTING);
+        byte[] initialContent;
+        if (existing == null || truncate) {
+            initialContent = new byte[0];
+        } else if (stagedContents.containsKey(pathText)) {
+            initialContent = stagedContents.get(pathText);
+        } else {
+            initialContent = readDecodedEntry(existing);
+        }
+        UpdateEntryByteChannel channel = new UpdateEntryByteChannel(
+                pathText,
+                existing,
+                initialMetadata,
+                initialContent,
+                readable,
+                writable,
+                append,
+                writable && (existing == null || truncate)
+        );
+        if (writable) {
+            activeUpdateChannel = channel;
+        }
+        return channel;
+    }
+
+    /// Commits staged entry bytes into the update index.
+    private void commitUpdatedEntry(UpdateEntryByteChannel channel, byte @Unmodifiable [] content)
+            throws IOException {
+        if (activeUpdateChannel == channel) {
+            activeUpdateChannel = null;
+        }
+        @Nullable SevenZipEntryMetadata existing = entries.get(channel.path());
+        if (existing != channel.originalMetadata()) {
+            throw new java.nio.file.FileSystemException(
+                    channel.path(),
+                    null,
+                    "7z entry changed while its update channel was open"
+            );
+        }
+
+        SevenZipEntryMetadata metadata = existing != null
+                ? copyMetadata(existing, channel.path(), content.length)
+                : newMetadata(channel.path(), false, content.length, channel.initialMetadata());
+        entries.put(channel.path(), metadata);
+        stagedContents.put(channel.path(), content);
+        if (existing == null) {
+            rebuildUpdateChildren();
+        }
+        dirty = true;
+    }
+
+    /// Prepares a previously absent path for an update-mode entry.
+    private String prepareUpdateEntry(Path path) throws IOException {
+        requireUpdateMode();
+        requireNoActiveUpdateChannel(path);
+        String pathText = normalizedPathText(path);
+        if ("/".equals(pathText) || entries.containsKey(pathText) || children.containsKey(pathText)) {
+            throw new FileAlreadyExistsException(path.toString());
+        }
+        ensureExistingParentDirectory(pathText);
+        return pathText;
+    }
+
+    /// Adds one new update entry and marks the archive dirty.
+    private void addUpdateEntry(
+            String path,
+            SevenZipEntryMetadata metadata,
+            byte @Unmodifiable [] content
+    ) throws IOException {
+        entries.put(path, metadata);
+        stagedContents.put(path, content.clone());
+        rebuildUpdateChildren();
+        dirty = true;
+    }
+
+    /// Rejects a structural or metadata mutation while an update channel remains open.
+    private void requireNoActiveUpdateChannel(Path path) throws IOException {
+        if (activeUpdateChannel != null) {
+            throw new java.nio.file.FileSystemException(
+                    path.toString(),
+                    null,
+                    "A 7z entry update channel is still open"
+            );
+        }
+    }
+
+    /// Requires a path's parent to exist as a directory.
+    private void ensureExistingParentDirectory(String path) throws IOException {
+        int separator = path.lastIndexOf('/');
+        String parentPath = separator > 0 ? path.substring(0, separator) : "/";
+        if (!"/".equals(parentPath)
+                && !entries.containsKey(parentPath)
+                && !children.containsKey(parentPath)) {
+            throw new NoSuchFileException(parentPath);
+        }
+        @Nullable SevenZipEntryMetadata parent = entries.get(parentPath);
+        if (parent != null && !parent.directory()) {
+            throw new java.nio.file.FileSystemException(path, parentPath, "7z parent entry is not a directory");
+        }
+    }
+
+    /// Rebuilds update-mode directory child indexes.
+    private void rebuildUpdateChildren() throws IOException {
+        Map<String, List<Path>> rebuilt = childrenByPath(entries);
+        children.clear();
+        children.putAll(rebuilt);
+    }
+
+    /// Remaps path-keyed update state after a move.
+    private static <T> void remapUpdateMap(
+            Map<String, T> values,
+            Map<String, String> movedPaths,
+            String targetPath,
+            boolean targetExists
+    ) {
+        LinkedHashMap<String, T> rebuilt = new LinkedHashMap<>();
+        for (Map.Entry<String, T> entry : values.entrySet()) {
+            String oldPath = entry.getKey();
+            if (targetExists && oldPath.equals(targetPath) && !movedPaths.containsKey(oldPath)) {
+                continue;
+            }
+            @Nullable String movedPath = movedPaths.get(oldPath);
+            rebuilt.put(movedPath != null ? movedPath : oldPath, entry.getValue());
+        }
+        values.clear();
+        values.putAll(rebuilt);
+    }
+
+    /// Returns metadata for a newly created update entry.
+    private static SevenZipEntryMetadata newMetadata(
+            String path,
+            boolean directory,
+            long size,
+            SevenZipEntryWriteMetadata metadata
+    ) {
+        return new SevenZipEntryMetadata(
+                writableEntryName(path),
+                directory,
+                size,
+                SevenZipEntryMetadata.NO_DATA_OFFSET,
+                0L,
+                0L,
+                SevenZipLZMADecoder.COPY_METHOD_ID,
+                new byte[0],
+                metadata.creationTime(),
+                metadata.lastAccessTime(),
+                metadata.lastModifiedTime(),
+                metadata.windowsAttributes()
+        );
+    }
+
+    /// Returns copied parsed metadata with a changed path and decoded size.
+    private static SevenZipEntryMetadata copyMetadata(
+            SevenZipEntryMetadata metadata,
+            String path,
+            long size
+    ) {
+        return new SevenZipEntryMetadata(
+                writableEntryName(path),
+                metadata.directory(),
+                size,
+                metadata.dataOffset(),
+                metadata.decodedOffset(),
+                metadata.packedSize(),
+                metadata.packedCrc32(),
+                metadata.crc32(),
+                metadata.method(),
+                metadata.creationTime(),
+                metadata.lastAccessTime(),
+                metadata.lastModifiedTime(),
+                metadata.windowsAttributes()
+        );
+    }
+
+    /// Sets one basic timestamp attribute.
+    private void setBasicAttribute(Path path, String name, @Nullable Object value) throws IOException {
+        if (!(value instanceof FileTime time)) {
+            throw new IllegalArgumentException("7z basic timestamp value must be FileTime: " + name);
+        }
+        switch (name) {
+            case "lastModifiedTime" -> setTimes(path, time, null, null);
+            case "lastAccessTime" -> setTimes(path, null, time, null);
+            case "creationTime" -> setTimes(path, null, null, time);
+            default -> throw new UnsupportedOperationException("Unsupported writable 7z basic attribute: " + name);
+        }
+    }
+
+    /// Sets one POSIX attribute.
+    private void setPosixAttribute(Path path, String name, @Nullable Object value) throws IOException {
+        switch (name) {
+            case "lastModifiedTime", "lastAccessTime", "creationTime" -> setBasicAttribute(path, name, value);
+            case "owner" -> {
+                if (!(value instanceof UserPrincipal owner)) {
+                    throw new IllegalArgumentException("7z POSIX owner value must be UserPrincipal");
+                }
+                setOwner(path, owner);
+            }
+            case "group" -> {
+                if (!(value instanceof GroupPrincipal group)) {
+                    throw new IllegalArgumentException("7z POSIX group value must be GroupPrincipal");
+                }
+                setGroup(path, group);
+            }
+            case "permissions" -> {
+                if (!(value instanceof Set<?> values)) {
+                    throw new IllegalArgumentException("7z POSIX permissions value must be Set");
+                }
+                EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
+                for (Object item : values) {
+                    if (!(item instanceof PosixFilePermission permission)) {
+                        throw new IllegalArgumentException("7z POSIX permissions contain an invalid value");
+                    }
+                    permissions.add(permission);
+                }
+                setPermissions(path, permissions);
+            }
+            default -> throw new UnsupportedOperationException("Unsupported writable 7z POSIX attribute: " + name);
+        }
+    }
+
+    /// Sets one 7z-specific entry property.
+    private void setSevenZipAttribute(Path path, String name, @Nullable Object value) throws IOException {
+        switch (name) {
+            case "lastModifiedTime", "lastAccessTime", "creationTime" -> setBasicAttribute(path, name, value);
+            case "windowsAttributes" -> {
+                if (!(value instanceof Number number)) {
+                    throw new IllegalArgumentException("7z windowsAttributes value must be numeric");
+                }
+                setWindowsAttributes(path, number.intValue());
+            }
+            case "unixMode" -> {
+                if (!(value instanceof Number number)) {
+                    throw new IllegalArgumentException("7z unixMode value must be numeric");
+                }
+                setUnixMode(path, number.intValue());
+            }
+            case "compression" -> {
+                if (!(value instanceof SevenZipCompression compression)) {
+                    throw new IllegalArgumentException("7z compression value must be SevenZipCompression");
+                }
+                setCompression(path, compression);
+            }
+            case "filter" -> {
+                if (value == null) {
+                    clearFilter(path);
+                } else if (value instanceof SevenZipFilter filter) {
+                    setFilter(path, filter);
+                } else {
+                    throw new IllegalArgumentException("7z filter value must be SevenZipFilter or null");
+                }
+            }
+            default -> throw new UnsupportedOperationException("Unsupported writable 7z attribute: " + name);
+        }
+    }
+
+    /// Sets entry timestamps in update mode.
+    private void setTimes(
+            Path path,
+            @Nullable FileTime lastModifiedTime,
+            @Nullable FileTime lastAccessTime,
+            @Nullable FileTime creationTime
+    ) throws IOException {
+        mutateMetadata(path, metadata -> copyMetadataValues(
+                metadata,
+                creationTime != null ? creationTime : metadata.creationTime(),
+                lastAccessTime != null ? lastAccessTime : metadata.lastAccessTime(),
+                lastModifiedTime != null ? lastModifiedTime : metadata.lastModifiedTime(),
+                metadata.windowsAttributes()
+        ));
+    }
+
+    /// Rejects owner changes because 7z has no owner principal property.
+    private void setOwner(Path path, UserPrincipal owner) {
+        Objects.requireNonNull(owner, "owner");
+        requireUpdateMode();
+        throw new UnsupportedOperationException("7z does not store owner principals");
+    }
+
+    /// Rejects group changes because 7z has no group principal property.
+    private void setGroup(Path path, GroupPrincipal group) {
+        Objects.requireNonNull(group, "group");
+        requireUpdateMode();
+        throw new UnsupportedOperationException("7z does not store group principals");
+    }
+
+    /// Sets POSIX permissions encoded in the 7z Windows attributes property.
+    private void setPermissions(Path path, Set<PosixFilePermission> permissions) throws IOException {
+        Objects.requireNonNull(permissions, "permissions");
+        mutateMetadata(path, metadata -> copyMetadataValues(
+                metadata,
+                metadata.creationTime(),
+                metadata.lastAccessTime(),
+                metadata.lastModifiedTime(),
+                SevenZipPosixSupport.withPermissions(
+                        metadata.directory(),
+                        metadata.windowsAttributes(),
+                        permissions
+                )
+        ));
+    }
+
+    /// Sets the raw Windows attributes property.
+    private void setWindowsAttributes(Path path, int windowsAttributes) throws IOException {
+        mutateMetadata(path, metadata -> copyMetadataValues(
+                metadata,
+                metadata.creationTime(),
+                metadata.lastAccessTime(),
+                metadata.lastModifiedTime(),
+                windowsAttributes
+        ));
+    }
+
+    /// Sets Unix mode bits in the high half of the Windows attributes property.
+    private void setUnixMode(Path path, int unixMode) throws IOException {
+        if (unixMode < SevenZipArkivoEntryAttributes.UNKNOWN_UNIX_MODE || unixMode > 0xffff) {
+            throw new IllegalArgumentException("unixMode must be an unsigned 16-bit value or UNKNOWN_UNIX_MODE");
+        }
+        mutateMetadata(path, metadata -> {
+            int current = metadata.windowsAttributes();
+            int windowsAttributes;
+            if (unixMode == SevenZipArkivoEntryAttributes.UNKNOWN_UNIX_MODE) {
+                windowsAttributes = current == SevenZipArkivoEntryAttributes.UNKNOWN_WINDOWS_ATTRIBUTES
+                        ? current
+                        : current & 0xffff;
+            } else {
+                int lowAttributes = current == SevenZipArkivoEntryAttributes.UNKNOWN_WINDOWS_ATTRIBUTES
+                        ? 0
+                        : current & 0xffff;
+                windowsAttributes = lowAttributes | unixMode << 16;
+            }
+            return copyMetadataValues(
+                    metadata,
+                    metadata.creationTime(),
+                    metadata.lastAccessTime(),
+                    metadata.lastModifiedTime(),
+                    windowsAttributes
+            );
+        });
+    }
+
+    /// Sets entry-specific output compression.
+    private void setCompression(Path path, SevenZipCompression compression) throws IOException {
+        Objects.requireNonNull(compression, "compression");
+        mutateOutputSettings(path, settings -> new UpdateOutputSettings(
+                compression,
+                settings.filterConfigured(),
+                settings.filter()
+        ));
+    }
+
+    /// Sets an entry-specific preprocessing filter.
+    private void setFilter(Path path, SevenZipFilter filter) throws IOException {
+        Objects.requireNonNull(filter, "filter");
+        mutateOutputSettings(path, settings -> new UpdateOutputSettings(
+                settings.compression(),
+                true,
+                filter
+        ));
+    }
+
+    /// Disables preprocessing for one updated entry.
+    private void clearFilter(Path path) throws IOException {
+        mutateOutputSettings(path, settings -> new UpdateOutputSettings(
+                settings.compression(),
+                true,
+                null
+        ));
+    }
+
+    /// Replaces one entry's parsed metadata through an update function.
+    private void mutateMetadata(Path path, MetadataMutation mutation) throws IOException {
+        requireUpdateMode();
+        requireNoActiveUpdateChannel(path);
+        String pathText = requireExistingPath(path);
+        @Nullable SevenZipEntryMetadata metadata = entries.get(pathText);
+        if (metadata == null) {
+            throw new java.nio.file.FileSystemException(
+                    path.toString(),
+                    null,
+                    "Synthetic 7z directory metadata cannot be changed"
+            );
+        }
+        entries.put(pathText, mutation.apply(metadata));
+        dirty = true;
+    }
+
+    /// Replaces one entry's output settings through an update function.
+    private void mutateOutputSettings(Path path, OutputSettingsMutation mutation) throws IOException {
+        requireUpdateMode();
+        requireNoActiveUpdateChannel(path);
+        String pathText = requireExistingPath(path);
+        if (!entries.containsKey(pathText)) {
+            throw new java.nio.file.FileSystemException(
+                    path.toString(),
+                    null,
+                    "Synthetic 7z directory output settings cannot be changed"
+            );
+        }
+        UpdateOutputSettings settings =
+                updateOutputSettings.getOrDefault(pathText, UpdateOutputSettings.DEFAULTS);
+        updateOutputSettings.put(pathText, mutation.apply(settings));
+        dirty = true;
+    }
+
+    /// Returns copied metadata with selected timestamp and attribute values.
+    private static SevenZipEntryMetadata copyMetadataValues(
+            SevenZipEntryMetadata metadata,
+            @Nullable FileTime creationTime,
+            @Nullable FileTime lastAccessTime,
+            @Nullable FileTime lastModifiedTime,
+            int windowsAttributes
+    ) {
+        return new SevenZipEntryMetadata(
+                metadata.path(),
+                metadata.directory(),
+                metadata.size(),
+                metadata.dataOffset(),
+                metadata.decodedOffset(),
+                metadata.packedSize(),
+                metadata.packedCrc32(),
+                metadata.crc32(),
+                metadata.method(),
+                creationTime,
+                lastAccessTime,
+                lastModifiedTime,
+                windowsAttributes
+        );
+    }
+
+    /// Changes an immutable parsed metadata snapshot.
+    @FunctionalInterface
+    @NotNullByDefault
+    private interface MetadataMutation {
+        /// Returns replacement metadata.
+        SevenZipEntryMetadata apply(SevenZipEntryMetadata metadata);
+    }
+
+    /// Changes immutable per-entry output settings.
+    @FunctionalInterface
+    @NotNullByDefault
+    private interface OutputSettingsMutation {
+        /// Returns replacement output settings.
+        UpdateOutputSettings apply(UpdateOutputSettings settings);
+    }
+
+    /// Stores per-entry output method overrides for update rewriting.
+    ///
+    /// @param compression the entry compression override, or `null` for the archive default
+    /// @param filterConfigured whether the filter setting overrides the archive default
+    /// @param filter the filter override, or `null` to disable filtering
+    @NotNullByDefault
+    private record UpdateOutputSettings(
+            @Nullable SevenZipCompression compression,
+            boolean filterConfigured,
+            @Nullable SevenZipFilter filter
+    ) {
+        /// The default settings that inherit archive output methods.
+        private static final UpdateOutputSettings DEFAULTS =
+                new UpdateOutputSettings(null, false, null);
     }
 
     /// Prepares a new archive entry path for forward-only writing.
@@ -1259,7 +2379,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             throw new java.nio.file.ProviderMismatchException();
         }
         String pathText = sevenZipPath.toAbsolutePath().normalize().toString();
-        if ("/".equals(pathText) || entries.containsKey(pathText)) {
+        if ("/".equals(pathText) || entries.containsKey(pathText) || children.containsKey(pathText)) {
             return pathText;
         }
         throw new NoSuchFileException(path.toString());
@@ -1291,15 +2411,20 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     if (index < 0 || index >= splitVolumePaths.size()) {
                         return null;
                     }
-                    return Files.newByteChannel(splitVolumePaths.get((int) index), config.openOptions());
+                    return Files.newByteChannel(splitVolumePaths.get((int) index), sourceOpenOptions());
                 });
             }
-            return Files.newByteChannel(archivePath, config.openOptions());
+            return Files.newByteChannel(archivePath, sourceOpenOptions());
         }
         if (volumes != null) {
             return SevenZipVolumeChannel.open(volumes);
         }
         throw new IOException("7z archive storage is not available");
+    }
+
+    /// Returns archive source options that never mutate update-mode input storage.
+    private @Unmodifiable Set<? extends OpenOption> sourceOpenOptions() {
+        return updateMode ? Set.of(StandardOpenOption.READ) : config.openOptions();
     }
 
     /// Reads a decoded entry into memory for seekable channel access.
@@ -1375,22 +2500,29 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// Returns directory children keyed by normalized absolute parent path text.
     private Map<String, List<Path>> childrenByPath(Map<String, SevenZipEntryMetadata> entries) throws IOException {
-        LinkedHashMap<String, ArrayList<Path>> result = new LinkedHashMap<>();
-        result.put("/", new ArrayList<>());
+        LinkedHashMap<String, LinkedHashMap<String, Path>> result = new LinkedHashMap<>();
+        result.put("/", new LinkedHashMap<>());
         for (String pathText : entries.keySet()) {
-            Path path = getPath(pathText);
-            Path parent = path.getParent();
-            String parentText = parent != null ? parent.toString() : "/";
-            SevenZipEntryMetadata parentMetadata = entries.get(parentText);
-            if (parentMetadata != null && !parentMetadata.directory()) {
-                throw new IOException("7z entry path conflicts with directory: " + parentMetadata.path());
+            Path child = getPath(pathText);
+            while (true) {
+                @Nullable Path parent = child.getParent();
+                String parentText = parent != null ? parent.toString() : "/";
+                @Nullable SevenZipEntryMetadata parentMetadata = entries.get(parentText);
+                if (parentMetadata != null && !parentMetadata.directory()) {
+                    throw new IOException("7z entry path conflicts with directory: " + parentMetadata.path());
+                }
+                result.computeIfAbsent(parentText, ignored -> new LinkedHashMap<>())
+                        .putIfAbsent(child.toString(), child);
+                if (parent == null || "/".equals(parentText)) {
+                    break;
+                }
+                child = parent;
             }
-            result.computeIfAbsent(parentText, ignored -> new ArrayList<>()).add(path);
         }
 
         LinkedHashMap<String, List<Path>> copied = new LinkedHashMap<>();
-        for (Map.Entry<String, ArrayList<Path>> entry : result.entrySet()) {
-            copied.put(entry.getKey(), List.copyOf(entry.getValue()));
+        for (Map.Entry<String, LinkedHashMap<String, Path>> entry : result.entrySet()) {
+            copied.put(entry.getKey(), List.copyOf(entry.getValue().values()));
         }
         return Collections.unmodifiableMap(copied);
     }
@@ -1436,6 +2568,215 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         /// Returns whether the given attribute was requested.
         private boolean contains(String name) {
             return names.contains(name);
+        }
+    }
+
+    /// Implements a staged random-access channel for one update-mode entry.
+    @NotNullByDefault
+    private final class UpdateEntryByteChannel implements SeekableByteChannel {
+        /// The normalized absolute entry path.
+        private final String path;
+
+        /// The metadata present when this channel opened, or `null` for a new entry.
+        private final @Nullable SevenZipEntryMetadata originalMetadata;
+
+        /// Initial metadata applied when a new entry is committed.
+        private final SevenZipEntryWriteMetadata initialMetadata;
+
+        /// Whether reads are allowed.
+        private final boolean readable;
+
+        /// Whether writes are allowed.
+        private final boolean writable;
+
+        /// Whether every write is forced to the current end.
+        private final boolean append;
+
+        /// The staged decoded entry bytes.
+        private byte[] data;
+
+        /// The logical staged size.
+        private int size;
+
+        /// The current channel position.
+        private int position;
+
+        /// Whether closing this channel must update the archive index.
+        private boolean changed;
+
+        /// Whether this channel is open.
+        private boolean channelOpen = true;
+
+        /// Creates a staged update entry channel.
+        private UpdateEntryByteChannel(
+                String path,
+                @Nullable SevenZipEntryMetadata originalMetadata,
+                SevenZipEntryWriteMetadata initialMetadata,
+                byte @Unmodifiable [] initialContent,
+                boolean readable,
+                boolean writable,
+                boolean append,
+                boolean forceCommit
+        ) {
+            this.path = Objects.requireNonNull(path, "path");
+            this.originalMetadata = originalMetadata;
+            this.initialMetadata = Objects.requireNonNull(initialMetadata, "initialMetadata");
+            this.readable = readable;
+            this.writable = writable;
+            this.append = append;
+            this.data = Arrays.copyOf(initialContent, Math.max(initialContent.length, 32));
+            this.size = initialContent.length;
+            this.position = append ? size : 0;
+            this.changed = forceCommit;
+        }
+
+        /// Returns the normalized entry path.
+        private String path() {
+            return path;
+        }
+
+        /// Returns metadata present when this channel opened.
+        private @Nullable SevenZipEntryMetadata originalMetadata() {
+            return originalMetadata;
+        }
+
+        /// Returns initial metadata for a new entry.
+        private SevenZipEntryWriteMetadata initialMetadata() {
+            return initialMetadata;
+        }
+
+        /// Reads staged bytes from the current position.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            Objects.requireNonNull(destination, "destination");
+            ensureChannelOpen();
+            if (!readable) {
+                throw new NonReadableChannelException();
+            }
+            if (position >= size) {
+                return -1;
+            }
+            int count = Math.min(destination.remaining(), size - position);
+            destination.put(data, position, count);
+            position += count;
+            return count;
+        }
+
+        /// Writes staged bytes at the current position or end in append mode.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            ensureChannelOpen();
+            if (!writable) {
+                throw new NonWritableChannelException();
+            }
+            if (append) {
+                position = size;
+            }
+            int count = source.remaining();
+            int end = checkedArrayPosition((long) position + count);
+            ensureCapacity(end);
+            source.get(data, position, count);
+            position = end;
+            size = Math.max(size, end);
+            changed |= count != 0;
+            return count;
+        }
+
+        /// Returns the current staged position.
+        @Override
+        public long position() throws IOException {
+            ensureChannelOpen();
+            return position;
+        }
+
+        /// Changes the current staged position.
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            ensureChannelOpen();
+            position = checkedArrayPosition(newPosition);
+            return this;
+        }
+
+        /// Returns the current staged size.
+        @Override
+        public long size() throws IOException {
+            ensureChannelOpen();
+            return size;
+        }
+
+        /// Truncates staged content.
+        @Override
+        public SeekableByteChannel truncate(long newSize) throws IOException {
+            ensureChannelOpen();
+            if (!writable) {
+                throw new NonWritableChannelException();
+            }
+            int checkedSize = checkedArrayPosition(newSize);
+            if (checkedSize < size) {
+                size = checkedSize;
+                if (position > size) {
+                    position = size;
+                }
+                changed = true;
+            }
+            return this;
+        }
+
+        /// Returns whether this channel is open.
+        @Override
+        public boolean isOpen() {
+            return channelOpen;
+        }
+
+        /// Closes this channel and commits changed staged bytes to the update index.
+        @Override
+        public void close() throws IOException {
+            if (!channelOpen) {
+                return;
+            }
+            channelOpen = false;
+            if (!writable) {
+                return;
+            }
+            if (changed) {
+                commitUpdatedEntry(this, Arrays.copyOf(data, size));
+            } else if (activeUpdateChannel == this) {
+                activeUpdateChannel = null;
+            }
+        }
+
+        /// Ensures enough staged array capacity.
+        private void ensureCapacity(int requiredCapacity) throws IOException {
+            if (requiredCapacity <= data.length) {
+                return;
+            }
+            long grown = Math.max((long) requiredCapacity, (long) data.length * 2L);
+            if (grown > Integer.MAX_VALUE) {
+                grown = Integer.MAX_VALUE;
+            }
+            if (grown < requiredCapacity) {
+                throw new IOException("7z entry is too large for update storage");
+            }
+            data = Arrays.copyOf(data, (int) grown);
+        }
+
+        /// Converts a staged position to the array-backed index domain.
+        private int checkedArrayPosition(long value) throws IOException {
+            if (value < 0L) {
+                throw new IllegalArgumentException("7z entry position must not be negative");
+            }
+            if (value > Integer.MAX_VALUE) {
+                throw new IOException("7z entry is too large for update storage");
+            }
+            return (int) value;
+        }
+
+        /// Ensures this channel is open.
+        private void ensureChannelOpen() throws ClosedChannelException {
+            if (!channelOpen) {
+                throw new ClosedChannelException();
+            }
         }
     }
 
@@ -1643,13 +2984,13 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// Owner attribute view for one 7z path.
     @NotNullByDefault
-    private static final class OwnerAttributeView implements FileOwnerAttributeView {
-        /// The attributes returned by this view.
-        private final PosixFileAttributes attributes;
+    private final class OwnerAttributeView implements FileOwnerAttributeView {
+        /// The path exposed by this view.
+        private final Path path;
 
         /// Creates an owner attribute view.
-        private OwnerAttributeView(PosixFileAttributes attributes) {
-            this.attributes = Objects.requireNonNull(attributes, "attributes");
+        private OwnerAttributeView(Path path) {
+            this.path = Objects.requireNonNull(path, "path");
         }
 
         /// Returns the attribute view name.
@@ -1660,27 +3001,26 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
         /// Returns the synthesized owner principal.
         @Override
-        public UserPrincipal getOwner() {
-            return attributes.owner();
+        public UserPrincipal getOwner() throws IOException {
+            return SevenZipArkivoFileSystemImpl.this.readAttributes(path, PosixFileAttributes.class).owner();
         }
 
-        /// Rejects owner mutation.
+        /// Rejects owner mutation because 7z stores no owner principal.
         @Override
         public void setOwner(UserPrincipal owner) {
-            Objects.requireNonNull(owner, "owner");
-            throw new ReadOnlyFileSystemException();
+            SevenZipArkivoFileSystemImpl.this.setOwner(path, owner);
         }
     }
 
     /// POSIX attribute view for one 7z path.
     @NotNullByDefault
-    private static final class PosixAttributeView implements PosixFileAttributeView {
-        /// The attributes returned by this view.
-        private final PosixFileAttributes attributes;
+    private final class PosixAttributeView implements PosixFileAttributeView {
+        /// The path exposed by this view.
+        private final Path path;
 
         /// Creates a POSIX attribute view.
-        private PosixAttributeView(PosixFileAttributes attributes) {
-            this.attributes = Objects.requireNonNull(attributes, "attributes");
+        private PosixAttributeView(Path path) {
+            this.path = Objects.requireNonNull(path, "path");
         }
 
         /// Returns the attribute view name.
@@ -1691,57 +3031,59 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
         /// Reads POSIX attributes.
         @Override
-        public PosixFileAttributes readAttributes() {
-            return attributes;
+        public PosixFileAttributes readAttributes() throws IOException {
+            return SevenZipArkivoFileSystemImpl.this.readAttributes(path, PosixFileAttributes.class);
         }
 
         /// Returns the synthesized owner principal.
         @Override
-        public UserPrincipal getOwner() {
-            return attributes.owner();
+        public UserPrincipal getOwner() throws IOException {
+            return readAttributes().owner();
         }
 
-        /// Rejects POSIX time mutation.
+        /// Sets entry timestamps in update mode.
         @Override
         public void setTimes(
                 @Nullable FileTime lastModifiedTime,
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
-        ) {
-            throw new ReadOnlyFileSystemException();
+        ) throws IOException {
+            SevenZipArkivoFileSystemImpl.this.setTimes(
+                    path,
+                    lastModifiedTime,
+                    lastAccessTime,
+                    createTime
+            );
         }
 
-        /// Rejects owner mutation.
+        /// Rejects owner mutation because 7z stores no owner principal.
         @Override
         public void setOwner(UserPrincipal owner) {
-            Objects.requireNonNull(owner, "owner");
-            throw new ReadOnlyFileSystemException();
+            SevenZipArkivoFileSystemImpl.this.setOwner(path, owner);
         }
 
-        /// Rejects group mutation.
+        /// Rejects group mutation because 7z stores no group principal.
         @Override
         public void setGroup(GroupPrincipal group) {
-            Objects.requireNonNull(group, "group");
-            throw new ReadOnlyFileSystemException();
+            SevenZipArkivoFileSystemImpl.this.setGroup(path, group);
         }
 
-        /// Rejects permissions mutation.
+        /// Sets permissions encoded by Unix mode metadata.
         @Override
-        public void setPermissions(Set<PosixFilePermission> permissions) {
-            Objects.requireNonNull(permissions, "permissions");
-            throw new ReadOnlyFileSystemException();
+        public void setPermissions(Set<PosixFilePermission> permissions) throws IOException {
+            SevenZipArkivoFileSystemImpl.this.setPermissions(path, permissions);
         }
     }
 
     /// Basic attribute view for one 7z path.
     @NotNullByDefault
-    private static final class BasicAttributeView implements BasicFileAttributeView {
-        /// The attributes returned by this view.
-        private final BasicFileAttributes attributes;
+    private final class BasicAttributeView implements BasicFileAttributeView {
+        /// The path exposed by this view.
+        private final Path path;
 
         /// Creates a basic attribute view.
-        private BasicAttributeView(BasicFileAttributes attributes) {
-            this.attributes = attributes;
+        private BasicAttributeView(Path path) {
+            this.path = Objects.requireNonNull(path, "path");
         }
 
         /// Returns the attribute view name.
@@ -1752,72 +3094,83 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
         /// Reads attributes.
         @Override
-        public BasicFileAttributes readAttributes() {
-            return attributes;
+        public BasicFileAttributes readAttributes() throws IOException {
+            return SevenZipArkivoFileSystemImpl.this.readAttributes(path, BasicFileAttributes.class);
         }
 
-        /// Rejects root time mutation.
+        /// Sets entry timestamps in update mode.
         @Override
         public void setTimes(
                 @Nullable FileTime lastModifiedTime,
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
-        ) {
-            throw new ReadOnlyFileSystemException();
+        ) throws IOException {
+            SevenZipArkivoFileSystemImpl.this.setTimes(
+                    path,
+                    lastModifiedTime,
+                    lastAccessTime,
+                    createTime
+            );
         }
     }
 
     /// 7z attribute view for one archive entry path.
     @NotNullByDefault
-    private static final class SevenZipAttributeView implements SevenZipArkivoEntryAttributeView {
-        /// The attributes returned by this view.
-        private final SevenZipArkivoEntryAttributes attributes;
+    private final class SevenZipAttributeView implements SevenZipArkivoEntryAttributeView {
+        /// The path exposed by this view.
+        private final Path path;
 
         /// Creates a 7z attribute view.
-        private SevenZipAttributeView(SevenZipArkivoEntryAttributes attributes) {
-            this.attributes = Objects.requireNonNull(attributes, "attributes");
+        private SevenZipAttributeView(Path path) {
+            this.path = Objects.requireNonNull(path, "path");
         }
 
         /// Reads attributes.
         @Override
-        public SevenZipArkivoEntryAttributes readAttributes() {
-            return attributes;
+        public SevenZipArkivoEntryAttributes readAttributes() throws IOException {
+            return SevenZipArkivoFileSystemImpl.this.readAttributes(
+                    path,
+                    SevenZipArkivoEntryAttributes.class
+            );
         }
 
-        /// Rejects entry time mutation.
+        /// Sets entry timestamps in update mode.
         @Override
         public void setTimes(
                 @Nullable FileTime lastModifiedTime,
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
-        ) {
-            throw new ReadOnlyFileSystemException();
+        ) throws IOException {
+            SevenZipArkivoFileSystemImpl.this.setTimes(
+                    path,
+                    lastModifiedTime,
+                    lastAccessTime,
+                    createTime
+            );
         }
 
-        /// Rejects Windows attribute mutation.
+        /// Sets raw Windows attributes in update mode.
         @Override
-        public void setWindowsAttributes(int windowsAttributes) {
-            throw new ReadOnlyFileSystemException();
+        public void setWindowsAttributes(int windowsAttributes) throws IOException {
+            SevenZipArkivoFileSystemImpl.this.setWindowsAttributes(path, windowsAttributes);
         }
 
-        /// Rejects compression mutation.
+        /// Sets entry-specific compression in update mode.
         @Override
-        public void setCompression(SevenZipCompression compression) {
-            Objects.requireNonNull(compression, "compression");
-            throw new ReadOnlyFileSystemException();
+        public void setCompression(SevenZipCompression compression) throws IOException {
+            SevenZipArkivoFileSystemImpl.this.setCompression(path, compression);
         }
 
-        /// Rejects filter mutation.
+        /// Sets an entry-specific filter in update mode.
         @Override
-        public void setFilter(SevenZipFilter filter) {
-            Objects.requireNonNull(filter, "filter");
-            throw new ReadOnlyFileSystemException();
+        public void setFilter(SevenZipFilter filter) throws IOException {
+            SevenZipArkivoFileSystemImpl.this.setFilter(path, filter);
         }
 
-        /// Rejects clearing the filter.
+        /// Disables filtering for this entry in update mode.
         @Override
-        public void clearFilter() {
-            throw new ReadOnlyFileSystemException();
+        public void clearFilter() throws IOException {
+            SevenZipArkivoFileSystemImpl.this.clearFilter(path);
         }
     }
 }

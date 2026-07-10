@@ -12,6 +12,7 @@ import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.util.EnumSet;
+import java.util.Objects;
 import java.util.Set;
 
 /// Provides synthesized POSIX metadata helpers for 7z file systems.
@@ -141,6 +142,30 @@ final class SevenZipPosixSupport {
         return unixModeWindowsAttributes(SYMBOLIC_LINK_TYPE, permissions);
     }
 
+    /// Returns Windows attributes with replaced POSIX permissions and preserved file type and low attribute bits.
+    static int withPermissions(
+            boolean directory,
+            int windowsAttributes,
+            Set<PosixFilePermission> permissions
+    ) {
+        Objects.requireNonNull(permissions, "permissions");
+        int unixMode = unixMode(windowsAttributes);
+        int fileType;
+        if (unixMode != SevenZipArkivoEntryAttributes.UNKNOWN_UNIX_MODE) {
+            fileType = unixMode & FILE_TYPE_MASK;
+        } else if (directory) {
+            fileType = DIRECTORY_TYPE;
+        } else if (isSymbolicLink(windowsAttributes)) {
+            fileType = SYMBOLIC_LINK_TYPE;
+        } else {
+            fileType = REGULAR_FILE_TYPE;
+        }
+        int lowAttributes = windowsAttributes == SevenZipArkivoEntryAttributes.UNKNOWN_WINDOWS_ATTRIBUTES
+                ? 0
+                : windowsAttributes & 0xffff;
+        return lowAttributes | (fileType | permissionsMode(permissions)) << 16;
+    }
+
     /// Returns Windows attributes containing the given Unix file type and POSIX permissions.
     private static int unixModeWindowsAttributes(int fileType, Set<PosixFilePermission> permissions) {
         return (fileType | permissionsMode(permissions)) << 16;
@@ -167,7 +192,7 @@ final class SevenZipPosixSupport {
 
     /// Decodes POSIX permissions from stored Unix mode bits.
     private static @Nullable @Unmodifiable Set<PosixFilePermission> permissionsFromUnixMode(int mode) {
-        if (mode == SevenZipArkivoEntryAttributes.UNKNOWN_UNIX_MODE || (mode & 0777) == 0) {
+        if (mode == SevenZipArkivoEntryAttributes.UNKNOWN_UNIX_MODE) {
             return null;
         }
 

@@ -20,6 +20,13 @@ import java.util.Map;
 import java.util.Objects;
 
 /// Opens 7z archives as NIO file systems.
+///
+/// Path-backed `READ` and `WRITE` open a complete-rewrite update session. Closing a changed session atomically
+/// replaces the source by default; `ArkivoFileSystem.COMMIT_TARGET` can publish a single-volume derivative. Existing
+/// path-backed split archives preserve their first-volume size unless `SPLIT_SIZE` selects another output split size.
+///
+/// Updates preserve decoded entry content and stored timestamps and attributes, then re-encode every surviving entry
+/// with the configured output compression, filter, password, and header-encryption policy.
 @NotNullByDefault
 public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem permits SevenZipArkivoFileSystemImpl {
     /// The environment option for an `ArkivoPasswordProvider` value.
@@ -31,6 +38,8 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
             ArkivoFileSystemOption.of("arkivo.7z", "passwordProvider", ArkivoPasswordProvider.class);
 
     /// The environment option for the default `SevenZipCompression` used by non-empty output entries.
+    ///
+    /// Complete-rewrite updates use this compression for surviving entries unless an entry attribute view overrides it.
     ///
     /// Values may be a complete compression object, a `SevenZipCompressionMethod`, or a stable method name string.
     /// The default remains `SevenZipCompression.copy()`.
@@ -44,6 +53,8 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
 
     /// The environment option for an optional `SevenZipFilter` applied before output compression.
     ///
+    /// Complete-rewrite updates use this filter for surviving entries unless an entry attribute view overrides it.
+    ///
     /// Values may be a complete filter object, a `SevenZipFilterMethod`, or a stable method name string. No filter is
     /// applied by default.
     public static final ArkivoFileSystemOption<SevenZipFilter> FILTER =
@@ -56,7 +67,9 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
 
     /// The environment option for the maximum `Long` byte size of each numbered output volume.
     ///
-    /// Path-backed split output requires a conventional first-volume path such as `archive.7z.001`.
+    /// Path-backed split output requires a conventional first-volume path such as `archive.7z.001`. Updates preserve
+    /// an existing split archive's first-volume size when this option is absent; `-1` explicitly rewrites it as a
+    /// single-volume archive.
     public static final ArkivoFileSystemOption<Long> SPLIT_SIZE =
             ArkivoFileSystemOption.of(
                     "arkivo.7z",
@@ -88,6 +101,8 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     }
 
     /// Opens a 7z archive file system with environment options.
+    ///
+    /// `READ` and `WRITE` select complete-rewrite update mode. `CREATE` additionally allows a missing source path.
     public static SevenZipArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
@@ -126,6 +141,54 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
             throw new UnsupportedOperationException("7z volume sources cannot be opened with write archive options");
         }
         return new SevenZipArkivoFileSystemImpl(SevenZipArkivoFileSystemProvider.instance(), null, volumes, config);
+    }
+
+    /// Opens a complete-rewrite update over a multi-volume source and transactional volume target.
+    ///
+    /// The returned file system owns the source after this method returns successfully. Closing a changed file system
+    /// assembles a new archive and commits every output volume; failures roll back the target transaction.
+    public static SevenZipArkivoFileSystem update(
+            ArkivoVolumeSource source,
+            ArkivoVolumeTarget target,
+            long splitSize
+    ) throws IOException {
+        return update(source, target, splitSize, Map.of());
+    }
+
+    /// Opens a complete-rewrite update over explicit multi-volume input and output with environment options.
+    ///
+    /// Archive open options, `SPLIT_SIZE`, and `COMMIT_TARGET` are determined by this factory and must not be supplied
+    /// in the environment.
+    public static SevenZipArkivoFileSystem update(
+            ArkivoVolumeSource source,
+            ArkivoVolumeTarget target,
+            long splitSize,
+            Map<String, ?> environment
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(environment, "environment");
+        if (splitSize <= 0L) {
+            throw new IllegalArgumentException("splitSize must be positive");
+        }
+        if (environment.containsKey(ArkivoFileSystem.OPEN_OPTIONS.key())) {
+            throw new IllegalArgumentException("7z volume update open options are determined by the factory");
+        }
+        if (environment.containsKey(SPLIT_SIZE.key())) {
+            throw new IllegalArgumentException("7z volume update splitSize must be provided as the factory argument");
+        }
+        if (environment.containsKey(ArkivoFileSystem.COMMIT_TARGET.key())) {
+            throw new IllegalArgumentException("7z volume updates use the factory volume target");
+        }
+        SevenZipArkivoFileSystemConfig config =
+                SevenZipArkivoFileSystemConfig.fromUpdateEnvironment(environment);
+        return new SevenZipArkivoFileSystemImpl(
+                SevenZipArkivoFileSystemProvider.instance(),
+                source,
+                target,
+                splitSize,
+                config
+        );
     }
 
     /// Creates a forward-only 7z file system that publishes split output to a transactional volume target.

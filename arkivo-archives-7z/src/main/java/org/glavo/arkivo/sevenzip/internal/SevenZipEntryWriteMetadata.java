@@ -13,7 +13,7 @@ import org.jetbrains.annotations.Nullable;
 import java.nio.file.attribute.FileTime;
 import java.util.Objects;
 
-/// Stores optional metadata applied when a forward-only 7z entry is opened.
+/// Stores optional metadata applied when a forward-only or rewritten 7z entry is opened.
 ///
 /// @param lastModifiedTime the last modification time, or `null` when absent
 /// @param lastAccessTime the last access time, or `null` when absent

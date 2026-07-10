@@ -72,6 +72,25 @@ public final class SevenZipArkivoFormat implements ArkivoFormat {
         return SevenZipArkivoFileSystem.open(volumes, environment);
     }
 
+    /// Opens a complete-rewrite update over multi-volume input and transactional output.
+    public ArkivoFileSystem update(
+            ArkivoVolumeSource source,
+            ArkivoVolumeTarget target,
+            long splitSize
+    ) throws IOException {
+        return SevenZipArkivoFileSystem.update(source, target, splitSize);
+    }
+
+    /// Opens a complete-rewrite multi-volume update with environment options.
+    public ArkivoFileSystem update(
+            ArkivoVolumeSource source,
+            ArkivoVolumeTarget target,
+            long splitSize,
+            Map<String, ?> environment
+    ) throws IOException {
+        return SevenZipArkivoFileSystem.update(source, target, splitSize, environment);
+    }
+
     /// Creates a forward-only 7z file system that publishes split output to a transactional volume target.
     public ArkivoFileSystem create(ArkivoVolumeTarget target, long splitSize) throws IOException {
         return SevenZipArkivoFileSystem.create(target, splitSize);
