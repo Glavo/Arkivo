@@ -3,7 +3,10 @@
 
 package org.glavo.arkivo.rar;
 
+import org.glavo.arkivo.ArkivoEditStorage;
+import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.ArkivoStoredContent;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -26,6 +29,7 @@ import java.nio.file.FileSystem;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.ReadOnlyFileSystemException;
 import java.nio.file.StandardCopyOption;
@@ -65,6 +69,79 @@ public final class RarArkivoStreamingReaderTest {
 
     /// RAR4 file header flag indicating that the name field includes Unicode metadata.
     private static final long RAR4_FILE_FLAG_UNICODE = 0x0200L;
+
+    /// Verifies that explicit volume sources and configured cached-content storage are both owned by the file system.
+    @Test
+    public void explicitVolumeFileSystemOwnsConfiguredStorage() throws IOException {
+        byte[] content = "volume-content".getBytes(StandardCharsets.UTF_8);
+        TestSeekableChannelSource source = new TestSeekableChannelSource(rar4Archive(
+                storedFile("value.txt", 1_700_000_000L, 0100644, content, null)
+        ));
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                source,
+                Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage)
+        )) {
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/value.txt")));
+        }
+        assertEquals(1, source.closeCount());
+        assertEquals(true, source.allOpenedChannelsClosed());
+        assertEquals(1, storage.createdContentCount());
+        assertEquals(1, storage.contentCloseCount());
+        assertEquals(1, storage.closeCount());
+    }
+
+    /// Verifies that file redirections share one cached body and failed cleanup can be retried.
+    @Test
+    public void fileSystemStorageSharesRedirectedBodiesAndRetriesCleanup() throws IOException {
+        byte[] content = "shared-content".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("rar-storage-");
+        Files.write(archivePath, archive(
+                storedFile("source.txt", 1_700_000_000L, 0100644, content, null),
+                redirectedEntry(
+                        "hard.txt",
+                        1_700_000_001L,
+                        0100644,
+                        RarArkivoEntryAttributes.REDIRECTION_TYPE_HARD_LINK,
+                        0,
+                        "source.txt"
+                ),
+                redirectedEntry(
+                        "copy.txt",
+                        1_700_000_002L,
+                        0100644,
+                        RarArkivoEntryAttributes.REDIRECTION_TYPE_FILE_COPY,
+                        0,
+                        "source.txt"
+                )
+        ));
+        TrackingEditStorage storage = new TrackingEditStorage(true);
+        RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                archivePath,
+                Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage)
+        );
+        try {
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/source.txt")));
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/hard.txt")));
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/copy.txt")));
+            IOException failure = assertThrows(IOException.class, fileSystem::close);
+            assertEquals("content close failed", failure.getMessage());
+            assertEquals(1, storage.createdContentCount());
+            assertEquals(1, storage.contentCloseCount());
+            assertEquals(1, storage.closeCount());
+
+            fileSystem.close();
+            fileSystem.close();
+            assertEquals(2, storage.contentCloseCount());
+            assertEquals(1, storage.closeCount());
+        } finally {
+            try {
+                fileSystem.close();
+            } finally {
+                Files.deleteIfExists(archivePath);
+            }
+        }
+    }
 
     /// Verifies that stored RAR5 entries can be streamed with metadata.
     @Test
@@ -1830,19 +1907,19 @@ public final class RarArkivoStreamingReaderTest {
 
     /// One RAR test member.
     ///
-    /// @param path the stored RAR entry path or service header name
-    /// @param modificationTime the Unix modification time in seconds
-    /// @param attributes the raw operating-system-specific file attributes
-    /// @param directory whether this member is a directory
-    /// @param symbolicLink whether this member is a symbolic link
-    /// @param compressionMethod the RAR compression method number
-    /// @param crc32 the unsigned CRC32 value stored in the file header
-    /// @param unpackedSize the unpacked size stored in the file header
-    /// @param body the packed data bytes
-    /// @param extraArea the encoded extra area, or `null` when absent
-    /// @param service whether this member is a service header
+    /// @param path                        the stored RAR entry path or service header name
+    /// @param modificationTime            the Unix modification time in seconds
+    /// @param attributes                  the raw operating-system-specific file attributes
+    /// @param directory                   whether this member is a directory
+    /// @param symbolicLink                whether this member is a symbolic link
+    /// @param compressionMethod           the RAR compression method number
+    /// @param crc32                       the unsigned CRC32 value stored in the file header
+    /// @param unpackedSize                the unpacked size stored in the file header
+    /// @param body                        the packed data bytes
+    /// @param extraArea                   the encoded extra area, or `null` when absent
+    /// @param service                     whether this member is a service header
     /// @param continuesFromPreviousVolume whether this member continues data from the previous volume
-    /// @param continuesInNextVolume whether this member continues data in the next volume
+    /// @param continuesInNextVolume       whether this member continues data in the next volume
     @NotNullByDefault
     private record Member(
             String path,
@@ -1867,6 +1944,97 @@ public final class RarArkivoStreamingReaderTest {
             }
             body = body.clone();
             extraArea = extraArea != null ? extraArea.clone() : new byte[0];
+        }
+    }
+
+    /// Tracks cached-content allocation and close calls while delegating content to memory storage.
+    @NotNullByDefault
+    private static final class TrackingEditStorage implements ArkivoEditStorage {
+        /// The delegate memory storage.
+        private final ArkivoEditStorage delegate = ArkivoEditStorage.memory();
+
+        /// Whether the first stored-content close call must fail.
+        private final boolean failFirstContentClose;
+
+        /// The number of created content objects.
+        private int createdContentCount;
+
+        /// The total number of stored-content close calls.
+        private int contentCloseCount;
+
+        /// The number of storage close calls.
+        private int closeCount;
+
+        /// Creates tracking storage with the requested cleanup behavior.
+        private TrackingEditStorage(boolean failFirstContentClose) {
+            this.failFirstContentClose = failFirstContentClose;
+        }
+
+        /// Creates one tracked stored-content object.
+        @Override
+        public ArkivoStoredContent createContent(String path, long expectedSize) throws IOException {
+            createdContentCount++;
+            return new TrackingStoredContent(delegate.createContent(path, expectedSize));
+        }
+
+        /// Closes the delegate storage and records the call.
+        @Override
+        public void close() throws IOException {
+            closeCount++;
+            delegate.close();
+        }
+
+        /// Returns the number of created content objects.
+        private int createdContentCount() {
+            return createdContentCount;
+        }
+
+        /// Returns the total number of stored-content close calls.
+        private int contentCloseCount() {
+            return contentCloseCount;
+        }
+
+        /// Returns the number of storage close calls.
+        private int closeCount() {
+            return closeCount;
+        }
+
+        /// Tracks one delegated stored-content object.
+        @NotNullByDefault
+        private final class TrackingStoredContent implements ArkivoStoredContent {
+            /// The delegated stored content.
+            private final ArkivoStoredContent content;
+
+            /// Whether this content has failed its first close call.
+            private boolean firstCloseFailed;
+
+            /// Creates tracked stored content.
+            private TrackingStoredContent(ArkivoStoredContent content) {
+                this.content = content;
+            }
+
+            /// Opens a channel over the delegated content.
+            @Override
+            public SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException {
+                return content.openChannel(options);
+            }
+
+            /// Returns the delegated content size.
+            @Override
+            public long size() throws IOException {
+                return content.size();
+            }
+
+            /// Closes the delegated content or injects the configured first failure.
+            @Override
+            public void close() throws IOException {
+                contentCloseCount++;
+                if (failFirstContentClose && !firstCloseFailed) {
+                    firstCloseFailed = true;
+                    throw new IOException("content close failed");
+                }
+                content.close();
+            }
         }
     }
 

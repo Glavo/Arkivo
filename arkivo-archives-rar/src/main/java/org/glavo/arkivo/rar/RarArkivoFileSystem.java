@@ -16,6 +16,9 @@ import java.util.Map;
 import java.util.Objects;
 
 /// Opens RAR archives as read-only NIO file systems.
+///
+/// Readable stored-entry bodies are cached through `ArkivoFileSystem.EDIT_STORAGE`, using temporary files under the
+/// system temporary directory by default. The file system owns and closes the selected edit storage.
 @NotNullByDefault
 public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permits RarArkivoFileSystemImpl {
     /// Creates a RAR archive file system base instance.
@@ -29,6 +32,8 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     }
 
     /// Opens a RAR archive file system with environment options.
+    ///
+    /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for cached readable entry bodies.
     public static RarArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
@@ -45,6 +50,7 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// Opens a read-only RAR archive file system from a repeatable seekable channel source with environment options.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for cached readable entry bodies.
     public static RarArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
             Map<String, ?> environment
@@ -59,6 +65,8 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     }
 
     /// Opens a multi-volume RAR archive file system with environment options.
+    ///
+    /// The returned file system owns the volume source and selected edit storage after this method returns successfully.
     public static RarArkivoFileSystem open(ArkivoVolumeSource volumes, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(volumes, "volumes");
         Objects.requireNonNull(environment, "environment");
