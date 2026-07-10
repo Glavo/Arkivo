@@ -3300,6 +3300,88 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that replacement split output removes numbered volumes from the previous archive.
+    @Test
+    public void splitOutputReplacementRemovesStaleVolumes() throws IOException {
+        Path archivePath = createTemporaryArchivePath("split-replace-");
+        byte[] originalContent = new byte[512];
+        for (int index = 0; index < originalContent.length; index++) {
+            originalContent[index] = (byte) index;
+        }
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
+                    archivePath,
+                    Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), 64L)
+            )) {
+                writer.beginFile("original.bin");
+                ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(view);
+                view.setMethod(ZipMethod.stored());
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write(originalContent);
+                }
+            }
+            assertEquals(true, splitVolumePaths(archivePath).size() > 2);
+
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
+                    archivePath,
+                    Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), 4096L)
+            )) {
+                writer.beginFile("replacement.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("replacement".getBytes(StandardCharsets.UTF_8));
+                }
+            }
+
+            assertEquals(List.of(archivePath), splitVolumePaths(archivePath));
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals(
+                        "replacement",
+                        Files.readString(fileSystem.getPath("/replacement.txt"), StandardCharsets.UTF_8)
+                );
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a failed split output publication leaves existing output untouched and removes staging data.
+    @Test
+    public void splitOutputCreateNewFailureCleansStagingData() throws IOException {
+        Path archivePath = createTemporaryArchivePath("split-create-new-failure-");
+        Path existingVolumePath = splitVolumePath(archivePath, 0);
+        byte[] existingContent = "existing volume".getBytes(StandardCharsets.UTF_8);
+
+        try {
+            Files.write(existingVolumePath, existingContent);
+            ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
+                    archivePath,
+                    Map.of(
+                            ArkivoFileSystem.OPEN_OPTIONS.key(),
+                            Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE),
+                            ZipArkivoFileSystem.SPLIT_SIZE.key(),
+                            64L
+                    )
+            );
+            writer.beginFile("new.txt");
+            try (OutputStream output = writer.openOutputStream()) {
+                output.write("new output".getBytes(StandardCharsets.UTF_8));
+            }
+
+            assertThrows(FileAlreadyExistsException.class, writer::close);
+            assertArrayEquals(existingContent, Files.readAllBytes(existingVolumePath));
+            assertEquals(false, Files.exists(archivePath));
+            try (DirectoryStream<Path> entries = Files.newDirectoryStream(archivePath.getParent())) {
+                for (Path path : entries) {
+                    assertEquals(false, path.getFileName().toString().startsWith(".arkivo-zip-split-"));
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that streaming ZIP write channels report closed state before read capability checks.
     @Test
     public void fileSystemWriteChannelReadAfterCloseIsRejectedAsClosed() throws IOException {

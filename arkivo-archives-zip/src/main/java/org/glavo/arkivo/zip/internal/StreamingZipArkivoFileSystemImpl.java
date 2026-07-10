@@ -48,7 +48,6 @@ import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.ReadOnlyFileSystemException;
 import java.nio.file.PathMatcher;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.WatchService;
 import java.nio.file.attribute.BasicFileAttributeView;
@@ -2543,26 +2542,32 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// Writes ZIP bytes to split archive volumes.
     @NotNullByDefault
     private static final class SplitCountingOutputStream extends CountingOutputStream {
+        /// The prefix used for temporary split output directories.
+        private static final String STAGING_DIRECTORY_PREFIX = ".arkivo-zip-split-";
+
         /// The final archive path.
         private final Path archivePath;
 
-        /// The open options used for numbered volume paths.
-        private final @Unmodifiable Set<OpenOption> openOptions;
+        /// The directory that holds unpublished split output and backups.
+        private final Path stagingDirectory;
 
-        /// Whether the final archive path may be replaced on close.
-        private final boolean replaceFinalArchive;
+        /// The open options used for staged volume paths.
+        private final @Unmodifiable Set<OpenOption> stagingOpenOptions;
+
+        /// Whether existing output volumes may be replaced during publication.
+        private final boolean replaceExistingOutput;
 
         /// The maximum number of bytes written to one split volume.
         private final long splitSize;
-
-        /// The path currently receiving bytes.
-        private Path currentVolumePath;
 
         /// The zero-based disk number currently receiving bytes.
         private int currentDiskNumber;
 
         /// The number of bytes written to the current disk.
         private long currentDiskPosition;
+
+        /// The first write or flush failure that prevents publication.
+        private @Nullable Throwable writeFailure;
 
         /// Whether this stream has been closed.
         private boolean closed;
@@ -2573,33 +2578,45 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 Set<OpenOption> openOptions,
                 long splitSize
         ) throws IOException {
-            Path firstVolumePath = ZipSplitVolumePaths.numberedVolumePath(archivePath, 0);
-            Set<OpenOption> volumeOpenOptions = splitVolumeOpenOptions(openOptions);
-            return new SplitCountingOutputStream(
-                    archivePath,
-                    volumeOpenOptions,
-                    !openOptions.contains(StandardOpenOption.CREATE_NEW),
-                    splitSize,
-                    firstVolumePath,
-                    Files.newOutputStream(firstVolumePath, volumeOpenOptions.toArray(OpenOption[]::new))
-            );
+            Path stagingDirectory = Files.createTempDirectory(outputDirectory(archivePath), STAGING_DIRECTORY_PREFIX);
+            try {
+                Set<OpenOption> stagingOpenOptions = stagingOpenOptions(openOptions);
+                return new SplitCountingOutputStream(
+                        archivePath,
+                        stagingDirectory,
+                        stagingOpenOptions,
+                        !openOptions.contains(StandardOpenOption.CREATE_NEW),
+                        splitSize,
+                        Files.newOutputStream(
+                                stagedVolumePath(stagingDirectory, 0),
+                                stagingOpenOptions.toArray(OpenOption[]::new)
+                        )
+                );
+            } catch (IOException | RuntimeException | Error exception) {
+                try {
+                    deleteStagingDirectory(stagingDirectory);
+                } catch (IOException | RuntimeException | Error cleanupException) {
+                    exception.addSuppressed(cleanupException);
+                }
+                throw exception;
+            }
         }
 
         /// Creates a split ZIP output stream.
         private SplitCountingOutputStream(
                 Path archivePath,
-                Set<OpenOption> openOptions,
-                boolean replaceFinalArchive,
+                Path stagingDirectory,
+                Set<OpenOption> stagingOpenOptions,
+                boolean replaceExistingOutput,
                 long splitSize,
-                Path currentVolumePath,
                 OutputStream output
         ) {
             super(output, 0L);
             this.archivePath = Objects.requireNonNull(archivePath, "archivePath");
-            this.openOptions = Set.copyOf(openOptions);
-            this.replaceFinalArchive = replaceFinalArchive;
+            this.stagingDirectory = Objects.requireNonNull(stagingDirectory, "stagingDirectory");
+            this.stagingOpenOptions = Set.copyOf(stagingOpenOptions);
+            this.replaceExistingOutput = replaceExistingOutput;
             this.splitSize = splitSize;
-            this.currentVolumePath = Objects.requireNonNull(currentVolumePath, "currentVolumePath");
         }
 
         /// Returns the disk where the next byte will be written.
@@ -2644,83 +2661,258 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         /// Writes one byte.
         @Override
         public void write(int value) throws IOException {
-            ensureWritableDisk();
-            output.write(value);
-            position++;
-            currentDiskPosition++;
+            try {
+                ensureWritableDisk();
+                output.write(value);
+                position++;
+                currentDiskPosition++;
+            } catch (IOException | RuntimeException | Error exception) {
+                recordWriteFailure(exception);
+                throw exception;
+            }
         }
 
         /// Writes bytes.
         @Override
         public void write(byte[] bytes, int offset, int length) throws IOException {
-            Objects.checkFromIndexSize(offset, length, bytes.length);
-            while (length > 0) {
-                ensureWritableDisk();
-                int count = (int) Math.min(length, splitSize - currentDiskPosition);
-                output.write(bytes, offset, count);
-                position += count;
-                currentDiskPosition += count;
-                offset += count;
-                length -= count;
+            try {
+                Objects.checkFromIndexSize(offset, length, bytes.length);
+                while (length > 0) {
+                    ensureWritableDisk();
+                    int count = (int) Math.min(length, splitSize - currentDiskPosition);
+                    output.write(bytes, offset, count);
+                    position += count;
+                    currentDiskPosition += count;
+                    offset += count;
+                    length -= count;
+                }
+            } catch (IOException | RuntimeException | Error exception) {
+                recordWriteFailure(exception);
+                throw exception;
             }
         }
 
-        /// Closes the current volume and publishes it as the final archive path.
+        /// Flushes the current staged volume.
+        @Override
+        public void flush() throws IOException {
+            try {
+                output.flush();
+            } catch (IOException | RuntimeException | Error exception) {
+                recordWriteFailure(exception);
+                throw exception;
+            }
+        }
+
+        /// Closes the staged output and publishes every volume.
         @Override
         public void close() throws IOException {
             if (closed) {
                 return;
             }
             closed = true;
-            Throwable failure = null;
+            @Nullable Throwable failure = writeFailure;
             try {
                 output.close();
             } catch (IOException | RuntimeException | Error exception) {
-                failure = exception;
+                failure = appendFailure(failure, exception);
             }
             if (failure == null) {
                 try {
-                    moveFinalVolume();
+                    publish();
                 } catch (IOException | RuntimeException | Error exception) {
                     failure = exception;
+                }
+            }
+            if (failure != null) {
+                try {
+                    deleteStagingDirectory(stagingDirectory);
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = appendFailure(failure, exception);
                 }
             }
             throwFailure(failure);
         }
 
-        /// Opens the next numbered volume when the current one is full.
+        /// Records a failed staged output operation.
+        private void recordWriteFailure(Throwable exception) {
+            writeFailure = appendFailure(writeFailure, exception);
+        }
+
+        /// Opens the next staged volume when the current one is full.
         private void ensureWritableDisk() throws IOException {
             if (currentDiskPosition < splitSize) {
                 return;
             }
             output.close();
             int nextDiskNumber = Math.addExact(currentDiskNumber, 1);
-            Path nextVolumePath = ZipSplitVolumePaths.numberedVolumePath(archivePath, nextDiskNumber);
-            OutputStream nextOutput = Files.newOutputStream(nextVolumePath, openOptions.toArray(OpenOption[]::new));
+            OutputStream nextOutput = Files.newOutputStream(
+                    stagedVolumePath(stagingDirectory, nextDiskNumber),
+                    stagingOpenOptions.toArray(OpenOption[]::new)
+            );
             currentDiskNumber = nextDiskNumber;
             currentDiskPosition = 0;
-            currentVolumePath = nextVolumePath;
             output = nextOutput;
         }
 
-        /// Moves the last numbered volume to the final archive path.
-        private void moveFinalVolume() throws IOException {
-            if (replaceFinalArchive) {
-                Files.move(currentVolumePath, archivePath, StandardCopyOption.REPLACE_EXISTING);
-            } else {
-                Files.move(currentVolumePath, archivePath);
+        /// Publishes staged volumes after preserving every existing output path for rollback.
+        private void publish() throws IOException {
+            ArrayList<OutputBackup> backups = new ArrayList<>();
+            ArrayList<Path> publishedPaths = new ArrayList<>();
+            try {
+                if (replaceExistingOutput) {
+                    backupExistingOutput(backups);
+                } else {
+                    requireNoExistingOutput();
+                }
+                for (int diskNumber = 0; diskNumber <= currentDiskNumber; diskNumber++) {
+                    Path outputPath = outputPath(diskNumber);
+                    Files.move(stagedVolumePath(stagingDirectory, diskNumber), outputPath);
+                    publishedPaths.add(outputPath);
+                }
+            } catch (IOException | RuntimeException | Error exception) {
+                rollbackPublication(publishedPaths, backups, exception);
+                throw exception;
+            }
+            deleteStagingDirectory(stagingDirectory);
+        }
+
+        /// Moves all existing split output paths into staging for a possible rollback.
+        private void backupExistingOutput(List<OutputBackup> backups) throws IOException {
+            int backupIndex = 0;
+            for (Path outputPath : existingOutputPaths()) {
+                Path backupPath = stagingDirectory.resolve("backup-" + backupIndex++);
+                Files.move(outputPath, backupPath);
+                backups.add(new OutputBackup(outputPath, backupPath));
             }
         }
 
-        /// Returns open options suitable for numbered split volumes.
-        private static @Unmodifiable Set<OpenOption> splitVolumeOpenOptions(Set<OpenOption> openOptions) {
-            if (openOptions.contains(StandardOpenOption.CREATE_NEW)) {
-                return Set.copyOf(openOptions);
+        /// Rejects output publication when create-new output paths already exist.
+        private void requireNoExistingOutput() throws IOException {
+            List<Path> existingPaths = existingOutputPaths();
+            if (!existingPaths.isEmpty()) {
+                throw new FileAlreadyExistsException(existingPaths.get(0).toString());
             }
+        }
+
+        /// Returns every existing conventional split output path for this archive name.
+        private @Unmodifiable List<Path> existingOutputPaths() throws IOException {
+            Path outputDirectory = outputDirectory(archivePath);
+            String baseName = outputBaseName(archivePath);
+            ArrayList<Path> paths = new ArrayList<>();
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(outputDirectory)) {
+                for (Path path : stream) {
+                    Path fileName = path.getFileName();
+                    if (fileName != null && isNumberedVolumeName(fileName.toString(), baseName)) {
+                        paths.add(path);
+                    }
+                }
+            }
+            Path finalArchivePath = archivePath.toAbsolutePath();
+            if (Files.exists(finalArchivePath)) {
+                paths.add(finalArchivePath);
+            }
+            return List.copyOf(paths);
+        }
+
+        /// Returns the output path for a disk in the currently staged archive.
+        private Path outputPath(int diskNumber) {
+            return diskNumber == currentDiskNumber
+                    ? archivePath
+                    : ZipSplitVolumePaths.numberedVolumePath(archivePath, diskNumber);
+        }
+
+        /// Removes published output and restores every backed-up output path after a failed publication.
+        private void rollbackPublication(List<Path> publishedPaths, List<OutputBackup> backups, Throwable failure) {
+            for (int index = publishedPaths.size() - 1; index >= 0; index--) {
+                try {
+                    Files.deleteIfExists(publishedPaths.get(index));
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure.addSuppressed(exception);
+                }
+            }
+            for (int index = backups.size() - 1; index >= 0; index--) {
+                OutputBackup backup = backups.get(index);
+                try {
+                    Files.move(backup.backupPath(), backup.outputPath());
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure.addSuppressed(exception);
+                }
+            }
+            try {
+                deleteStagingDirectory(stagingDirectory);
+            } catch (IOException | RuntimeException | Error exception) {
+                failure.addSuppressed(exception);
+            }
+        }
+
+        /// Returns the directory in which split output is published.
+        private static Path outputDirectory(Path archivePath) {
+            Path parent = archivePath.toAbsolutePath().getParent();
+            if (parent == null) {
+                throw new IllegalArgumentException("archivePath must have a parent directory");
+            }
+            return parent;
+        }
+
+        /// Returns the base file name used by conventional split volumes.
+        private static String outputBaseName(Path archivePath) {
+            Path fileName = archivePath.getFileName();
+            if (fileName == null) {
+                throw new IllegalArgumentException("archivePath must have a file name");
+            }
+            String name = fileName.toString();
+            return name.length() >= 4 && name.regionMatches(true, name.length() - 4, ".zip", 0, 4)
+                    ? name.substring(0, name.length() - 4)
+                    : name;
+        }
+
+        /// Returns whether a file name is a conventional numbered volume for the given output base name.
+        private static boolean isNumberedVolumeName(String fileName, String baseName) {
+            String prefix = baseName + ".z";
+            if (!fileName.startsWith(prefix) || fileName.length() == prefix.length()) {
+                return false;
+            }
+            for (int index = prefix.length(); index < fileName.length(); index++) {
+                if (!Character.isDigit(fileName.charAt(index))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /// Returns the path used to stage one output volume.
+        private static Path stagedVolumePath(Path stagingDirectory, int diskNumber) {
+            return stagingDirectory.resolve("volume-" + diskNumber);
+        }
+
+        /// Removes all staged output and backup paths.
+        private static void deleteStagingDirectory(Path stagingDirectory) throws IOException {
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(stagingDirectory)) {
+                for (Path path : stream) {
+                    Files.deleteIfExists(path);
+                }
+            }
+            Files.deleteIfExists(stagingDirectory);
+        }
+
+        /// Returns open options suitable for new staged volume paths.
+        private static @Unmodifiable Set<OpenOption> stagingOpenOptions(Set<OpenOption> openOptions) {
             HashSet<OpenOption> volumeOpenOptions = new HashSet<>(openOptions);
-            volumeOpenOptions.add(StandardOpenOption.CREATE);
-            volumeOpenOptions.add(StandardOpenOption.TRUNCATE_EXISTING);
+            volumeOpenOptions.remove(StandardOpenOption.APPEND);
+            volumeOpenOptions.remove(StandardOpenOption.CREATE);
+            volumeOpenOptions.remove(StandardOpenOption.TRUNCATE_EXISTING);
+            volumeOpenOptions.remove(StandardOpenOption.CREATE_NEW);
+            volumeOpenOptions.add(StandardOpenOption.CREATE_NEW);
+            volumeOpenOptions.add(StandardOpenOption.WRITE);
             return Set.copyOf(volumeOpenOptions);
+        }
+
+        /// Stores a staged backup of a previously published output path.
+        ///
+        /// @param outputPath the original published path
+        /// @param backupPath the staged backup path
+        @NotNullByDefault
+        private record OutputBackup(Path outputPath, Path backupPath) {
         }
     }
 
