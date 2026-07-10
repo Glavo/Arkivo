@@ -8,13 +8,14 @@ import org.glavo.arkivo.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.tar.TarArkivoStreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
-import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.math.BigDecimal;
+import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributeView;
@@ -128,11 +129,16 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     }
 
     /// Writes an indexed TAR entry snapshot while preserving its type and metadata.
-    void writeSnapshot(TarArkivoEntryAttributes attributes, byte @Unmodifiable [] body)
-            throws IOException {
+    void writeSnapshot(
+            TarArkivoEntryAttributes attributes,
+            @Nullable ReadableByteChannel body,
+            long bodySize
+    ) throws IOException {
         ensureOpen();
         Objects.requireNonNull(attributes, "attributes");
-        Objects.requireNonNull(body, "body");
+        if (bodySize < 0L) {
+            throw new IllegalArgumentException("TAR snapshot body size must not be negative");
+        }
         if (pendingEntry != null) {
             throw new IllegalStateException("A TAR streaming entry is already pending");
         }
@@ -144,9 +150,13 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         boolean storesBody = typeFlag == TarEntryAttributes.REGULAR_TYPE
                 || typeFlag == TarEntryAttributes.OLD_REGULAR_TYPE
                 || attributes.isOther();
-        long size = storesBody ? body.length : 0L;
+        long size = storesBody ? bodySize : 0L;
+        if (size > 0L && body == null) {
+            throw new IllegalArgumentException("TAR snapshot body channel is required for non-empty content");
+        }
         String path = entryPathText(attributes.path(), attributes.isDirectory());
-        String linkName = attributes.linkName() != null ? attributes.linkName() : "";
+        @Nullable String configuredLinkName = attributes.linkName();
+        String linkName = configuredLinkName != null ? configuredLinkName : "";
 
         LinkedHashMap<String, String> paxRecords = new LinkedHashMap<>();
         @Nullable HeaderPathFields pathFields = headerPathFields(path);
@@ -176,13 +186,15 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             headerGroupId = 0L;
         }
 
-        String userName = attributes.userName() != null ? attributes.userName() : "";
+        @Nullable String configuredUserName = attributes.userName();
+        String userName = configuredUserName != null ? configuredUserName : "";
         String headerUserName = userName;
         if (utf8Length(userName) > 32) {
             paxRecords.put("uname", userName);
             headerUserName = "";
         }
-        String groupName = attributes.groupName() != null ? attributes.groupName() : "";
+        @Nullable String configuredGroupName = attributes.groupName();
+        String groupName = configuredGroupName != null ? configuredGroupName : "";
         String headerGroupName = groupName;
         if (utf8Length(groupName) > 32) {
             paxRecords.put("gname", groupName);
@@ -204,8 +216,27 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
                 headerGroupName
         );
         if (size > 0L) {
-            output.write(body);
+            writeBody(Objects.requireNonNull(body, "body"), size);
             writePadding(size);
+        }
+    }
+
+    /// Copies exactly one indexed entry body to the archive output using bounded memory.
+    private void writeBody(ReadableByteChannel body, long size) throws IOException {
+        ByteBuffer buffer = ByteBuffer.allocate(64 * 1024);
+        long remaining = size;
+        while (remaining > 0L) {
+            buffer.clear();
+            buffer.limit((int) Math.min(remaining, buffer.capacity()));
+            int count = body.read(buffer);
+            if (count < 0) {
+                throw new IOException("TAR snapshot body ended before its declared size");
+            }
+            if (count == 0) {
+                continue;
+            }
+            output.write(buffer.array(), 0, count);
+            remaining -= count;
         }
     }
 
@@ -762,7 +793,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
 
     /// Stores USTAR path field values.
     ///
-    /// @param name the value to write into the USTAR name field
+    /// @param name   the value to write into the USTAR name field
     /// @param prefix the value to write into the USTAR prefix field
     private record HeaderPathFields(
             String name,

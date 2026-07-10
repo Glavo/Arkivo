@@ -18,6 +18,8 @@ import java.util.Objects;
 /// Supplying `READ` and `WRITE` through `ArkivoFileSystem.OPEN_OPTIONS` opens a complete rewrite update session.
 /// Closing a changed update session atomically replaces the source by default; `ArkivoFileSystem.COMMIT_TARGET` can
 /// select another publication policy.
+/// Indexed read and update sessions stage entry bodies through `ArkivoFileSystem.EDIT_STORAGE`, using temporary files
+/// under the system temporary directory by default. The file system owns and closes the selected edit storage.
 @NotNullByDefault
 public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permits TarArkivoFileSystemImpl {
     /// Creates a TAR archive file system base instance.
@@ -33,6 +35,7 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     /// Opens a TAR archive file system with environment options.
     ///
     /// `READ` and `WRITE` select update mode. `CREATE` additionally allows a missing source archive.
+    /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for indexed entry bodies in read and update modes.
     public static TarArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
