@@ -85,13 +85,18 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
                 skipPadding(fields.size());
                 continue;
             }
-            if ("/".equals(identifier) || "/SYM64/".equals(identifier)) {
+            if ("/".equals(identifier) || "/SYM64/".equals(identifier) || isBsdSymbolTable(identifier)) {
                 skipBytes(fields.size());
                 skipPadding(fields.size());
                 continue;
             }
 
             ResolvedName resolvedName = resolveName(identifier, fields.size());
+            if (isBsdSymbolTable(resolvedName.path())) {
+                skipBytes(resolvedName.dataSize());
+                skipPadding(fields.size());
+                continue;
+            }
             remainingEntryBytes = resolvedName.dataSize();
             pendingEntryPadding = (fields.size() & 1L) != 0;
             currentBodyOpened = false;
@@ -106,6 +111,17 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             );
             return true;
         }
+    }
+
+    /// Returns whether an identifier names a BSD archive symbol table.
+    private static boolean isBsdSymbolTable(String identifier) {
+        String name = identifier.endsWith("/")
+                ? identifier.substring(0, identifier.length() - 1)
+                : identifier;
+        return "__.SYMDEF".equals(name)
+                || "__.SYMDEF SORTED".equals(name)
+                || "__.SYMDEF_64".equals(name)
+                || "__.SYMDEF_64 SORTED".equals(name);
     }
 
     /// Reads the current archive member attributes as the requested attribute type.

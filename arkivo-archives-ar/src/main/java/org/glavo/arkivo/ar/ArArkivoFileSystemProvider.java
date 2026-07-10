@@ -25,7 +25,6 @@ import java.nio.file.LinkOption;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.ProviderMismatchException;
-import java.nio.file.ReadOnlyFileSystemException;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
@@ -162,10 +161,10 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
         readFileSystem(link).createSymbolicLink(link, target, attributes);
     }
 
-    /// AR file systems are read-only.
+    /// Deletes a member from an update-mode AR archive file system.
     @Override
-    public void delete(Path path) {
-        throw new ReadOnlyFileSystemException();
+    public void delete(Path path) throws IOException {
+        readFileSystem(path).delete(path);
     }
 
     /// Copies a path inside an AR archive file system to another file system.
@@ -204,10 +203,10 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
         }
     }
 
-    /// AR file systems are read-only.
+    /// Moves a member inside an update-mode AR archive file system.
     @Override
-    public void move(Path source, Path target, CopyOption... options) {
-        throw new ReadOnlyFileSystemException();
+    public void move(Path source, Path target, CopyOption... options) throws IOException {
+        readFileSystem(source).move(source, target, options);
     }
 
     /// Returns whether two AR archive paths refer to the same file.
@@ -265,10 +264,11 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
         return readFileSystem(link).readSymbolicLink(link);
     }
 
-    /// AR file systems are read-only.
+    /// Sets a supported member attribute in update mode.
     @Override
-    public void setAttribute(Path path, String attribute, Object value, LinkOption... options) {
-        throw new ReadOnlyFileSystemException();
+    public void setAttribute(Path path, String attribute, @Nullable Object value, LinkOption... options)
+            throws IOException {
+        readFileSystem(path).setAttribute(path, attribute, value, options);
     }
 
     /// Returns the AR file system implementation that owns a path.

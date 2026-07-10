@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.ar.internal;
 
+import org.glavo.arkivo.ArkivoCommitOutput;
+import org.glavo.arkivo.ArkivoCommitTarget;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ar.ArArkivoEntryAttributeView;
@@ -22,13 +24,17 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonReadableChannelException;
+import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessMode;
 import java.nio.file.ClosedFileSystemException;
+import java.nio.file.CopyOption;
 import java.nio.file.DirectoryIteratorException;
+import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileStore;
@@ -41,6 +47,7 @@ import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.nio.file.ReadOnlyFileSystemException;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -55,18 +62,20 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-/// Implements an AR archive file system backed by either an in-memory read index or a forward-only writer.
+/// Implements an AR archive file system backed by an in-memory index or a forward-only writer.
 @NotNullByDefault
 public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// The supported file attribute view names.
@@ -94,13 +103,25 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     private final ArFileStore fileStore = new ArFileStore();
 
     /// Entry nodes by normalized archive path.
-    private final @Unmodifiable Map<String, Node> nodes;
+    private final Map<String, Node> nodes;
 
-    /// The streaming writer used by forward-only write mode, or `null` in read mode.
+    /// The streaming writer used by forward-only write mode, or `null` in read and update modes.
     private final @Nullable ArArkivoStreamingWriter writer;
+
+    /// The target used to publish a rewritten update-mode archive, or `null` outside update mode.
+    private final @Nullable ArkivoCommitTarget commitTarget;
 
     /// Whether this file system is read-only.
     private final boolean readOnly;
+
+    /// Whether this file system edits an existing archive through complete rewrite.
+    private final boolean updateMode;
+
+    /// The active update-mode member channel, or `null` when no member is being changed.
+    private @Nullable UpdateMemberByteChannel activeUpdateChannel;
+
+    /// Whether update mode has changed the indexed archive.
+    private boolean dirty;
 
     /// Archive paths already emitted by forward-only write mode.
     private final HashSet<String> writtenEntries = new HashSet<>();
@@ -120,6 +141,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             Map<String, Node> nodes,
             @Nullable ArArkivoStreamingWriter writer,
             boolean readOnly,
+            boolean updateMode,
+            @Nullable ArkivoCommitTarget commitTarget,
             Runnable closeAction
     ) {
         super(threadSafety);
@@ -127,9 +150,11 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         this.archivePath = Objects.requireNonNull(archivePath, "archivePath");
         this.archiveUri = Objects.requireNonNull(archiveUri, "archiveUri");
         this.closeAction = Objects.requireNonNull(closeAction, "closeAction");
-        this.nodes = Map.copyOf(nodes);
+        this.nodes = updateMode ? new LinkedHashMap<>(nodes) : Map.copyOf(nodes);
         this.writer = writer;
+        this.commitTarget = commitTarget;
         this.readOnly = readOnly;
+        this.updateMode = updateMode;
         this.rootPath = ArArkivoPath.root(this);
         this.writtenDirectories.add("");
     }
@@ -151,6 +176,44 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 environment,
                 Set.of(StandardOpenOption.READ)
         );
+        if (isArchiveUpdateOpen(openOptions)) {
+            validateArchiveUpdateOptions(openOptions);
+            if (ArkivoFileSystem.EDIT_STORAGE.isPresent(environment)) {
+                throw new UnsupportedOperationException("AR update mode does not use configurable edit storage");
+            }
+            if (ArkivoFileSystem.SOURCE_MUTATION_POLICY.isPresent(environment)) {
+                throw new UnsupportedOperationException("AR update mode always performs a complete archive rewrite");
+            }
+            boolean newArchive = !Files.exists(archivePath);
+            Map<String, Node> nodes;
+            if (!newArchive) {
+                try (InputStream input = Files.newInputStream(archivePath, StandardOpenOption.READ)) {
+                    nodes = readNodes(input);
+                }
+            } else if (openOptions.contains(StandardOpenOption.CREATE)) {
+                nodes = rootNodes();
+            } else {
+                throw new NoSuchFileException(archivePath.toString());
+            }
+            @Nullable ArkivoCommitTarget commitTarget = ArkivoFileSystem.COMMIT_TARGET.read(environment);
+            if (commitTarget == null) {
+                commitTarget = ArkivoCommitTarget.atomicReplace(defaultCommitDirectory(archivePath));
+            }
+            ArArkivoFileSystemImpl fileSystem = new ArArkivoFileSystemImpl(
+                    provider,
+                    archivePath,
+                    archiveUri,
+                    threadSafety,
+                    nodes,
+                    null,
+                    false,
+                    true,
+                    commitTarget,
+                    closeAction
+            );
+            fileSystem.dirty = newArchive;
+            return fileSystem;
+        }
         if (isWriteArchiveOpen(openOptions)) {
             validateArchiveWriteOptions(openOptions);
             if (ArkivoFileSystem.COMMIT_TARGET.read(environment) != null) {
@@ -165,6 +228,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     rootNodes(),
                     ArArkivoStreamingWriter.open(output),
                     false,
+                    false,
+                    null,
                     closeAction
             );
         }
@@ -179,6 +244,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     readNodes(input),
                     null,
                     true,
+                    false,
+                    null,
                     closeAction
             );
         }
@@ -194,16 +261,31 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     @Override
     public void close() throws IOException {
         if (open) {
-            open = false;
             Throwable failure = null;
-            ArArkivoStreamingWriter currentWriter = writer;
-            if (currentWriter != null) {
+            @Nullable UpdateMemberByteChannel updateChannel = activeUpdateChannel;
+            if (updateChannel != null) {
+                try {
+                    updateChannel.close();
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = exception;
+                }
+            }
+            @Nullable ArArkivoStreamingWriter currentWriter = writer;
+            if (failure == null && currentWriter != null) {
                 try {
                     currentWriter.close();
                 } catch (IOException | RuntimeException | Error exception) {
                     failure = exception;
                 }
             }
+            if (failure == null && updateMode && dirty) {
+                try {
+                    commitUpdate();
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = exception;
+                }
+            }
+            open = false;
             try {
                 closeAction.run();
             } catch (RuntimeException | Error exception) {
@@ -307,13 +389,16 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         return new ByteArrayInputStream(node.content());
     }
 
-    /// Opens a read-only byte channel for an entry.
+    /// Opens a byte channel for a member in the current file system mode.
     public SeekableByteChannel newByteChannel(
             Path path,
             Set<? extends OpenOption> options,
             FileAttribute<?>... attributes
     ) throws IOException {
         Objects.requireNonNull(attributes, "attributes");
+        if (updateMode && requestsWrite(options)) {
+            return newUpdateByteChannel(path, options, attributes);
+        }
         if (!readOnly && requestsWrite(options)) {
             return new WritableEntryByteChannel(newOutputStream(path, options, attributes));
         }
@@ -327,12 +412,12 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         return new ByteArraySeekableByteChannel(node.content());
     }
 
-    /// Opens an output stream for a new forward-only member.
+    /// Opens an output stream for a writable member.
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
         return newOutputStream(path, Set.of(options));
     }
 
-    /// Opens an output stream for a new forward-only member.
+    /// Opens an output stream for a writable member.
     private OutputStream newOutputStream(
             Path path,
             Set<? extends OpenOption> options,
@@ -341,6 +426,20 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         Objects.requireNonNull(options, "options");
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
+        if (updateMode) {
+            if (options.contains(StandardOpenOption.READ)) {
+                throw new UnsupportedOperationException("AR output streams do not support READ");
+            }
+            LinkedHashSet<OpenOption> channelOptions = new LinkedHashSet<>(options);
+            if (channelOptions.isEmpty()) {
+                channelOptions.add(StandardOpenOption.CREATE);
+                channelOptions.add(StandardOpenOption.TRUNCATE_EXISTING);
+                channelOptions.add(StandardOpenOption.WRITE);
+            } else if (!channelOptions.contains(StandardOpenOption.APPEND)) {
+                channelOptions.add(StandardOpenOption.WRITE);
+            }
+            return Channels.newOutputStream(newUpdateByteChannel(path, channelOptions, attributes));
+        }
         validateEntryWriteOptions(options);
         int mode = initialMode(false, false, attributes);
         String entryPath = prepareWritableEntry(path, false);
@@ -350,11 +449,23 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         return new WrittenEntryOutputStream(currentWriter.openOutputStream(), entryPath);
     }
 
-    /// Creates a new forward-only directory member.
+    /// Creates a new directory member in a writable archive.
     public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
         int mode = initialMode(true, false, attributes);
+        if (updateMode) {
+            String entryPath = prepareUpdateMember(directory);
+            int effectiveMode = mode != UNKNOWN_MODE ? mode : 040755;
+            addUpdateNode(new Node(
+                    entryPath,
+                    defaultAttributes(entryPath, effectiveMode, 0L),
+                    true,
+                    new byte[0],
+                    false
+            ));
+            return;
+        }
         String entryPath = prepareWritableEntry(directory, true);
         ArArkivoStreamingWriter currentWriter = requireWriter();
         currentWriter.beginDirectory(entryPath);
@@ -363,18 +474,153 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         recordWrittenEntry(entryPath, true);
     }
 
-    /// Creates a new forward-only symbolic link member.
+    /// Creates a new symbolic link member in a writable archive.
     public void createSymbolicLink(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
+        String targetText = archivePathText(target);
+        if (targetText.isEmpty()) {
+            throw new IllegalArgumentException("AR symbolic link target is empty");
+        }
         int mode = initialMode(false, true, attributes);
+        if (updateMode) {
+            String entryPath = prepareUpdateMember(link);
+            byte[] content = targetText.getBytes(StandardCharsets.UTF_8);
+            int effectiveMode = mode != UNKNOWN_MODE ? mode : 0120777;
+            addUpdateNode(new Node(
+                    entryPath,
+                    defaultAttributes(entryPath, effectiveMode, content.length),
+                    false,
+                    content,
+                    false
+            ));
+            return;
+        }
         String entryPath = prepareWritableEntry(link, false);
         ArArkivoStreamingWriter currentWriter = requireWriter();
-        currentWriter.beginSymbolicLink(entryPath, archivePathText(target));
+        currentWriter.beginSymbolicLink(entryPath, targetText);
         applyInitialMode(currentWriter, mode);
         currentWriter.endEntry();
         recordWrittenEntry(entryPath, false);
+    }
+
+    /// Deletes one member from an update-mode archive.
+    public void delete(Path path) throws IOException {
+        requireUpdateMode();
+        requireNoActiveUpdateChannel(path);
+        String entryPath = normalizedNodePath(path);
+        if (entryPath.isEmpty()) {
+            throw new FileSystemException(path.toString(), null, "The AR root cannot be deleted");
+        }
+        Node node = requireNode(path);
+        if (node.directory() && !node.children().isEmpty()) {
+            throw new DirectoryNotEmptyException(path.toString());
+        }
+
+        nodes.remove(entryPath);
+        @Nullable Node parent = nodes.get(parentPath(entryPath));
+        if (parent != null) {
+            parent.children().remove(fileName(entryPath));
+        }
+        dirty = true;
+    }
+
+    /// Moves one member and any descendants inside an update-mode archive.
+    public void move(Path source, Path target, CopyOption... options) throws IOException {
+        requireUpdateMode();
+        requireNoActiveUpdateChannel(source);
+        boolean replaceExisting = false;
+        for (CopyOption option : options) {
+            if (option == StandardCopyOption.REPLACE_EXISTING) {
+                replaceExisting = true;
+            } else if (option != StandardCopyOption.ATOMIC_MOVE) {
+                throw new UnsupportedOperationException("Unsupported AR move option: " + option);
+            }
+        }
+
+        String sourcePath = normalizedNodePath(source);
+        String targetPath = normalizedNodePath(target);
+        if (sourcePath.isEmpty() || targetPath.isEmpty()) {
+            throw new FileSystemException(source.toString(), target.toString(), "The AR root cannot be moved");
+        }
+        if (sourcePath.equals(targetPath)) {
+            return;
+        }
+        Node sourceNode = requireNode(source);
+        if (sourceNode.directory() && targetPath.startsWith(sourcePath + "/")) {
+            throw new FileSystemException(source.toString(), target.toString(), "A directory cannot be moved below itself");
+        }
+        ensureExistingParentDirectory(targetPath);
+
+        @Nullable Node targetNode = nodes.get(targetPath);
+        if (targetNode != null) {
+            if (!replaceExisting) {
+                throw new FileAlreadyExistsException(target.toString());
+            }
+            if (sourceNode.directory() != targetNode.directory()) {
+                throw new FileSystemException(source.toString(), target.toString(), "Source and target member types differ");
+            }
+            if (targetNode.directory() && !targetNode.children().isEmpty()) {
+                throw new DirectoryNotEmptyException(target.toString());
+            }
+        }
+
+        LinkedHashMap<String, String> movedPaths = new LinkedHashMap<>();
+        for (String path : nodes.keySet()) {
+            if (path.equals(sourcePath) || path.startsWith(sourcePath + "/")) {
+                movedPaths.put(path, targetPath + path.substring(sourcePath.length()));
+            }
+        }
+        for (String movedPath : movedPaths.values()) {
+            @Nullable Node collision = nodes.get(movedPath);
+            if (collision != null && !movedPaths.containsKey(movedPath) && !movedPath.equals(targetPath)) {
+                throw new FileAlreadyExistsException(movedPath);
+            }
+        }
+
+        LinkedHashMap<String, Node> rebuilt = new LinkedHashMap<>();
+        for (Node node : nodes.values()) {
+            if (targetNode != null && node.path().equals(targetPath) && !movedPaths.containsKey(node.path())) {
+                continue;
+            }
+            @Nullable String movedPath = movedPaths.get(node.path());
+            String newPath = movedPath != null ? movedPath : node.path();
+            ArArkivoEntryAttributes attributes = copyAttributes(node.attributes(), newPath, node.content().length);
+            rebuilt.put(newPath, new Node(
+                    newPath,
+                    attributes,
+                    node.directory(),
+                    node.content(),
+                    node.syntheticDirectory()
+            ));
+        }
+        rebuildChildren(rebuilt);
+        nodes.clear();
+        nodes.putAll(rebuilt);
+        dirty = true;
+    }
+
+    /// Updates one named member attribute in update mode.
+    public void setAttribute(Path path, String attribute, @Nullable Object value, LinkOption... options)
+            throws IOException {
+        Objects.requireNonNull(attribute, "attribute");
+        Objects.requireNonNull(options, "options");
+        int separator = attribute.indexOf(':');
+        String view = separator >= 0 ? attribute.substring(0, separator) : "basic";
+        String name = separator >= 0 ? attribute.substring(separator + 1) : attribute;
+        switch (view) {
+            case "basic" -> setBasicAttribute(path, name, value);
+            case "owner" -> {
+                if (!"owner".equals(name) || !(value instanceof UserPrincipal owner)) {
+                    throw new IllegalArgumentException("Unsupported AR owner attribute: " + name);
+                }
+                setOwner(path, owner);
+            }
+            case "posix" -> setPosixAttribute(path, name, value);
+            case "ar" -> setArAttribute(path, name, value);
+            default -> throw new UnsupportedOperationException("Unsupported AR attribute view: " + view);
+        }
     }
 
     /// Opens a directory stream for an entry.
@@ -403,6 +649,10 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Checks access to an entry.
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
+        if (updateMode) {
+            requireNode(path);
+            return;
+        }
         if (!readOnly) {
             checkWritableAccess(path, modes);
             return;
@@ -417,7 +667,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Returns this archive's file store.
     public FileStore fileStore(Path path) throws IOException {
-        if (readOnly) {
+        if (readOnly || updateMode) {
             requireNode(path);
         } else {
             requireWritableKnownPath(path);
@@ -598,6 +848,15 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 || options.contains(StandardOpenOption.APPEND);
     }
 
+    /// Returns whether archive open options request read/write update mode.
+    private static boolean isArchiveUpdateOpen(Set<? extends OpenOption> options) {
+        return options.contains(StandardOpenOption.READ)
+                && options.contains(StandardOpenOption.WRITE)
+                && !options.contains(StandardOpenOption.TRUNCATE_EXISTING)
+                && !options.contains(StandardOpenOption.CREATE_NEW)
+                && !options.contains(StandardOpenOption.APPEND);
+    }
+
     /// Validates archive open options for read mode.
     private static void validateArchiveReadOptions(Set<? extends OpenOption> options) {
         for (OpenOption option : options) {
@@ -632,6 +891,17 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
     }
 
+    /// Validates archive open options for complete rewrite update mode.
+    private static void validateArchiveUpdateOptions(Set<? extends OpenOption> options) {
+        for (OpenOption option : options) {
+            if (option != StandardOpenOption.READ
+                    && option != StandardOpenOption.WRITE
+                    && option != StandardOpenOption.CREATE) {
+                throw new UnsupportedOperationException("Unsupported AR archive update option: " + option);
+            }
+        }
+    }
+
     /// Returns whether entry open options request write access.
     private static boolean requestsWrite(Set<? extends OpenOption> options) {
         return options.contains(StandardOpenOption.WRITE)
@@ -655,6 +925,26 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     && option != StandardOpenOption.CREATE_NEW
                     && option != StandardOpenOption.TRUNCATE_EXISTING) {
                 throw new UnsupportedOperationException("Unsupported AR member write option: " + option);
+            }
+        }
+    }
+
+    /// Validates options for a random-access update member channel.
+    private static void validateUpdateMemberOptions(Set<? extends OpenOption> options) {
+        if (options.contains(StandardOpenOption.APPEND) && options.contains(StandardOpenOption.READ)) {
+            throw new IllegalArgumentException("AR member APPEND cannot be combined with READ");
+        }
+        if (options.contains(StandardOpenOption.APPEND) && options.contains(StandardOpenOption.TRUNCATE_EXISTING)) {
+            throw new IllegalArgumentException("AR member APPEND cannot be combined with TRUNCATE_EXISTING");
+        }
+        for (OpenOption option : options) {
+            if (option != StandardOpenOption.READ
+                    && option != StandardOpenOption.WRITE
+                    && option != StandardOpenOption.APPEND
+                    && option != StandardOpenOption.CREATE
+                    && option != StandardOpenOption.CREATE_NEW
+                    && option != StandardOpenOption.TRUNCATE_EXISTING) {
+                throw new UnsupportedOperationException("Unsupported AR member update option: " + option);
             }
         }
     }
@@ -719,9 +1009,10 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         return permissions;
     }
 
-    /// Requires this file system to be in read mode.
+    /// Requires this file system to be in read or update mode.
     private void requireReadableFileSystem() {
-        if (!readOnly) {
+        ensureOpen();
+        if (!readOnly && !updateMode) {
             throw new UnsupportedOperationException("Forward-only AR write file systems do not expose reads");
         }
     }
@@ -734,13 +1025,517 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
     }
 
-    /// Returns the writer for write mode.
+    /// Returns the writer for forward-only write mode.
     private ArArkivoStreamingWriter requireWriter() {
-        ArArkivoStreamingWriter currentWriter = writer;
+        @Nullable ArArkivoStreamingWriter currentWriter = writer;
         if (currentWriter == null) {
             throw new ReadOnlyFileSystemException();
         }
         return currentWriter;
+    }
+
+    /// Requires this file system to be in complete rewrite update mode.
+    private void requireUpdateMode() {
+        ensureOpen();
+        if (!updateMode) {
+            if (readOnly) {
+                throw new ReadOnlyFileSystemException();
+            }
+            throw new UnsupportedOperationException("Forward-only AR write file systems do not support mutations");
+        }
+    }
+
+    /// Opens a seekable channel that stages one update-mode member body.
+    private SeekableByteChannel newUpdateByteChannel(
+            Path path,
+            Set<? extends OpenOption> options,
+            FileAttribute<?>... attributes
+    ) throws IOException {
+        requireUpdateMode();
+        validateUpdateMemberOptions(options);
+        if (activeUpdateChannel != null) {
+            throw new FileSystemException(path.toString(), null, "Another AR member update channel is already open");
+        }
+
+        boolean append = options.contains(StandardOpenOption.APPEND);
+        boolean writable = options.contains(StandardOpenOption.WRITE) || append;
+        boolean readable = options.contains(StandardOpenOption.READ);
+        if (!readable && !writable) {
+            throw new IllegalArgumentException("AR member update channel requires READ, WRITE, or APPEND");
+        }
+
+        String entryPath = normalizedNodePath(path);
+        if (entryPath.isEmpty()) {
+            throw new FileSystemException(path.toString(), null, "The AR root cannot be opened as a file");
+        }
+        @Nullable Node existing = nodes.get(entryPath);
+        boolean create = writable
+                && (options.contains(StandardOpenOption.CREATE) || options.contains(StandardOpenOption.CREATE_NEW));
+        boolean createNew = options.contains(StandardOpenOption.CREATE_NEW);
+        if (existing == null && !create) {
+            throw new NoSuchFileException(path.toString());
+        }
+        if (existing != null && createNew) {
+            throw new FileAlreadyExistsException(path.toString());
+        }
+        if (existing != null && existing.directory()) {
+            throw new FileSystemException(path.toString(), null, "AR member is a directory");
+        }
+        if (existing == null) {
+            ensureParents(nodes, entryPath);
+        }
+
+        int mode = initialMode(false, false, attributes);
+        boolean truncate = writable && options.contains(StandardOpenOption.TRUNCATE_EXISTING);
+        byte[] initialContent = existing != null && !truncate ? existing.content() : new byte[0];
+        UpdateMemberByteChannel channel = new UpdateMemberByteChannel(
+                entryPath,
+                existing,
+                mode,
+                initialContent,
+                readable,
+                writable,
+                append,
+                writable && (existing == null || truncate)
+        );
+        if (writable) {
+            activeUpdateChannel = channel;
+        }
+        return channel;
+    }
+
+    /// Prepares a previously absent path for an update-mode member.
+    private String prepareUpdateMember(Path path) throws IOException {
+        requireUpdateMode();
+        requireNoActiveUpdateChannel(path);
+        String entryPath = normalizedNodePath(path);
+        if (entryPath.isEmpty() || nodes.containsKey(entryPath)) {
+            throw new FileAlreadyExistsException(path.toString());
+        }
+        ensureParents(nodes, entryPath);
+        return entryPath;
+    }
+
+    /// Adds a new update-mode node and marks the archive dirty.
+    private void addUpdateNode(Node node) throws IOException {
+        putNode(nodes, node);
+        dirty = true;
+    }
+
+    /// Rejects a mutation while an update member channel is open.
+    private void requireNoActiveUpdateChannel(Path path) throws IOException {
+        if (activeUpdateChannel != null) {
+            throw new FileSystemException(path.toString(), null, "An AR member update channel is still open");
+        }
+    }
+
+    /// Commits staged member content into the update index.
+    private void commitUpdatedMember(UpdateMemberByteChannel channel, byte @Unmodifiable [] content)
+            throws IOException {
+        if (activeUpdateChannel == channel) {
+            activeUpdateChannel = null;
+        }
+        @Nullable Node existing = nodes.get(channel.path());
+        if (existing != channel.originalNode()) {
+            throw new FileSystemException(channel.path(), null, "AR member changed while its update channel was open");
+        }
+
+        ArArkivoEntryAttributes base = existing != null
+                ? existing.attributes()
+                : defaultAttributes(channel.path(), 0100644, content.length);
+        int mode = existing == null && channel.initialMode() != UNKNOWN_MODE
+                ? channel.initialMode()
+                : base.mode();
+        ArArkivoEntryAttributes attributes = new ArNodeAttributes(
+                channel.path(),
+                archiveIdentifier(channel.path()),
+                base.userId(),
+                base.groupId(),
+                mode,
+                content.length,
+                base.lastModifiedTime()
+        );
+        Node replacement = new Node(channel.path(), attributes, false, content, false);
+        if (existing == null) {
+            putNode(nodes, replacement);
+        } else {
+            nodes.put(channel.path(), replacement);
+        }
+        dirty = true;
+    }
+
+    /// Returns default metadata for a newly created update-mode member.
+    private static ArNodeAttributes defaultAttributes(String path, int mode, long size) {
+        return new ArNodeAttributes(
+                path,
+                archiveIdentifier(path),
+                0L,
+                0L,
+                mode,
+                size,
+                FileTime.fromMillis(0L)
+        );
+    }
+
+    /// Returns copied metadata with a changed path and body size.
+    private static ArNodeAttributes copyAttributes(
+            ArArkivoEntryAttributes attributes,
+            String path,
+            long size
+    ) {
+        return new ArNodeAttributes(
+                path,
+                archiveIdentifier(path),
+                attributes.userId(),
+                attributes.groupId(),
+                attributes.mode(),
+                size,
+                attributes.lastModifiedTime()
+        );
+    }
+
+    /// Returns an AR header identifier for a normalized member path.
+    private static String archiveIdentifier(String path) {
+        boolean standard = !path.startsWith("#1/")
+                && !path.equals("/")
+                && !path.equals("//")
+                && !path.equals("/SYM64/");
+        for (int index = 0; standard && index < path.length(); index++) {
+            standard = path.charAt(index) <= 0x7f;
+        }
+        String identifier = path + "/";
+        if (standard && identifier.getBytes(StandardCharsets.US_ASCII).length <= 16) {
+            return identifier;
+        }
+        return "#1/" + path.getBytes(StandardCharsets.UTF_8).length;
+    }
+
+    /// Returns a replacement node while preserving its directory index and synthetic marker.
+    private static Node replaceNodeAttributes(
+            Node node,
+            ArArkivoEntryAttributes attributes,
+            byte @Unmodifiable [] content
+    ) {
+        Node replacement = new Node(
+                node.path(),
+                attributes,
+                attributes.isDirectory(),
+                content,
+                node.syntheticDirectory()
+        );
+        replacement.children().putAll(node.children());
+        return replacement;
+    }
+
+    /// Requires a path's parent to exist as a directory.
+    private void ensureExistingParentDirectory(String path) throws IOException {
+        @Nullable Node parent = nodes.get(parentPath(path));
+        if (parent == null) {
+            throw new NoSuchFileException(parentPath(path));
+        }
+        if (!parent.directory()) {
+            throw new FileSystemException(path, parent.path(), "AR parent member is not a directory");
+        }
+    }
+
+    /// Rebuilds child indexes after paths have been moved.
+    private static void rebuildChildren(Map<String, Node> rebuilt) throws IOException {
+        for (Node node : rebuilt.values()) {
+            node.children().clear();
+        }
+        for (Node node : rebuilt.values()) {
+            if (node.path().isEmpty()) {
+                continue;
+            }
+            @Nullable Node parent = rebuilt.get(parentPath(node.path()));
+            if (parent == null || !parent.directory()) {
+                throw new IOException("AR parent member is missing after move: " + node.path());
+            }
+            parent.children().put(fileName(node.path()), node.path());
+        }
+    }
+
+    /// Sets one basic timestamp attribute.
+    private void setBasicAttribute(Path path, String name, @Nullable Object value) throws IOException {
+        if (!(value instanceof FileTime time)) {
+            throw new IllegalArgumentException("AR basic timestamp value must be FileTime: " + name);
+        }
+        if (!"lastModifiedTime".equals(name)) {
+            throw new UnsupportedOperationException("AR stores only lastModifiedTime");
+        }
+        setTimes(path, time, null, null);
+    }
+
+    /// Sets one POSIX attribute.
+    private void setPosixAttribute(Path path, String name, @Nullable Object value) throws IOException {
+        switch (name) {
+            case "lastModifiedTime" -> setBasicAttribute(path, name, value);
+            case "lastAccessTime", "creationTime" ->
+                    throw new UnsupportedOperationException("AR stores only lastModifiedTime");
+            case "owner" -> {
+                if (!(value instanceof UserPrincipal owner)) {
+                    throw new IllegalArgumentException("AR POSIX owner value must be UserPrincipal");
+                }
+                setOwner(path, owner);
+            }
+            case "group" -> {
+                if (!(value instanceof GroupPrincipal group)) {
+                    throw new IllegalArgumentException("AR POSIX group value must be GroupPrincipal");
+                }
+                setGroup(path, group);
+            }
+            case "permissions" -> {
+                if (!(value instanceof Set<?> values)) {
+                    throw new IllegalArgumentException("AR POSIX permissions value must be Set");
+                }
+                EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
+                for (Object item : values) {
+                    if (!(item instanceof PosixFilePermission permission)) {
+                        throw new IllegalArgumentException("AR POSIX permissions contain an invalid value");
+                    }
+                    permissions.add(permission);
+                }
+                setPermissions(path, permissions);
+            }
+            default -> throw new UnsupportedOperationException("Unsupported writable AR POSIX attribute: " + name);
+        }
+    }
+
+    /// Sets one AR-specific metadata attribute.
+    private void setArAttribute(Path path, String name, @Nullable Object value) throws IOException {
+        switch (name) {
+            case "lastModifiedTime" -> setBasicAttribute(path, name, value);
+            case "lastAccessTime", "creationTime" ->
+                    throw new UnsupportedOperationException("AR stores only lastModifiedTime");
+            case "userId" -> {
+                if (!(value instanceof Number number)) {
+                    throw new IllegalArgumentException("AR userId value must be numeric");
+                }
+                setUserId(path, number.longValue());
+            }
+            case "groupId" -> {
+                if (!(value instanceof Number number)) {
+                    throw new IllegalArgumentException("AR groupId value must be numeric");
+                }
+                setGroupId(path, number.longValue());
+            }
+            case "mode" -> {
+                if (!(value instanceof Number number)) {
+                    throw new IllegalArgumentException("AR mode value must be numeric");
+                }
+                setMode(path, number.intValue());
+            }
+            case "size" -> {
+                if (!(value instanceof Number number)) {
+                    throw new IllegalArgumentException("AR size value must be numeric");
+                }
+                setSize(path, number.longValue());
+            }
+            default -> throw new UnsupportedOperationException("Unsupported writable AR attribute: " + name);
+        }
+    }
+
+    /// Sets the stored AR modification time in update mode.
+    private void setTimes(
+            Path path,
+            @Nullable FileTime lastModifiedTime,
+            @Nullable FileTime lastAccessTime,
+            @Nullable FileTime creationTime
+    ) throws IOException {
+        if (lastAccessTime != null || creationTime != null) {
+            throw new UnsupportedOperationException("AR stores only lastModifiedTime");
+        }
+        mutateAttributes(path, attributes -> copyWithMetadata(
+                attributes,
+                attributes.userId(),
+                attributes.groupId(),
+                attributes.mode(),
+                attributes.size(),
+                lastModifiedTime != null ? lastModifiedTime : attributes.lastModifiedTime()
+        ));
+    }
+
+    /// Sets the numeric owner represented by a user principal.
+    private void setOwner(Path path, UserPrincipal owner) throws IOException {
+        requireUpdateMode();
+        setUserId(path, principalId(Objects.requireNonNull(owner, "owner").getName(), "owner"));
+    }
+
+    /// Sets the numeric group represented by a group principal.
+    private void setGroup(Path path, GroupPrincipal group) throws IOException {
+        requireUpdateMode();
+        setGroupId(path, principalId(Objects.requireNonNull(group, "group").getName(), "group"));
+    }
+
+    /// Parses a non-negative numeric AR principal identifier.
+    private static long principalId(String name, String kind) {
+        try {
+            long value = Long.parseLong(name);
+            if (value < 0L) {
+                throw new IllegalArgumentException("AR " + kind + " identifier must not be negative");
+            }
+            return value;
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException("AR " + kind + " principal must have a numeric name", exception);
+        }
+    }
+
+    /// Sets member permission bits in update mode.
+    private void setPermissions(Path path, Set<PosixFilePermission> permissions) throws IOException {
+        Objects.requireNonNull(permissions, "permissions");
+        mutateAttributes(path, attributes -> copyWithMetadata(
+                attributes,
+                attributes.userId(),
+                attributes.groupId(),
+                (attributes.mode() & ~0777) | permissionsMode(permissions),
+                attributes.size(),
+                attributes.lastModifiedTime()
+        ));
+    }
+
+    /// Sets the numeric AR user identifier in update mode.
+    private void setUserId(Path path, long userId) throws IOException {
+        if (userId < 0L) {
+            throw new IllegalArgumentException("userId must not be negative");
+        }
+        mutateAttributes(path, attributes -> copyWithMetadata(
+                attributes,
+                userId,
+                attributes.groupId(),
+                attributes.mode(),
+                attributes.size(),
+                attributes.lastModifiedTime()
+        ));
+    }
+
+    /// Sets the numeric AR group identifier in update mode.
+    private void setGroupId(Path path, long groupId) throws IOException {
+        if (groupId < 0L) {
+            throw new IllegalArgumentException("groupId must not be negative");
+        }
+        mutateAttributes(path, attributes -> copyWithMetadata(
+                attributes,
+                attributes.userId(),
+                groupId,
+                attributes.mode(),
+                attributes.size(),
+                attributes.lastModifiedTime()
+        ));
+    }
+
+    /// Sets the raw AR mode while preserving the member file type.
+    private void setMode(Path path, int mode) throws IOException {
+        if (mode < 0) {
+            throw new IllegalArgumentException("mode must not be negative");
+        }
+        mutateAttributes(path, attributes -> {
+            if (!sameFileType(attributes.mode(), mode)) {
+                throw new IllegalArgumentException("AR mode updates cannot change the member file type");
+            }
+            return copyWithMetadata(
+                    attributes,
+                    attributes.userId(),
+                    attributes.groupId(),
+                    mode,
+                    attributes.size(),
+                    attributes.lastModifiedTime()
+            );
+        });
+    }
+
+    /// Sets the stored AR member body size.
+    private void setSize(Path path, long size) throws IOException {
+        if (size < 0L || size > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("AR member size must be between 0 and " + Integer.MAX_VALUE);
+        }
+        requireUpdateMode();
+        requireNoActiveUpdateChannel(path);
+        Node node = requireNode(path);
+        if (node.path().isEmpty() || node.syntheticDirectory()) {
+            throw new FileSystemException(path.toString(), null, "Synthetic AR directory metadata cannot be changed");
+        }
+        if (node.directory()) {
+            throw new FileSystemException(path.toString(), null, "AR directory bodies cannot be resized");
+        }
+        byte[] content = Arrays.copyOf(node.content(), (int) size);
+        ArArkivoEntryAttributes attributes = copyWithMetadata(
+                node.attributes(),
+                node.attributes().userId(),
+                node.attributes().groupId(),
+                node.attributes().mode(),
+                size,
+                node.attributes().lastModifiedTime()
+        );
+        nodes.put(node.path(), replaceNodeAttributes(node, attributes, content));
+        dirty = true;
+    }
+
+    /// Returns whether two AR modes describe the same member file type.
+    private static boolean sameFileType(int firstMode, int secondMode) {
+        return ArPosixSupport.isRegularFile(firstMode) == ArPosixSupport.isRegularFile(secondMode)
+                && ArPosixSupport.isDirectory(firstMode) == ArPosixSupport.isDirectory(secondMode)
+                && ArPosixSupport.isSymbolicLink(firstMode) == ArPosixSupport.isSymbolicLink(secondMode)
+                && ArPosixSupport.isOther(firstMode) == ArPosixSupport.isOther(secondMode);
+    }
+
+    /// Returns POSIX permission bits for the given permission set.
+    private static int permissionsMode(Set<PosixFilePermission> permissions) {
+        int mode = 0;
+        for (PosixFilePermission permission : permissions) {
+            switch (permission) {
+                case OWNER_READ -> mode |= 0400;
+                case OWNER_WRITE -> mode |= 0200;
+                case OWNER_EXECUTE -> mode |= 0100;
+                case GROUP_READ -> mode |= 0040;
+                case GROUP_WRITE -> mode |= 0020;
+                case GROUP_EXECUTE -> mode |= 0010;
+                case OTHERS_READ -> mode |= 0004;
+                case OTHERS_WRITE -> mode |= 0002;
+                case OTHERS_EXECUTE -> mode |= 0001;
+            }
+        }
+        return mode;
+    }
+
+    /// Returns copied metadata with selected AR values changed.
+    private static ArNodeAttributes copyWithMetadata(
+            ArArkivoEntryAttributes attributes,
+            long userId,
+            long groupId,
+            int mode,
+            long size,
+            FileTime lastModifiedTime
+    ) {
+        return new ArNodeAttributes(
+                attributes.path(),
+                archiveIdentifier(attributes.path()),
+                userId,
+                groupId,
+                mode,
+                size,
+                lastModifiedTime
+        );
+    }
+
+    /// Replaces one member's metadata through an update function.
+    private void mutateAttributes(Path path, AttributeMutation mutation) throws IOException {
+        requireUpdateMode();
+        requireNoActiveUpdateChannel(path);
+        Node node = requireNode(path);
+        if (node.path().isEmpty() || node.syntheticDirectory()) {
+            throw new FileSystemException(path.toString(), null, "Synthetic AR directory metadata cannot be changed");
+        }
+        ArArkivoEntryAttributes attributes = mutation.apply(node.attributes());
+        nodes.put(node.path(), replaceNodeAttributes(node, attributes, node.content()));
+        dirty = true;
+    }
+
+    /// Changes an immutable member metadata snapshot.
+    @FunctionalInterface
+    @NotNullByDefault
+    private interface AttributeMutation {
+        /// Returns replacement metadata.
+        ArArkivoEntryAttributes apply(ArArkivoEntryAttributes attributes);
     }
 
     /// Prepares a new archive member path for forward-only writing.
@@ -836,6 +1631,53 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         return Map.of("", new Node("", syntheticDirectoryAttributes("/"), true, new byte[0], true));
     }
 
+    /// Publishes all surviving update nodes through a complete AR rewrite.
+    private void commitUpdate() throws IOException {
+        ArkivoCommitTarget target = Objects.requireNonNull(commitTarget, "commitTarget");
+        ArkivoCommitOutput output = target.openOutput(archivePath);
+        Throwable failure = null;
+        try {
+            try (SeekableByteChannel channel = output.openChannel(Set.of(
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE
+            ));
+                 ArArkivoStreamingWriterImpl archiveWriter =
+                         new ArArkivoStreamingWriterImpl(Channels.newOutputStream(channel))) {
+                for (Node node : nodes.values()) {
+                    if (node.path().isEmpty() || node.syntheticDirectory()) {
+                        continue;
+                    }
+                    archiveWriter.writeSnapshot(node.attributes(), node.content());
+                }
+            }
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+        }
+        try {
+            if (failure == null) {
+                output.commit();
+            } else {
+                output.rollback();
+            }
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = appendFailure(failure, exception);
+        }
+        try {
+            output.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = appendFailure(failure, exception);
+        }
+        throwFailure(failure);
+    }
+
+    /// Returns the directory used for default atomic update output.
+    private static Path defaultCommitDirectory(Path archivePath) {
+        Path absolutePath = archivePath.toAbsolutePath();
+        @Nullable Path parent = absolutePath.getParent();
+        return parent != null ? parent : absolutePath.getFileSystem().getPath(".").toAbsolutePath();
+    }
+
     /// Adds a secondary failure as suppressed when a primary failure already exists.
     private static Throwable appendFailure(@Nullable Throwable failure, Throwable exception) {
         if (failure != null) {
@@ -873,7 +1715,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 try (InputStream entryInput = reader.openInputStream()) {
                     content = entryInput.readAllBytes();
                 }
-                putNode(nodes, new Node(path, attributes, attributes.isDirectory(), content, false));
+                ArArkivoEntryAttributes nodeAttributes = copyAttributes(attributes, path, content.length);
+                putNode(nodes, new Node(path, nodeAttributes, nodeAttributes.isDirectory(), content, false));
             }
         }
         return nodes;
@@ -938,7 +1781,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// Returns synthetic directory attributes.
     private static ArNodeAttributes syntheticDirectoryAttributes(String path) {
         FileTime time = FileTime.fromMillis(0L);
-        return new ArNodeAttributes(path, path, 0L, 0L, 040755, 0L, time, true);
+        return new ArNodeAttributes(path, path, 0L, 0L, 040755, 0L, time);
     }
 
     /// Stores parsed named attribute selection.
@@ -1052,7 +1895,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
     }
 
-    /// Stores attributes for synthetic AR file system nodes.
+    /// Stores indexed AR member metadata.
     @NotNullByDefault
     private static final class ArNodeAttributes implements ArArkivoEntryAttributes, PosixFileAttributes {
         /// The decoded archive member path.
@@ -1076,9 +1919,6 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         /// The last modified time.
         private final FileTime lastModifiedTime;
 
-        /// Whether this node is a directory.
-        private final boolean directory;
-
         /// Creates node attributes.
         private ArNodeAttributes(
                 String path,
@@ -1087,8 +1927,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 long groupId,
                 int mode,
                 long size,
-                FileTime lastModifiedTime,
-                boolean directory
+                FileTime lastModifiedTime
         ) {
             this.path = Objects.requireNonNull(path, "path");
             this.identifier = Objects.requireNonNull(identifier, "identifier");
@@ -1097,7 +1936,6 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             this.mode = mode;
             this.size = size;
             this.lastModifiedTime = Objects.requireNonNull(lastModifiedTime, "lastModifiedTime");
-            this.directory = directory;
         }
 
         /// Returns the decoded archive member path.
@@ -1151,25 +1989,25 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         /// Returns whether this node is a regular file.
         @Override
         public boolean isRegularFile() {
-            return !directory;
+            return ArPosixSupport.isRegularFile(mode);
         }
 
         /// Returns whether this node is a directory.
         @Override
         public boolean isDirectory() {
-            return directory;
+            return ArPosixSupport.isDirectory(mode);
         }
 
         /// Returns whether this node is a symbolic link.
         @Override
         public boolean isSymbolicLink() {
-            return false;
+            return ArPosixSupport.isSymbolicLink(mode);
         }
 
         /// Returns whether this node has another file type.
         @Override
         public boolean isOther() {
-            return false;
+            return ArPosixSupport.isOther(mode);
         }
 
         /// Returns the node size.
@@ -1203,7 +2041,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
     }
 
-    /// Implements a read-only basic attribute view.
+    /// Implements a basic attribute view for read and update modes.
     @NotNullByDefault
     private final class BasicView implements BasicFileAttributeView {
         /// The path whose attributes are exposed.
@@ -1226,18 +2064,18 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             return ArArkivoFileSystemImpl.this.readAttributes(path, BasicFileAttributes.class);
         }
 
-        /// AR attributes are read-only.
+        /// Sets this path's supported timestamp in update mode.
         @Override
         public void setTimes(
                 @Nullable FileTime lastModifiedTime,
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
-        ) {
-            throw new ReadOnlyFileSystemException();
+        ) throws IOException {
+            ArArkivoFileSystemImpl.this.setTimes(path, lastModifiedTime, lastAccessTime, createTime);
         }
     }
 
-    /// Implements a read-only AR attribute view.
+    /// Implements an AR attribute view for read and update modes.
     @NotNullByDefault
     private final class ArView implements ArArkivoEntryAttributeView {
         /// The path whose attributes are exposed.
@@ -1254,42 +2092,42 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             return ArArkivoFileSystemImpl.this.readAttributes(path, ArArkivoEntryAttributes.class);
         }
 
-        /// AR attributes are read-only.
+        /// Sets this path's supported timestamp in update mode.
         @Override
         public void setTimes(
                 @Nullable FileTime lastModifiedTime,
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
-        ) {
-            throw new ReadOnlyFileSystemException();
+        ) throws IOException {
+            ArArkivoFileSystemImpl.this.setTimes(path, lastModifiedTime, lastAccessTime, createTime);
         }
 
-        /// AR attributes are read-only.
+        /// Sets this path's numeric user identifier in update mode.
         @Override
-        public void setUserId(long userId) {
-            throw new ReadOnlyFileSystemException();
+        public void setUserId(long userId) throws IOException {
+            ArArkivoFileSystemImpl.this.setUserId(path, userId);
         }
 
-        /// AR attributes are read-only.
+        /// Sets this path's numeric group identifier in update mode.
         @Override
-        public void setGroupId(long groupId) {
-            throw new ReadOnlyFileSystemException();
+        public void setGroupId(long groupId) throws IOException {
+            ArArkivoFileSystemImpl.this.setGroupId(path, groupId);
         }
 
-        /// AR attributes are read-only.
+        /// Sets this path's raw mode in update mode.
         @Override
-        public void setMode(int mode) {
-            throw new ReadOnlyFileSystemException();
+        public void setMode(int mode) throws IOException {
+            ArArkivoFileSystemImpl.this.setMode(path, mode);
         }
 
-        /// AR attributes are read-only.
+        /// Sets this path's body size in update mode.
         @Override
-        public void setSize(long size) {
-            throw new ReadOnlyFileSystemException();
+        public void setSize(long size) throws IOException {
+            ArArkivoFileSystemImpl.this.setSize(path, size);
         }
     }
 
-    /// Implements a read-only owner attribute view.
+    /// Implements an owner attribute view for read and update modes.
     @NotNullByDefault
     private final class OwnerView implements FileOwnerAttributeView {
         /// The path whose owner is exposed.
@@ -1312,15 +2150,14 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             return ArArkivoFileSystemImpl.this.readAttributes(path, PosixFileAttributes.class).owner();
         }
 
-        /// AR attributes are read-only.
+        /// Sets this path's numeric owner in update mode.
         @Override
-        public void setOwner(UserPrincipal owner) {
-            Objects.requireNonNull(owner, "owner");
-            throw new ReadOnlyFileSystemException();
+        public void setOwner(UserPrincipal owner) throws IOException {
+            ArArkivoFileSystemImpl.this.setOwner(path, owner);
         }
     }
 
-    /// Implements a read-only POSIX attribute view.
+    /// Implements a POSIX attribute view for read and update modes.
     @NotNullByDefault
     private final class PosixView implements PosixFileAttributeView {
         /// The path whose POSIX attributes are exposed.
@@ -1349,35 +2186,32 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             return readAttributes().owner();
         }
 
-        /// AR attributes are read-only.
+        /// Sets this path's supported timestamp in update mode.
         @Override
         public void setTimes(
                 @Nullable FileTime lastModifiedTime,
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
-        ) {
-            throw new ReadOnlyFileSystemException();
+        ) throws IOException {
+            ArArkivoFileSystemImpl.this.setTimes(path, lastModifiedTime, lastAccessTime, createTime);
         }
 
-        /// AR attributes are read-only.
+        /// Sets this path's numeric owner in update mode.
         @Override
-        public void setOwner(UserPrincipal owner) {
-            Objects.requireNonNull(owner, "owner");
-            throw new ReadOnlyFileSystemException();
+        public void setOwner(UserPrincipal owner) throws IOException {
+            ArArkivoFileSystemImpl.this.setOwner(path, owner);
         }
 
-        /// AR attributes are read-only.
+        /// Sets this path's numeric group in update mode.
         @Override
-        public void setGroup(GroupPrincipal group) {
-            Objects.requireNonNull(group, "group");
-            throw new ReadOnlyFileSystemException();
+        public void setGroup(GroupPrincipal group) throws IOException {
+            ArArkivoFileSystemImpl.this.setGroup(path, group);
         }
 
-        /// AR attributes are read-only.
+        /// Sets this path's permissions in update mode.
         @Override
-        public void setPermissions(Set<PosixFilePermission> permissions) {
-            Objects.requireNonNull(permissions, "permissions");
-            throw new ReadOnlyFileSystemException();
+        public void setPermissions(Set<PosixFilePermission> permissions) throws IOException {
+            ArArkivoFileSystemImpl.this.setPermissions(path, permissions);
         }
     }
 
@@ -1445,6 +2279,215 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         @Override
         public Object getAttribute(String attribute) throws IOException {
             return ArkivoFileStoreAttributes.get(this, attribute);
+        }
+    }
+
+    /// Implements a staged random-access channel for one update-mode member.
+    @NotNullByDefault
+    private final class UpdateMemberByteChannel implements SeekableByteChannel {
+        /// The normalized member path.
+        private final String path;
+
+        /// The node present when this channel opened, or `null` for a new member.
+        private final @Nullable Node originalNode;
+
+        /// Initial mode applied only when a new member is committed.
+        private final int initialMode;
+
+        /// Whether reads are allowed.
+        private final boolean readable;
+
+        /// Whether writes are allowed.
+        private final boolean writable;
+
+        /// Whether every write is forced to the current end.
+        private final boolean append;
+
+        /// The staged member bytes.
+        private byte[] data;
+
+        /// The logical staged size.
+        private int size;
+
+        /// The current channel position.
+        private int position;
+
+        /// Whether closing this channel must update the archive index.
+        private boolean changed;
+
+        /// Whether this channel is open.
+        private boolean channelOpen = true;
+
+        /// Creates a staged update member channel.
+        private UpdateMemberByteChannel(
+                String path,
+                @Nullable Node originalNode,
+                int initialMode,
+                byte @Unmodifiable [] initialContent,
+                boolean readable,
+                boolean writable,
+                boolean append,
+                boolean forceCommit
+        ) {
+            this.path = Objects.requireNonNull(path, "path");
+            this.originalNode = originalNode;
+            this.initialMode = initialMode;
+            this.readable = readable;
+            this.writable = writable;
+            this.append = append;
+            this.data = Arrays.copyOf(initialContent, Math.max(initialContent.length, 32));
+            this.size = initialContent.length;
+            this.position = append ? size : 0;
+            this.changed = forceCommit;
+        }
+
+        /// Returns the normalized member path.
+        private String path() {
+            return path;
+        }
+
+        /// Returns the node present when this channel opened.
+        private @Nullable Node originalNode() {
+            return originalNode;
+        }
+
+        /// Returns the initial mode for a new member.
+        private int initialMode() {
+            return initialMode;
+        }
+
+        /// Reads staged bytes from the current position.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            Objects.requireNonNull(destination, "destination");
+            ensureChannelOpen();
+            if (!readable) {
+                throw new NonReadableChannelException();
+            }
+            if (position >= size) {
+                return -1;
+            }
+            int count = Math.min(destination.remaining(), size - position);
+            destination.put(data, position, count);
+            position += count;
+            return count;
+        }
+
+        /// Writes staged bytes at the current position or end in append mode.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            ensureChannelOpen();
+            if (!writable) {
+                throw new NonWritableChannelException();
+            }
+            if (append) {
+                position = size;
+            }
+            int count = source.remaining();
+            int end = checkedArrayPosition((long) position + count);
+            ensureCapacity(end);
+            source.get(data, position, count);
+            position = end;
+            size = Math.max(size, end);
+            changed |= count != 0;
+            return count;
+        }
+
+        /// Returns the current staged position.
+        @Override
+        public long position() throws IOException {
+            ensureChannelOpen();
+            return position;
+        }
+
+        /// Changes the current staged position.
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            ensureChannelOpen();
+            position = checkedArrayPosition(newPosition);
+            return this;
+        }
+
+        /// Returns the current staged size.
+        @Override
+        public long size() throws IOException {
+            ensureChannelOpen();
+            return size;
+        }
+
+        /// Truncates staged content.
+        @Override
+        public SeekableByteChannel truncate(long newSize) throws IOException {
+            ensureChannelOpen();
+            if (!writable) {
+                throw new NonWritableChannelException();
+            }
+            int checkedSize = checkedArrayPosition(newSize);
+            if (checkedSize < size) {
+                size = checkedSize;
+                if (position > size) {
+                    position = size;
+                }
+                changed = true;
+            }
+            return this;
+        }
+
+        /// Returns whether this channel is open.
+        @Override
+        public boolean isOpen() {
+            return channelOpen;
+        }
+
+        /// Closes this channel and commits changed staged bytes to the update index.
+        @Override
+        public void close() throws IOException {
+            if (!channelOpen) {
+                return;
+            }
+            channelOpen = false;
+            if (!writable) {
+                return;
+            }
+            if (changed) {
+                commitUpdatedMember(this, Arrays.copyOf(data, size));
+            } else if (activeUpdateChannel == this) {
+                activeUpdateChannel = null;
+            }
+        }
+
+        /// Ensures enough staged array capacity.
+        private void ensureCapacity(int requiredCapacity) throws IOException {
+            if (requiredCapacity <= data.length) {
+                return;
+            }
+            long grown = Math.max((long) requiredCapacity, (long) data.length * 2L);
+            if (grown > Integer.MAX_VALUE) {
+                grown = Integer.MAX_VALUE;
+            }
+            if (grown < requiredCapacity) {
+                throw new IOException("AR member is too large for update storage");
+            }
+            data = Arrays.copyOf(data, (int) grown);
+        }
+
+        /// Converts a staged position to the array-backed index domain.
+        private int checkedArrayPosition(long value) throws IOException {
+            if (value < 0L) {
+                throw new IllegalArgumentException("AR member position must not be negative");
+            }
+            if (value > Integer.MAX_VALUE) {
+                throw new IOException("AR member is too large for update storage");
+            }
+            return (int) value;
+        }
+
+        /// Ensures this channel is open.
+        private void ensureChannelOpen() throws ClosedChannelException {
+            if (!channelOpen) {
+                throw new ClosedChannelException();
+            }
         }
     }
 

@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.ar;
 
+import org.glavo.arkivo.ArkivoCommitTarget;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -14,6 +15,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.time.Instant;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.ClosedFileSystemException;
@@ -731,6 +733,256 @@ public final class ArArkivoStreamingReaderTest {
         }
     }
 
+    /// Verifies that update mode rewrites additions, replacements, deletions, moves, links, long names, and metadata.
+    @Test
+    public void updatesExistingArchiveThroughCompleteRewrite() throws IOException {
+        byte[] keepContent = "abcdef".getBytes(StandardCharsets.UTF_8);
+        String longName = "this-is-a-very-long-ar-member-name.txt";
+        Path archivePath = createTemporaryArchivePath("ar-update-");
+        try {
+            try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
+                writeStreamingMember(writer, "keep.txt", keepContent);
+                writeStreamingMember(writer, "remove.txt", "remove".getBytes(StandardCharsets.UTF_8));
+                writer.beginDirectory("dir");
+                writer.endEntry();
+                writeStreamingMember(writer, "dir/child.txt", "child".getBytes(StandardCharsets.UTF_8));
+                writer.beginSymbolicLink("link", "keep.txt");
+                writer.endEntry();
+                writeStreamingMember(writer, longName, "long".getBytes(StandardCharsets.UTF_8));
+                writeStreamingMember(writer, "target.txt", "old-target".getBytes(StandardCharsets.UTF_8));
+                writeStreamingMember(writer, "replacement.txt", "new-target".getBytes(StandardCharsets.UTF_8));
+                writeStreamingMember(writer, "resize.bin", new byte[]{1, 2, 3});
+            }
+
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+            );
+            FileTime modifiedTime = FileTime.from(Instant.parse("2032-03-04T05:06:07Z"));
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, environment)) {
+                assertEquals(false, fileSystem.isReadOnly());
+                Path keep = fileSystem.getPath("/keep.txt");
+                assertArrayEquals(keepContent, Files.readAllBytes(keep));
+                try (SeekableByteChannel channel = Files.newByteChannel(
+                        keep,
+                        Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+                )) {
+                    channel.position(2L);
+                    assertEquals(2, channel.write(ByteBuffer.wrap("ZZ".getBytes(StandardCharsets.UTF_8))));
+                    channel.truncate(5L);
+                    channel.position(0L);
+                    ByteBuffer updated = ByteBuffer.allocate(5);
+                    assertEquals(5, channel.read(updated));
+                    assertArrayEquals("abZZe".getBytes(StandardCharsets.UTF_8), updated.array());
+                }
+
+                ArArkivoEntryAttributeView arView =
+                        Objects.requireNonNull(Files.getFileAttributeView(keep, ArArkivoEntryAttributeView.class));
+                arView.setTimes(modifiedTime, null, null);
+                arView.setUserId(1234L);
+                arView.setGroupId(5678L);
+                arView.setMode(0100640);
+
+                Files.move(
+                        fileSystem.getPath("/replacement.txt"),
+                        fileSystem.getPath("/target.txt"),
+                        StandardCopyOption.REPLACE_EXISTING
+                );
+                Files.delete(fileSystem.getPath("/remove.txt"));
+                Files.move(fileSystem.getPath("/dir"), fileSystem.getPath("/renamed"));
+                Files.writeString(fileSystem.getPath("/new.txt"), "new", StandardCharsets.UTF_8);
+                Files.setAttribute(fileSystem.getPath("/resize.bin"), "ar:size", 5L);
+            }
+
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath)) {
+                Path keep = fileSystem.getPath("/keep.txt");
+                assertArrayEquals("abZZe".getBytes(StandardCharsets.UTF_8), Files.readAllBytes(keep));
+                ArArkivoEntryAttributes attributes = Files.readAttributes(keep, ArArkivoEntryAttributes.class);
+                assertEquals(modifiedTime, attributes.lastModifiedTime());
+                assertEquals(1234L, attributes.userId());
+                assertEquals(5678L, attributes.groupId());
+                assertEquals(0100640, attributes.mode());
+
+                assertEquals(false, Files.exists(fileSystem.getPath("/remove.txt")));
+                assertEquals(
+                        "new-target",
+                        Files.readString(fileSystem.getPath("/target.txt"), StandardCharsets.UTF_8)
+                );
+                assertEquals(
+                        "child",
+                        Files.readString(fileSystem.getPath("/renamed/child.txt"), StandardCharsets.UTF_8)
+                );
+                assertEquals("keep.txt", Files.readSymbolicLink(fileSystem.getPath("/link")).toString());
+                assertEquals(
+                        "long",
+                        Files.readString(fileSystem.getPath("/" + longName), StandardCharsets.UTF_8)
+                );
+                assertEquals("new", Files.readString(fileSystem.getPath("/new.txt"), StandardCharsets.UTF_8));
+                assertArrayEquals(new byte[]{1, 2, 3, 0, 0}, Files.readAllBytes(fileSystem.getPath("/resize.bin")));
+            }
+
+            ArrayList<String> physicalMembers = new ArrayList<>();
+            try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(Files.newInputStream(archivePath))) {
+                while (reader.next()) {
+                    physicalMembers.add(reader.readAttributes(ArArkivoEntryAttributes.class).path());
+                }
+            }
+            assertEquals(
+                    List.of(
+                            "keep.txt",
+                            "renamed",
+                            "renamed/child.txt",
+                            "link",
+                            longName,
+                            "target.txt",
+                            "resize.bin",
+                            "new.txt"
+                    ),
+                    physicalMembers
+            );
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that an explicit commit target can publish an updated derivative without changing the source.
+    @Test
+    public void updateCommitTargetCanPublishDerivedArchive() throws IOException {
+        Path archivePath = createTemporaryArchivePath("ar-update-source-");
+        Path derivedPath = createTemporaryArchivePath("ar-update-derived-");
+        Files.deleteIfExists(derivedPath);
+        try {
+            try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
+                writeStreamingMember(writer, "value.txt", "before".getBytes(StandardCharsets.UTF_8));
+            }
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.COMMIT_TARGET.key(),
+                    ArkivoCommitTarget.writeTo(derivedPath)
+            );
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, environment)) {
+                Files.writeString(fileSystem.getPath("/value.txt"), "after", StandardCharsets.UTF_8);
+            }
+
+            try (ArArkivoFileSystem source = ArArkivoFileSystem.open(archivePath);
+                 ArArkivoFileSystem derived = ArArkivoFileSystem.open(derivedPath)) {
+                assertEquals("before", Files.readString(source.getPath("/value.txt"), StandardCharsets.UTF_8));
+                assertEquals("after", Files.readString(derived.getPath("/value.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchive(derivedPath);
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that commit setup failure leaves the original AR bytes untouched.
+    @Test
+    public void failedUpdateCommitLeavesOriginalArchiveUntouched() throws IOException {
+        Path archivePath = createTemporaryArchivePath("ar-update-failure-");
+        try {
+            try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
+                writeStreamingMember(writer, "value.txt", "before".getBytes(StandardCharsets.UTF_8));
+            }
+            byte[] originalArchive = Files.readAllBytes(archivePath);
+            ArkivoCommitTarget failingTarget = sourcePath -> {
+                throw new IOException("commit target failed");
+            };
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.COMMIT_TARGET.key(),
+                    failingTarget
+            );
+
+            ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, environment);
+            Files.writeString(fileSystem.getPath("/value.txt"), "after", StandardCharsets.UTF_8);
+            IOException exception = assertThrows(IOException.class, fileSystem::close);
+            assertEquals("commit target failed", exception.getMessage());
+            assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that closing an unchanged update session does not rewrite archive bytes.
+    @Test
+    public void unchangedUpdateLeavesArchiveBytesUntouched() throws IOException {
+        Path archivePath = createTemporaryArchivePath("ar-update-unchanged-");
+        try {
+            try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
+                writeStreamingMember(writer, "value.txt", "value".getBytes(StandardCharsets.UTF_8));
+            }
+            byte[] originalArchive = Files.readAllBytes(archivePath);
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+            );
+            try (ArArkivoFileSystem ignored = ArArkivoFileSystem.open(archivePath, environment)) {
+            }
+            assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that update mode with CREATE publishes a valid empty archive for a missing source.
+    @Test
+    public void updateCreateModeCreatesMissingArchive() throws IOException {
+        Path archivePath = createTemporaryArchivePath("ar-update-create-");
+        Files.deleteIfExists(archivePath);
+        try {
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
+            );
+            try (ArArkivoFileSystem ignored = ArArkivoFileSystem.open(archivePath, environment)) {
+            }
+            assertEquals(true, Files.exists(archivePath));
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath);
+                 DirectoryStream<Path> members = Files.newDirectoryStream(fileSystem.getPath("/"))) {
+                assertEquals(false, members.iterator().hasNext());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that BSD symbol tables are skipped and omitted from rewritten archives.
+    @Test
+    public void updateOmitsStaleBsdSymbolTables() throws IOException {
+        byte[] content = "value".getBytes(StandardCharsets.UTF_8);
+        byte[] extendedSymbolName = "__.SYMDEF_64 SORTED".getBytes(StandardCharsets.US_ASCII);
+        Path archivePath = createTemporaryArchivePath("ar-update-symbols-");
+        try {
+            Files.write(archivePath, archive(
+                    member("__.SYMDEF/", 0, 0, 0, 0, new byte[0]),
+                    member("#1/" + extendedSymbolName.length, 0, 0, 0, 0, extendedSymbolName),
+                    member("value.txt/", 1, 2, 3, 0100644, content)
+            ));
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+            );
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, environment)) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/value.txt")));
+                Files.writeString(fileSystem.getPath("/new.txt"), "new", StandardCharsets.UTF_8);
+            }
+
+            String rewritten = new String(Files.readAllBytes(archivePath), StandardCharsets.ISO_8859_1);
+            assertEquals(false, rewritten.contains("__.SYMDEF"));
+            try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(Files.newInputStream(archivePath))) {
+                assertEquals(true, reader.next());
+                assertEquals("value.txt", reader.readAttributes(ArArkivoEntryAttributes.class).path());
+                assertEquals(true, reader.next());
+                assertEquals("new.txt", reader.readAttributes(ArArkivoEntryAttributes.class).path());
+                assertEquals(false, reader.next());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that the streaming writer rejects unsafe paths.
     @Test
     public void writerRejectsUnsafePaths() throws IOException {
@@ -865,6 +1117,18 @@ public final class ArArkivoStreamingReaderTest {
         reader.close();
 
         assertEquals(2, source.closeCount());
+    }
+
+    /// Writes one streaming AR member with the given body.
+    private static void writeStreamingMember(
+            ArArkivoStreamingWriter writer,
+            String path,
+            byte @Unmodifiable [] content
+    ) throws IOException {
+        writer.beginFile(path);
+        try (OutputStream output = writer.openOutputStream()) {
+            output.write(content);
+        }
     }
 
     /// Creates an AR archive from the given members.

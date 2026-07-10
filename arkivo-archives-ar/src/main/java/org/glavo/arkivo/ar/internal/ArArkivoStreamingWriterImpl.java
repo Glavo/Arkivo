@@ -120,6 +120,36 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         );
     }
 
+    /// Writes an indexed AR member snapshot while preserving its metadata and body.
+    void writeSnapshot(ArArkivoEntryAttributes attributes, byte @Unmodifiable [] body) throws IOException {
+        ensureOpen();
+        Objects.requireNonNull(attributes, "attributes");
+        Objects.requireNonNull(body, "body");
+        if (pendingMember != null) {
+            throw new IllegalStateException("An AR streaming member is already pending");
+        }
+        if (currentBody != null) {
+            throw new IllegalStateException("An AR streaming member body is still open");
+        }
+
+        PendingMember member = new PendingMember(
+                memberPathText(attributes.path()),
+                attributes.mode(),
+                MemberKind.REGULAR_FILE,
+                null
+        );
+        pendingMember = member;
+        try {
+            member.attributes.setTimes(attributes.lastModifiedTime(), null, null);
+            member.attributes.setUserId(attributes.userId());
+            member.attributes.setGroupId(attributes.groupId());
+            member.attributes.setSize(body.length);
+        } finally {
+            pendingMember = null;
+        }
+        writeMember(member, body);
+    }
+
     /// Returns an attribute view used to configure the current pending entry before it is committed.
     @Override
     public <V extends FileAttributeView> @Nullable V attributeView(Class<V> type) {
