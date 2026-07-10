@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.tar;
 
+import org.glavo.arkivo.ArkivoEditStorage;
 import org.glavo.arkivo.ArkivoStreamingWriter;
 import org.glavo.arkivo.tar.internal.TarArkivoStreamingWriterImpl;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -16,6 +17,10 @@ import java.nio.file.Path;
 import java.util.Objects;
 
 /// Writes TAR entries to a forward-only stream.
+///
+/// Regular file bodies are staged until their final size can be written into the TAR header. Default factories use
+/// temporary-file storage under the system temporary directory; overloads accepting `ArkivoEditStorage` let callers
+/// select another policy. The writer owns and closes its body storage.
 @NotNullByDefault
 public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWriter
         permits TarArkivoStreamingWriterImpl {
@@ -29,15 +34,36 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
         return open(Files.newOutputStream(path));
     }
 
+    /// Creates a streaming TAR writer that writes to an archive path and owns the given body storage.
+    public static TarArkivoStreamingWriter create(Path path, ArkivoEditStorage bodyStorage) throws IOException {
+        Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(bodyStorage, "bodyStorage");
+        return open(Files.newOutputStream(path), bodyStorage);
+    }
+
     /// Opens a streaming TAR writer over an output stream.
     public static TarArkivoStreamingWriter open(OutputStream output) {
         return new TarArkivoStreamingWriterImpl(Objects.requireNonNull(output, "output"));
+    }
+
+    /// Opens a streaming TAR writer over an output stream and owns the given body storage.
+    public static TarArkivoStreamingWriter open(OutputStream output, ArkivoEditStorage bodyStorage) {
+        return new TarArkivoStreamingWriterImpl(
+                Objects.requireNonNull(output, "output"),
+                Objects.requireNonNull(bodyStorage, "bodyStorage")
+        );
     }
 
     /// Opens a streaming TAR writer over a writable channel.
     public static TarArkivoStreamingWriter open(WritableByteChannel output) {
         Objects.requireNonNull(output, "output");
         return open(Channels.newOutputStream(output));
+    }
+
+    /// Opens a streaming TAR writer over a writable channel and owns the given body storage.
+    public static TarArkivoStreamingWriter open(WritableByteChannel output, ArkivoEditStorage bodyStorage) {
+        Objects.requireNonNull(output, "output");
+        return open(Channels.newOutputStream(output), bodyStorage);
     }
 
     /// Begins a pending hard link entry for the given logical archive path and target archive path.

@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.ar.internal;
 
+import org.glavo.arkivo.ArkivoEditStorage;
+import org.glavo.arkivo.ArkivoStoredContent;
 import org.glavo.arkivo.ar.ArArkivoEntryAttributeView;
 import org.glavo.arkivo.ar.ArArkivoEntryAttributes;
 import org.glavo.arkivo.ar.ArArkivoStreamingWriter;
@@ -10,18 +12,22 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.FileAttributeView;
 import java.nio.file.attribute.FileTime;
+import java.util.ArrayList;
 import java.util.Objects;
+import java.util.Set;
 
 /// Implements the public forward-only AR streaming writer API.
 @NotNullByDefault
@@ -53,6 +59,12 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     /// The backing archive output stream.
     private final OutputStream output;
 
+    /// The storage used when a member body size is not known before writing.
+    private final ArkivoEditStorage bodyStorage;
+
+    /// Stored bodies whose first cleanup attempt failed and must be retried while closing.
+    private final ArrayList<ArkivoStoredContent> retiredBodies = new ArrayList<>();
+
     /// Whether the global AR archive header has been written.
     private boolean globalHeaderWritten;
 
@@ -62,6 +74,9 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     /// Whether the backing archive output stream has been closed.
     private boolean outputClosed;
 
+    /// Whether the body storage has been closed.
+    private boolean bodyStorageClosed;
+
     /// The pending member that has not yet been committed.
     private @Nullable PendingMember pendingMember;
 
@@ -70,7 +85,18 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
 
     /// Creates a streaming AR writer.
     public ArArkivoStreamingWriterImpl(OutputStream output) {
+        this(output, ArkivoEditStorage.temporaryFiles(defaultBodyStorageDirectory()));
+    }
+
+    /// Creates a streaming AR writer that owns the given body storage.
+    public ArArkivoStreamingWriterImpl(OutputStream output, ArkivoEditStorage bodyStorage) {
         this.output = Objects.requireNonNull(output, "output");
+        this.bodyStorage = Objects.requireNonNull(bodyStorage, "bodyStorage");
+    }
+
+    /// Returns the directory used by default staged body storage.
+    private static Path defaultBodyStorageDirectory() {
+        return Path.of(System.getProperty("java.io.tmpdir", ".")).toAbsolutePath().normalize();
     }
 
     /// Begins a pending regular file AR member for the given logical archive path.
@@ -234,7 +260,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         }
 
         pendingMember = null;
-        BufferedMemberBodyOutputStream body = new BufferedMemberBodyOutputStream(member);
+        StoredMemberBodyOutputStream body = new StoredMemberBodyOutputStream(member);
         currentBody = body;
         return body;
     }
@@ -242,7 +268,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     /// Closes this streaming writer and finishes the AR archive stream.
     @Override
     public void close() throws IOException {
-        if (!open && outputClosed) {
+        if (!open && outputClosed && retiredBodies.isEmpty() && bodyStorageClosed) {
             return;
         }
 
@@ -290,6 +316,8 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
             }
         }
 
+        failure = closeBodyStorage(failure);
+
         if (failure != null) {
             throw failure;
         }
@@ -318,6 +346,54 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         writeMemberPrefix(member, layout);
         output.write(body);
         writeMemberPadding(layout.storedSize());
+    }
+
+    /// Writes one staged AR member body from a readable channel.
+    private void writeStoredMember(PendingMember member, ReadableByteChannel body, long bodySize) throws IOException {
+        MemberLayout layout = memberLayout(member, bodySize);
+        writeMemberPrefix(member, layout);
+        writeBody(body, bodySize);
+        writeMemberPadding(layout.storedSize());
+    }
+
+    /// Closes retired staged bodies and their owning storage, preserving cleanup failures.
+    private @Nullable IOException closeBodyStorage(@Nullable IOException failure) {
+        var iterator = retiredBodies.iterator();
+        while (iterator.hasNext()) {
+            ArkivoStoredContent content = iterator.next();
+            try {
+                content.close();
+                iterator.remove();
+            } catch (IOException exception) {
+                if (failure != null) {
+                    failure.addSuppressed(exception);
+                } else {
+                    failure = exception;
+                }
+            }
+        }
+        if (!bodyStorageClosed) {
+            try {
+                bodyStorage.close();
+                bodyStorageClosed = true;
+            } catch (IOException exception) {
+                if (failure != null) {
+                    failure.addSuppressed(exception);
+                } else {
+                    failure = exception;
+                }
+            }
+        }
+        return failure;
+    }
+
+    /// Releases staged content now or retains it for a close-time cleanup retry.
+    private void releaseBody(ArkivoStoredContent content) {
+        try {
+            content.close();
+        } catch (IOException exception) {
+            retiredBodies.add(content);
+        }
     }
 
     /// Calculates the AR header layout for a member body.
@@ -816,58 +892,112 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         }
     }
 
-    /// Buffers one member body before committing its AR header and body.
+    /// Stages one unknown-size member body before committing its AR header and body.
     @NotNullByDefault
-    private final class BufferedMemberBodyOutputStream extends ByteArrayOutputStream {
+    private final class StoredMemberBodyOutputStream extends OutputStream {
         /// The member metadata to commit.
         private final PendingMember member;
+
+        /// The stored body owned by this stream until commit finishes.
+        private final ArkivoStoredContent content;
+
+        /// The output stream opened over the stored body.
+        private final OutputStream storageOutput;
+
+        /// The number of staged body bytes.
+        private long written;
 
         /// Whether this stream has been closed.
         private boolean closed;
 
-        /// Whether this stream has committed its body successfully.
-        private boolean committed;
+        /// Whether this stream has finished its commit attempt.
+        private boolean finishedBody;
 
-        /// Creates a buffered member body output stream.
-        private BufferedMemberBodyOutputStream(PendingMember member) {
+        /// Creates a stored member body output stream.
+        private StoredMemberBodyOutputStream(PendingMember member) throws IOException {
             this.member = member;
+            this.content = bodyStorage.createContent(member.path, ArkivoEditStorage.UNKNOWN_SIZE);
+            try {
+                this.storageOutput = Channels.newOutputStream(content.openChannel(Set.of(
+                        StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE
+                )));
+            } catch (IOException | RuntimeException | Error exception) {
+                releaseBody(content);
+                throw exception;
+            }
         }
 
         /// Writes one body byte.
         @Override
-        public void write(int value) {
+        public void write(int value) throws IOException {
             ensureWritable();
-            super.write(value);
+            if (written == MAX_MEMBER_SIZE) {
+                throw memberTooLarge();
+            }
+            storageOutput.write(value);
+            written++;
         }
 
         /// Writes body bytes.
         @Override
-        public void write(byte[] bytes, int offset, int length) {
+        public void write(byte[] bytes, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, bytes.length);
             ensureWritable();
-            super.write(bytes, offset, length);
+            if (length > MAX_MEMBER_SIZE - written) {
+                throw memberTooLarge();
+            }
+            storageOutput.write(bytes, offset, length);
+            written += length;
+        }
+
+        /// Flushes staged member bytes.
+        @Override
+        public void flush() throws IOException {
+            ensureWritable();
+            storageOutput.flush();
         }
 
         /// Closes this body stream and commits its member.
         @Override
         public void close() throws IOException {
-            if (committed) {
+            if (finishedBody) {
                 return;
             }
             closed = true;
-            writeMember(member, toByteArray());
-            committed = true;
-            if (currentBody == this) {
-                currentBody = null;
+            @Nullable IOException failure = null;
+            try {
+                storageOutput.close();
+                long size = content.size();
+                try (SeekableByteChannel input = content.openChannel(Set.of(StandardOpenOption.READ))) {
+                    writeStoredMember(member, input, size);
+                }
+            } catch (IOException exception) {
+                failure = exception;
+            } finally {
+                finishedBody = true;
+                releaseBody(content);
+                if (currentBody == this) {
+                    currentBody = null;
+                }
+            }
+            if (failure != null) {
+                throw failure;
             }
         }
 
+        /// Creates an exception for a body larger than the AR size field.
+        private IOException memberTooLarge() {
+            return new IOException("AR member body exceeds the maximum representable size for " + member.path);
+        }
+
         /// Ensures this body stream can still accept bytes.
-        private void ensureWritable() {
+        private void ensureWritable() throws IOException {
             if (!open) {
-                throw new IllegalStateException("AR streaming writer is closed");
+                throw new IOException("AR streaming writer is closed");
             }
             if (closed) {
-                throw new IllegalStateException("AR member body stream is closed");
+                throw new IOException("AR member body stream is closed");
             }
         }
     }

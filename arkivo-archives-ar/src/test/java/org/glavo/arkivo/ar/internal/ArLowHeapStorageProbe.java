@@ -59,15 +59,11 @@ public final class ArLowHeapStorageProbe {
         }
     }
 
-    /// Creates one fixed-size AR member without retaining its complete body in memory.
+    /// Creates one unknown-size AR member through the public streaming writer API.
     private static void createArchive(Path archivePath) throws IOException {
         byte[] buffer = new byte[BUFFER_SIZE];
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
             writer.beginFile("large.bin");
-            ArArkivoEntryAttributeView attributes = Objects.requireNonNull(
-                    writer.attributeView(ArArkivoEntryAttributeView.class)
-            );
-            attributes.setSize(ENTRY_SIZE);
             try (OutputStream output = writer.openOutputStream()) {
                 long remaining = ENTRY_SIZE;
                 while (remaining > 0L) {

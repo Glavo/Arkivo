@@ -6,19 +6,18 @@ package org.glavo.arkivo.tar.internal;
 import org.glavo.arkivo.ArkivoEditStorage;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.tar.TarArkivoFileSystem;
+import org.glavo.arkivo.tar.TarArkivoStreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.nio.file.attribute.FileTime;
 import java.util.Map;
 import java.util.Set;
 
@@ -27,6 +26,9 @@ import java.util.Set;
 public final class TarLowHeapStorageProbe {
     /// The entry size, deliberately larger than this probe's configured maximum heap.
     private static final long ENTRY_SIZE = 64L * 1024L * 1024L;
+
+    /// The bounded buffer used to generate the source entry.
+    private static final int BUFFER_SIZE = 64 * 1024;
 
     /// The byte written near the end of the entry during the update.
     private static final byte UPDATED_BYTE = 0x5a;
@@ -52,26 +54,19 @@ public final class TarLowHeapStorageProbe {
         }
     }
 
-    /// Creates one TAR entry from a bounded zero-producing channel.
+    /// Creates one unknown-size TAR entry through the public streaming writer API.
     private static void createArchive(Path archivePath) throws IOException {
-        TarEntryAttributes attributes = new TarEntryAttributes(
-                "large.bin",
-                TarEntryAttributes.REGULAR_TYPE,
-                0644,
-                0L,
-                0L,
-                null,
-                null,
-                null,
-                ENTRY_SIZE,
-                FileTime.fromMillis(0L),
-                FileTime.fromMillis(0L),
-                FileTime.fromMillis(0L)
-        );
-        try (OutputStream output = Files.newOutputStream(archivePath);
-             TarArkivoStreamingWriterImpl writer = new TarArkivoStreamingWriterImpl(output);
-             ZeroReadableByteChannel body = new ZeroReadableByteChannel(ENTRY_SIZE)) {
-            writer.writeSnapshot(attributes, body, ENTRY_SIZE);
+        byte[] buffer = new byte[BUFFER_SIZE];
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
+            writer.beginFile("large.bin");
+            try (OutputStream output = writer.openOutputStream()) {
+                long remaining = ENTRY_SIZE;
+                while (remaining > 0L) {
+                    int count = (int) Math.min(remaining, buffer.length);
+                    output.write(buffer, 0, count);
+                    remaining -= count;
+                }
+            }
         }
     }
 
@@ -123,48 +118,4 @@ public final class TarLowHeapStorageProbe {
         }
     }
 
-    /// Produces a fixed number of zero bytes without allocating the complete body.
-    @NotNullByDefault
-    private static final class ZeroReadableByteChannel implements ReadableByteChannel {
-        /// The bounded source block.
-        private final byte[] zeros = new byte[64 * 1024];
-
-        /// The number of bytes still available.
-        private long remaining;
-
-        /// Whether this channel is open.
-        private boolean open = true;
-
-        /// Creates a zero-producing channel with the given size.
-        private ZeroReadableByteChannel(long size) {
-            this.remaining = size;
-        }
-
-        /// Reads zero bytes into the destination.
-        @Override
-        public int read(ByteBuffer destination) throws IOException {
-            if (!open) {
-                throw new IOException("Zero channel is closed");
-            }
-            if (remaining == 0L) {
-                return -1;
-            }
-            int count = (int) Math.min(Math.min(remaining, destination.remaining()), zeros.length);
-            destination.put(zeros, 0, count);
-            remaining -= count;
-            return count;
-        }
-
-        /// Returns whether this channel is open.
-        @Override
-        public boolean isOpen() {
-            return open;
-        }
-
-        /// Closes this channel.
-        @Override
-        public void close() {
-            open = false;
-        }
-    }
 }

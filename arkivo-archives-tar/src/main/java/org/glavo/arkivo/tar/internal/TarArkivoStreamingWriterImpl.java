@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.tar.internal;
 
+import org.glavo.arkivo.ArkivoEditStorage;
+import org.glavo.arkivo.ArkivoStoredContent;
 import org.glavo.arkivo.tar.TarArkivoEntryAttributeView;
 import org.glavo.arkivo.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.tar.TarArkivoStreamingWriter;
@@ -16,8 +18,11 @@ import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.FileAttributeView;
 import java.nio.file.attribute.FileTime;
@@ -27,6 +32,7 @@ import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -84,6 +90,12 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     /// The backing archive output stream.
     private final OutputStream output;
 
+    /// The storage used to stage file bodies until their TAR headers can be written.
+    private final ArkivoEditStorage bodyStorage;
+
+    /// Stored bodies whose first cleanup attempt failed and must be retried while closing.
+    private final ArrayList<ArkivoStoredContent> retiredBodies = new ArrayList<>();
+
     /// The pending entry that has not yet been committed.
     private @Nullable PendingEntry pendingEntry;
 
@@ -99,9 +111,23 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     /// Whether the backing archive output stream has been closed.
     private boolean outputClosed;
 
+    /// Whether the body storage has been closed.
+    private boolean bodyStorageClosed;
+
     /// Creates a streaming TAR writer.
     public TarArkivoStreamingWriterImpl(OutputStream output) {
+        this(output, ArkivoEditStorage.temporaryFiles(defaultBodyStorageDirectory()));
+    }
+
+    /// Creates a streaming TAR writer that owns the given body storage.
+    public TarArkivoStreamingWriterImpl(OutputStream output, ArkivoEditStorage bodyStorage) {
         this.output = Objects.requireNonNull(output, "output");
+        this.bodyStorage = Objects.requireNonNull(bodyStorage, "bodyStorage");
+    }
+
+    /// Returns the directory used by default staged body storage.
+    private static Path defaultBodyStorageDirectory() {
+        return Path.of(System.getProperty("java.io.tmpdir", ".")).toAbsolutePath().normalize();
     }
 
     /// Begins a pending regular file TAR entry for the given logical archive path.
@@ -276,7 +302,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         PendingEntry entry = requirePendingEntry();
         entry.ensurePending();
         pendingEntry = null;
-        writeEntry(entry, new byte[0]);
+        writeEntry(entry, null, 0L);
     }
 
     /// Opens a writable channel for the current pending file entry and commits it when the channel is closed.
@@ -303,7 +329,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     /// Closes this streaming writer and finishes the TAR stream.
     @Override
     public void close() throws IOException {
-        if (!open && outputClosed) {
+        if (!open && outputClosed && retiredBodies.isEmpty() && bodyStorageClosed) {
             return;
         }
 
@@ -322,7 +348,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             pendingEntry = null;
             try {
                 entry.ensurePending();
-                writeEntry(entry, new byte[0]);
+                writeEntry(entry, null, 0L);
             } catch (IOException exception) {
                 pendingEntry = entry;
                 failure = exception;
@@ -350,6 +376,8 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             }
         }
 
+        failure = closeBodyStorage(failure);
+
         if (failure != null) {
             throw failure;
         }
@@ -365,7 +393,17 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     }
 
     /// Writes one real TAR entry, including any needed PAX metadata.
-    private void writeEntry(PendingEntry entry, byte[] body) throws IOException {
+    private void writeEntry(
+            PendingEntry entry,
+            @Nullable ReadableByteChannel body,
+            long bodySize
+    ) throws IOException {
+        if (bodySize < 0L) {
+            throw new IllegalArgumentException("TAR entry body size must not be negative");
+        }
+        if (bodySize > 0L && body == null) {
+            throw new IllegalArgumentException("TAR entry body channel is required for non-empty content");
+        }
         entry.committed = true;
         byte typeFlag = 0;
         int defaultMode = 0;
@@ -375,7 +413,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             case FILE -> {
                 typeFlag = TarEntryAttributes.REGULAR_TYPE;
                 defaultMode = DEFAULT_FILE_MODE;
-                size = body.length;
+                size = bodySize;
                 linkName = "";
             }
             case DIRECTORY -> {
@@ -469,8 +507,48 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
                 headerGroupName
         );
         if (size > 0L) {
-            output.write(body);
+            writeBody(Objects.requireNonNull(body, "body"), size);
             writePadding(size);
+        }
+    }
+
+    /// Closes retired staged bodies and their owning storage, preserving cleanup failures.
+    private @Nullable IOException closeBodyStorage(@Nullable IOException failure) {
+        var iterator = retiredBodies.iterator();
+        while (iterator.hasNext()) {
+            ArkivoStoredContent content = iterator.next();
+            try {
+                content.close();
+                iterator.remove();
+            } catch (IOException exception) {
+                if (failure != null) {
+                    failure.addSuppressed(exception);
+                } else {
+                    failure = exception;
+                }
+            }
+        }
+        if (!bodyStorageClosed) {
+            try {
+                bodyStorage.close();
+                bodyStorageClosed = true;
+            } catch (IOException exception) {
+                if (failure != null) {
+                    failure.addSuppressed(exception);
+                } else {
+                    failure = exception;
+                }
+            }
+        }
+        return failure;
+    }
+
+    /// Releases staged content now or retains it for a close-time cleanup retry.
+    private void releaseBody(ArkivoStoredContent content) {
+        try {
+            content.close();
+        } catch (IOException exception) {
+            retiredBodies.add(content);
         }
     }
 
@@ -1301,57 +1379,94 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         }
     }
 
-    /// Buffers one file body before committing its TAR header and body.
-    private final class EntryBodyOutputStream extends ByteArrayOutputStream {
+    /// Stages one file body before committing its TAR header and body.
+    private final class EntryBodyOutputStream extends OutputStream {
         /// The entry metadata to commit.
         private final PendingEntry entry;
+
+        /// The stored body owned by this stream until commit finishes.
+        private final ArkivoStoredContent content;
+
+        /// The output stream opened over the stored body.
+        private final OutputStream storageOutput;
 
         /// Whether this stream has been closed.
         private boolean closed;
 
-        /// Whether this stream has committed its body successfully.
-        private boolean committed;
+        /// Whether this stream has finished its commit attempt.
+        private boolean finishedBody;
 
         /// Creates an entry body output stream.
-        private EntryBodyOutputStream(PendingEntry entry) {
+        private EntryBodyOutputStream(PendingEntry entry) throws IOException {
             this.entry = entry;
+            this.content = bodyStorage.createContent(entry.path, ArkivoEditStorage.UNKNOWN_SIZE);
+            try {
+                this.storageOutput = Channels.newOutputStream(content.openChannel(Set.of(
+                        StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE
+                )));
+            } catch (IOException | RuntimeException | Error exception) {
+                releaseBody(content);
+                throw exception;
+            }
         }
 
         /// Writes one body byte.
         @Override
-        public void write(int value) {
+        public void write(int value) throws IOException {
             ensureWritable();
-            super.write(value);
+            storageOutput.write(value);
         }
 
         /// Writes body bytes.
         @Override
-        public void write(byte[] bytes, int offset, int length) {
+        public void write(byte[] bytes, int offset, int length) throws IOException {
             ensureWritable();
-            super.write(bytes, offset, length);
+            storageOutput.write(bytes, offset, length);
+        }
+
+        /// Flushes staged body bytes.
+        @Override
+        public void flush() throws IOException {
+            ensureWritable();
+            storageOutput.flush();
         }
 
         /// Closes this body stream and commits its entry.
         @Override
         public void close() throws IOException {
-            if (committed) {
+            if (finishedBody) {
                 return;
             }
             closed = true;
-            writeEntry(entry, toByteArray());
-            committed = true;
-            if (currentBody == this) {
-                currentBody = null;
+            @Nullable IOException failure = null;
+            try {
+                storageOutput.close();
+                long size = content.size();
+                try (SeekableByteChannel input = content.openChannel(Set.of(StandardOpenOption.READ))) {
+                    writeEntry(entry, input, size);
+                }
+            } catch (IOException exception) {
+                failure = exception;
+            } finally {
+                finishedBody = true;
+                releaseBody(content);
+                if (currentBody == this) {
+                    currentBody = null;
+                }
+            }
+            if (failure != null) {
+                throw failure;
             }
         }
 
         /// Ensures this body stream can still accept bytes.
-        private void ensureWritable() {
+        private void ensureWritable() throws IOException {
             if (!open) {
-                throw new IllegalStateException("TAR streaming writer is closed");
+                throw new IOException("TAR streaming writer is closed");
             }
             if (closed) {
-                throw new IllegalStateException("TAR entry body stream is closed");
+                throw new IOException("TAR entry body stream is closed");
             }
         }
     }

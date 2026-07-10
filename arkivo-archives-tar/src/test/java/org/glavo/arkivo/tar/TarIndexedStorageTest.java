@@ -9,6 +9,8 @@ import org.glavo.arkivo.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.SeekableByteChannel;
@@ -26,6 +28,30 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Tests indexed TAR content storage ownership and cleanup behavior.
 @NotNullByDefault
 public final class TarIndexedStorageTest {
+    /// Verifies that a streaming writer owns staged body storage and retries a failed body cleanup.
+    @Test
+    public void streamingWriterOwnsBodyStorage() throws IOException {
+        byte[] expected = "streamed-content".getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        TrackingEditStorage storage = new TrackingEditStorage(true);
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive, storage)) {
+            writer.beginFile("file.txt");
+            try (OutputStream output = writer.openOutputStream()) {
+                output.write(expected);
+            }
+        }
+        assertEquals(1, storage.createdContentCount());
+        assertEquals(2, storage.contentCloseCount());
+        assertEquals(1, storage.closeCount());
+        try (TarArkivoStreamingReader reader =
+                     TarArkivoStreamingReader.open(new ByteArrayInputStream(archive.toByteArray()))) {
+            assertEquals(true, reader.next());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(expected, input.readAllBytes());
+            }
+        }
+    }
+
     /// Verifies that a regular file and its hard link share one owned stored body.
     @Test
     public void hardLinksShareOneStoredBody() throws IOException {
