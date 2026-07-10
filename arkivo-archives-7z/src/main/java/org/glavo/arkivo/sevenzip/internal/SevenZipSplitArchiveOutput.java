@@ -58,8 +58,12 @@ final class SevenZipSplitArchiveOutput {
     /// Whether all output and temporary-file cleanup has completed.
     private boolean cleanupComplete;
 
-    /// Opens temporary seekable storage for one split 7z archive.
-    static SevenZipSplitArchiveOutput open(ArkivoVolumeTarget target, long splitSize) throws IOException {
+    /// Opens temporary seekable storage for one optionally encrypted split 7z archive.
+    static SevenZipSplitArchiveOutput open(
+            ArkivoVolumeTarget target,
+            long splitSize,
+            char @Nullable [] password
+    ) throws IOException {
         Objects.requireNonNull(target, "target");
         if (splitSize <= 0) {
             throw new IllegalArgumentException("splitSize must be positive");
@@ -72,7 +76,9 @@ final class SevenZipSplitArchiveOutput {
                     temporaryArchivePath,
                     Set.of(StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)
             );
-            SevenZOutputFile writer = new SevenZOutputFile(channel);
+            SevenZOutputFile writer = password != null
+                    ? new SevenZOutputFile(channel, password)
+                    : new SevenZOutputFile(channel);
             channel = null;
             return new SevenZipSplitArchiveOutput(writer, temporaryArchivePath, target, splitSize);
         } catch (IOException | RuntimeException | Error exception) {

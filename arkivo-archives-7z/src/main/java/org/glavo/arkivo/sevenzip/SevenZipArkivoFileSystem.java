@@ -23,6 +23,10 @@ import java.util.Objects;
 @NotNullByDefault
 public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem permits SevenZipArkivoFileSystemImpl {
     /// The environment option for an `ArkivoPasswordProvider` value.
+    ///
+    /// Read operations use the provider to decrypt encrypted data and headers. Write operations request one archive
+    /// password, strictly interpret its bytes as UTF-16LE, and encrypt every non-empty entry data stream with
+    /// 7z AES-256/SHA-256. Content encryption does not hide entry names or other header metadata.
     public static final ArkivoFileSystemOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArkivoFileSystemOption.of("arkivo.7z", "passwordProvider", ArkivoPasswordProvider.class);
 
@@ -39,7 +43,8 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
 
     /// The environment option for whether new archives should encrypt metadata headers.
     ///
-    /// Current forward-only writes reject encrypted headers.
+    /// Content encryption through `PASSWORD_PROVIDER` is supported, but current forward-only writes reject encrypted
+    /// headers.
     public static final ArkivoFileSystemOption<Boolean> ENCRYPT_HEADERS =
             ArkivoFileSystemOption.of(
                     "arkivo.7z",

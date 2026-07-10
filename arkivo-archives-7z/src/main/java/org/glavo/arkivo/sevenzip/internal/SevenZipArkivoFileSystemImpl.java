@@ -231,8 +231,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             validateWriteFeatures();
             @Nullable SevenZOutputFile openedWriter = null;
             @Nullable SevenZipSplitArchiveOutput openedSplitOutput = null;
-            try {
-                WriterResources writerResources = openArchiveWriter();
+            try (SevenZipWritePassword password = SevenZipWritePassword.open(config.passwordProvider())) {
+                WriterResources writerResources = openArchiveWriter(password.characters());
                 openedWriter = writerResources.writer();
                 openedSplitOutput = writerResources.splitOutput();
                 openedWriter.setContentCompression(SevenZMethod.COPY);
@@ -916,16 +916,13 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     Objects.requireNonNull(archivePath, "archivePath")
             );
         }
-        if (config.passwordProvider() != null) {
-            throw new UnsupportedOperationException("7z encrypted archive writes are not supported");
-        }
         if (config.encryptHeaders()) {
             throw new UnsupportedOperationException("7z encrypted header writes are not supported");
         }
     }
 
     /// Opens the underlying archive writer and optional split publisher.
-    private WriterResources openArchiveWriter() throws IOException {
+    private WriterResources openArchiveWriter(char @Nullable [] password) throws IOException {
         @Nullable ArkivoVolumeTarget target = outputTarget;
         long splitSize = outputSplitSize;
         if (target == null && config.splitSize() != SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
@@ -937,14 +934,17 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             splitSize = config.splitSize();
         }
         if (target != null) {
-            SevenZipSplitArchiveOutput splitOutput = SevenZipSplitArchiveOutput.open(target, splitSize);
+            SevenZipSplitArchiveOutput splitOutput = SevenZipSplitArchiveOutput.open(target, splitSize, password);
             return new WriterResources(splitOutput.writer(), splitOutput);
         }
 
         Path currentArchivePath = Objects.requireNonNull(archivePath, "archivePath");
         SeekableByteChannel channel = Files.newByteChannel(currentArchivePath, config.openOptions());
         try {
-            return new WriterResources(new SevenZOutputFile(channel), null);
+            SevenZOutputFile writer = password != null
+                    ? new SevenZOutputFile(channel, password)
+                    : new SevenZOutputFile(channel);
+            return new WriterResources(writer, null);
         } catch (IOException | RuntimeException | Error exception) {
             try {
                 channel.close();

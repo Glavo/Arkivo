@@ -4,6 +4,9 @@
 package org.glavo.arkivo.sevenzip;
 
 import java.io.ByteArrayOutputStream;
+import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
+import org.apache.commons.compress.archivers.sevenz.SevenZFile;
+import org.apache.commons.compress.archivers.sevenz.SevenZMethod;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
 import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ArkivoVolumeOutput;
@@ -724,6 +727,273 @@ public final class SevenZipArkivoFileSystemTest {
         assertEquals("forced output failure", exception.getMessage());
         assertEquals(true, archiveOutput.closed());
         writer.close();
+    }
+
+    /// Verifies path-backed AES writing, Arkivo password behavior, and Commons Compress interoperability.
+    @Test
+    public void createsEncryptedStreamingArchive() throws IOException {
+        String passwordText = "p\u00e4ss-\u5bc6\u7801";
+        char[] passwordCharacters = passwordText.toCharArray();
+        byte[] password = passwordText.getBytes(StandardCharsets.UTF_16LE);
+        byte[] content = "encrypted 7z streaming content".getBytes(StandardCharsets.UTF_8);
+        RecordingPasswordProvider writePasswordProvider = RecordingPasswordProvider.supplying(password);
+        Path archivePath = createTemporaryArchivePath("encrypted-streaming-");
+
+        try {
+            try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
+                    archivePath,
+                    Map.of(SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(), writePasswordProvider)
+            )) {
+                assertEquals(1, writePasswordProvider.archiveRequestCount());
+                writer.beginFile("content.bin");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write(content);
+                }
+                writer.beginSymbolicLink("link", "content.bin");
+                writer.endEntry();
+            }
+            assertEquals(1, writePasswordProvider.archiveRequestCount());
+
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/content.bin");
+                Path link = fileSystem.getPath("/link");
+                assertEquals(true, Files.exists(file));
+                assertEquals(true, Files.readAttributes(link, BasicFileAttributes.class).isSymbolicLink());
+                IOException exception = assertThrows(IOException.class, () -> Files.readAllBytes(file));
+                assertEquals(true, exception.getMessage().contains("7z AES encrypted data requires a password"));
+                assertThrows(IOException.class, () -> Files.readSymbolicLink(link));
+            }
+
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(
+                            SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                            ArkivoPasswordProvider.fixed("wrong".getBytes(StandardCharsets.UTF_16LE))
+                    )
+            )) {
+                IOException exception = assertThrows(
+                        IOException.class,
+                        () -> Files.readAllBytes(fileSystem.getPath("/content.bin"))
+                );
+                assertEquals(true, exception.getMessage().contains("7z entry data does not match CRC-32"));
+            }
+
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(
+                            SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                            ArkivoPasswordProvider.fixed(password)
+                    )
+            )) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/content.bin")));
+                assertEquals(fileSystem.getPath("content.bin"), Files.readSymbolicLink(fileSystem.getPath("/link")));
+            }
+
+            try (SevenZFile sevenZFile = SevenZFile.builder()
+                    .setPath(archivePath)
+                    .setPassword(passwordCharacters)
+                    .get()) {
+                SevenZArchiveEntry entry = Objects.requireNonNull(sevenZFile.getNextEntry());
+                assertEquals("content.bin", entry.getName());
+                boolean aesMethodPresent = false;
+                for (var method : entry.getContentMethods()) {
+                    if (method.getMethod() == SevenZMethod.AES256SHA256) {
+                        aesMethodPresent = true;
+                    }
+                }
+                assertEquals(true, aesMethodPresent);
+                try (var input = sevenZFile.getInputStream(entry)) {
+                    assertArrayEquals(content, input.readAllBytes());
+                }
+            }
+        } finally {
+            Arrays.fill(passwordCharacters, '\0');
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that an empty password encrypts writable-file-system content and remains usable for reads.
+    @Test
+    public void createsEncryptedArchiveWithEmptyPassword() throws IOException {
+        byte[] content = "empty password content".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("empty-password-write-");
+        Map<String, Object> writeEnvironment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE
+                ),
+                SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                ArkivoPasswordProvider.fixed(new byte[0])
+        );
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                    archivePath,
+                    writeEnvironment
+            )) {
+                Files.write(fileSystem.getPath("/content.bin"), content);
+            }
+
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                assertThrows(IOException.class, () -> Files.readAllBytes(fileSystem.getPath("/content.bin")));
+            }
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(
+                            SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                            ArkivoPasswordProvider.fixed(new byte[0])
+                    )
+            )) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/content.bin")));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies AES writing through output-stream, writable-channel, and transactional split targets.
+    @Test
+    public void createsEncryptedArchivesInAllStreamingTargets() throws IOException {
+        byte[] password = "target-password".getBytes(StandardCharsets.UTF_16LE);
+        byte[] content = new byte[384];
+        for (int index = 0; index < content.length; index++) {
+            content[index] = (byte) (index * 29);
+        }
+        Map<String, Object> environment = Map.of(
+                SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                ArkivoPasswordProvider.fixed(password)
+        );
+
+        TrackingOutputStream streamOutput = new TrackingOutputStream();
+        try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
+                streamOutput,
+                environment
+        )) {
+            writeStreamingContent(writer, content);
+        }
+        assertEquals(true, streamOutput.closed());
+        assertEncryptedContent(new byte[][]{streamOutput.toByteArray()}, password, content);
+
+        TrackingOutputStream channelOutput = new TrackingOutputStream();
+        WritableByteChannel channel = Channels.newChannel(channelOutput);
+        try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(channel, environment)) {
+            writeStreamingContent(writer, content);
+        }
+        assertEquals(false, channel.isOpen());
+        assertEncryptedContent(new byte[][]{channelOutput.toByteArray()}, password, content);
+
+        TestVolumeTarget target = new TestVolumeTarget(-1L, false);
+        try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
+                target,
+                64L,
+                environment
+        )) {
+            writeStreamingContent(writer, content);
+            assertEquals(0, target.openOutputCount());
+        }
+        byte[][] volumes = target.committedVolumes();
+        assertEquals(true, volumes.length > 1);
+        assertEncryptedContent(volumes, password, content);
+    }
+
+    /// Verifies password-provider failures occur before publication and preserve header-encryption rejection.
+    @Test
+    public void rejectsInvalidEncryptedWritePasswordsBeforePublication() throws IOException {
+        TrackingOutputStream missingPasswordOutput = new TrackingOutputStream();
+        IOException missingPasswordException = assertThrows(
+                IOException.class,
+                () -> SevenZipArkivoStreamingWriter.open(
+                        missingPasswordOutput,
+                        Map.of(
+                                SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                                RecordingPasswordProvider.missing()
+                        )
+                )
+        );
+        assertEquals("7z encrypted archive write requires a password", missingPasswordException.getMessage());
+        assertEquals(true, missingPasswordOutput.closed());
+        assertEquals(0, missingPasswordOutput.size());
+
+        TrackingOutputStream failingProviderOutput = new TrackingOutputStream();
+        IOException providerException = assertThrows(
+                IOException.class,
+                () -> SevenZipArkivoStreamingWriter.open(
+                        failingProviderOutput,
+                        Map.of(
+                                SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                                RecordingPasswordProvider.failing()
+                        )
+                )
+        );
+        assertEquals("password provider failed", providerException.getMessage());
+        assertEquals(true, failingProviderOutput.closed());
+        assertEquals(0, failingProviderOutput.size());
+
+        TrackingOutputStream invalidEncodingOutput = new TrackingOutputStream();
+        IOException encodingException = assertThrows(
+                IOException.class,
+                () -> SevenZipArkivoStreamingWriter.open(
+                        invalidEncodingOutput,
+                        Map.of(
+                                SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                                RecordingPasswordProvider.supplying(new byte[]{1})
+                        )
+                )
+        );
+        assertEquals("7z write password must contain valid UTF-16LE bytes", encodingException.getMessage());
+        assertEquals(true, invalidEncodingOutput.closed());
+        assertEquals(0, invalidEncodingOutput.size());
+
+        Path invalidPasswordPath = createTemporaryArchivePath("invalid-write-password-");
+        try {
+            assertThrows(
+                    IOException.class,
+                    () -> SevenZipArkivoStreamingWriter.create(
+                            invalidPasswordPath,
+                            Map.of(
+                                    SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                                    RecordingPasswordProvider.missing()
+                            )
+                    )
+            );
+            assertEquals(false, Files.exists(invalidPasswordPath));
+        } finally {
+            deleteTemporaryArchive(invalidPasswordPath);
+        }
+
+        TestVolumeTarget target = new TestVolumeTarget(-1L, false);
+        assertThrows(
+                IOException.class,
+                () -> SevenZipArkivoStreamingWriter.open(
+                        target,
+                        64L,
+                        Map.of(
+                                SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                                RecordingPasswordProvider.missing()
+                        )
+                )
+        );
+        assertEquals(0, target.openOutputCount());
+
+        RecordingPasswordProvider unusedProvider = RecordingPasswordProvider.supplying(
+                "header-password".getBytes(StandardCharsets.UTF_16LE)
+        );
+        TrackingOutputStream encryptedHeaderOutput = new TrackingOutputStream();
+        UnsupportedOperationException headerException = assertThrows(
+                UnsupportedOperationException.class,
+                () -> SevenZipArkivoStreamingWriter.open(
+                        encryptedHeaderOutput,
+                        Map.of(
+                                SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(), unusedProvider,
+                                SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(), true
+                        )
+                )
+        );
+        assertEquals("7z encrypted header writes are not supported", headerException.getMessage());
+        assertEquals(0, unusedProvider.archiveRequestCount());
+        assertEquals(true, encryptedHeaderOutput.closed());
     }
 
     /// Verifies that path-backed 7z writes produce conventional bounded split volumes that can be reopened.
@@ -4320,6 +4590,34 @@ public final class SevenZipArkivoFileSystemTest {
         return result;
     }
 
+    /// Writes one standard non-empty file through a streaming writer.
+    private static void writeStreamingContent(
+            SevenZipArkivoStreamingWriter writer,
+            byte @Unmodifiable [] content
+    ) throws IOException {
+        writer.beginFile("content.bin");
+        try (OutputStream output = writer.openOutputStream()) {
+            output.write(content);
+        }
+    }
+
+    /// Verifies encrypted split-volume content through the Arkivo reader.
+    private static void assertEncryptedContent(
+            byte @Unmodifiable [] @Unmodifiable [] volumes,
+            byte @Unmodifiable [] password,
+            byte @Unmodifiable [] expectedContent
+    ) throws IOException {
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                new SplitVolumeSource(volumes),
+                Map.of(
+                        SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                        ArkivoPasswordProvider.fixed(password)
+                )
+        )) {
+            assertArrayEquals(expectedContent, Files.readAllBytes(fileSystem.getPath("/content.bin")));
+        }
+    }
+
     /// Returns whether a throwable has a direct suppressed exception with the given message.
     private static boolean hasSuppressedMessage(Throwable throwable, String message) {
         for (Throwable suppressed : throwable.getSuppressed()) {
@@ -4377,6 +4675,55 @@ public final class SevenZipArkivoFileSystemTest {
         /// Returns whether this stream has been closed.
         private boolean closed() {
             return closed;
+        }
+    }
+
+    /// Records archive-password requests and optionally returns or rejects password data.
+    @NotNullByDefault
+    private static final class RecordingPasswordProvider implements ArkivoPasswordProvider {
+        /// The password returned for an archive, or `null` when no password should be supplied.
+        private final byte @Nullable @Unmodifiable [] password;
+
+        /// Whether archive password requests should fail.
+        private final boolean fail;
+
+        /// The number of archive password requests.
+        private int archiveRequestCount;
+
+        /// Creates a recording provider with the requested behavior.
+        private RecordingPasswordProvider(byte @Nullable [] password, boolean fail) {
+            this.password = password != null ? password.clone() : null;
+            this.fail = fail;
+        }
+
+        /// Creates a provider that supplies a defensive copy of the given password.
+        private static RecordingPasswordProvider supplying(byte[] password) {
+            return new RecordingPasswordProvider(Objects.requireNonNull(password, "password"), false);
+        }
+
+        /// Creates a provider that returns no password.
+        private static RecordingPasswordProvider missing() {
+            return new RecordingPasswordProvider(null, false);
+        }
+
+        /// Creates a provider that fails archive password requests.
+        private static RecordingPasswordProvider failing() {
+            return new RecordingPasswordProvider(null, true);
+        }
+
+        /// Returns or rejects the configured password while recording the request.
+        @Override
+        public byte @Nullable [] passwordForArchive() throws IOException {
+            archiveRequestCount++;
+            if (fail) {
+                throw new IOException("password provider failed");
+            }
+            return password != null ? password.clone() : null;
+        }
+
+        /// Returns the number of archive password requests.
+        private int archiveRequestCount() {
+            return archiveRequestCount;
         }
     }
 

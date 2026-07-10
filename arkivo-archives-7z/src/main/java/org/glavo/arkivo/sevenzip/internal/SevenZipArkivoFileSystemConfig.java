@@ -44,7 +44,7 @@ public final class SevenZipArkivoFileSystemConfig {
     /// The open options used to open the backing archive path.
     private final @Unmodifiable Set<OpenOption> openOptions;
 
-    /// The provider used to decrypt encrypted 7z content and metadata.
+    /// The provider used to decrypt encrypted 7z content and metadata or encrypt newly written content.
     private final @Nullable ArkivoPasswordProvider passwordProvider;
 
     /// The maximum size of each output volume, or `NO_SPLIT_SIZE` when split output is disabled.
@@ -122,7 +122,7 @@ public final class SevenZipArkivoFileSystemConfig {
         return openOptions.contains(StandardOpenOption.WRITE);
     }
 
-    /// Returns the provider used to decrypt encrypted 7z content and metadata.
+    /// Returns the provider used to decrypt encrypted 7z content and metadata or encrypt newly written content.
     public @Nullable ArkivoPasswordProvider passwordProvider() {
         return passwordProvider;
     }
