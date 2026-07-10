@@ -9,6 +9,7 @@ import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.sevenzip.internal.SevenZipArkivoFileSystemConfig;
 import org.glavo.arkivo.sevenzip.internal.SevenZipArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -1501,7 +1502,10 @@ public final class SevenZipArkivoFileSystemTest {
 
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(SevenZipArkivoFileSystem.PASSWORD.key(), password)
+                    Map.of(
+                            SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                            ArkivoPasswordProvider.fixed(password)
+                    )
             )) {
                 Path file = fileSystem.getPath("/hello.txt");
                 BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
@@ -1518,7 +1522,10 @@ public final class SevenZipArkivoFileSystemTest {
 
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(SevenZipArkivoFileSystem.PASSWORD.key(), "wrong".getBytes(StandardCharsets.UTF_16LE))
+                    Map.of(
+                            SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                            ArkivoPasswordProvider.fixed("wrong".getBytes(StandardCharsets.UTF_16LE))
+                    )
             )) {
                 Path file = fileSystem.getPath("/hello.txt");
 
@@ -1689,7 +1696,10 @@ public final class SevenZipArkivoFileSystemTest {
 
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(SevenZipArkivoFileSystem.PASSWORD.key(), password)
+                    Map.of(
+                            SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                            ArkivoPasswordProvider.fixed(password)
+                    )
             )) {
                 Path file = fileSystem.getPath("/hello.txt");
                 BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);

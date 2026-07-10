@@ -73,6 +73,11 @@ public final class SevenZipArkivoFileSystemConfig {
     /// Parses 7z file system configuration from an environment map.
     public static SevenZipArkivoFileSystemConfig fromEnvironment(Map<String, ?> environment) {
         Objects.requireNonNull(environment, "environment");
+        if (environment.containsKey("arkivo.7z.password")) {
+            throw new IllegalArgumentException(
+                    "The arkivo.7z.password option has been removed; use arkivo.7z.passwordProvider instead"
+            );
+        }
         if (environment.isEmpty()) {
             return DEFAULTS;
         }
@@ -121,19 +126,7 @@ public final class SevenZipArkivoFileSystemConfig {
 
     /// Parses the password provider from an environment map.
     private static @Nullable ArkivoPasswordProvider passwordProvider(Map<String, ?> environment) {
-        Object provider = environment.get(SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key());
-        Object password = environment.get(SevenZipArkivoFileSystem.PASSWORD.key());
-        if (provider != null && password != null) {
-            throw new IllegalArgumentException("passwordProvider and password cannot both be set");
-        }
-        if (provider != null) {
-            return SevenZipArkivoFileSystem.PASSWORD_PROVIDER.read(environment);
-        }
-        if (password != null) {
-            byte[] fixedPassword = SevenZipArkivoFileSystem.PASSWORD.read(environment);
-            return fixedPassword != null ? ArkivoPasswordProvider.fixed(fixedPassword) : null;
-        }
-        return null;
+        return SevenZipArkivoFileSystem.PASSWORD_PROVIDER.read(environment);
     }
 
     /// Parses the split size from an environment map.

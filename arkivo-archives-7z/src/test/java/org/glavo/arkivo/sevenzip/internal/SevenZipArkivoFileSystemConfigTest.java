@@ -5,6 +5,7 @@ package org.glavo.arkivo.sevenzip.internal;
 
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoFileSystem;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -14,8 +15,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests 7z file system environment configuration parsing.
@@ -31,7 +32,6 @@ public final class SevenZipArkivoFileSystemConfigTest {
     @Test
     public void sevenZipOptionKeysUseSevenZipNamespace() {
         assertEquals("arkivo.7z.passwordProvider", SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key());
-        assertEquals("arkivo.7z.password", SevenZipArkivoFileSystem.PASSWORD.key());
         assertEquals("arkivo.7z.splitSize", SevenZipArkivoFileSystem.SPLIT_SIZE.key());
         assertEquals("arkivo.7z.encryptHeaders", SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key());
         assertEquals("arkivo.threadSafety", ArkivoFileSystem.THREAD_SAFETY.key());
@@ -52,14 +52,34 @@ public final class SevenZipArkivoFileSystemConfigTest {
         assertEquals(ArkivoFileSystemThreadSafety.STRICT, config.threadSafety());
     }
 
-    /// Verifies that fixed password bytes are converted into a password provider.
+    /// Verifies that password providers are preserved by 7z configuration parsing.
     @Test
-    public void passwordBytes() throws Exception {
-        Map<String, Object> environment = Map.of(SevenZipArkivoFileSystem.PASSWORD.key(), new byte[]{1, 2, 3});
+    public void passwordProvider() {
+        ArkivoPasswordProvider passwordProvider = ArkivoPasswordProvider.fixed(new byte[]{1, 2, 3});
+        Map<String, Object> environment = Map.of(
+                SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                passwordProvider
+        );
 
         SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromEnvironment(environment);
 
-        assertArrayEquals(new byte[]{1, 2, 3}, config.passwordProvider().passwordForArchive());
+        assertSame(passwordProvider, config.passwordProvider());
+    }
+
+    /// Verifies that the removed fixed password option is rejected with migration guidance.
+    @Test
+    public void legacyFixedPasswordOptionIsRejected() {
+        Map<String, Object> environment = Map.of("arkivo.7z.password", new byte[]{1, 2, 3});
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> SevenZipArkivoFileSystemConfig.fromEnvironment(environment)
+        );
+
+        assertEquals(
+                "The arkivo.7z.password option has been removed; use arkivo.7z.passwordProvider instead",
+                exception.getMessage()
+        );
     }
 
     /// Verifies that 7z write mode open options are accepted for archive creation.

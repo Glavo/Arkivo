@@ -25,15 +25,6 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     public static final ArkivoFileSystemOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArkivoFileSystemOption.of("arkivo.7z", "passwordProvider", ArkivoPasswordProvider.class);
 
-    /// The environment option for a fixed `byte[]` password value.
-    public static final ArkivoFileSystemOption<byte[]> PASSWORD =
-            ArkivoFileSystemOption.of(
-                    "arkivo.7z",
-                    "password",
-                    byte[].class,
-                    SevenZipArkivoFileSystem::passwordOptionValue
-            );
-
     /// The environment option for a `Long` value reserved for split output volumes.
     ///
     /// Current forward-only writes reject non-default split sizes.
@@ -121,14 +112,6 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
 
     /// Returns the expected CRC-32 value of the next header bytes.
     public abstract long nextHeaderCrc32();
-
-    /// Converts a raw password option value.
-    private static byte[] passwordOptionValue(Object value) {
-        if (value instanceof byte[] password) {
-            return password;
-        }
-        throw new IllegalArgumentException("Expected byte[] for key: " + PASSWORD.key());
-    }
 
     /// Converts a raw split size option value.
     private static Long splitSizeOptionValue(Object value) {
