@@ -5,6 +5,7 @@ package org.glavo.arkivo.sevenzip.internal;
 
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.ArkivoEditStorage;
 import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.sevenzip.SevenZipCompression;
@@ -60,6 +61,7 @@ public final class SevenZipArkivoFileSystemConfigTest {
         assertEquals("arkivo.7z.splitSize", SevenZipArkivoFileSystem.SPLIT_SIZE.key());
         assertEquals("arkivo.7z.encryptHeaders", SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key());
         assertEquals("arkivo.threadSafety", ArkivoFileSystem.THREAD_SAFETY.key());
+        assertEquals("arkivo.editStorage", ArkivoFileSystem.EDIT_STORAGE.key());
     }
 
     /// Verifies that string environment values are parsed through typed 7z options.
@@ -227,6 +229,32 @@ public final class SevenZipArkivoFileSystemConfigTest {
         assertEquals(
                 Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
                 config.openOptions()
+        );
+    }
+
+    /// Verifies that edit storage is accepted for updates and rejected outside update mode.
+    @Test
+    public void editStorageRequiresUpdateMode() {
+        ArkivoEditStorage storage = ArkivoEditStorage.memory();
+        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromUpdateEnvironment(Map.of(
+                ArkivoFileSystem.EDIT_STORAGE.key(),
+                storage
+        ));
+
+        assertSame(storage, config.editStorage());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+                        ArkivoFileSystem.EDIT_STORAGE.key(),
+                        storage
+                ))
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+                        ArkivoFileSystem.EDIT_STORAGE.key(),
+                        storage
+                ))
         );
     }
 

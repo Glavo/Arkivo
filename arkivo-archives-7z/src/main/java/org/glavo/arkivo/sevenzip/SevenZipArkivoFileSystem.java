@@ -25,6 +25,10 @@ import java.util.Objects;
 /// replaces the source by default; `ArkivoFileSystem.COMMIT_TARGET` can publish a single-volume derivative. Existing
 /// path-backed split archives preserve their first-volume size unless `SPLIT_SIZE` selects another output split size.
 ///
+/// Modified decoded bodies and compressed random-read snapshots are staged through `ArkivoFileSystem.EDIT_STORAGE`.
+/// Update sessions own and close a configured storage; path-backed sessions use temporary files beside the archive by
+/// default, while explicit volume sessions use the platform temporary directory.
+///
 /// Updates preserve decoded entry content and stored timestamps and attributes, then re-encode every surviving entry
 /// with the configured output compression, filter, password, and header-encryption policy.
 @NotNullByDefault

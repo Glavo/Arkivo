@@ -7,6 +7,8 @@ import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
 import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile;
 import org.glavo.arkivo.ArkivoCommitOutput;
 import org.glavo.arkivo.ArkivoCommitTarget;
+import org.glavo.arkivo.ArkivoEditStorage;
+import org.glavo.arkivo.ArkivoStoredContent;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.ArkivoVolumeTarget;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
@@ -64,7 +66,6 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -122,7 +123,13 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     private final Map<String, List<Path>> children;
 
     /// Decoded bodies staged by update mode, keyed by absolute path text.
-    private final Map<String, byte @Unmodifiable []> stagedContents;
+    private final Map<String, ArkivoStoredContent> stagedContents;
+
+    /// The storage that owns decoded update bodies, or `null` outside update mode.
+    private final @Nullable ArkivoEditStorage editStorage;
+
+    /// Stored bodies whose first cleanup attempt failed and must be retried while closing.
+    private final List<ArkivoStoredContent> retiredStoredContents;
 
     /// Entry-specific output settings changed by update mode.
     private final Map<String, UpdateOutputSettings> updateOutputSettings;
@@ -174,6 +181,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// Whether split output publication or rollback has completed.
     private boolean splitOutputClosed;
+
+    /// Whether update staging storage has closed successfully.
+    private boolean editStorageClosed;
 
     /// Whether the close action has completed.
     private boolean closeActionCompleted;
@@ -291,6 +301,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             this.headerEncryption = null;
             this.headerEncryptionClosed = true;
             this.fileStore = SevenZipFileStore.WRITABLE;
+            ArkivoEditStorage openedEditStorage = config.editStorage();
+            if (openedEditStorage == null) {
+                openedEditStorage = ArkivoEditStorage.temporaryFiles(defaultEditStorageDirectory(this.archivePath));
+            }
             boolean newArchive = this.archivePath != null && !Files.exists(this.archivePath);
             SevenZipArchiveMetadata archiveMetadata;
             Map<String, SevenZipEntryMetadata> parsedEntries;
@@ -316,6 +330,11 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 parsedEntries = entriesByPath(archiveMetadata.entries());
                 parsedChildren = childrenByPath(parsedEntries);
             } catch (IOException | RuntimeException | Error exception) {
+                try {
+                    openedEditStorage.close();
+                } catch (IOException | RuntimeException | Error cleanupFailure) {
+                    exception.addSuppressed(cleanupFailure);
+                }
                 closeAfterConstructionFailure(exception);
                 throw exception;
             }
@@ -324,7 +343,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             this.entries = new LinkedHashMap<>(parsedEntries);
             this.children = new LinkedHashMap<>(parsedChildren);
             this.stagedContents = new LinkedHashMap<>();
+            this.editStorage = openedEditStorage;
+            this.retiredStoredContents = new ArrayList<>();
             this.updateOutputSettings = new LinkedHashMap<>();
+            this.editStorageClosed = false;
             this.dirty = newArchive;
         } else if (config.archiveWritable()) {
             validateWriteFeatures();
@@ -361,8 +383,11 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             this.entries = Map.of();
             this.children = Map.of("/", List.of());
             this.stagedContents = Map.of();
+            this.editStorage = null;
+            this.retiredStoredContents = List.of();
             this.updateOutputSettings = Map.of();
             this.updateSplitSize = SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE;
+            this.editStorageClosed = true;
         } else {
             this.writer = null;
             this.splitOutput = null;
@@ -380,8 +405,11 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             this.entries = entriesByPath(archiveMetadata.entries());
             this.children = childrenByPath(this.entries);
             this.stagedContents = Map.of();
+            this.editStorage = null;
+            this.retiredStoredContents = List.of();
             this.updateOutputSettings = Map.of();
             this.updateSplitSize = SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE;
+            this.editStorageClosed = true;
         }
     }
 
@@ -587,7 +615,12 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// Closes update mode after publishing changed content transactionally.
     private void closeUpdate() throws IOException {
-        if (!open && volumesClosed && closeActionCompleted) {
+        if (!open
+                && editStorageClosed
+                && stagedContents.isEmpty()
+                && retiredStoredContents.isEmpty()
+                && volumesClosed
+                && closeActionCompleted) {
             return;
         }
 
@@ -613,6 +646,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             headerEncryptionClosed = true;
             splitOutputClosed = true;
         }
+        failure = closeUpdateStorage(failure);
         if (!volumesClosed) {
             try {
                 if (volumes != null) {
@@ -634,6 +668,39 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             }
         }
         throwFailure(failure);
+    }
+
+    /// Closes all update entry bodies and their owning storage, retaining failed items for a later close retry.
+    private @Nullable Throwable closeUpdateStorage(@Nullable Throwable failure) {
+        Iterator<ArkivoStoredContent> stagedIterator = stagedContents.values().iterator();
+        while (stagedIterator.hasNext()) {
+            ArkivoStoredContent content = stagedIterator.next();
+            try {
+                content.close();
+                stagedIterator.remove();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        Iterator<ArkivoStoredContent> retiredIterator = retiredStoredContents.iterator();
+        while (retiredIterator.hasNext()) {
+            ArkivoStoredContent content = retiredIterator.next();
+            try {
+                content.close();
+                retiredIterator.remove();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        if (!editStorageClosed) {
+            try {
+                Objects.requireNonNull(editStorage, "editStorage").close();
+                editStorageClosed = true;
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        return failure;
     }
 
     /// Returns whether this file system is open.
@@ -723,8 +790,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             throw new java.nio.file.FileSystemException(path.toString(), null, "Is a directory");
         }
         String pathText = normalizedPathText(path);
-        if (updateMode && stagedContents.containsKey(pathText)) {
-            return new SevenZipByteChannel(stagedContents.get(pathText));
+        @Nullable ArkivoStoredContent stagedContent = updateMode ? stagedContents.get(pathText) : null;
+        if (stagedContent != null) {
+            return stagedContent.openChannel(Set.of(StandardOpenOption.READ));
         }
         if (metadata.dataOffset() == SevenZipEntryMetadata.NO_DATA_OFFSET) {
             return new SevenZipByteChannel(new byte[0]);
@@ -744,6 +812,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 );
             }
             return channel;
+        }
+        if (updateMode) {
+            return newStoredReadChannel(path);
         }
         return new SevenZipByteChannel(readDecodedEntry(metadata));
     }
@@ -799,7 +870,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         SevenZipEntryWriteMetadata metadata = initialEntryMetadata(true, false, attributes);
         if (updateMode) {
             String pathText = prepareUpdateEntry(directory);
-            addUpdateEntry(pathText, newMetadata(pathText, true, 0L, metadata), new byte[0]);
+            addUpdateEntry(pathText, newMetadata(pathText, true, 0L, metadata), null);
             return;
         }
         String pathText = prepareWritableEntry(directory, true);
@@ -825,10 +896,11 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         byte[] targetBytes = archivePathText(target).getBytes(StandardCharsets.UTF_8);
         if (updateMode) {
             String pathText = prepareUpdateEntry(link);
+            ArkivoStoredContent stagedTarget = storeBytes(pathText, targetBytes);
             addUpdateEntry(
                     pathText,
                     newMetadata(pathText, false, targetBytes.length, metadata),
-                    targetBytes
+                    stagedTarget
             );
             return;
         }
@@ -868,7 +940,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
 
         entries.remove(pathText);
-        stagedContents.remove(pathText);
+        @Nullable ArkivoStoredContent removedContent = stagedContents.remove(pathText);
+        if (removedContent != null) {
+            releaseStoredContent(removedContent);
+        }
         updateOutputSettings.remove(pathText);
         rebuildUpdateChildren();
         dirty = true;
@@ -958,7 +1033,13 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             rebuiltEntries.put(newPath, copyMetadata(entry.getValue(), newPath, entry.getValue().size()));
         }
 
+        @Nullable ArkivoStoredContent replacedContent = targetExists && !movedPaths.containsKey(targetPath)
+                ? stagedContents.remove(targetPath)
+                : null;
         remapUpdateMap(stagedContents, movedPaths, targetPath, targetExists);
+        if (replacedContent != null) {
+            releaseStoredContent(replacedContent);
+        }
         remapUpdateMap(updateOutputSettings, movedPaths, targetPath, targetExists);
         entries.clear();
         entries.putAll(rebuiltEntries);
@@ -993,8 +1074,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             throw new java.nio.file.FileSystemException(path.toString(), null, "Is a directory");
         }
         String pathText = normalizedPathText(path);
-        if (updateMode && stagedContents.containsKey(pathText)) {
-            return new ByteArrayInputStream(stagedContents.get(pathText));
+        @Nullable ArkivoStoredContent stagedContent = updateMode ? stagedContents.get(pathText) : null;
+        if (stagedContent != null) {
+            return Channels.newInputStream(stagedContent.openChannel(Set.of(StandardOpenOption.READ)));
         }
         if (metadata.dataOffset() == SevenZipEntryMetadata.NO_DATA_OFFSET) {
             return new ByteArrayInputStream(new byte[0]);
@@ -1526,18 +1608,15 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             @Nullable Throwable entryFailure = null;
             try {
                 if (!metadata.directory()) {
-                    if (stagedContents.containsKey(pathText)) {
-                        byte[] content = stagedContents.get(pathText);
-                        archiveWriter.write(content, 0, content.length);
+                    @Nullable ArkivoStoredContent stagedContent = stagedContents.get(pathText);
+                    if (stagedContent != null) {
+                        try (SeekableByteChannel channel = stagedContent.openChannel(Set.of(StandardOpenOption.READ));
+                             InputStream input = Channels.newInputStream(channel)) {
+                            copyToArchive(input, archiveWriter, transferBuffer);
+                        }
                     } else if (metadata.size() > 0L) {
                         try (InputStream input = newInputStream(getPath(pathText))) {
-                            while (true) {
-                                int read = input.read(transferBuffer);
-                                if (read < 0) {
-                                    break;
-                                }
-                                archiveWriter.write(transferBuffer, 0, read);
-                            }
+                            copyToArchive(input, archiveWriter, transferBuffer);
                         }
                     }
                 }
@@ -1551,6 +1630,30 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             }
             throwFailure(entryFailure);
         }
+    }
+
+    /// Streams one decoded entry body into an open 7z archive entry.
+    private static void copyToArchive(
+            InputStream input,
+            SevenZOutputFile archiveWriter,
+            byte[] transferBuffer
+    ) throws IOException {
+        while (true) {
+            int read = input.read(transferBuffer);
+            if (read < 0) {
+                return;
+            }
+            if (read > 0) {
+                archiveWriter.write(transferBuffer, 0, read);
+            }
+        }
+    }
+
+    /// Returns the directory used by default temporary update-entry storage.
+    private static Path defaultEditStorageDirectory(@Nullable Path archivePath) {
+        return archivePath != null
+                ? defaultCommitDirectory(archivePath)
+                : Path.of(System.getProperty("java.io.tmpdir", ".")).toAbsolutePath().normalize();
     }
 
     /// Returns the directory used for default atomic update output.
@@ -1786,33 +1889,54 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
         SevenZipEntryWriteMetadata initialMetadata = initialEntryMetadata(false, false, attributes);
         boolean truncate = writable && options.contains(StandardOpenOption.TRUNCATE_EXISTING);
-        byte[] initialContent;
-        if (existing == null || truncate) {
-            initialContent = new byte[0];
-        } else if (stagedContents.containsKey(pathText)) {
-            initialContent = stagedContents.get(pathText);
-        } else {
-            initialContent = readDecodedEntry(existing);
-        }
-        UpdateEntryByteChannel channel = new UpdateEntryByteChannel(
+        ArkivoStoredContent pendingContent = requireEditStorage().createContent(
                 pathText,
-                existing,
-                initialMetadata,
-                initialContent,
-                readable,
-                writable,
-                append,
-                writable && (existing == null || truncate)
+                ArkivoEditStorage.UNKNOWN_SIZE
         );
-        if (writable) {
+        @Nullable SeekableByteChannel storageChannel = null;
+        try {
+            if (existing != null && !truncate) {
+                copyEntryToStoredContent(path, pendingContent);
+            }
+            LinkedHashSet<OpenOption> channelOptions = new LinkedHashSet<>();
+            if (readable) {
+                channelOptions.add(StandardOpenOption.READ);
+            }
+            if (writable) {
+                channelOptions.add(StandardOpenOption.WRITE);
+            }
+            if (existing == null || truncate) {
+                channelOptions.add(StandardOpenOption.TRUNCATE_EXISTING);
+            }
+            storageChannel = pendingContent.openChannel(Set.copyOf(channelOptions));
+            UpdateEntryByteChannel channel = new UpdateEntryByteChannel(
+                    pathText,
+                    existing,
+                    initialMetadata,
+                    pendingContent,
+                    storageChannel,
+                    readable,
+                    writable,
+                    append,
+                    writable && (existing == null || truncate)
+            );
             activeUpdateChannel = channel;
+            return channel;
+        } catch (IOException | RuntimeException | Error exception) {
+            if (storageChannel != null) {
+                try {
+                    storageChannel.close();
+                } catch (IOException | RuntimeException | Error cleanupFailure) {
+                    exception.addSuppressed(cleanupFailure);
+                }
+            }
+            releaseStoredContent(pendingContent);
+            throw exception;
         }
-        return channel;
     }
 
-    /// Commits staged entry bytes into the update index.
-    private void commitUpdatedEntry(UpdateEntryByteChannel channel, byte @Unmodifiable [] content)
-            throws IOException {
+    /// Commits one staged entry body into the update index.
+    private void commitUpdatedEntry(UpdateEntryByteChannel channel, ArkivoStoredContent content) throws IOException {
         if (activeUpdateChannel == channel) {
             activeUpdateChannel = null;
         }
@@ -1825,13 +1949,24 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             );
         }
 
+        long size = content.size();
         SevenZipEntryMetadata metadata = existing != null
-                ? copyMetadata(existing, channel.path(), content.length)
-                : newMetadata(channel.path(), false, content.length, channel.initialMetadata());
-        entries.put(channel.path(), metadata);
-        stagedContents.put(channel.path(), content);
+                ? copyMetadata(existing, channel.path(), size)
+                : newMetadata(channel.path(), false, size, channel.initialMetadata());
+        @Nullable Map<String, List<Path>> rebuiltChildren = null;
         if (existing == null) {
-            rebuildUpdateChildren();
+            LinkedHashMap<String, SevenZipEntryMetadata> candidateEntries = new LinkedHashMap<>(entries);
+            candidateEntries.put(channel.path(), metadata);
+            rebuiltChildren = childrenByPath(candidateEntries);
+        }
+        entries.put(channel.path(), metadata);
+        @Nullable ArkivoStoredContent previousContent = stagedContents.put(channel.path(), content);
+        if (previousContent != null) {
+            releaseStoredContent(previousContent);
+        }
+        if (rebuiltChildren != null) {
+            children.clear();
+            children.putAll(rebuiltChildren);
         }
         dirty = true;
     }
@@ -1852,12 +1987,109 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     private void addUpdateEntry(
             String path,
             SevenZipEntryMetadata metadata,
-            byte @Unmodifiable [] content
+            @Nullable ArkivoStoredContent content
     ) throws IOException {
+        LinkedHashMap<String, SevenZipEntryMetadata> candidateEntries = new LinkedHashMap<>(entries);
+        candidateEntries.put(path, metadata);
+        Map<String, List<Path>> rebuiltChildren;
+        try {
+            rebuiltChildren = childrenByPath(candidateEntries);
+        } catch (IOException | RuntimeException | Error exception) {
+            if (content != null) {
+                releaseStoredContent(content);
+            }
+            throw exception;
+        }
         entries.put(path, metadata);
-        stagedContents.put(path, content.clone());
-        rebuildUpdateChildren();
+        if (content != null) {
+            stagedContents.put(path, content);
+        }
+        children.clear();
+        children.putAll(rebuiltChildren);
         dirty = true;
+    }
+
+    /// Returns the update entry storage owned by this file system.
+    private ArkivoEditStorage requireEditStorage() {
+        return Objects.requireNonNull(editStorage, "editStorage");
+    }
+
+    /// Streams the current decoded entry body into newly allocated stored content.
+    private void copyEntryToStoredContent(Path path, ArkivoStoredContent content) throws IOException {
+        try (InputStream input = newInputStream(path);
+             SeekableByteChannel output = content.openChannel(Set.of(
+                     StandardOpenOption.TRUNCATE_EXISTING,
+                     StandardOpenOption.WRITE
+             ))) {
+            byte[] buffer = new byte[64 * 1024];
+            ByteBuffer bytes = ByteBuffer.wrap(buffer);
+            while (true) {
+                int read = input.read(buffer);
+                if (read < 0) {
+                    return;
+                }
+                bytes.clear();
+                bytes.limit(read);
+                while (bytes.hasRemaining()) {
+                    output.write(bytes);
+                }
+            }
+        }
+    }
+
+    /// Decodes one source-backed entry into temporary seekable storage for random reads in update mode.
+    private SeekableByteChannel newStoredReadChannel(Path path) throws IOException {
+        String pathText = normalizedPathText(path);
+        long expectedSize = requireEntry(path).size();
+        ArkivoStoredContent content = requireEditStorage().createContent(
+                pathText,
+                expectedSize
+        );
+        @Nullable SeekableByteChannel channel = null;
+        try {
+            copyEntryToStoredContent(path, content);
+            channel = content.openChannel(Set.of(StandardOpenOption.READ));
+            return new StoredContentReadByteChannel(content, channel);
+        } catch (IOException | RuntimeException | Error exception) {
+            if (channel != null) {
+                try {
+                    channel.close();
+                } catch (IOException | RuntimeException | Error cleanupFailure) {
+                    exception.addSuppressed(cleanupFailure);
+                }
+            }
+            releaseStoredContent(content);
+            throw exception;
+        }
+    }
+
+    /// Stores one small generated body in update storage.
+    private ArkivoStoredContent storeBytes(String path, byte @Unmodifiable [] bytes) throws IOException {
+        ArkivoStoredContent content = requireEditStorage().createContent(path, bytes.length);
+        try {
+            try (SeekableByteChannel output = content.openChannel(Set.of(
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE
+            ))) {
+                ByteBuffer source = ByteBuffer.wrap(bytes);
+                while (source.hasRemaining()) {
+                    output.write(source);
+                }
+            }
+            return content;
+        } catch (IOException | RuntimeException | Error exception) {
+            releaseStoredContent(content);
+            throw exception;
+        }
+    }
+
+    /// Releases stored content now or retains it for a close-time cleanup retry.
+    private void releaseStoredContent(ArkivoStoredContent content) {
+        try {
+            content.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            retiredStoredContents.add(content);
+        }
     }
 
     /// Rejects a structural or metadata mutation while an update channel remains open.
@@ -2571,6 +2803,98 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
+    /// Exposes one transient decoded entry body as a seekable read-only channel.
+    @NotNullByDefault
+    private final class StoredContentReadByteChannel implements SeekableByteChannel {
+        /// The transient stored body released when this channel closes.
+        private final ArkivoStoredContent content;
+
+        /// The read channel opened over the transient stored body.
+        private final SeekableByteChannel channel;
+
+        /// Whether this wrapper remains open.
+        private boolean channelOpen = true;
+
+        /// Creates a read-only channel over transient stored content.
+        private StoredContentReadByteChannel(ArkivoStoredContent content, SeekableByteChannel channel) {
+            this.content = Objects.requireNonNull(content, "content");
+            this.channel = Objects.requireNonNull(channel, "channel");
+        }
+
+        /// Reads decoded entry bytes.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            ensureChannelOpen();
+            return channel.read(destination);
+        }
+
+        /// Rejects writes to a read-only entry channel.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            ensureChannelOpen();
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns the current decoded entry position.
+        @Override
+        public long position() throws IOException {
+            ensureChannelOpen();
+            return channel.position();
+        }
+
+        /// Changes the current decoded entry position.
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            ensureChannelOpen();
+            channel.position(newPosition);
+            return this;
+        }
+
+        /// Returns the decoded entry size.
+        @Override
+        public long size() throws IOException {
+            ensureChannelOpen();
+            return channel.size();
+        }
+
+        /// Rejects truncation of a read-only entry channel.
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            ensureChannelOpen();
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns whether this wrapper remains open.
+        @Override
+        public boolean isOpen() {
+            return channelOpen;
+        }
+
+        /// Closes the read channel and releases its transient decoded body.
+        @Override
+        public void close() throws IOException {
+            if (!channelOpen) {
+                return;
+            }
+            channelOpen = false;
+            @Nullable Throwable failure = null;
+            try {
+                channel.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+            }
+            releaseStoredContent(content);
+            throwFailure(failure);
+        }
+
+        /// Requires this wrapper to remain open.
+        private void ensureChannelOpen() throws ClosedChannelException {
+            if (!channelOpen) {
+                throw new ClosedChannelException();
+            }
+        }
+    }
+
     /// Implements a staged random-access channel for one update-mode entry.
     @NotNullByDefault
     private final class UpdateEntryByteChannel implements SeekableByteChannel {
@@ -2583,6 +2907,12 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         /// Initial metadata applied when a new entry is committed.
         private final SevenZipEntryWriteMetadata initialMetadata;
 
+        /// The pending stored body transferred to the archive index after a successful close.
+        private final ArkivoStoredContent content;
+
+        /// The seekable channel opened over the pending stored body.
+        private final SeekableByteChannel channel;
+
         /// Whether reads are allowed.
         private final boolean readable;
 
@@ -2591,15 +2921,6 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
         /// Whether every write is forced to the current end.
         private final boolean append;
-
-        /// The staged decoded entry bytes.
-        private byte[] data;
-
-        /// The logical staged size.
-        private int size;
-
-        /// The current channel position.
-        private int position;
 
         /// Whether closing this channel must update the archive index.
         private boolean changed;
@@ -2612,21 +2933,24 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 String path,
                 @Nullable SevenZipEntryMetadata originalMetadata,
                 SevenZipEntryWriteMetadata initialMetadata,
-                byte @Unmodifiable [] initialContent,
+                ArkivoStoredContent content,
+                SeekableByteChannel channel,
                 boolean readable,
                 boolean writable,
                 boolean append,
                 boolean forceCommit
-        ) {
+        ) throws IOException {
             this.path = Objects.requireNonNull(path, "path");
             this.originalMetadata = originalMetadata;
             this.initialMetadata = Objects.requireNonNull(initialMetadata, "initialMetadata");
+            this.content = Objects.requireNonNull(content, "content");
+            this.channel = Objects.requireNonNull(channel, "channel");
             this.readable = readable;
             this.writable = writable;
             this.append = append;
-            this.data = Arrays.copyOf(initialContent, Math.max(initialContent.length, 32));
-            this.size = initialContent.length;
-            this.position = append ? size : 0;
+            if (append) {
+                channel.position(channel.size());
+            }
             this.changed = forceCommit;
         }
 
@@ -2653,13 +2977,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             if (!readable) {
                 throw new NonReadableChannelException();
             }
-            if (position >= size) {
-                return -1;
-            }
-            int count = Math.min(destination.remaining(), size - position);
-            destination.put(data, position, count);
-            position += count;
-            return count;
+            return channel.read(destination);
         }
 
         /// Writes staged bytes at the current position or end in append mode.
@@ -2671,14 +2989,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 throw new NonWritableChannelException();
             }
             if (append) {
-                position = size;
+                channel.position(channel.size());
             }
-            int count = source.remaining();
-            int end = checkedArrayPosition((long) position + count);
-            ensureCapacity(end);
-            source.get(data, position, count);
-            position = end;
-            size = Math.max(size, end);
+            int count = channel.write(source);
             changed |= count != 0;
             return count;
         }
@@ -2687,14 +3000,14 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         @Override
         public long position() throws IOException {
             ensureChannelOpen();
-            return position;
+            return channel.position();
         }
 
         /// Changes the current staged position.
         @Override
         public SeekableByteChannel position(long newPosition) throws IOException {
             ensureChannelOpen();
-            position = checkedArrayPosition(newPosition);
+            channel.position(newPosition);
             return this;
         }
 
@@ -2702,7 +3015,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         @Override
         public long size() throws IOException {
             ensureChannelOpen();
-            return size;
+            return channel.size();
         }
 
         /// Truncates staged content.
@@ -2712,12 +3025,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             if (!writable) {
                 throw new NonWritableChannelException();
             }
-            int checkedSize = checkedArrayPosition(newSize);
-            if (checkedSize < size) {
-                size = checkedSize;
-                if (position > size) {
-                    position = size;
-                }
+            long previousSize = channel.size();
+            channel.truncate(newSize);
+            if (newSize < previousSize) {
                 changed = true;
             }
             return this;
@@ -2736,40 +3046,28 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 return;
             }
             channelOpen = false;
-            if (!writable) {
-                return;
+            @Nullable Throwable failure = null;
+            try {
+                channel.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
             }
-            if (changed) {
-                commitUpdatedEntry(this, Arrays.copyOf(data, size));
-            } else if (activeUpdateChannel == this) {
+            if (activeUpdateChannel == this) {
                 activeUpdateChannel = null;
             }
-        }
-
-        /// Ensures enough staged array capacity.
-        private void ensureCapacity(int requiredCapacity) throws IOException {
-            if (requiredCapacity <= data.length) {
-                return;
+            boolean transferred = false;
+            if (failure == null && writable && changed) {
+                try {
+                    commitUpdatedEntry(this, content);
+                    transferred = true;
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = exception;
+                }
             }
-            long grown = Math.max((long) requiredCapacity, (long) data.length * 2L);
-            if (grown > Integer.MAX_VALUE) {
-                grown = Integer.MAX_VALUE;
+            if (!transferred) {
+                releaseStoredContent(content);
             }
-            if (grown < requiredCapacity) {
-                throw new IOException("7z entry is too large for update storage");
-            }
-            data = Arrays.copyOf(data, (int) grown);
-        }
-
-        /// Converts a staged position to the array-backed index domain.
-        private int checkedArrayPosition(long value) throws IOException {
-            if (value < 0L) {
-                throw new IllegalArgumentException("7z entry position must not be negative");
-            }
-            if (value > Integer.MAX_VALUE) {
-                throw new IOException("7z entry is too large for update storage");
-            }
-            return (int) value;
+            throwFailure(failure);
         }
 
         /// Ensures this channel is open.

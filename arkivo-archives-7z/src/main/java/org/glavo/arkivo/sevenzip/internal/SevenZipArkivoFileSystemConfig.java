@@ -4,6 +4,7 @@
 package org.glavo.arkivo.sevenzip.internal;
 
 import org.glavo.arkivo.ArkivoCommitTarget;
+import org.glavo.arkivo.ArkivoEditStorage;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoPasswordProvider;
@@ -43,7 +44,10 @@ public final class SevenZipArkivoFileSystemConfig {
             null,
             NO_SPLIT_SIZE,
             false,
-            ArkivoFileSystemThreadSafety.CONCURRENT_READ
+            false,
+            ArkivoFileSystemThreadSafety.CONCURRENT_READ,
+            null,
+            null
     );
 
     /// The open options used to open the backing archive path.
@@ -70,6 +74,9 @@ public final class SevenZipArkivoFileSystemConfig {
     /// The requested 7z file system thread-safety strategy.
     private final ArkivoFileSystemThreadSafety threadSafety;
 
+    /// The storage used to stage decoded update entry bodies, or `null` for the default temporary-file storage.
+    private final @Nullable ArkivoEditStorage editStorage;
+
     /// The target used to publish a rewritten single-volume update, or `null` for default publication.
     private final @Nullable ArkivoCommitTarget commitTarget;
 
@@ -92,11 +99,12 @@ public final class SevenZipArkivoFileSystemConfig {
                 splitSize != NO_SPLIT_SIZE,
                 encryptHeaders,
                 threadSafety,
+                null,
                 null
         );
     }
 
-    /// Creates parsed 7z file system configuration with an update commit target.
+    /// Creates parsed 7z file system configuration with update staging and publication settings.
     private SevenZipArkivoFileSystemConfig(
             Set<? extends OpenOption> openOptions,
             @Nullable ArkivoPasswordProvider passwordProvider,
@@ -106,6 +114,7 @@ public final class SevenZipArkivoFileSystemConfig {
             boolean splitSizeConfigured,
             boolean encryptHeaders,
             ArkivoFileSystemThreadSafety threadSafety,
+            @Nullable ArkivoEditStorage editStorage,
             @Nullable ArkivoCommitTarget commitTarget
     ) {
         if (splitSize != NO_SPLIT_SIZE && splitSize <= 0) {
@@ -119,6 +128,7 @@ public final class SevenZipArkivoFileSystemConfig {
         this.splitSizeConfigured = splitSizeConfigured;
         this.encryptHeaders = encryptHeaders;
         this.threadSafety = Objects.requireNonNull(threadSafety, "threadSafety");
+        this.editStorage = editStorage;
         this.commitTarget = commitTarget;
     }
 
@@ -168,6 +178,7 @@ public final class SevenZipArkivoFileSystemConfig {
                         environment,
                         ArkivoFileSystemThreadSafety.CONCURRENT_READ
                 ),
+                ArkivoFileSystem.EDIT_STORAGE.read(environment),
                 ArkivoFileSystem.COMMIT_TARGET.read(environment)
         );
         if (!config.archiveWritable() && SevenZipArkivoFileSystem.COMPRESSION.isPresent(environment)) {
@@ -182,8 +193,8 @@ public final class SevenZipArkivoFileSystemConfig {
         if (!config.archiveUpdate() && config.commitTarget() != null) {
             throw new IllegalArgumentException("7z commit targets require read/write update mode");
         }
-        if (config.archiveUpdate() && ArkivoFileSystem.EDIT_STORAGE.isPresent(environment)) {
-            throw new UnsupportedOperationException("7z update mode does not use configurable edit storage");
+        if (!config.archiveUpdate() && config.editStorage() != null) {
+            throw new IllegalArgumentException("7z edit storage requires read/write update mode");
         }
         if (config.archiveUpdate() && ArkivoFileSystem.SOURCE_MUTATION_POLICY.isPresent(environment)) {
             throw new UnsupportedOperationException("7z update mode always performs a complete archive rewrite");
@@ -245,6 +256,11 @@ public final class SevenZipArkivoFileSystemConfig {
     /// Returns the requested 7z file system thread-safety strategy.
     public ArkivoFileSystemThreadSafety threadSafety() {
         return threadSafety;
+    }
+
+    /// Returns the configured update entry storage, or `null` for the default temporary-file storage.
+    public @Nullable ArkivoEditStorage editStorage() {
+        return editStorage;
     }
 
     /// Returns the configured single-volume update commit target.

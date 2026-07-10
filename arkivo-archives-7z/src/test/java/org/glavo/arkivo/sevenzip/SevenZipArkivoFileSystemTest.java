@@ -9,7 +9,9 @@ import org.apache.commons.compress.archivers.sevenz.SevenZFile;
 import org.apache.commons.compress.archivers.sevenz.SevenZMethod;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
 import org.glavo.arkivo.ArkivoCommitTarget;
+import org.glavo.arkivo.ArkivoEditStorage;
 import org.glavo.arkivo.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.ArkivoStoredContent;
 import org.glavo.arkivo.ArkivoVolumeOutput;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.ArkivoVolumeTarget;
@@ -47,6 +49,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.NonReadableChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
@@ -57,6 +60,7 @@ import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
 import java.nio.file.NotLinkException;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.ReadOnlyFileSystemException;
 import java.nio.file.StandardCopyOption;
@@ -631,6 +635,10 @@ public final class SevenZipArkivoFileSystemTest {
     @Test
     public void failedUpdateCommitLeavesOriginalArchiveUntouched() throws IOException {
         Path archivePath = createTemporaryArchivePath("update-failure-7z-");
+        Path storageDirectory = Files.createTempDirectory(Path.of("build", "tmp"), "update-failure-storage-");
+        TrackingEditStorage storage = new TrackingEditStorage(
+                ArkivoEditStorage.temporaryFiles(storageDirectory)
+        );
         try {
             createUpdateFixture(archivePath);
             byte[] originalArchive = Files.readAllBytes(archivePath);
@@ -641,15 +649,54 @@ public final class SevenZipArkivoFileSystemTest {
                     ArkivoFileSystem.OPEN_OPTIONS.key(),
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
                     ArkivoFileSystem.COMMIT_TARGET.key(),
-                    failingTarget
+                    failingTarget,
+                    ArkivoFileSystem.EDIT_STORAGE.key(),
+                    storage
             );
             SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment);
             Files.writeString(fileSystem.getPath("/keep.txt"), "after", StandardCharsets.UTF_8);
             IOException exception = assertThrows(IOException.class, fileSystem::close);
             assertEquals("commit target failed", exception.getMessage());
             assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
+            assertEquals(true, storage.isClosed());
+            assertEquals(0, storage.openContentCount());
+            try (DirectoryStream<Path> files = Files.newDirectoryStream(storageDirectory)) {
+                assertEquals(false, files.iterator().hasNext());
+            }
         } finally {
+            storage.close();
             deleteTemporaryArchive(archivePath);
+            Files.deleteIfExists(storageDirectory);
+        }
+    }
+
+    /// Verifies that archive construction failure closes a configured edit storage after ownership transfers.
+    @Test
+    public void failedUpdateConstructionClosesConfiguredEditStorage() throws IOException {
+        Path archivePath = createTemporaryArchivePath("update-construction-failure-7z-");
+        Path storageDirectory = Files.createTempDirectory(
+                Path.of("build", "tmp"),
+                "update-construction-failure-storage-"
+        );
+        TrackingEditStorage storage = new TrackingEditStorage(
+                ArkivoEditStorage.temporaryFiles(storageDirectory)
+        );
+        Files.write(archivePath, new byte[32]);
+        try {
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.EDIT_STORAGE.key(),
+                    storage
+            );
+
+            assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath, environment));
+            assertEquals(true, storage.isClosed());
+            assertEquals(0, storage.openContentCount());
+        } finally {
+            storage.close();
+            deleteTemporaryArchive(archivePath);
+            Files.deleteIfExists(storageDirectory);
         }
     }
 
@@ -711,6 +758,190 @@ public final class SevenZipArkivoFileSystemTest {
                 assertEquals(false, entries.iterator().hasNext());
             }
         } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that update mode uses configured edit storage and releases every staged body while closing.
+    @Test
+    public void updateUsesConfiguredEditStorageAndCleansStagedBodies() throws IOException {
+        Path archivePath = createTemporaryArchivePath("update-storage-7z-");
+        Path storageDirectory = Files.createTempDirectory(Path.of("build", "tmp"), "update-storage-content-");
+        TrackingEditStorage storage = new TrackingEditStorage(
+                ArkivoEditStorage.temporaryFiles(storageDirectory)
+        );
+        try {
+            createUpdateFixture(archivePath);
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.EDIT_STORAGE.key(),
+                    storage
+            );
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+                Path keep = fileSystem.getPath("/keep.txt");
+                try (SeekableByteChannel channel = Files.newByteChannel(
+                        keep,
+                        Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+                )) {
+                    channel.position(3L);
+                    assertEquals(1, channel.write(ByteBuffer.wrap(new byte[]{'Z'})));
+                }
+                assertEquals("abcZef", Files.readString(keep, StandardCharsets.UTF_8));
+                Files.writeString(keep, "again", StandardCharsets.UTF_8);
+                Path removed = fileSystem.getPath("/staged-remove.txt");
+                Files.writeString(removed, "remove", StandardCharsets.UTF_8);
+                Files.delete(removed);
+                Path moved = fileSystem.getPath("/staged-move.txt");
+                Path replaced = fileSystem.getPath("/staged-target.txt");
+                Files.writeString(moved, "move", StandardCharsets.UTF_8);
+                Files.writeString(replaced, "replace", StandardCharsets.UTF_8);
+                Files.move(moved, replaced, StandardCopyOption.REPLACE_EXISTING);
+                assertEquals(5, storage.createdContentCount());
+                assertEquals(2, storage.openContentCount());
+            }
+
+            assertEquals(true, storage.isClosed());
+            assertEquals(0, storage.openContentCount());
+            try (DirectoryStream<Path> files = Files.newDirectoryStream(storageDirectory)) {
+                assertEquals(false, files.iterator().hasNext());
+            }
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                assertEquals(
+                        "again",
+                        Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8)
+                );
+                assertEquals(
+                        "move",
+                        Files.readString(fileSystem.getPath("/staged-target.txt"), StandardCharsets.UTF_8)
+                );
+                assertEquals(false, Files.exists(fileSystem.getPath("/staged-remove.txt")));
+            }
+        } finally {
+            storage.close();
+            deleteTemporaryArchive(archivePath);
+            Files.deleteIfExists(storageDirectory);
+        }
+    }
+
+    /// Verifies that a failed immediate body cleanup is retried successfully when the update file system closes.
+    @Test
+    public void updateRetriesRetiredStoredBodyCleanup() throws IOException {
+        Path archivePath = createTemporaryArchivePath("update-storage-retry-7z-");
+        Path storageDirectory = Files.createTempDirectory(Path.of("build", "tmp"), "update-storage-retry-");
+        TrackingEditStorage storage = new TrackingEditStorage(
+                ArkivoEditStorage.temporaryFiles(storageDirectory),
+                true
+        );
+        try {
+            createUpdateFixture(archivePath);
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.EDIT_STORAGE.key(),
+                    storage
+            );
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+                Path removed = fileSystem.getPath("/retry.txt");
+                Files.writeString(removed, "retry", StandardCharsets.UTF_8);
+                Files.delete(removed);
+                assertEquals(1, storage.openContentCount());
+                assertEquals(1, storage.contentCloseAttemptCount());
+            }
+
+            assertEquals(2, storage.contentCloseAttemptCount());
+            assertEquals(0, storage.openContentCount());
+            assertEquals(true, storage.isClosed());
+            try (DirectoryStream<Path> files = Files.newDirectoryStream(storageDirectory)) {
+                assertEquals(false, files.iterator().hasNext());
+            }
+        } finally {
+            storage.close();
+            deleteTemporaryArchive(archivePath);
+            Files.deleteIfExists(storageDirectory);
+        }
+    }
+
+    /// Verifies that random reads of compressed source entries use transient seekable edit storage without rewriting.
+    @Test
+    public void updateRandomReadStagesCompressedEntryWithoutDirtyingArchive() throws IOException {
+        byte[] content = "compressed random read body".getBytes(StandardCharsets.UTF_8);
+        CoderPayload payload = lzma2Payload(content);
+        Path archivePath = createTemporaryArchivePath("update-random-read-storage-7z-");
+        Path storageDirectory = Files.createTempDirectory(Path.of("build", "tmp"), "update-random-read-storage-");
+        TrackingEditStorage storage = new TrackingEditStorage(
+                ArkivoEditStorage.temporaryFiles(storageDirectory)
+        );
+        Files.write(archivePath, archiveWithLZMA2File(payload, content.length));
+        byte[] originalArchive = Files.readAllBytes(archivePath);
+        try {
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.EDIT_STORAGE.key(),
+                    storage
+            );
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+                try (SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/hello.txt"))) {
+                    channel.position(11L);
+                    ByteBuffer suffix = ByteBuffer.allocate(content.length - 11);
+                    assertEquals(content.length - 11, channel.read(suffix));
+                    assertArrayEquals(Arrays.copyOfRange(content, 11, content.length), suffix.array());
+                    assertEquals(1, storage.createdContentCount());
+                    assertEquals(1, storage.openContentCount());
+                }
+                assertEquals(0, storage.openContentCount());
+            }
+
+            assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
+            assertEquals(true, storage.isClosed());
+            try (DirectoryStream<Path> files = Files.newDirectoryStream(storageDirectory)) {
+                assertEquals(false, files.iterator().hasNext());
+            }
+        } finally {
+            storage.close();
+            deleteTemporaryArchive(archivePath);
+            Files.deleteIfExists(storageDirectory);
+        }
+    }
+
+    /// Verifies that update channels preserve storage positions larger than the array index domain.
+    @Test
+    public void updateChannelSupportsLongStoragePositions() throws IOException {
+        Path archivePath = createTemporaryArchivePath("update-long-position-7z-");
+        LogicalEditStorage storage = new LogicalEditStorage();
+        long position = (long) Integer.MAX_VALUE + 4096L;
+        try {
+            createUpdateFixture(archivePath);
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.EDIT_STORAGE.key(),
+                    storage
+            );
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+                Path large = fileSystem.getPath("/large.bin");
+                try (SeekableByteChannel channel = Files.newByteChannel(
+                        large,
+                        Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
+                )) {
+                    channel.position(position);
+                    assertEquals(1, channel.write(ByteBuffer.wrap(new byte[]{1})));
+                    assertEquals(position + 1L, channel.size());
+                }
+                assertEquals(position + 1L, Files.size(large));
+                Files.delete(large);
+            }
+
+            assertEquals(ArkivoEditStorage.UNKNOWN_SIZE, storage.lastExpectedSize());
+            assertEquals(true, storage.isClosed());
+            assertEquals(true, storage.lastContentClosed());
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                assertEquals(false, Files.exists(fileSystem.getPath("/large.bin")));
+                assertEquals("abcdef", Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            storage.close();
             deleteTemporaryArchive(archivePath);
         }
     }
@@ -5590,6 +5821,364 @@ public final class SevenZipArkivoFileSystemTest {
             }
         }
         return false;
+    }
+
+    /// Records edit-storage allocation and cleanup while delegating actual bytes to another storage.
+    @NotNullByDefault
+    private static final class TrackingEditStorage implements ArkivoEditStorage {
+        /// The storage that owns actual test content.
+        private final ArkivoEditStorage delegate;
+
+        /// Whether each content object should fail its first close attempt.
+        private final boolean failFirstContentClose;
+
+        /// The number of content objects created by this storage.
+        private int createdContentCount;
+
+        /// The number of content objects that remain open.
+        private int openContentCount;
+
+        /// The total number of content close attempts.
+        private int contentCloseAttemptCount;
+
+        /// Whether this storage has closed.
+        private boolean closed;
+
+        /// Creates a tracking wrapper over one storage.
+        private TrackingEditStorage(ArkivoEditStorage delegate) {
+            this(delegate, false);
+        }
+
+        /// Creates a tracking wrapper with optional first-attempt content close failures.
+        private TrackingEditStorage(ArkivoEditStorage delegate, boolean failFirstContentClose) {
+            this.delegate = Objects.requireNonNull(delegate, "delegate");
+            this.failFirstContentClose = failFirstContentClose;
+        }
+
+        /// Creates and tracks one stored body.
+        @Override
+        public ArkivoStoredContent createContent(String path, long expectedSize) throws IOException {
+            if (closed) {
+                throw new IOException("Tracking edit storage is closed");
+            }
+            ArkivoStoredContent content = delegate.createContent(path, expectedSize);
+            createdContentCount++;
+            openContentCount++;
+            return new TrackingStoredContent(this, content);
+        }
+
+        /// Closes the delegated storage.
+        @Override
+        public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            delegate.close();
+            closed = true;
+        }
+
+        /// Records one successfully closed content object.
+        private void contentClosed() {
+            openContentCount--;
+        }
+
+        /// Records a content close attempt and returns whether it should fail.
+        private boolean contentCloseAttempt(boolean previouslyFailed) {
+            contentCloseAttemptCount++;
+            return failFirstContentClose && !previouslyFailed;
+        }
+
+        /// Returns the number of created content objects.
+        private int createdContentCount() {
+            return createdContentCount;
+        }
+
+        /// Returns the number of content objects that remain open.
+        private int openContentCount() {
+            return openContentCount;
+        }
+
+        /// Returns the total number of content close attempts.
+        private int contentCloseAttemptCount() {
+            return contentCloseAttemptCount;
+        }
+
+        /// Returns whether this storage has closed.
+        private boolean isClosed() {
+            return closed;
+        }
+    }
+
+    /// Records stored-content cleanup while preserving the delegated channel behavior.
+    @NotNullByDefault
+    private static final class TrackingStoredContent implements ArkivoStoredContent {
+        /// The tracking storage that created this content.
+        private final TrackingEditStorage owner;
+
+        /// The content that owns actual bytes.
+        private final ArkivoStoredContent delegate;
+
+        /// Whether this content has closed successfully.
+        private boolean closed;
+
+        /// Whether this content has already emitted its configured close failure.
+        private boolean closeFailed;
+
+        /// Creates a tracked stored-content wrapper.
+        private TrackingStoredContent(TrackingEditStorage owner, ArkivoStoredContent delegate) {
+            this.owner = Objects.requireNonNull(owner, "owner");
+            this.delegate = Objects.requireNonNull(delegate, "delegate");
+        }
+
+        /// Opens a delegated seekable channel.
+        @Override
+        public SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException {
+            return delegate.openChannel(options);
+        }
+
+        /// Returns the delegated content size.
+        @Override
+        public long size() throws IOException {
+            return delegate.size();
+        }
+
+        /// Closes the delegated content and records successful cleanup.
+        @Override
+        public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            if (owner.contentCloseAttempt(closeFailed)) {
+                closeFailed = true;
+                throw new IOException("forced stored-content close failure");
+            }
+            delegate.close();
+            closed = true;
+            owner.contentClosed();
+        }
+    }
+
+    /// Provides logical long-addressable stored content without allocating its sparse byte range.
+    @NotNullByDefault
+    private static final class LogicalEditStorage implements ArkivoEditStorage {
+        /// The expected size supplied for the most recently created content.
+        private long lastExpectedSize = Long.MIN_VALUE;
+
+        /// The most recently created logical content.
+        private @Nullable LogicalStoredContent lastContent;
+
+        /// Whether this storage has closed.
+        private boolean closed;
+
+        /// Creates one long-addressable logical body.
+        @Override
+        public ArkivoStoredContent createContent(String path, long expectedSize) throws IOException {
+            Objects.requireNonNull(path, "path");
+            if (closed) {
+                throw new IOException("Logical edit storage is closed");
+            }
+            lastExpectedSize = expectedSize;
+            LogicalStoredContent content = new LogicalStoredContent();
+            lastContent = content;
+            return content;
+        }
+
+        /// Closes this logical storage.
+        @Override
+        public void close() {
+            closed = true;
+        }
+
+        /// Returns the most recently supplied expected size.
+        private long lastExpectedSize() {
+            return lastExpectedSize;
+        }
+
+        /// Returns whether this storage has closed.
+        private boolean isClosed() {
+            return closed;
+        }
+
+        /// Returns whether the most recently created content has closed.
+        private boolean lastContentClosed() {
+            LogicalStoredContent content = Objects.requireNonNull(lastContent, "lastContent");
+            return content.isClosed();
+        }
+    }
+
+    /// Stores only the logical size of a sparse test body.
+    @NotNullByDefault
+    private static final class LogicalStoredContent implements ArkivoStoredContent {
+        /// The logical content size.
+        private long size;
+
+        /// Whether this content remains open.
+        private boolean open = true;
+
+        /// Opens one channel over the logical body.
+        @Override
+        public SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException {
+            Objects.requireNonNull(options, "options");
+            ensureOpen();
+            if (options.contains(StandardOpenOption.TRUNCATE_EXISTING)) {
+                size = 0L;
+            }
+            boolean readable = options.isEmpty() || options.contains(StandardOpenOption.READ);
+            boolean writable = options.contains(StandardOpenOption.WRITE)
+                    || options.contains(StandardOpenOption.CREATE)
+                    || options.contains(StandardOpenOption.CREATE_NEW)
+                    || options.contains(StandardOpenOption.TRUNCATE_EXISTING);
+            return new LogicalSeekableByteChannel(this, readable, writable);
+        }
+
+        /// Returns the logical body size.
+        @Override
+        public long size() throws IOException {
+            ensureOpen();
+            return size;
+        }
+
+        /// Closes this logical body.
+        @Override
+        public void close() {
+            open = false;
+            size = 0L;
+        }
+
+        /// Returns whether this content has closed.
+        private boolean isClosed() {
+            return !open;
+        }
+
+        /// Requires this content to remain open.
+        private void ensureOpen() throws IOException {
+            if (!open) {
+                throw new IOException("Logical stored content is closed");
+            }
+        }
+    }
+
+    /// Implements a sparse logical seekable channel for long-position tests.
+    @NotNullByDefault
+    private static final class LogicalSeekableByteChannel implements SeekableByteChannel {
+        /// The logical content shared with this channel.
+        private final LogicalStoredContent content;
+
+        /// Whether reads are allowed.
+        private final boolean readable;
+
+        /// Whether writes are allowed.
+        private final boolean writable;
+
+        /// The current logical position.
+        private long position;
+
+        /// Whether this channel remains open.
+        private boolean open = true;
+
+        /// Creates a channel over one logical body.
+        private LogicalSeekableByteChannel(
+                LogicalStoredContent content,
+                boolean readable,
+                boolean writable
+        ) {
+            this.content = Objects.requireNonNull(content, "content");
+            this.readable = readable;
+            this.writable = writable;
+        }
+
+        /// Reads zero-filled logical bytes.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            ensureOpen();
+            if (!readable) {
+                throw new NonReadableChannelException();
+            }
+            long remaining = content.size - position;
+            if (remaining <= 0L) {
+                return -1;
+            }
+            int count = (int) Math.min(destination.remaining(), remaining);
+            for (int index = 0; index < count; index++) {
+                destination.put((byte) 0);
+            }
+            position += count;
+            return count;
+        }
+
+        /// Advances the logical size without retaining written bytes.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            ensureOpen();
+            if (!writable) {
+                throw new NonWritableChannelException();
+            }
+            int count = source.remaining();
+            long end = Math.addExact(position, count);
+            source.position(source.limit());
+            position = end;
+            content.size = Math.max(content.size, end);
+            return count;
+        }
+
+        /// Returns the current logical position.
+        @Override
+        public long position() throws IOException {
+            ensureOpen();
+            return position;
+        }
+
+        /// Changes the current logical position.
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            ensureOpen();
+            if (newPosition < 0L) {
+                throw new IllegalArgumentException("newPosition must not be negative");
+            }
+            position = newPosition;
+            return this;
+        }
+
+        /// Returns the logical body size.
+        @Override
+        public long size() throws IOException {
+            ensureOpen();
+            return content.size;
+        }
+
+        /// Truncates the logical body.
+        @Override
+        public SeekableByteChannel truncate(long newSize) throws IOException {
+            ensureOpen();
+            if (!writable) {
+                throw new NonWritableChannelException();
+            }
+            if (newSize < 0L) {
+                throw new IllegalArgumentException("newSize must not be negative");
+            }
+            content.size = Math.min(content.size, newSize);
+            position = Math.min(position, content.size);
+            return this;
+        }
+
+        /// Returns whether this channel remains open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes this channel.
+        @Override
+        public void close() {
+            open = false;
+        }
+
+        /// Requires this channel to remain open.
+        private void ensureOpen() throws ClosedChannelException {
+            if (!open) {
+                throw new ClosedChannelException();
+            }
+        }
     }
 
     /// Records byte-array output close ownership for streaming writer tests.

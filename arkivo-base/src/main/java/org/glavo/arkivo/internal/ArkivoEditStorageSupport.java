@@ -104,7 +104,7 @@ public final class ArkivoEditStorageSupport {
                 throw new IllegalArgumentException("expectedSize must be UNKNOWN_SIZE or non-negative");
             }
             Files.createDirectories(directory);
-            return new TemporaryFileStoredContent(Files.createTempFile(directory, "arkivo-zip-entry-", ".tmp"));
+            return new TemporaryFileStoredContent(Files.createTempFile(directory, "arkivo-entry-", ".tmp"));
         }
 
         /// Closes this storage.
