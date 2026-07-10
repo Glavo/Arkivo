@@ -542,6 +542,15 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         return newOutputStream(path, Set.of(options));
     }
 
+    /// Opens an output stream for a new forward-only file entry with explicit metadata.
+    OutputStream newOutputStream(Path path, SevenZipEntryWriteMetadata metadata) throws IOException {
+        Objects.requireNonNull(metadata, "metadata");
+        requireWritableFileSystem();
+        String pathText = prepareWritableEntry(path, false);
+        beginWritableEntry(pathText, false, metadata);
+        return new WrittenEntryOutputStream(pathText);
+    }
+
     /// Opens an output stream for a new forward-only file entry.
     private OutputStream newOutputStream(
             Path path,
@@ -552,9 +561,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
         validateEntryWriteOptions(options);
-        int windowsAttributes = initialWindowsAttributes(false, false, attributes);
+        SevenZipEntryWriteMetadata metadata = initialEntryMetadata(false, false, attributes);
         String pathText = prepareWritableEntry(path, false);
-        beginWritableEntry(pathText, false, windowsAttributes);
+        beginWritableEntry(pathText, false, metadata);
         return new WrittenEntryOutputStream(pathText);
     }
 
@@ -562,9 +571,18 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
-        int windowsAttributes = initialWindowsAttributes(true, false, attributes);
+        SevenZipEntryWriteMetadata metadata = initialEntryMetadata(true, false, attributes);
         String pathText = prepareWritableEntry(directory, true);
-        beginWritableEntry(pathText, true, windowsAttributes);
+        beginWritableEntry(pathText, true, metadata);
+        closeWritableEntry(pathText, true);
+    }
+
+    /// Creates a new forward-only directory entry with explicit metadata.
+    void createDirectory(Path directory, SevenZipEntryWriteMetadata metadata) throws IOException {
+        Objects.requireNonNull(metadata, "metadata");
+        requireWritableFileSystem();
+        String pathText = prepareWritableEntry(directory, true);
+        beginWritableEntry(pathText, true, metadata);
         closeWritableEntry(pathText, true);
     }
 
@@ -573,9 +591,21 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
-        int windowsAttributes = initialWindowsAttributes(false, true, attributes);
+        SevenZipEntryWriteMetadata metadata = initialEntryMetadata(false, true, attributes);
         String pathText = prepareWritableEntry(link, false);
-        beginWritableEntry(pathText, false, windowsAttributes);
+        beginWritableEntry(pathText, false, metadata);
+        byte[] targetBytes = archivePathText(target).getBytes(StandardCharsets.UTF_8);
+        requireWriter().write(targetBytes, 0, targetBytes.length);
+        closeWritableEntry(pathText, false);
+    }
+
+    /// Creates a new forward-only symbolic link entry with explicit metadata.
+    void createSymbolicLink(Path link, Path target, SevenZipEntryWriteMetadata metadata) throws IOException {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(metadata, "metadata");
+        requireWritableFileSystem();
+        String pathText = prepareWritableEntry(link, false);
+        beginWritableEntry(pathText, false, metadata);
         byte[] targetBytes = archivePathText(target).getBytes(StandardCharsets.UTF_8);
         requireWriter().write(targetBytes, 0, targetBytes.length);
         closeWritableEntry(pathText, false);
@@ -993,25 +1023,26 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
-    /// Returns 7z Windows attributes derived from supported initial file attributes.
-    private static int initialWindowsAttributes(
+    /// Returns 7z entry metadata derived from supported initial file attributes.
+    private static SevenZipEntryWriteMetadata initialEntryMetadata(
             boolean directory,
             boolean symbolicLink,
             FileAttribute<?>... attributes
     ) {
         @Nullable Set<PosixFilePermission> permissions = initialPosixPermissions(attributes);
+        int windowsAttributes;
         if (permissions == null) {
-            return symbolicLink
+            windowsAttributes = symbolicLink
                     ? SYMBOLIC_LINK_WINDOWS_ATTRIBUTES
                     : SevenZipArkivoEntryAttributes.UNKNOWN_WINDOWS_ATTRIBUTES;
+        } else if (symbolicLink) {
+            windowsAttributes = SevenZipPosixSupport.symbolicLinkWindowsAttributes(permissions);
+        } else if (directory) {
+            windowsAttributes = SevenZipPosixSupport.directoryWindowsAttributes(permissions);
+        } else {
+            windowsAttributes = SevenZipPosixSupport.regularFileWindowsAttributes(permissions);
         }
-        if (symbolicLink) {
-            return SevenZipPosixSupport.symbolicLinkWindowsAttributes(permissions);
-        }
-        if (directory) {
-            return SevenZipPosixSupport.directoryWindowsAttributes(permissions);
-        }
-        return SevenZipPosixSupport.regularFileWindowsAttributes(permissions);
+        return SevenZipEntryWriteMetadata.withWindowsAttributes(windowsAttributes);
     }
 
     /// Returns POSIX permissions stored by supported initial file attributes.
@@ -1082,17 +1113,18 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Opens a 7z writer entry.
-    private void beginWritableEntry(String path, boolean directory, int windowsAttributes) throws IOException {
+    private void beginWritableEntry(
+            String path,
+            boolean directory,
+            SevenZipEntryWriteMetadata metadata
+    ) throws IOException {
         if (entryOpen) {
             throw new IOException("A 7z entry is already open");
         }
         SevenZArchiveEntry entry = new SevenZArchiveEntry();
         entry.setName(writableEntryName(path));
         entry.setDirectory(directory);
-        if (windowsAttributes != SevenZipArkivoEntryAttributes.UNKNOWN_WINDOWS_ATTRIBUTES) {
-            entry.setHasWindowsAttributes(true);
-            entry.setWindowsAttributes(windowsAttributes);
-        }
+        metadata.applyTo(entry);
         requireWriter().putArchiveEntry(entry);
         entryOpen = true;
     }
@@ -1711,6 +1743,12 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
         ) {
+            throw new ReadOnlyFileSystemException();
+        }
+
+        /// Rejects Windows attribute mutation.
+        @Override
+        public void setWindowsAttributes(int windowsAttributes) {
             throw new ReadOnlyFileSystemException();
         }
     }

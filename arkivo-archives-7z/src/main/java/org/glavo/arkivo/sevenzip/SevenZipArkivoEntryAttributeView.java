@@ -20,4 +20,9 @@ public interface SevenZipArkivoEntryAttributeView extends BasicFileAttributeView
     /// Reads the 7z-specific entry attributes.
     @Override
     SevenZipArkivoEntryAttributes readAttributes() throws IOException;
+
+    /// Sets the raw Windows file attributes stored for a pending streaming entry.
+    ///
+    /// Passing `UNKNOWN_WINDOWS_ATTRIBUTES` clears the property. Unix mode bits occupy the high 16 bits.
+    void setWindowsAttributes(int windowsAttributes) throws IOException;
 }

@@ -35,6 +35,7 @@ import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -54,6 +55,7 @@ import java.nio.file.Path;
 import java.nio.file.ReadOnlyFileSystemException;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileOwnerAttributeView;
 import java.nio.file.attribute.FileTime;
@@ -498,6 +500,230 @@ public final class SevenZipArkivoFileSystemTest {
         } finally {
             deleteTemporaryArchive(archivePath);
         }
+    }
+
+    /// Verifies that the 7z streaming writer creates every supported entry type and preserves writable metadata.
+    @Test
+    public void createsEntriesWithStreamingWriter() throws IOException {
+        byte[] content = "streaming 7z payload".getBytes(StandardCharsets.UTF_8);
+        FileTime lastModifiedTime = FileTime.from(Instant.parse("2024-01-02T03:04:05.123Z"));
+        FileTime lastAccessTime = FileTime.from(Instant.parse("2024-02-03T04:05:06.234Z"));
+        FileTime creationTime = FileTime.from(Instant.parse("2024-03-04T05:06:07.345Z"));
+        Set<PosixFilePermission> directoryPermissions = PosixFilePermissions.fromString("rwxr-x---");
+        Set<PosixFilePermission> filePermissions = PosixFilePermissions.fromString("rw-r-----");
+        Set<PosixFilePermission> linkPermissions = PosixFilePermissions.fromString("rwxr-xr--");
+        Path archivePath = createTemporaryArchivePath("streaming-writer-");
+
+        try {
+            try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(archivePath)) {
+                writer.beginDirectory("meta");
+                Objects.requireNonNull(writer.attributeView(PosixFileAttributeView.class))
+                        .setPermissions(directoryPermissions);
+                writer.endEntry();
+
+                writer.beginFile("meta/payload.bin");
+                Objects.requireNonNull(writer.attributeView(BasicFileAttributeView.class))
+                        .setTimes(lastModifiedTime, lastAccessTime, creationTime);
+                SevenZipArkivoEntryAttributeView sevenZipView = Objects.requireNonNull(
+                        writer.attributeView(SevenZipArkivoEntryAttributeView.class)
+                );
+                sevenZipView.setWindowsAttributes(0x20);
+                Objects.requireNonNull(writer.attributeView(PosixFileAttributeView.class))
+                        .setPermissions(filePermissions);
+                SevenZipArkivoEntryAttributes pendingAttributes = sevenZipView.readAttributes();
+                assertEquals("meta/payload.bin", pendingAttributes.path());
+                assertEquals(lastModifiedTime, pendingAttributes.lastModifiedTime());
+                assertEquals(0100640, pendingAttributes.unixMode());
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write(content);
+                }
+
+                writer.beginSymbolicLink("meta/link", "payload.bin");
+                Objects.requireNonNull(writer.attributeView(PosixFileAttributeView.class))
+                        .setPermissions(linkPermissions);
+                writer.endEntry();
+
+                writer.beginFile("empty.txt");
+                writer.endEntry();
+            }
+
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path directory = fileSystem.getPath("/meta");
+                Path file = fileSystem.getPath("/meta/payload.bin");
+                Path link = fileSystem.getPath("/meta/link");
+                SevenZipArkivoEntryAttributes fileAttributes =
+                        Files.readAttributes(file, SevenZipArkivoEntryAttributes.class);
+
+                assertEquals(directoryPermissions, Files.readAttributes(directory, PosixFileAttributes.class).permissions());
+                assertArrayEquals(content, Files.readAllBytes(file));
+                assertEquals(lastModifiedTime, fileAttributes.lastModifiedTime());
+                assertEquals(lastAccessTime, fileAttributes.lastAccessTime());
+                assertEquals(creationTime, fileAttributes.creationTime());
+                assertEquals(0100640, fileAttributes.unixMode());
+                assertEquals(0x20, fileAttributes.windowsAttributes() & 0xffff);
+                assertEquals(filePermissions, Files.readAttributes(file, PosixFileAttributes.class).permissions());
+                assertEquals(true, Files.readAttributes(link, BasicFileAttributes.class).isSymbolicLink());
+                assertEquals(linkPermissions, Files.readAttributes(link, PosixFileAttributes.class).permissions());
+                assertEquals(fileSystem.getPath("payload.bin"), Files.readSymbolicLink(link));
+                assertArrayEquals(new byte[0], Files.readAllBytes(fileSystem.getPath("/empty.txt")));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that output-stream writers stage a complete archive, close active bodies, and own their output.
+    @Test
+    public void createsStreamingArchiveInOutputStream() throws IOException {
+        byte[] content = new byte[]{4, 3, 2, 1};
+        TrackingOutputStream archiveOutput = new TrackingOutputStream();
+        SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(archiveOutput);
+        writer.beginFile("content.bin");
+        OutputStream body = writer.openOutputStream();
+        body.write(content);
+
+        assertEquals(0, archiveOutput.size());
+        writer.close();
+
+        assertEquals(true, archiveOutput.closed());
+        assertThrows(ClosedChannelException.class, () -> body.write(0));
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                new SplitVolumeSource(new byte[][]{archiveOutput.toByteArray()})
+        )) {
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/content.bin")));
+        }
+    }
+
+    /// Verifies that writable-channel writers own their channel and produce a readable single-volume archive.
+    @Test
+    public void createsStreamingArchiveInWritableChannel() throws IOException {
+        TrackingOutputStream archiveOutput = new TrackingOutputStream();
+        WritableByteChannel archiveChannel = Channels.newChannel(archiveOutput);
+
+        try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(archiveChannel)) {
+            writer.beginFile("channel.txt");
+            try (WritableByteChannel body = writer.openChannel()) {
+                assertEquals(7, body.write(ByteBuffer.wrap("channel".getBytes(StandardCharsets.UTF_8))));
+            }
+        }
+
+        assertEquals(false, archiveChannel.isOpen());
+        assertEquals(true, archiveOutput.closed());
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                new SplitVolumeSource(new byte[][]{archiveOutput.toByteArray()})
+        )) {
+            assertEquals("channel", Files.readString(fileSystem.getPath("/channel.txt")));
+        }
+    }
+
+    /// Verifies that the streaming writer publishes bounded output through a transactional volume target.
+    @Test
+    public void createsSplitArchiveWithStreamingWriter() throws IOException {
+        byte[] content = new byte[512];
+        for (int index = 0; index < content.length; index++) {
+            content[index] = (byte) (index * 13);
+        }
+        TestVolumeTarget target = new TestVolumeTarget(-1L, false);
+
+        try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(target, 64L)) {
+            writer.beginFile("content.bin");
+            writer.openOutputStream().write(content);
+            assertEquals(0, target.openOutputCount());
+        }
+
+        byte[][] volumes = target.committedVolumes();
+        assertEquals(true, volumes.length > 1);
+        assertEquals(true, target.allOpenedChannelsClosed());
+        for (byte[] volume : volumes) {
+            assertEquals(true, volume.length > 0 && volume.length <= 64);
+        }
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(new SplitVolumeSource(volumes))) {
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/content.bin")));
+        }
+    }
+
+    /// Verifies that streaming target failures roll back unpublished volumes and support close retry.
+    @Test
+    public void streamingWriterTargetFailureRollsBack() throws IOException {
+        TestVolumeTarget target = new TestVolumeTarget(1L, false);
+        SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(target, 64L);
+        writer.beginFile("content.bin");
+        try (OutputStream output = writer.openOutputStream()) {
+            output.write(new byte[512]);
+        }
+
+        IOException exception = assertThrows(IOException.class, writer::close);
+
+        assertEquals("volume open failed", exception.getMessage());
+        assertEquals(1, target.rollbackCount());
+        assertEquals(0, target.committedVolumes().length);
+        assertEquals(true, target.allOpenedChannelsClosed());
+        writer.close();
+    }
+
+    /// Verifies streaming writer state validation, path validation, and automatic empty-entry completion.
+    @Test
+    public void validatesStreamingWriterStateAndConfiguration() throws IOException {
+        TrackingOutputStream archiveOutput = new TrackingOutputStream();
+        SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(archiveOutput);
+
+        assertThrows(IllegalArgumentException.class, () -> writer.beginFile("../escape"));
+        assertThrows(IllegalArgumentException.class, () -> writer.beginDirectory("/absolute"));
+        assertThrows(IllegalArgumentException.class, () -> writer.beginFile("C:/drive"));
+        assertThrows(IllegalArgumentException.class, () -> writer.beginSymbolicLink("link", ""));
+        assertThrows(IllegalStateException.class, writer::endEntry);
+
+        writer.beginDirectory("dir");
+        assertThrows(IllegalStateException.class, writer::openOutputStream);
+        writer.endEntry();
+
+        writer.beginFile("body.txt");
+        OutputStream body = writer.openOutputStream();
+        assertThrows(IllegalStateException.class, () -> writer.beginFile("next.txt"));
+        body.close();
+
+        writer.beginFile("implicit-empty.txt");
+        writer.close();
+        assertThrows(IllegalStateException.class, () -> writer.beginFile("closed.txt"));
+
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                new SplitVolumeSource(new byte[][]{archiveOutput.toByteArray()})
+        )) {
+            assertEquals(true, Files.isDirectory(fileSystem.getPath("/dir")));
+            assertArrayEquals(new byte[0], Files.readAllBytes(fileSystem.getPath("/body.txt")));
+            assertArrayEquals(new byte[0], Files.readAllBytes(fileSystem.getPath("/implicit-empty.txt")));
+        }
+
+        assertThrows(IllegalArgumentException.class, () -> SevenZipArkivoStreamingWriter.open(
+                new TrackingOutputStream(),
+                Map.of(ArkivoFileSystem.OPEN_OPTIONS.key(), Set.of(StandardOpenOption.WRITE))
+        ));
+        assertThrows(IllegalArgumentException.class, () -> SevenZipArkivoStreamingWriter.open(
+                new TestVolumeTarget(-1L, false),
+                0L
+        ));
+        assertThrows(IllegalArgumentException.class, () -> SevenZipArkivoStreamingWriter.open(
+                new TestVolumeTarget(-1L, false),
+                64L,
+                Map.of(SevenZipArkivoFileSystem.SPLIT_SIZE.key(), 32L)
+        ));
+    }
+
+    /// Verifies that direct output publication failures close owned output and surface the write failure.
+    @Test
+    public void streamingWriterOutputFailureClosesOwnedStream() throws IOException {
+        FailingOutputStream archiveOutput = new FailingOutputStream();
+        SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(archiveOutput);
+        writer.beginFile("content.bin");
+        try (OutputStream output = writer.openOutputStream()) {
+            output.write(new byte[128]);
+        }
+
+        IOException exception = assertThrows(IOException.class, writer::close);
+
+        assertEquals("forced output failure", exception.getMessage());
+        assertEquals(true, archiveOutput.closed());
+        writer.close();
     }
 
     /// Verifies that path-backed 7z writes produce conventional bounded split volumes that can be reopened.
@@ -4102,6 +4328,56 @@ public final class SevenZipArkivoFileSystemTest {
             }
         }
         return false;
+    }
+
+    /// Records byte-array output close ownership for streaming writer tests.
+    @NotNullByDefault
+    private static final class TrackingOutputStream extends ByteArrayOutputStream {
+        /// Whether this stream has been closed.
+        private boolean closed;
+
+        /// Records stream close.
+        @Override
+        public void close() throws IOException {
+            super.close();
+            closed = true;
+        }
+
+        /// Returns whether this stream has been closed.
+        private boolean closed() {
+            return closed;
+        }
+    }
+
+    /// Fails every archive publication write while recording output ownership.
+    @NotNullByDefault
+    private static final class FailingOutputStream extends OutputStream {
+        /// Whether this stream has been closed.
+        private boolean closed;
+
+        /// Fails one-byte writes.
+        @Override
+        public void write(int value) throws IOException {
+            throw new IOException("forced output failure");
+        }
+
+        /// Fails bulk writes.
+        @Override
+        public void write(byte[] buffer, int offset, int length) throws IOException {
+            Objects.checkFromIndexSize(offset, length, buffer.length);
+            throw new IOException("forced output failure");
+        }
+
+        /// Records stream close.
+        @Override
+        public void close() {
+            closed = true;
+        }
+
+        /// Returns whether this stream has been closed.
+        private boolean closed() {
+            return closed;
+        }
     }
 
     /// Creates in-memory transactional volume output with configurable failures.

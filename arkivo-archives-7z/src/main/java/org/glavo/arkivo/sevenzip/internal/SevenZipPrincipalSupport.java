@@ -32,6 +32,20 @@ final class SevenZipPrincipalSupport {
         return USER_PRINCIPAL_LOOKUP_SERVICE;
     }
 
+    /// Requires a principal name to match the synthesized owner.
+    static void requireDefaultOwner(UserPrincipal owner) throws UserPrincipalNotFoundException {
+        if (!DEFAULT_OWNER.getName().equals(owner.getName())) {
+            throw new UserPrincipalNotFoundException(owner.getName());
+        }
+    }
+
+    /// Requires a principal name to match the synthesized group.
+    static void requireDefaultGroup(GroupPrincipal group) throws UserPrincipalNotFoundException {
+        if (!DEFAULT_GROUP.getName().equals(group.getName())) {
+            throw new UserPrincipalNotFoundException(group.getName());
+        }
+    }
+
     /// Stores a synthetic named user principal.
     ///
     /// @param name the stable principal name
