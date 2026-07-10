@@ -7,6 +7,7 @@ import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemOption;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoPasswordProvider;
+import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.sevenzip.internal.SevenZipArkivoFileSystemConfig;
 import org.glavo.arkivo.sevenzip.internal.SevenZipArkivoFileSystemImpl;
@@ -70,6 +71,24 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
         return SevenZipArkivoFileSystemProvider.instance().newFileSystem(path, environment);
+    }
+
+    /// Opens a read-only 7z archive file system from a repeatable seekable channel source.
+    ///
+    /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    public static SevenZipArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
+        return open(source, Map.of());
+    }
+
+    /// Opens a read-only 7z archive file system from a repeatable seekable channel source with environment options.
+    ///
+    /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    public static SevenZipArkivoFileSystem open(
+            ArkivoSeekableChannelSource source,
+            Map<String, ?> environment
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        return open((ArkivoVolumeSource) source, environment);
     }
 
     /// Opens a multi-volume 7z archive file system.

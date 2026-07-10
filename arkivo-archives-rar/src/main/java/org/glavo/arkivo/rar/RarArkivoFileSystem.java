@@ -5,6 +5,7 @@ package org.glavo.arkivo.rar;
 
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.rar.internal.RarArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -32,6 +33,24 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
         return RarArkivoFileSystemProvider.instance().newFileSystem(path, environment);
+    }
+
+    /// Opens a read-only RAR archive file system from a repeatable seekable channel source.
+    ///
+    /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    public static RarArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
+        return open(source, Map.of());
+    }
+
+    /// Opens a read-only RAR archive file system from a repeatable seekable channel source with environment options.
+    ///
+    /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    public static RarArkivoFileSystem open(
+            ArkivoSeekableChannelSource source,
+            Map<String, ?> environment
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        return open((ArkivoVolumeSource) source, environment);
     }
 
     /// Opens a multi-volume RAR archive file system.

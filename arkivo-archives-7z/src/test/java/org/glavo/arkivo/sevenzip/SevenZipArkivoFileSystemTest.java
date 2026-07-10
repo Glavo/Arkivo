@@ -5,6 +5,7 @@ package org.glavo.arkivo.sevenzip;
 
 import java.io.ByteArrayOutputStream;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
+import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
@@ -347,6 +348,23 @@ public final class SevenZipArkivoFileSystemTest {
                 assertArrayEquals(Arrays.copyOfRange(content, 1, content.length), buffer.array());
             }
         }
+    }
+
+    /// Verifies that a repeatable seekable channel source supports random-access 7z file system operations.
+    @Test
+    public void randomAccessFileSystemFromSeekableChannelSource() throws IOException {
+        byte[] content = "seekable channel source content".getBytes(StandardCharsets.UTF_8);
+        TestSeekableChannelSource source = new TestSeekableChannelSource(archiveWithCopyFile(content));
+
+        try (ArkivoFileSystem fileSystem = SevenZipArkivoFormat.instance().open(source)) {
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/hello.txt")));
+            assertEquals(true, source.openCount() > 1);
+            assertEquals(true, source.allOpenedChannelsClosed());
+            assertEquals(0, source.closeCount());
+        }
+
+        assertEquals(true, source.allOpenedChannelsClosed());
+        assertEquals(1, source.closeCount());
     }
 
     /// Verifies that conventional 7z split volumes can be discovered from the first volume path.
@@ -884,6 +902,22 @@ public final class SevenZipArkivoFileSystemTest {
         assertEquals(true, exception.getMessage().contains("pack sizes are missing"));
         assertEquals(1, volumes.closeCount());
         assertEquals(true, hasSuppressedMessage(exception, "volume source close failed"));
+    }
+
+    /// Verifies that failed 7z parsing closes a seekable channel source and every channel opened from it.
+    @Test
+    public void failedSeekableChannelSourceOpenClosesSource() throws IOException {
+        TestSeekableChannelSource source = new TestSeekableChannelSource(archiveWithMissingPackSizes());
+
+        IOException exception = assertThrows(
+                IOException.class,
+                () -> SevenZipArkivoFileSystem.open(source, Map.of())
+        );
+
+        assertEquals(true, exception.getMessage().contains("pack sizes are missing"));
+        assertEquals(true, source.openCount() > 0);
+        assertEquals(true, source.allOpenedChannelsClosed());
+        assertEquals(1, source.closeCount());
     }
 
     /// Verifies that close action failures do not mask owned volume source close failures.
@@ -3772,6 +3806,61 @@ public final class SevenZipArkivoFileSystemTest {
                 return null;
             }
             return new MemorySeekableByteChannel(volumes[(int) index], false);
+        }
+    }
+
+    /// Repeatable single-archive source that records opened channel and source lifecycles.
+    @NotNullByDefault
+    private static final class TestSeekableChannelSource implements ArkivoSeekableChannelSource {
+        /// The archive bytes exposed by each opened channel.
+        private final byte @Unmodifiable [] content;
+
+        /// The channels opened from this source.
+        private final ArrayList<MemorySeekableByteChannel> openedChannels = new ArrayList<>();
+
+        /// The number of times this source has been closed.
+        private int closeCount;
+
+        /// Creates a repeatable source over the given archive bytes.
+        private TestSeekableChannelSource(byte[] content) {
+            this.content = Objects.requireNonNull(content, "content").clone();
+        }
+
+        /// Opens an independent channel over the archive bytes.
+        @Override
+        public SeekableByteChannel openChannel() throws IOException {
+            if (closeCount > 0) {
+                throw new IOException("source is closed");
+            }
+            MemorySeekableByteChannel channel = new MemorySeekableByteChannel(content, false);
+            openedChannels.add(channel);
+            return channel;
+        }
+
+        /// Records that this source has been closed.
+        @Override
+        public void close() {
+            closeCount++;
+        }
+
+        /// Returns the number of channels opened from this source.
+        private int openCount() {
+            return openedChannels.size();
+        }
+
+        /// Returns whether every channel opened from this source has been closed.
+        private boolean allOpenedChannelsClosed() {
+            for (MemorySeekableByteChannel channel : openedChannels) {
+                if (channel.isOpen()) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /// Returns the number of times this source has been closed.
+        private int closeCount() {
+            return closeCount;
         }
     }
 

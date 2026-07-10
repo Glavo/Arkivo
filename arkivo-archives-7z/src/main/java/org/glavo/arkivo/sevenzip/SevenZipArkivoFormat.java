@@ -5,6 +5,7 @@ package org.glavo.arkivo.sevenzip;
 
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFormat;
+import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -44,6 +45,20 @@ public final class SevenZipArkivoFormat implements ArkivoFormat {
     /// Opens a 7z archive file system with environment options.
     public ArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         return SevenZipArkivoFileSystem.open(path, environment);
+    }
+
+    /// Opens a read-only 7z archive file system from a repeatable seekable channel source.
+    ///
+    /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    public ArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
+        return SevenZipArkivoFileSystem.open(source);
+    }
+
+    /// Opens a read-only 7z archive file system from a repeatable seekable channel source with environment options.
+    ///
+    /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    public ArkivoFileSystem open(ArkivoSeekableChannelSource source, Map<String, ?> environment) throws IOException {
+        return SevenZipArkivoFileSystem.open(source, environment);
     }
 
     /// Opens a multi-volume 7z archive file system.

@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.rar;
 
+import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -13,6 +14,9 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
+import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.ClosedFileSystemException;
@@ -563,6 +567,37 @@ public final class RarArkivoStreamingReaderTest {
         Files.deleteIfExists(existingFile);
         Files.deleteIfExists(copiedDirectory);
         deleteTemporaryArchive(archivePath);
+    }
+
+    /// Verifies that a repeatable seekable channel source supports random-access RAR file system operations.
+    @Test
+    public void randomAccessFileSystemFromSeekableChannelSource() throws IOException {
+        byte[] content = "seekable channel source content".getBytes(StandardCharsets.UTF_8);
+        TestSeekableChannelSource source = new TestSeekableChannelSource(archive(
+                storedFile("hello.txt", 0, 0100644, content, null)
+        ));
+
+        try (RarArkivoFileSystem fileSystem = RarArkivoFormat.instance().open(source)) {
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/hello.txt")));
+            assertEquals(true, source.openCount() > 0);
+            assertEquals(true, source.allOpenedChannelsClosed());
+            assertEquals(0, source.closeCount());
+        }
+
+        assertEquals(true, source.allOpenedChannelsClosed());
+        assertEquals(1, source.closeCount());
+    }
+
+    /// Verifies that failed RAR parsing closes a seekable channel source and every channel opened from it.
+    @Test
+    public void failedSeekableChannelSourceOpenClosesSource() throws IOException {
+        TestSeekableChannelSource source = new TestSeekableChannelSource(new byte[0]);
+
+        assertThrows(IOException.class, () -> RarArkivoFileSystem.open(source, Map.of()));
+
+        assertEquals(true, source.openCount() > 0);
+        assertEquals(true, source.allOpenedChannelsClosed());
+        assertEquals(1, source.closeCount());
     }
 
     /// Verifies that stored RAR5 entries can be read from explicit archive volumes.
@@ -1606,6 +1641,158 @@ public final class RarArkivoStreamingReaderTest {
     private interface WriterConsumer {
         /// Writes fields to the given writer.
         void accept(VintWriter writer) throws IOException;
+    }
+
+    /// Repeatable single-archive source that records opened channel and source lifecycles.
+    @NotNullByDefault
+    private static final class TestSeekableChannelSource implements ArkivoSeekableChannelSource {
+        /// The archive bytes exposed by each opened channel.
+        private final byte @Unmodifiable [] content;
+
+        /// The channels opened from this source.
+        private final ArrayList<TestByteArraySeekableChannel> openedChannels = new ArrayList<>();
+
+        /// The number of times this source has been closed.
+        private int closeCount;
+
+        /// Creates a repeatable source over the given archive bytes.
+        private TestSeekableChannelSource(byte[] content) {
+            this.content = Objects.requireNonNull(content, "content").clone();
+        }
+
+        /// Opens an independent channel over the archive bytes.
+        @Override
+        public SeekableByteChannel openChannel() throws IOException {
+            if (closeCount > 0) {
+                throw new IOException("source is closed");
+            }
+            TestByteArraySeekableChannel channel = new TestByteArraySeekableChannel(content);
+            openedChannels.add(channel);
+            return channel;
+        }
+
+        /// Records that this source has been closed.
+        @Override
+        public void close() {
+            closeCount++;
+        }
+
+        /// Returns the number of channels opened from this source.
+        private int openCount() {
+            return openedChannels.size();
+        }
+
+        /// Returns whether every channel opened from this source has been closed.
+        private boolean allOpenedChannelsClosed() {
+            for (TestByteArraySeekableChannel channel : openedChannels) {
+                if (channel.isOpen()) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /// Returns the number of times this source has been closed.
+        private int closeCount() {
+            return closeCount;
+        }
+    }
+
+    /// Read-only seekable channel over an immutable byte array.
+    @NotNullByDefault
+    private static final class TestByteArraySeekableChannel implements SeekableByteChannel {
+        /// The immutable channel content.
+        private final byte @Unmodifiable [] content;
+
+        /// The current channel position.
+        private int position;
+
+        /// Whether this channel is open.
+        private boolean open = true;
+
+        /// Creates a read-only channel over the given content.
+        private TestByteArraySeekableChannel(byte[] content) {
+            this.content = Objects.requireNonNull(content, "content").clone();
+        }
+
+        /// Reads bytes from the current channel position.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            Objects.requireNonNull(destination, "destination");
+            ensureOpen();
+            if (!destination.hasRemaining()) {
+                return 0;
+            }
+            if (position >= content.length) {
+                return -1;
+            }
+            int count = Math.min(destination.remaining(), content.length - position);
+            destination.put(content, position, count);
+            position += count;
+            return count;
+        }
+
+        /// Always rejects writes.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            ensureOpen();
+            Objects.requireNonNull(source, "source");
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns the current channel position.
+        @Override
+        public long position() throws IOException {
+            ensureOpen();
+            return position;
+        }
+
+        /// Sets the current channel position.
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            ensureOpen();
+            if (newPosition < 0 || newPosition > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("newPosition is out of range");
+            }
+            position = (int) newPosition;
+            return this;
+        }
+
+        /// Returns the content size.
+        @Override
+        public long size() throws IOException {
+            ensureOpen();
+            return content.length;
+        }
+
+        /// Always rejects truncation.
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            ensureOpen();
+            if (size < 0) {
+                throw new IllegalArgumentException("size must not be negative");
+            }
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns whether this channel is open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes this channel.
+        @Override
+        public void close() {
+            open = false;
+        }
+
+        /// Requires this channel to be open.
+        private void ensureOpen() throws IOException {
+            if (!open) {
+                throw new ClosedChannelException();
+            }
+        }
     }
 
     /// Writes RAR test header primitives.
