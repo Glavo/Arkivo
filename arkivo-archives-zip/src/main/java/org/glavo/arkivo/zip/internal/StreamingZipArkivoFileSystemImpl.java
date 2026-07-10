@@ -485,7 +485,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     public URI archiveUri() {
         Path path = archivePath;
         if (path == null) {
-        throw new UnsupportedOperationException("Streaming ZIP output paths backed by non-path output cannot be converted to URIs");
+            throw new UnsupportedOperationException("Streaming ZIP output paths backed by non-path output cannot be converted to URIs");
         }
         return path.toUri().normalize();
     }
@@ -499,54 +499,56 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// Closes this ZIP file system and finishes the output archive.
     @Override
     public void close() throws IOException {
-        lock();
-        try {
-            if (!open) {
-                return;
-            }
-            open = false;
-            Throwable failure = null;
-            boolean rewriteExistingArchive = rewriteSnapshot != null;
+        try (CloseOperation ignored = beginCloseOperation()) {
+            lock();
             try {
-                EntryOutputStream entryOutput = currentEntryOutput;
-                if (entryOutput != null) {
-                    entryOutput.close();
+                if (!open) {
+                    return;
                 }
-                if (!rewriteExistingArchive) {
-                    writeCentralDirectory();
-                }
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = exception;
-            } finally {
+                open = false;
+                Throwable failure = null;
+                boolean rewriteExistingArchive = rewriteSnapshot != null;
                 try {
-                    output.close();
+                    EntryOutputStream entryOutput = currentEntryOutput;
+                    if (entryOutput != null) {
+                        entryOutput.close();
+                    }
+                    if (!rewriteExistingArchive) {
+                        writeCentralDirectory();
+                    }
                 } catch (IOException | RuntimeException | Error exception) {
-                    failure = appendFailure(failure, exception);
-                }
-            }
-            if (rewriteExistingArchive) {
-                if (failure == null) {
+                    failure = exception;
+                } finally {
                     try {
-                        rewriteExistingArchive();
+                        output.close();
                     } catch (IOException | RuntimeException | Error exception) {
-                        failure = exception;
+                        failure = appendFailure(failure, exception);
                     }
                 }
-                failure = closeRewriteStorage(failure);
-            } else {
-                failure = finishCommitOutput(failure);
-            }
-            Runnable action = closeAction;
-            try {
-                if (action != null) {
-                    action.run();
+                if (rewriteExistingArchive) {
+                    if (failure == null) {
+                        try {
+                            rewriteExistingArchive();
+                        } catch (IOException | RuntimeException | Error exception) {
+                            failure = exception;
+                        }
+                    }
+                    failure = closeRewriteStorage(failure);
+                } else {
+                    failure = finishCommitOutput(failure);
                 }
-            } catch (RuntimeException | Error exception) {
-                failure = appendFailure(failure, exception);
+                Runnable action = closeAction;
+                try {
+                    if (action != null) {
+                        action.run();
+                    }
+                } catch (RuntimeException | Error exception) {
+                    failure = appendFailure(failure, exception);
+                }
+                throwFailure(failure);
+            } finally {
+                unlock();
             }
-            throwFailure(failure);
-        } finally {
-            unlock();
         }
     }
 
@@ -793,33 +795,43 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// Returns the root directory path.
     @Override
     public @Unmodifiable Iterable<Path> getRootDirectories() {
-        return List.of(rootPath);
+        try (Operation ignored = beginReadOperation()) {
+            return List.of(rootPath);
+        }
     }
 
     /// Returns the file stores exposed by this ZIP file system.
     @Override
     public @Unmodifiable Iterable<FileStore> getFileStores() {
-        return List.of(StreamingZipFileStore.WRITABLE);
+        try (Operation ignored = beginReadOperation()) {
+            return List.of(StreamingZipFileStore.WRITABLE);
+        }
     }
 
     /// Returns the supported file attribute view names.
     @Override
     public @Unmodifiable Set<String> supportedFileAttributeViews() {
-        return Set.of("basic", "zip", "owner", "posix");
+        try (Operation ignored = beginReadOperation()) {
+            return Set.of("basic", "zip", "owner", "posix");
+        }
     }
 
     /// Returns a path inside this ZIP file system.
     @Override
     public Path getPath(String first, String... more) {
-        checkOpen();
-        return ZipArkivoPath.of(this, first, more);
+        try (Operation ignored = beginReadOperation()) {
+            checkOpen();
+            return ZipArkivoPath.of(this, first, more);
+        }
     }
 
     /// Returns a path matcher for paths in this ZIP file system.
     @Override
     public PathMatcher getPathMatcher(String syntaxAndPattern) {
-        checkOpen();
-        return ArkivoPathMatchers.create(syntaxAndPattern, '/');
+        try (Operation ignored = beginReadOperation()) {
+            checkOpen();
+            return ArkivoPathMatchers.create(syntaxAndPattern, '/');
+        }
     }
 
     /// Always rejects watch services because ZIP watch services are not supported.
@@ -830,6 +842,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Checks whether the given path can be accessed in streaming output mode.
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            checkAccessLocked(path, modes);
+        }
+    }
+
+    /// Checks path access while the caller holds the shared operation lock.
+    private void checkAccessLocked(Path path, AccessMode... modes) throws IOException {
         lock();
         try {
             checkOpen();
@@ -853,6 +872,16 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Opens a directory stream over entries visible in the current output session.
     public DirectoryStream<Path> newDirectoryStream(
+            Path directory,
+            DirectoryStream.Filter<? super Path> filter
+    ) throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            return manageDirectoryStream(newDirectoryStreamLocked(directory, filter));
+        }
+    }
+
+    /// Opens a directory stream while the caller holds the shared operation lock.
+    private DirectoryStream<Path> newDirectoryStreamLocked(
             Path directory,
             DirectoryStream.Filter<? super Path> filter
     ) throws IOException {
@@ -884,6 +913,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Returns an attribute view for an entry path visible in the current output session.
     public <V extends FileAttributeView> @Nullable V getFileAttributeView(Path path, Class<V> type) {
+        try (Operation ignored = beginReadOperation()) {
+            return getFileAttributeViewLocked(path, type);
+        }
+    }
+
+    /// Returns an attribute view while the caller holds the shared operation lock.
+    private <V extends FileAttributeView> @Nullable V getFileAttributeViewLocked(Path path, Class<V> type) {
         Objects.requireNonNull(type, "type");
         if (type == BasicFileAttributeView.class || type == ZipArkivoEntryAttributeView.class) {
             return type.cast(new EntryAttributeView(this, path));
@@ -899,6 +935,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Reads typed attributes for an entry path visible in the current output session.
     public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type) throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            return readAttributesLocked(path, type);
+        }
+    }
+
+    /// Reads typed attributes while the caller holds the shared operation lock.
+    private <A extends BasicFileAttributes> A readAttributesLocked(Path path, Class<A> type) throws IOException {
         Objects.requireNonNull(type, "type");
         if (type == BasicFileAttributes.class || type == ZipArkivoEntryAttributes.class) {
             return type.cast(readZipAttributes(path));
@@ -911,6 +954,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Reads named attributes for an entry path visible in the current output session.
     public Map<String, Object> readAttributes(Path path, String attributes) throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            return readAttributesLocked(path, attributes);
+        }
+    }
+
+    /// Reads named attributes while the caller holds the shared operation lock.
+    private Map<String, Object> readAttributesLocked(Path path, String attributes) throws IOException {
         Objects.requireNonNull(attributes, "attributes");
         int separator = attributes.indexOf(':');
         String view = separator >= 0 ? attributes.substring(0, separator) : "basic";
@@ -944,6 +994,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Reads a symbolic link target written in the current output session.
     public Path readSymbolicLink(Path link) throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            return readSymbolicLinkLocked(link);
+        }
+    }
+
+    /// Reads a symbolic link target while the caller holds the shared operation lock.
+    private Path readSymbolicLinkLocked(Path link) throws IOException {
         lock();
         try {
             checkOpen();
@@ -1134,7 +1191,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             case "method" -> requireZipView(values, name, zipView, attributes.method());
             case "encryption" -> requireZipView(values, name, zipView, attributes.encryption());
             case "localExtraData" -> requireZipView(values, name, zipView, attributes.localExtraData());
-            case "centralDirectoryExtraData" -> requireZipView(values, name, zipView, attributes.centralDirectoryExtraData());
+            case "centralDirectoryExtraData" ->
+                    requireZipView(values, name, zipView, attributes.centralDirectoryExtraData());
             case "rawComment" -> requireZipView(values, name, zipView, attributes.rawComment());
             case "owner" -> requireOwnerView(values, name, view, posixAttributes.owner());
             case "group" -> requirePosixView(values, name, view, posixAttributes.group());
@@ -1178,7 +1236,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// Returns a user principal lookup service for synthesized ZIP principals.
     @Override
     public UserPrincipalLookupService getUserPrincipalLookupService() {
-        return ZipPosixSupport.userPrincipalLookupService();
+        try (Operation ignored = beginReadOperation()) {
+            return ZipPosixSupport.userPrincipalLookupService();
+        }
     }
 
     /// Opens an output stream for the next ZIP entry.
@@ -1192,18 +1252,33 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             Set<? extends OpenOption> options,
             FileAttribute<?>... attributes
     ) throws IOException {
-        Objects.requireNonNull(options, "options");
-        Objects.requireNonNull(attributes, "attributes");
-        EntryMetadata metadata = applyInitialAttributes(
-                EntryMetadata.deflated(config.defaultEncryption()),
-                false,
-                attributes
-        );
-        return new EntryWritableByteChannel(newOutputStream(path, metadata, options.toArray(OpenOption[]::new)));
+        try (Operation ignored = beginWriteOperation()) {
+            Objects.requireNonNull(options, "options");
+            Objects.requireNonNull(attributes, "attributes");
+            EntryMetadata metadata = applyInitialAttributes(
+                    EntryMetadata.deflated(config.defaultEncryption()),
+                    false,
+                    attributes
+            );
+            OutputStream outputStream = newOutputStreamLocked(
+                    path,
+                    metadata,
+                    options.toArray(OpenOption[]::new)
+            );
+            return manageWriteChannel(new EntryWritableByteChannel(outputStream));
+        }
     }
 
     /// Opens an output stream for the next ZIP entry with central directory attributes.
     OutputStream newOutputStream(Path path, EntryMetadata metadata, OpenOption... options) throws IOException {
+        try (Operation ignored = beginWriteOperation()) {
+            return manageOutputStream(newOutputStreamLocked(path, metadata, options));
+        }
+    }
+
+    /// Opens an entry output stream while the caller holds the exclusive operation lock.
+    private OutputStream newOutputStreamLocked(Path path, EntryMetadata metadata, OpenOption... options)
+            throws IOException {
         lock();
         try {
             checkOpen();
@@ -1258,6 +1333,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Creates a symbolic link entry.
     public void createSymbolicLink(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
+        try (Operation ignored = beginWriteOperation()) {
+            createSymbolicLinkLocked(link, target, attributes);
+        }
+    }
+
+    /// Creates a symbolic link entry while the caller holds the exclusive operation lock.
+    private void createSymbolicLinkLocked(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
         Objects.requireNonNull(target, "target");
         EntryMetadata metadata = applyInitialSymbolicLinkAttributes(
                 EntryMetadata.symbolicLink(config.defaultEncryption()),
@@ -1269,6 +1351,17 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Creates a directory entry with central directory attributes.
     void createDirectory(Path directory, EntryMetadata metadata, FileAttribute<?>... attributes) throws IOException {
+        try (Operation ignored = beginWriteOperation()) {
+            createDirectoryLocked(directory, metadata, attributes);
+        }
+    }
+
+    /// Creates a directory entry while the caller holds the exclusive operation lock.
+    private void createDirectoryLocked(
+            Path directory,
+            EntryMetadata metadata,
+            FileAttribute<?>... attributes
+    ) throws IOException {
         lock();
         try {
             checkOpen();
@@ -1327,7 +1420,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Writes a complete stored entry with a known byte array body.
     void writeStoredEntry(Path path, byte[] content, EntryMetadata metadata) throws IOException {
-        writeStoredEntry(path, content, metadata, null);
+        try (Operation ignored = beginWriteOperation()) {
+            writeStoredEntry(path, content, metadata, null);
+        }
     }
 
     /// Writes a complete stored entry with optional symbolic link target metadata.
@@ -1428,6 +1523,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Deletes an entry from the rewritten ZIP archive.
     public void delete(Path path) throws IOException {
+        try (Operation ignored = beginWriteOperation()) {
+            deleteLocked(path);
+        }
+    }
+
+    /// Deletes an entry while the caller holds the exclusive operation lock.
+    private void deleteLocked(Path path) throws IOException {
         lock();
         try {
             checkOpen();
@@ -3564,8 +3666,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Stores ZIP64 values decoded from an extended information extra field.
     ///
-    /// @param uncompressedSize the uncompressed size
-    /// @param compressedSize the compressed size
+    /// @param uncompressedSize  the uncompressed size
+    /// @param compressedSize    the compressed size
     /// @param localHeaderOffset the local file header offset
     private record Zip64Values(long uncompressedSize, long compressedSize, long localHeaderOffset) {
         /// Reads ZIP64 values from central directory extra data when required.

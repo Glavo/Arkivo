@@ -260,38 +260,40 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// Closes this file system.
     @Override
     public void close() throws IOException {
-        if (open) {
-            Throwable failure = null;
-            @Nullable UpdateMemberByteChannel updateChannel = activeUpdateChannel;
-            if (updateChannel != null) {
-                try {
-                    updateChannel.close();
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = exception;
+        try (CloseOperation ignored = beginCloseOperation()) {
+            if (open) {
+                Throwable failure = null;
+                @Nullable UpdateMemberByteChannel updateChannel = activeUpdateChannel;
+                if (updateChannel != null) {
+                    try {
+                        updateChannel.close();
+                    } catch (IOException | RuntimeException | Error exception) {
+                        failure = exception;
+                    }
                 }
-            }
-            @Nullable ArArkivoStreamingWriter currentWriter = writer;
-            if (failure == null && currentWriter != null) {
-                try {
-                    currentWriter.close();
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = exception;
+                @Nullable ArArkivoStreamingWriter currentWriter = writer;
+                if (failure == null && currentWriter != null) {
+                    try {
+                        currentWriter.close();
+                    } catch (IOException | RuntimeException | Error exception) {
+                        failure = exception;
+                    }
                 }
-            }
-            if (failure == null && updateMode && dirty) {
-                try {
-                    commitUpdate();
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = exception;
+                if (failure == null && updateMode && dirty) {
+                    try {
+                        commitUpdate();
+                    } catch (IOException | RuntimeException | Error exception) {
+                        failure = exception;
+                    }
                 }
+                open = false;
+                try {
+                    closeAction.run();
+                } catch (RuntimeException | Error exception) {
+                    failure = appendFailure(failure, exception);
+                }
+                throwFailure(failure);
             }
-            open = false;
-            try {
-                closeAction.run();
-            } catch (RuntimeException | Error exception) {
-                failure = appendFailure(failure, exception);
-            }
-            throwFailure(failure);
         }
     }
 
@@ -316,33 +318,48 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// Returns the root directories in this file system.
     @Override
     public Iterable<Path> getRootDirectories() {
-        ensureOpen();
-        return List.of(rootPath);
+        try (Operation ignored = beginReadOperation()) {
+            ensureOpen();
+            return List.of(rootPath);
+        }
     }
 
     /// Returns file stores for this file system.
     @Override
     public Iterable<FileStore> getFileStores() {
-        ensureOpen();
-        return List.of(fileStore);
+        try (Operation ignored = beginReadOperation()) {
+            ensureOpen();
+            return List.of(fileStore);
+        }
     }
 
     /// Returns supported attribute view names.
     @Override
     public Set<String> supportedFileAttributeViews() {
-        return SUPPORTED_ATTRIBUTE_VIEWS;
+        try (Operation ignored = beginReadOperation()) {
+            return SUPPORTED_ATTRIBUTE_VIEWS;
+        }
     }
 
     /// Returns a path inside this AR file system.
     @Override
     public Path getPath(String first, String... more) {
-        ensureOpen();
-        return ArArkivoPath.of(this, first, more);
+        try (Operation ignored = beginReadOperation()) {
+            ensureOpen();
+            return ArArkivoPath.of(this, first, more);
+        }
     }
 
     /// Returns a path matcher for AR paths.
     @Override
     public PathMatcher getPathMatcher(String syntaxAndPattern) {
+        try (Operation ignored = beginReadOperation()) {
+            return getPathMatcherLocked(syntaxAndPattern);
+        }
+    }
+
+    /// Returns a path matcher while the caller holds the shared operation lock.
+    private PathMatcher getPathMatcherLocked(String syntaxAndPattern) {
         Objects.requireNonNull(syntaxAndPattern, "syntaxAndPattern");
         int separator = syntaxAndPattern.indexOf(':');
         if (separator <= 0) {
@@ -364,7 +381,9 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// Returns the AR user principal lookup service.
     @Override
     public UserPrincipalLookupService getUserPrincipalLookupService() {
-        return ArPosixSupport.userPrincipalLookupService();
+        try (Operation ignored = beginReadOperation()) {
+            return ArPosixSupport.userPrincipalLookupService();
+        }
     }
 
     /// Watch services are not supported by AR file systems.
@@ -380,17 +399,32 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Opens an input stream for an entry.
     public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
-        requireReadableFileSystem();
-        validateReadOptions(Set.of(options));
-        Node node = requireNode(path);
-        if (node.directory()) {
-            throw new FileSystemException(path.toString(), null, "AR entry is a directory");
+        try (Operation ignored = beginReadOperation()) {
+            requireReadableFileSystem();
+            validateReadOptions(Set.of(options));
+            Node node = requireNode(path);
+            if (node.directory()) {
+                throw new FileSystemException(path.toString(), null, "AR entry is a directory");
+            }
+            return manageInputStream(new ByteArrayInputStream(node.content()));
         }
-        return new ByteArrayInputStream(node.content());
     }
 
     /// Opens a byte channel for a member in the current file system mode.
     public SeekableByteChannel newByteChannel(
+            Path path,
+            Set<? extends OpenOption> options,
+            FileAttribute<?>... attributes
+    ) throws IOException {
+        boolean writable = requestsWrite(options);
+        try (Operation ignored = writable ? beginWriteOperation() : beginReadOperation()) {
+            SeekableByteChannel channel = newByteChannelLocked(path, options, attributes);
+            return writable ? manageWriteChannel(channel) : manageReadChannel(channel);
+        }
+    }
+
+    /// Opens a member byte channel while the caller holds the matching operation lock.
+    private SeekableByteChannel newByteChannelLocked(
             Path path,
             Set<? extends OpenOption> options,
             FileAttribute<?>... attributes
@@ -414,7 +448,9 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Opens an output stream for a writable member.
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
-        return newOutputStream(path, Set.of(options));
+        try (Operation ignored = beginWriteOperation()) {
+            return manageOutputStream(newOutputStream(path, Set.of(options)));
+        }
     }
 
     /// Opens an output stream for a writable member.
@@ -451,6 +487,13 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Creates a new directory member in a writable archive.
     public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
+        try (Operation ignored = beginWriteOperation()) {
+            createDirectoryLocked(directory, attributes);
+        }
+    }
+
+    /// Creates a directory member while the caller holds the exclusive operation lock.
+    private void createDirectoryLocked(Path directory, FileAttribute<?>... attributes) throws IOException {
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
         int mode = initialMode(true, false, attributes);
@@ -476,6 +519,13 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Creates a new symbolic link member in a writable archive.
     public void createSymbolicLink(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
+        try (Operation ignored = beginWriteOperation()) {
+            createSymbolicLinkLocked(link, target, attributes);
+        }
+    }
+
+    /// Creates a symbolic link member while the caller holds the exclusive operation lock.
+    private void createSymbolicLinkLocked(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
@@ -507,6 +557,13 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Deletes one member from an update-mode archive.
     public void delete(Path path) throws IOException {
+        try (Operation ignored = beginWriteOperation()) {
+            deleteLocked(path);
+        }
+    }
+
+    /// Deletes one member while the caller holds the exclusive operation lock.
+    private void deleteLocked(Path path) throws IOException {
         requireUpdateMode();
         requireNoActiveUpdateChannel(path);
         String entryPath = normalizedNodePath(path);
@@ -528,6 +585,13 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Moves one member and any descendants inside an update-mode archive.
     public void move(Path source, Path target, CopyOption... options) throws IOException {
+        try (Operation ignored = beginWriteOperation()) {
+            moveLocked(source, target, options);
+        }
+    }
+
+    /// Moves one member while the caller holds the exclusive operation lock.
+    private void moveLocked(Path source, Path target, CopyOption... options) throws IOException {
         requireUpdateMode();
         requireNoActiveUpdateChannel(source);
         boolean replaceExisting = false;
@@ -604,6 +668,18 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// Updates one named member attribute in update mode.
     public void setAttribute(Path path, String attribute, @Nullable Object value, LinkOption... options)
             throws IOException {
+        try (Operation ignored = beginWriteOperation()) {
+            setAttributeLocked(path, attribute, value, options);
+        }
+    }
+
+    /// Updates one named member attribute while the caller holds the exclusive operation lock.
+    private void setAttributeLocked(
+            Path path,
+            String attribute,
+            @Nullable Object value,
+            LinkOption... options
+    ) throws IOException {
         Objects.requireNonNull(attribute, "attribute");
         Objects.requireNonNull(options, "options");
         int separator = attribute.indexOf(':');
@@ -626,6 +702,16 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// Opens a directory stream for an entry.
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter)
             throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            return manageDirectoryStream(newDirectoryStreamLocked(directory, filter));
+        }
+    }
+
+    /// Opens a directory stream while the caller holds the shared operation lock.
+    private DirectoryStream<Path> newDirectoryStreamLocked(
+            Path directory,
+            DirectoryStream.Filter<? super Path> filter
+    ) throws IOException {
         requireReadableFileSystem();
         Objects.requireNonNull(filter, "filter");
         Node node = requireNode(directory);
@@ -649,6 +735,13 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Checks access to an entry.
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            checkAccessLocked(path, modes);
+        }
+    }
+
+    /// Checks access while the caller holds the shared operation lock.
+    private void checkAccessLocked(Path path, AccessMode... modes) throws IOException {
         if (updateMode) {
             requireNode(path);
             return;
@@ -667,6 +760,13 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Returns this archive's file store.
     public FileStore fileStore(Path path) throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            return fileStoreLocked(path);
+        }
+    }
+
+    /// Returns the file store while the caller holds the shared operation lock.
+    private FileStore fileStoreLocked(Path path) throws IOException {
         if (readOnly || updateMode) {
             requireNode(path);
         } else {
@@ -677,6 +777,13 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Reads a symbolic link target from an AR archive path.
     public Path readSymbolicLink(Path link) throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            return readSymbolicLinkLocked(link);
+        }
+    }
+
+    /// Reads a symbolic link target while the caller holds the shared operation lock.
+    private Path readSymbolicLinkLocked(Path link) throws IOException {
         requireReadableFileSystem();
         Node node = requireNode(link);
         if (!node.attributes().isSymbolicLink()) {
@@ -687,6 +794,17 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Returns an attribute view for a path.
     public <V extends java.nio.file.attribute.FileAttributeView> @Nullable V getFileAttributeView(
+            Path path,
+            Class<V> type,
+            LinkOption... options
+    ) {
+        try (Operation ignored = beginReadOperation()) {
+            return getFileAttributeViewLocked(path, type, options);
+        }
+    }
+
+    /// Returns an attribute view while the caller holds the shared operation lock.
+    private <V extends java.nio.file.attribute.FileAttributeView> @Nullable V getFileAttributeViewLocked(
             Path path,
             Class<V> type,
             LinkOption... options
@@ -711,6 +829,17 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// Reads attributes for a path.
     public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, LinkOption... options)
             throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            return readAttributesLocked(path, type, options);
+        }
+    }
+
+    /// Reads attributes while the caller holds the shared operation lock.
+    private <A extends BasicFileAttributes> A readAttributesLocked(
+            Path path,
+            Class<A> type,
+            LinkOption... options
+    ) throws IOException {
         requireReadableFileSystem();
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(options, "options");
@@ -723,6 +852,14 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Reads named attributes for a path.
     public Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options) throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            return readAttributesLocked(path, attributes, options);
+        }
+    }
+
+    /// Reads named attributes while the caller holds the shared operation lock.
+    private Map<String, Object> readAttributesLocked(Path path, String attributes, LinkOption... options)
+            throws IOException {
         requireReadableFileSystem();
         Objects.requireNonNull(attributes, "attributes");
         Objects.requireNonNull(options, "options");

@@ -151,11 +151,11 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         List<Path> splitVolumePaths = RarSplitVolumePaths.discover(archivePath);
         try (InputStream input = splitVolumePaths != null
                 ? new RarVolumeInputStream(index -> {
-                    if (index < 0 || index >= splitVolumePaths.size()) {
-                        return null;
-                    }
-                    return Files.newByteChannel(splitVolumePaths.get((int) index), openOptions);
-                })
+            if (index < 0 || index >= splitVolumePaths.size()) {
+                return null;
+            }
+            return Files.newByteChannel(splitVolumePaths.get((int) index), openOptions);
+        })
                 : Files.newInputStream(archivePath, openOptions.toArray(OpenOption[]::new))) {
             return new RarArkivoFileSystemImpl(
                     provider,
@@ -228,41 +228,43 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     /// Closes this file system.
     @Override
     public void close() throws IOException {
-        if (!open && volumesClosed && closeActionCompleted) {
-            return;
-        }
-        open = false;
-        Throwable failure = null;
-        if (!volumesClosed) {
-            try {
-                if (volumes != null) {
-                    volumes.close();
-                }
-                volumesClosed = true;
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = exception;
+        try (CloseOperation ignored = beginCloseOperation()) {
+            if (!open && volumesClosed && closeActionCompleted) {
+                return;
             }
-        }
-        if (!closeActionCompleted) {
-            try {
-                closeAction.run();
-                closeActionCompleted = true;
-            } catch (RuntimeException | Error exception) {
-                if (failure != null) {
-                    failure.addSuppressed(exception);
-                } else {
+            open = false;
+            Throwable failure = null;
+            if (!volumesClosed) {
+                try {
+                    if (volumes != null) {
+                        volumes.close();
+                    }
+                    volumesClosed = true;
+                } catch (IOException | RuntimeException | Error exception) {
                     failure = exception;
                 }
             }
-        }
-        if (failure instanceof IOException ioException) {
-            throw ioException;
-        }
-        if (failure instanceof RuntimeException runtimeException) {
-            throw runtimeException;
-        }
-        if (failure instanceof Error error) {
-            throw error;
+            if (!closeActionCompleted) {
+                try {
+                    closeAction.run();
+                    closeActionCompleted = true;
+                } catch (RuntimeException | Error exception) {
+                    if (failure != null) {
+                        failure.addSuppressed(exception);
+                    } else {
+                        failure = exception;
+                    }
+                }
+            }
+            if (failure instanceof IOException ioException) {
+                throw ioException;
+            }
+            if (failure instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            if (failure instanceof Error error) {
+                throw error;
+            }
         }
     }
 
@@ -287,55 +289,67 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     /// Returns the root directories in this file system.
     @Override
     public Iterable<Path> getRootDirectories() {
-        ensureOpen();
-        return List.of(rootPath);
+        try (Operation ignored = beginReadOperation()) {
+            ensureOpen();
+            return List.of(rootPath);
+        }
     }
 
     /// Returns file stores for this file system.
     @Override
     public Iterable<FileStore> getFileStores() {
-        ensureOpen();
-        return List.of(fileStore);
+        try (Operation ignored = beginReadOperation()) {
+            ensureOpen();
+            return List.of(fileStore);
+        }
     }
 
     /// Returns supported attribute view names.
     @Override
     public Set<String> supportedFileAttributeViews() {
-        return SUPPORTED_ATTRIBUTE_VIEWS;
+        try (Operation ignored = beginReadOperation()) {
+            return SUPPORTED_ATTRIBUTE_VIEWS;
+        }
     }
 
     /// Returns a path inside this RAR file system.
     @Override
     public Path getPath(String first, String... more) {
-        ensureOpen();
-        return RarArkivoPath.of(this, first, more);
+        try (Operation ignored = beginReadOperation()) {
+            ensureOpen();
+            return RarArkivoPath.of(this, first, more);
+        }
     }
 
     /// Returns a path matcher for RAR paths.
     @Override
     public PathMatcher getPathMatcher(String syntaxAndPattern) {
-        Objects.requireNonNull(syntaxAndPattern, "syntaxAndPattern");
-        int separator = syntaxAndPattern.indexOf(':');
-        if (separator <= 0) {
-            throw new IllegalArgumentException("Path matcher syntax must be syntax:pattern");
+        try (Operation ignored = beginReadOperation()) {
+            Objects.requireNonNull(syntaxAndPattern, "syntaxAndPattern");
+            int separator = syntaxAndPattern.indexOf(':');
+            if (separator <= 0) {
+                throw new IllegalArgumentException("Path matcher syntax must be syntax:pattern");
+            }
+            String syntax = syntaxAndPattern.substring(0, separator);
+            String pattern = syntaxAndPattern.substring(separator + 1);
+            if ("regex".equals(syntax)) {
+                java.util.regex.Pattern compiled = java.util.regex.Pattern.compile(pattern);
+                return path -> compiled.matcher(path.toString()).matches();
+            }
+            if ("glob".equals(syntax)) {
+                PathMatcher matcher = java.nio.file.FileSystems.getDefault().getPathMatcher("glob:" + pattern);
+                return path -> matcher.matches(Path.of(path.toString()));
+            }
+            throw new UnsupportedOperationException("Unsupported path matcher syntax: " + syntax);
         }
-        String syntax = syntaxAndPattern.substring(0, separator);
-        String pattern = syntaxAndPattern.substring(separator + 1);
-        if ("regex".equals(syntax)) {
-            java.util.regex.Pattern compiled = java.util.regex.Pattern.compile(pattern);
-            return path -> compiled.matcher(path.toString()).matches();
-        }
-        if ("glob".equals(syntax)) {
-            PathMatcher matcher = java.nio.file.FileSystems.getDefault().getPathMatcher("glob:" + pattern);
-            return path -> matcher.matches(Path.of(path.toString()));
-        }
-        throw new UnsupportedOperationException("Unsupported path matcher syntax: " + syntax);
     }
 
     /// Returns the RAR user principal lookup service.
     @Override
     public UserPrincipalLookupService getUserPrincipalLookupService() {
-        return RarPosixSupport.userPrincipalLookupService();
+        try (Operation ignored = beginReadOperation()) {
+            return RarPosixSupport.userPrincipalLookupService();
+        }
     }
 
     /// Watch services are not supported by RAR file systems.
@@ -351,16 +365,18 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
 
     /// Opens an input stream for an entry.
     public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
-        validateReadOptions(Set.of(options));
-        Node node = requireNode(path);
-        if (node.directory()) {
-            throw new FileSystemException(path.toString(), null, "RAR entry is a directory");
+        try (Operation ignored = beginReadOperation()) {
+            validateReadOptions(Set.of(options));
+            Node node = requireNode(path);
+            if (node.directory()) {
+                throw new FileSystemException(path.toString(), null, "RAR entry is a directory");
+            }
+            byte @Nullable @Unmodifiable [] content = node.content();
+            if (content == null) {
+                throw new IOException("RAR entry content is not available: " + path);
+            }
+            return manageInputStream(new ByteArrayInputStream(content));
         }
-        byte @Nullable @Unmodifiable [] content = node.content();
-        if (content == null) {
-            throw new IOException("RAR entry content is not available: " + path);
-        }
-        return new ByteArrayInputStream(content);
     }
 
     /// Opens a read-only byte channel for an entry.
@@ -369,66 +385,76 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             Set<? extends OpenOption> options,
             FileAttribute<?>... attributes
     ) throws IOException {
-        Objects.requireNonNull(attributes, "attributes");
-        validateReadOptions(options);
-        Node node = requireNode(path);
-        if (node.directory()) {
-            throw new FileSystemException(path.toString(), null, "RAR entry is a directory");
+        try (Operation ignored = beginReadOperation()) {
+            Objects.requireNonNull(attributes, "attributes");
+            validateReadOptions(options);
+            Node node = requireNode(path);
+            if (node.directory()) {
+                throw new FileSystemException(path.toString(), null, "RAR entry is a directory");
+            }
+            byte @Nullable @Unmodifiable [] content = node.content();
+            if (content == null) {
+                throw new IOException("RAR entry content is not available: " + path);
+            }
+            return manageReadChannel(new ByteArraySeekableByteChannel(content));
         }
-        byte @Nullable @Unmodifiable [] content = node.content();
-        if (content == null) {
-            throw new IOException("RAR entry content is not available: " + path);
-        }
-        return new ByteArraySeekableByteChannel(content);
     }
 
     /// Opens a directory stream for an entry.
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter)
             throws IOException {
-        Objects.requireNonNull(filter, "filter");
-        Node node = requireNode(directory);
-        if (!node.directory()) {
-            throw new FileSystemException(directory.toString(), null, "RAR entry is not a directory");
-        }
-
-        ArrayList<Path> accepted = new ArrayList<>();
-        for (String childPath : node.children().values()) {
-            Path child = rootPath.resolve(childPath);
-            try {
-                if (filter.accept(child)) {
-                    accepted.add(child);
-                }
-            } catch (IOException exception) {
-                throw new DirectoryIteratorException(exception);
+        try (Operation ignored = beginReadOperation()) {
+            Objects.requireNonNull(filter, "filter");
+            Node node = requireNode(directory);
+            if (!node.directory()) {
+                throw new FileSystemException(directory.toString(), null, "RAR entry is not a directory");
             }
+
+            ArrayList<Path> accepted = new ArrayList<>();
+            for (String childPath : node.children().values()) {
+                Path child = rootPath.resolve(childPath);
+                try {
+                    if (filter.accept(child)) {
+                        accepted.add(child);
+                    }
+                } catch (IOException exception) {
+                    throw new DirectoryIteratorException(exception);
+                }
+            }
+            return manageDirectoryStream(new ListDirectoryStream(accepted));
         }
-        return new ListDirectoryStream(accepted);
     }
 
     /// Checks access to an entry.
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
-        requireNode(path);
-        for (AccessMode mode : modes) {
-            if (mode != AccessMode.READ) {
-                throw new ReadOnlyFileSystemException();
+        try (Operation ignored = beginReadOperation()) {
+            requireNode(path);
+            for (AccessMode mode : modes) {
+                if (mode != AccessMode.READ) {
+                    throw new ReadOnlyFileSystemException();
+                }
             }
         }
     }
 
     /// Returns this archive's file store.
     public FileStore fileStore(Path path) throws IOException {
-        requireNode(path);
-        return fileStore;
+        try (Operation ignored = beginReadOperation()) {
+            requireNode(path);
+            return fileStore;
+        }
     }
 
     /// Reads a symbolic link target.
     public Path readSymbolicLink(Path link) throws IOException {
-        Node node = requireNode(link);
-        String linkName = node.attributes().linkName();
-        if (!node.attributes().isSymbolicLink() || linkName == null) {
-            throw new NotLinkException(link.toString());
+        try (Operation ignored = beginReadOperation()) {
+            Node node = requireNode(link);
+            String linkName = node.attributes().linkName();
+            if (!node.attributes().isSymbolicLink() || linkName == null) {
+                throw new NotLinkException(link.toString());
+            }
+            return getPath(linkName);
         }
-        return getPath(linkName);
     }
 
     /// Returns an attribute view for a path.
@@ -437,37 +463,51 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             Class<V> type,
             LinkOption... options
     ) {
-        Objects.requireNonNull(type, "type");
-        Objects.requireNonNull(options, "options");
-        if (type == BasicFileAttributeView.class) {
-            return type.cast(new BasicView(path));
+        try (Operation ignored = beginReadOperation()) {
+            Objects.requireNonNull(type, "type");
+            Objects.requireNonNull(options, "options");
+            if (type == BasicFileAttributeView.class) {
+                return type.cast(new BasicView(path));
+            }
+            if (type == FileOwnerAttributeView.class) {
+                return type.cast(new OwnerView(path));
+            }
+            if (type == PosixFileAttributeView.class) {
+                return type.cast(new PosixView(path));
+            }
+            if (type == RarArkivoEntryAttributeView.class) {
+                return type.cast(new RarView(path));
+            }
+            return null;
         }
-        if (type == FileOwnerAttributeView.class) {
-            return type.cast(new OwnerView(path));
-        }
-        if (type == PosixFileAttributeView.class) {
-            return type.cast(new PosixView(path));
-        }
-        if (type == RarArkivoEntryAttributeView.class) {
-            return type.cast(new RarView(path));
-        }
-        return null;
     }
 
     /// Reads attributes for a path.
     public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, LinkOption... options)
             throws IOException {
-        Objects.requireNonNull(type, "type");
-        Objects.requireNonNull(options, "options");
-        RarEntryAttributes attributes = requireNode(path).attributes();
-        if (type == BasicFileAttributes.class || type == RarArkivoEntryAttributes.class || type == PosixFileAttributes.class) {
-            return type.cast(attributes);
+        try (Operation ignored = beginReadOperation()) {
+            Objects.requireNonNull(type, "type");
+            Objects.requireNonNull(options, "options");
+            RarEntryAttributes attributes = requireNode(path).attributes();
+            if (type == BasicFileAttributes.class
+                    || type == RarArkivoEntryAttributes.class
+                    || type == PosixFileAttributes.class) {
+                return type.cast(attributes);
+            }
+            throw new UnsupportedOperationException("Unsupported RAR attribute type: " + type.getName());
         }
-        throw new UnsupportedOperationException("Unsupported RAR attribute type: " + type.getName());
     }
 
     /// Reads named attributes for a path.
     public Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options) throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            return readAttributesLocked(path, attributes, options);
+        }
+    }
+
+    /// Reads named attributes while the caller holds the shared operation lock.
+    private Map<String, Object> readAttributesLocked(Path path, String attributes, LinkOption... options)
+            throws IOException {
         Objects.requireNonNull(attributes, "attributes");
         Objects.requireNonNull(options, "options");
         RarEntryAttributes entryAttributes = requireNode(path).attributes();

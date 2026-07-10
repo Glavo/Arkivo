@@ -260,38 +260,40 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Closes this file system.
     @Override
     public void close() throws IOException {
-        if (open) {
-            Throwable failure = null;
-            @Nullable UpdateEntryByteChannel updateChannel = activeUpdateChannel;
-            if (updateChannel != null) {
-                try {
-                    updateChannel.close();
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = exception;
+        try (CloseOperation ignored = beginCloseOperation()) {
+            if (open) {
+                Throwable failure = null;
+                @Nullable UpdateEntryByteChannel updateChannel = activeUpdateChannel;
+                if (updateChannel != null) {
+                    try {
+                        updateChannel.close();
+                    } catch (IOException | RuntimeException | Error exception) {
+                        failure = exception;
+                    }
                 }
-            }
-            @Nullable TarArkivoStreamingWriter currentWriter = writer;
-            if (failure == null && currentWriter != null) {
-                try {
-                    currentWriter.close();
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = exception;
+                @Nullable TarArkivoStreamingWriter currentWriter = writer;
+                if (failure == null && currentWriter != null) {
+                    try {
+                        currentWriter.close();
+                    } catch (IOException | RuntimeException | Error exception) {
+                        failure = exception;
+                    }
                 }
-            }
-            if (failure == null && updateMode && dirty) {
-                try {
-                    commitUpdate();
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = exception;
+                if (failure == null && updateMode && dirty) {
+                    try {
+                        commitUpdate();
+                    } catch (IOException | RuntimeException | Error exception) {
+                        failure = exception;
+                    }
                 }
+                open = false;
+                try {
+                    closeAction.run();
+                } catch (RuntimeException | Error exception) {
+                    failure = appendFailure(failure, exception);
+                }
+                throwFailure(failure);
             }
-            open = false;
-            try {
-                closeAction.run();
-            } catch (RuntimeException | Error exception) {
-                failure = appendFailure(failure, exception);
-            }
-            throwFailure(failure);
         }
     }
 
@@ -316,33 +318,48 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Returns the root directories in this file system.
     @Override
     public Iterable<Path> getRootDirectories() {
-        ensureOpen();
-        return List.of(rootPath);
+        try (Operation ignored = beginReadOperation()) {
+            ensureOpen();
+            return List.of(rootPath);
+        }
     }
 
     /// Returns file stores for this file system.
     @Override
     public Iterable<FileStore> getFileStores() {
-        ensureOpen();
-        return List.of(fileStore);
+        try (Operation ignored = beginReadOperation()) {
+            ensureOpen();
+            return List.of(fileStore);
+        }
     }
 
     /// Returns supported attribute view names.
     @Override
     public Set<String> supportedFileAttributeViews() {
-        return SUPPORTED_ATTRIBUTE_VIEWS;
+        try (Operation ignored = beginReadOperation()) {
+            return SUPPORTED_ATTRIBUTE_VIEWS;
+        }
     }
 
     /// Returns a path inside this TAR file system.
     @Override
     public Path getPath(String first, String... more) {
-        ensureOpen();
-        return TarArkivoPath.of(this, first, more);
+        try (Operation ignored = beginReadOperation()) {
+            ensureOpen();
+            return TarArkivoPath.of(this, first, more);
+        }
     }
 
     /// Returns a path matcher for TAR paths.
     @Override
     public PathMatcher getPathMatcher(String syntaxAndPattern) {
+        try (Operation ignored = beginReadOperation()) {
+            return getPathMatcherLocked(syntaxAndPattern);
+        }
+    }
+
+    /// Returns a path matcher while the caller holds the shared operation lock.
+    private PathMatcher getPathMatcherLocked(String syntaxAndPattern) {
         Objects.requireNonNull(syntaxAndPattern, "syntaxAndPattern");
         int separator = syntaxAndPattern.indexOf(':');
         if (separator <= 0) {
@@ -364,7 +381,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Returns the TAR user principal lookup service.
     @Override
     public UserPrincipalLookupService getUserPrincipalLookupService() {
-        return TarPosixSupport.userPrincipalLookupService();
+        try (Operation ignored = beginReadOperation()) {
+            return TarPosixSupport.userPrincipalLookupService();
+        }
     }
 
     /// Watch services are not supported by TAR file systems.
@@ -380,17 +399,32 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Opens an input stream for an entry.
     public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
-        requireReadableFileSystem();
-        validateReadOptions(Set.of(options));
-        Node node = requireNode(path);
-        if (!node.attributes().isRegularFile()) {
-            throw new FileSystemException(path.toString(), null, "TAR entry is not a regular file");
+        try (Operation ignored = beginReadOperation()) {
+            requireReadableFileSystem();
+            validateReadOptions(Set.of(options));
+            Node node = requireNode(path);
+            if (!node.attributes().isRegularFile()) {
+                throw new FileSystemException(path.toString(), null, "TAR entry is not a regular file");
+            }
+            return manageInputStream(new ByteArrayInputStream(node.content()));
         }
-        return new ByteArrayInputStream(node.content());
     }
 
     /// Opens a read-only byte channel for an entry.
     public SeekableByteChannel newByteChannel(
+            Path path,
+            Set<? extends OpenOption> options,
+            FileAttribute<?>... attributes
+    ) throws IOException {
+        boolean writable = requestsWrite(options);
+        try (Operation ignored = writable ? beginWriteOperation() : beginReadOperation()) {
+            SeekableByteChannel channel = newByteChannelLocked(path, options, attributes);
+            return writable ? manageWriteChannel(channel) : manageReadChannel(channel);
+        }
+    }
+
+    /// Opens an entry byte channel while the caller holds the matching operation lock.
+    private SeekableByteChannel newByteChannelLocked(
             Path path,
             Set<? extends OpenOption> options,
             FileAttribute<?>... attributes
@@ -414,7 +448,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Opens an output stream for a new forward-only file entry.
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
-        return newOutputStream(path, Set.of(options));
+        try (Operation ignored = beginWriteOperation()) {
+            return manageOutputStream(newOutputStream(path, Set.of(options)));
+        }
     }
 
     /// Opens an output stream for a new forward-only file entry.
@@ -451,6 +487,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Creates a new forward-only directory entry.
     public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
+        try (Operation ignored = beginWriteOperation()) {
+            createDirectoryLocked(directory, attributes);
+        }
+    }
+
+    /// Creates a directory entry while the caller holds the exclusive operation lock.
+    private void createDirectoryLocked(Path directory, FileAttribute<?>... attributes) throws IOException {
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
         @Nullable Set<PosixFilePermission> permissions = initialPosixPermissions(attributes);
@@ -476,6 +519,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Creates a new forward-only symbolic link entry.
     public void createSymbolicLink(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
+        try (Operation ignored = beginWriteOperation()) {
+            createSymbolicLinkLocked(link, target, attributes);
+        }
+    }
+
+    /// Creates a symbolic link entry while the caller holds the exclusive operation lock.
+    private void createSymbolicLinkLocked(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(attributes, "attributes");
         requireWritableFileSystem();
@@ -502,6 +552,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Creates a new forward-only hard link entry.
     public void createLink(Path link, Path existing) throws IOException {
+        try (Operation ignored = beginWriteOperation()) {
+            createLinkLocked(link, existing);
+        }
+    }
+
+    /// Creates a hard link entry while the caller holds the exclusive operation lock.
+    private void createLinkLocked(Path link, Path existing) throws IOException {
         Objects.requireNonNull(existing, "existing");
         requireWritableFileSystem();
         if (updateMode) {
@@ -534,6 +591,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Deletes one entry from an update-mode archive.
     public void delete(Path path) throws IOException {
+        try (Operation ignored = beginWriteOperation()) {
+            deleteLocked(path);
+        }
+    }
+
+    /// Deletes one entry while the caller holds the exclusive operation lock.
+    private void deleteLocked(Path path) throws IOException {
         requireUpdateMode();
         requireNoActiveUpdateChannel(path);
         String entryPath = normalizedNodePath(path);
@@ -556,6 +620,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Moves one entry and any descendants inside an update-mode archive.
     public void move(Path source, Path target, CopyOption... options) throws IOException {
+        try (Operation ignored = beginWriteOperation()) {
+            moveLocked(source, target, options);
+        }
+    }
+
+    /// Moves one entry while the caller holds the exclusive operation lock.
+    private void moveLocked(Path source, Path target, CopyOption... options) throws IOException {
         requireUpdateMode();
         requireNoActiveUpdateChannel(source);
         boolean replaceExisting = false;
@@ -643,6 +714,18 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Updates one named entry attribute in update mode.
     public void setAttribute(Path path, String attribute, @Nullable Object value, LinkOption... options) throws IOException {
+        try (Operation ignored = beginWriteOperation()) {
+            setAttributeLocked(path, attribute, value, options);
+        }
+    }
+
+    /// Updates one named entry attribute while the caller holds the exclusive operation lock.
+    private void setAttributeLocked(
+            Path path,
+            String attribute,
+            @Nullable Object value,
+            LinkOption... options
+    ) throws IOException {
         Objects.requireNonNull(attribute, "attribute");
         Objects.requireNonNull(options, "options");
         int separator = attribute.indexOf(':');
@@ -665,6 +748,16 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Opens a directory stream for an entry.
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter)
             throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            return manageDirectoryStream(newDirectoryStreamLocked(directory, filter));
+        }
+    }
+
+    /// Opens a directory stream while the caller holds the shared operation lock.
+    private DirectoryStream<Path> newDirectoryStreamLocked(
+            Path directory,
+            DirectoryStream.Filter<? super Path> filter
+    ) throws IOException {
         requireReadableFileSystem();
         Objects.requireNonNull(filter, "filter");
         Node node = requireNode(directory);
@@ -688,6 +781,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Checks access to an entry.
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            checkAccessLocked(path, modes);
+        }
+    }
+
+    /// Checks access while the caller holds the shared operation lock.
+    private void checkAccessLocked(Path path, AccessMode... modes) throws IOException {
         if (updateMode) {
             requireNode(path);
             return;
@@ -706,6 +806,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Returns this archive's file store.
     public FileStore fileStore(Path path) throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            return fileStoreLocked(path);
+        }
+    }
+
+    /// Returns the file store while the caller holds the shared operation lock.
+    private FileStore fileStoreLocked(Path path) throws IOException {
         if (readOnly || updateMode) {
             requireNode(path);
         } else {
@@ -716,6 +823,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Reads a symbolic link target.
     public Path readSymbolicLink(Path link) throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            return readSymbolicLinkLocked(link);
+        }
+    }
+
+    /// Reads a symbolic link target while the caller holds the shared operation lock.
+    private Path readSymbolicLinkLocked(Path link) throws IOException {
         requireReadableFileSystem();
         Node node = requireNode(link);
         @Nullable String linkName = node.attributes().linkName();
@@ -727,6 +841,17 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Returns an attribute view for a path.
     public <V extends java.nio.file.attribute.FileAttributeView> @Nullable V getFileAttributeView(
+            Path path,
+            Class<V> type,
+            LinkOption... options
+    ) {
+        try (Operation ignored = beginReadOperation()) {
+            return getFileAttributeViewLocked(path, type, options);
+        }
+    }
+
+    /// Returns an attribute view while the caller holds the shared operation lock.
+    private <V extends java.nio.file.attribute.FileAttributeView> @Nullable V getFileAttributeViewLocked(
             Path path,
             Class<V> type,
             LinkOption... options
@@ -751,6 +876,17 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Reads attributes for a path.
     public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, LinkOption... options)
             throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            return readAttributesLocked(path, type, options);
+        }
+    }
+
+    /// Reads attributes while the caller holds the shared operation lock.
+    private <A extends BasicFileAttributes> A readAttributesLocked(
+            Path path,
+            Class<A> type,
+            LinkOption... options
+    ) throws IOException {
         requireReadableFileSystem();
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(options, "options");
@@ -763,6 +899,14 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Reads named attributes for a path.
     public Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options) throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            return readAttributesLocked(path, attributes, options);
+        }
+    }
+
+    /// Reads named attributes while the caller holds the shared operation lock.
+    private Map<String, Object> readAttributesLocked(Path path, String attributes, LinkOption... options)
+            throws IOException {
         requireReadableFileSystem();
         Objects.requireNonNull(attributes, "attributes");
         Objects.requireNonNull(options, "options");
@@ -1387,6 +1531,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             parent.children().put(fileName(node.path()), node.path());
         }
     }
+
     /// Sets one basic timestamp attribute.
     private void setBasicAttribute(Path path, String name, @Nullable Object value) throws IOException {
         if (!(value instanceof FileTime time)) {
@@ -2295,7 +2440,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         private final @Nullable Node originalNode;
 
         /// Initial permissions applied only when a new entry is committed.
-        private final @Nullable @Unmodifiable Set<PosixFilePermission> initialPermissions;
+        private final @Nullable
+        @Unmodifiable Set<PosixFilePermission> initialPermissions;
 
         /// Whether reads are allowed.
         private final boolean readable;

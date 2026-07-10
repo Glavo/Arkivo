@@ -10,13 +10,17 @@ import java.util.Locale;
 /// Defines the thread-safety strategy requested for an archive file system instance.
 @NotNullByDefault
 public enum ArkivoFileSystemThreadSafety {
-    /// Performs no additional synchronization beyond each implementation's internal invariants.
+    /// Performs no Arkivo lifecycle synchronization or resource wrapping beyond each implementation's invariants.
+    /// Callers must coordinate concurrent operations and close any entry resources before closing the file system.
     NONE("none"),
 
-    /// Supports concurrent read-only file system operations.
+    /// Allows read-only operations to run concurrently while serializing mutations and file system close.
+    /// Entry streams, channels, and directory streams reject new operations after file system close but remain the
+    /// caller's responsibility to close.
     CONCURRENT_READ("concurrent-read"),
 
-    /// Coordinates file system operations and close semantics more strictly.
+    /// Uses concurrent-read coordination and force-closes active entry streams, channels, and directory streams before
+    /// closing the archive backing resources.
     STRICT("strict");
 
     /// The stable environment option name.
