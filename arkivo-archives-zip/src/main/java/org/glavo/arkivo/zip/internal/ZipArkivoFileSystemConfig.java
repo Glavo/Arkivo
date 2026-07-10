@@ -123,6 +123,11 @@ public final class ZipArkivoFileSystemConfig {
     ) {
         Objects.requireNonNull(environment, "environment");
         Objects.requireNonNull(defaultOpenOptions, "defaultOpenOptions");
+        if (environment.containsKey("arkivo.zip.password")) {
+            throw new IllegalArgumentException(
+                    "The arkivo.zip.password option has been removed; use arkivo.zip.passwordProvider instead"
+            );
+        }
         if (environment.isEmpty() && defaultOpenOptions.equals(DEFAULT_READ_OPEN_OPTIONS)) {
             return DEFAULTS;
         }
@@ -211,19 +216,7 @@ public final class ZipArkivoFileSystemConfig {
 
     /// Parses the password provider from an environment map.
     private static @Nullable ArkivoPasswordProvider passwordProvider(Map<String, ?> environment) {
-        Object provider = environment.get(ZipArkivoFileSystem.PASSWORD_PROVIDER.key());
-        Object password = environment.get(ZipArkivoFileSystem.PASSWORD.key());
-        if (provider != null && password != null) {
-            throw new IllegalArgumentException("passwordProvider and password cannot both be set");
-        }
-        if (provider != null) {
-            return ZipArkivoFileSystem.PASSWORD_PROVIDER.read(environment);
-        }
-        if (password != null) {
-            byte[] fixedPassword = ZipArkivoFileSystem.PASSWORD.read(environment);
-            return fixedPassword != null ? ArkivoPasswordProvider.fixed(fixedPassword) : null;
-        }
-        return null;
+        return ZipArkivoFileSystem.PASSWORD_PROVIDER.read(environment);
     }
 
     /// Parses the split size from an environment map.

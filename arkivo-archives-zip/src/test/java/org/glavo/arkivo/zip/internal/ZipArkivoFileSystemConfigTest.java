@@ -7,6 +7,7 @@ import org.glavo.arkivo.ArkivoCommitTarget;
 import org.glavo.arkivo.ArkivoEditStorage;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.ArkivoSourceMutationPolicy;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipEntryNameEncoding;
@@ -19,7 +20,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -39,7 +39,6 @@ public final class ZipArkivoFileSystemConfigTest {
         assertEquals("arkivo.zip", ZipArkivoFileSystem.PASSWORD_PROVIDER.namespace());
         assertEquals("passwordProvider", ZipArkivoFileSystem.PASSWORD_PROVIDER.name());
         assertEquals("arkivo.zip.passwordProvider", ZipArkivoFileSystem.PASSWORD_PROVIDER.key());
-        assertEquals("arkivo.zip.password", ZipArkivoFileSystem.PASSWORD.key());
         assertEquals("arkivo.zip.defaultEncryption", ZipArkivoFileSystem.DEFAULT_ENCRYPTION.key());
         assertEquals("arkivo.zip.splitSize", ZipArkivoFileSystem.SPLIT_SIZE.key());
         assertEquals("arkivo.zip.entryNameEncoding", ZipArkivoFileSystem.ENTRY_NAME_ENCODING.key());
@@ -132,14 +131,26 @@ public final class ZipArkivoFileSystemConfigTest {
         assertThrows(IllegalArgumentException.class, () -> ZipArkivoFileSystemConfig.fromEnvironment(environment));
     }
 
-    /// Verifies that fixed password bytes are converted into a password provider.
+    /// Verifies that password providers are preserved by ZIP configuration parsing.
     @Test
-    public void passwordBytes() throws Exception {
-        Map<String, Object> environment = Map.of(ZipArkivoFileSystem.PASSWORD.key(), new byte[]{1, 2, 3});
+    public void passwordProvider() {
+        ArkivoPasswordProvider passwordProvider = ArkivoPasswordProvider.fixed(new byte[]{1, 2, 3});
+        Map<String, Object> environment = Map.of(
+                ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                passwordProvider
+        );
 
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
 
-        assertArrayEquals(new byte[]{1, 2, 3}, config.passwordProvider().passwordForArchive());
+        assertSame(passwordProvider, config.passwordProvider());
+    }
+
+    /// Verifies that the removed fixed password option is rejected.
+    @Test
+    public void legacyFixedPasswordOptionIsRejected() {
+        Map<String, Object> environment = Map.of("arkivo.zip.password", new byte[]{1, 2, 3});
+
+        assertThrows(IllegalArgumentException.class, () -> ZipArkivoFileSystemConfig.fromEnvironment(environment));
     }
 
     /// Verifies that ZIP file system configuration accepts common edit strategy options.

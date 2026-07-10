@@ -85,7 +85,7 @@ Format-specific file system configuration options should live on the concrete fi
 `ArkivoFileSystemOption` constants.
 Environment option keys should use a compact Arkivo namespace. Common option keys should use `arkivo.<option>`,
 such as `arkivo.threadSafety`, while format-specific option keys should use `arkivo.<format>.<option>`, such as
-`arkivo.zip.password`.
+`arkivo.zip.passwordProvider`.
 `ArkivoFileSystemOption` should model the namespace and local option name separately, with the environment key derived
 from those parts.
 Standalone string key constants should not be exposed by concrete file system utility classes; callers can use

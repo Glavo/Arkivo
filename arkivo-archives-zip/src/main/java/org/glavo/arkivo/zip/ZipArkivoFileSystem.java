@@ -28,10 +28,6 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
     public static final ArkivoFileSystemOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArkivoFileSystemOption.of("arkivo.zip", "passwordProvider", ArkivoPasswordProvider.class);
 
-    /// The environment option for a fixed `byte[]` password value.
-    public static final ArkivoFileSystemOption<byte[]> PASSWORD =
-            ArkivoFileSystemOption.of("arkivo.zip", "password", byte[].class, ZipArkivoFileSystem::passwordOptionValue);
-
     /// The environment option for a `ZipEncryption` value used as the default encryption method for new entries.
     public static final ArkivoFileSystemOption<ZipEncryption> DEFAULT_ENCRYPTION =
             ArkivoFileSystemOption.of(
@@ -92,14 +88,6 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
 
     /// Opens a read-only channel over the bytes stored before the ZIP archive body.
     public abstract SeekableByteChannel openPreambleChannel() throws IOException;
-
-    /// Converts a raw password option value.
-    private static byte[] passwordOptionValue(Object value) {
-        if (value instanceof byte[] password) {
-            return password;
-        }
-        throw new IllegalArgumentException("Expected byte[] for key: " + PASSWORD.key());
-    }
 
     /// Converts a raw default encryption option value.
     private static ZipEncryption defaultEncryptionOptionValue(Object value) {
