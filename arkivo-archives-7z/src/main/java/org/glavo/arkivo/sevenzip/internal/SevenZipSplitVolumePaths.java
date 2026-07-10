@@ -39,6 +39,14 @@ final class SevenZipSplitVolumePaths {
     private SevenZipSplitVolumePaths() {
     }
 
+    /// Requires a path to identify conventional first volume number one.
+    static void requireFirstVolumePath(Path firstVolumePath) {
+        Path fileNamePath = firstVolumePath.getFileName();
+        if (fileNamePath == null || splitVolumeNumber(fileNamePath.toString()) != FIRST_VOLUME_NUMBER) {
+            throw new IllegalArgumentException("7z split output path must end in a numbered first-volume suffix such as .001");
+        }
+    }
+
     /// Returns conventional split volume paths for a first-volume path, or `null` for a single-volume path.
     static @Nullable @Unmodifiable List<Path> discover(Path firstVolumePath) throws IOException {
         Path fileNamePath = firstVolumePath.getFileName();
@@ -102,7 +110,10 @@ final class SevenZipSplitVolumePaths {
     }
 
     /// Returns the conventional path for a numbered split volume.
-    private static Path numberedVolumePath(Path firstVolumePath, int volumeNumber) {
+    static Path numberedVolumePath(Path firstVolumePath, int volumeNumber) {
+        if (volumeNumber <= 0) {
+            throw new IllegalArgumentException("volumeNumber must be positive");
+        }
         String fileName = firstVolumePath.getFileName().toString();
         int suffixStart = fileName.lastIndexOf('.') + 1;
         int suffixWidth = fileName.length() - suffixStart;
@@ -110,6 +121,20 @@ final class SevenZipSplitVolumePaths {
         Path volumePath = Path.of(volumeFileName);
         Path parent = firstVolumePath.getParent();
         return parent != null ? parent.resolve(volumePath) : volumePath;
+    }
+
+    /// Returns the first-volume file name prefix before its numeric suffix.
+    static String volumeFileNamePrefix(Path firstVolumePath) {
+        requireFirstVolumePath(firstVolumePath);
+        String fileName = firstVolumePath.getFileName().toString();
+        return fileName.substring(0, fileName.lastIndexOf('.') + 1);
+    }
+
+    /// Returns the minimum numeric suffix width established by the first-volume path.
+    static int volumeSuffixWidth(Path firstVolumePath) {
+        requireFirstVolumePath(firstVolumePath);
+        String fileName = firstVolumePath.getFileName().toString();
+        return fileName.length() - fileName.lastIndexOf('.') - 1;
     }
 
     /// Returns a positive volume number padded to the requested minimum width.

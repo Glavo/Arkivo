@@ -6,7 +6,9 @@ package org.glavo.arkivo.sevenzip;
 import java.io.ByteArrayOutputStream;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
 import org.glavo.arkivo.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.ArkivoVolumeOutput;
 import org.glavo.arkivo.ArkivoVolumeSource;
+import org.glavo.arkivo.ArkivoVolumeTarget;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoPasswordProvider;
@@ -36,9 +38,11 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
@@ -491,6 +495,254 @@ public final class SevenZipArkivoFileSystemTest {
                 assertEquals(fileSystem.getPath("dir/hello.txt"), Files.readSymbolicLink(link));
                 assertEquals("dir/hello.txt", Files.readString(link, StandardCharsets.UTF_8));
             }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that path-backed 7z writes produce conventional bounded split volumes that can be reopened.
+    @Test
+    public void createsPathBackedSplitArchive() throws IOException {
+        long splitSize = 128L;
+        byte[] content = new byte[1024];
+        for (int index = 0; index < content.length; index++) {
+            content[index] = (byte) index;
+        }
+        Path firstVolume = createTemporaryArchivePath("split-write-").resolveSibling("sample.7z.001");
+        Map<String, Object> environment = splitWriteEnvironment(splitSize, false);
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(firstVolume, environment)) {
+                Files.write(fileSystem.getPath("/content.bin"), content);
+                assertEquals(false, Files.exists(firstVolume));
+            }
+
+            List<Path> volumePaths = existingTestVolumePaths(firstVolume);
+            assertEquals(true, volumePaths.size() > 1);
+            for (int index = 0; index < volumePaths.size(); index++) {
+                long volumeSize = Files.size(volumePaths.get(index));
+                assertEquals(true, volumeSize > 0L);
+                assertEquals(true, volumeSize <= splitSize);
+                if (index + 1 < volumePaths.size()) {
+                    assertEquals(splitSize, volumeSize);
+                }
+            }
+
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(firstVolume)) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/content.bin")));
+            }
+        } finally {
+            deleteTemporaryArchiveDirectory(firstVolume);
+        }
+    }
+
+    /// Verifies that replacing path-backed split output removes stale higher-numbered volumes.
+    @Test
+    public void pathBackedSplitArchiveRemovesStaleVolumes() throws IOException {
+        long splitSize = 4096L;
+        byte[] content = "replacement split archive".getBytes(StandardCharsets.UTF_8);
+        Path firstVolume = createTemporaryArchivePath("split-replace-").resolveSibling("sample.7z.001");
+        Path secondVolume = testVolumePath(firstVolume, 2);
+        Path thirdVolume = testVolumePath(firstVolume, 3);
+        Files.write(firstVolume, new byte[]{1});
+        Files.write(secondVolume, new byte[]{2});
+        Files.write(thirdVolume, new byte[]{3});
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                    firstVolume,
+                    splitWriteEnvironment(splitSize, false)
+            )) {
+                Files.write(fileSystem.getPath("/replacement.txt"), content);
+                assertArrayEquals(new byte[]{1}, Files.readAllBytes(firstVolume));
+                assertArrayEquals(new byte[]{2}, Files.readAllBytes(secondVolume));
+                assertArrayEquals(new byte[]{3}, Files.readAllBytes(thirdVolume));
+            }
+
+            assertEquals(true, Files.exists(firstVolume));
+            assertEquals(false, Files.exists(secondVolume));
+            assertEquals(false, Files.exists(thirdVolume));
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(firstVolume)) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/replacement.txt")));
+            }
+        } finally {
+            deleteTemporaryArchiveDirectory(firstVolume);
+        }
+    }
+
+    /// Verifies that create-new split publication preserves existing volumes after a conflict.
+    @Test
+    public void pathBackedSplitCreateNewRollsBack() throws IOException {
+        byte[] existingContent = new byte[]{9, 8, 7};
+        Path firstVolume = createTemporaryArchivePath("split-create-new-").resolveSibling("sample.7z.001");
+        Path secondVolume = testVolumePath(firstVolume, 2);
+        try {
+            SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                    firstVolume,
+                    splitWriteEnvironment(64L, true)
+            );
+            Files.write(fileSystem.getPath("/content.bin"), new byte[512]);
+            Files.write(secondVolume, existingContent);
+
+            assertThrows(FileAlreadyExistsException.class, fileSystem::close);
+            assertEquals(false, Files.exists(firstVolume));
+            assertArrayEquals(existingContent, Files.readAllBytes(secondVolume));
+
+            fileSystem.close();
+        } finally {
+            deleteTemporaryArchiveDirectory(firstVolume);
+        }
+    }
+
+    /// Verifies that create-new path output rejects any existing numbered volume before assembly starts.
+    @Test
+    public void pathBackedSplitCreateNewRejectsExistingVolumeAtOpen() throws IOException {
+        byte[] existingContent = new byte[]{6, 5, 4};
+        Path firstVolume = createTemporaryArchivePath("split-create-new-existing-")
+                .resolveSibling("sample.7z.001");
+        Path secondVolume = testVolumePath(firstVolume, 2);
+        Files.write(secondVolume, existingContent);
+
+        try {
+            assertThrows(
+                    FileAlreadyExistsException.class,
+                    () -> SevenZipArkivoFileSystem.open(firstVolume, splitWriteEnvironment(64L, true))
+            );
+            assertEquals(false, Files.exists(firstVolume));
+            assertArrayEquals(existingContent, Files.readAllBytes(secondVolume));
+        } finally {
+            deleteTemporaryArchiveDirectory(firstVolume);
+        }
+    }
+
+    /// Verifies that arbitrary transactional targets receive bounded 7z volumes only when the file system closes.
+    @Test
+    public void createsSplitArchiveInVolumeTarget() throws IOException {
+        long splitSize = 96L;
+        byte[] content = new byte[768];
+        for (int index = 0; index < content.length; index++) {
+            content[index] = (byte) (index * 31);
+        }
+        TestVolumeTarget target = new TestVolumeTarget(-1L, false);
+
+        try (ArkivoFileSystem fileSystem = SevenZipArkivoFormat.instance().create(
+                target,
+                splitSize,
+                Map.of(ArkivoFileSystem.THREAD_SAFETY.key(), ArkivoFileSystemThreadSafety.STRICT)
+        )) {
+            assertEquals(false, fileSystem.isReadOnly());
+            Files.write(fileSystem.getPath("/content.bin"), content);
+            assertEquals(0, target.openOutputCount());
+        }
+
+        byte[][] volumes = target.committedVolumes();
+        assertEquals(1, target.openOutputCount());
+        assertEquals(true, volumes.length > 1);
+        assertEquals(true, target.allOpenedChannelsClosed());
+        for (int index = 0; index < volumes.length; index++) {
+            assertEquals(true, volumes[index].length > 0);
+            assertEquals(true, volumes[index].length <= splitSize);
+            if (index + 1 < volumes.length) {
+                assertEquals(splitSize, volumes[index].length);
+            }
+        }
+
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(new SplitVolumeSource(volumes))) {
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/content.bin")));
+        }
+    }
+
+    /// Verifies that an empty split 7z archive still commits one readable non-empty volume.
+    @Test
+    public void createsEmptySplitArchiveInVolumeTarget() throws IOException {
+        TestVolumeTarget target = new TestVolumeTarget(-1L, false);
+
+        try (SevenZipArkivoFileSystem ignored = SevenZipArkivoFileSystem.create(target, 1024L)) {
+            // Closing the file system finalizes an archive without entries.
+        }
+
+        byte[][] volumes = target.committedVolumes();
+        assertEquals(1, volumes.length);
+        assertEquals(true, volumes[0].length > 0);
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(new SplitVolumeSource(volumes));
+             DirectoryStream<Path> children = Files.newDirectoryStream(fileSystem.getPath("/"))) {
+            assertEquals(false, children.iterator().hasNext());
+        }
+    }
+
+    /// Verifies that an arbitrary target failure rolls back unpublished 7z volumes and supports close retry.
+    @Test
+    public void splitArchiveTargetFailureRollsBack() throws IOException {
+        TestVolumeTarget target = new TestVolumeTarget(1L, false);
+        SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.create(target, 64L);
+        Files.write(fileSystem.getPath("/content.bin"), new byte[512]);
+
+        IOException exception = assertThrows(IOException.class, fileSystem::close);
+
+        assertEquals("volume open failed", exception.getMessage());
+        assertEquals(1, target.rollbackCount());
+        assertEquals(0, target.committedVolumes().length);
+        assertEquals(true, target.allOpenedChannelsClosed());
+
+        fileSystem.close();
+    }
+
+    /// Verifies that a target commit failure rolls back all staged 7z volumes.
+    @Test
+    public void splitArchiveTargetCommitFailureRollsBack() throws IOException {
+        TestVolumeTarget target = new TestVolumeTarget(-1L, true);
+        SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.create(target, 64L);
+        Files.write(fileSystem.getPath("/content.bin"), new byte[256]);
+
+        IOException exception = assertThrows(IOException.class, fileSystem::close);
+
+        assertEquals("volume commit failed", exception.getMessage());
+        assertEquals(1, target.rollbackCount());
+        assertEquals(0, target.committedVolumes().length);
+        assertEquals(true, target.allOpenedChannelsClosed());
+
+        fileSystem.close();
+    }
+
+    /// Verifies that a zero-progress volume channel fails instead of blocking close and is rolled back.
+    @Test
+    public void splitArchiveZeroProgressTargetRollsBack() throws IOException {
+        TestVolumeTarget target = new TestVolumeTarget(-1L, false, true);
+        SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.create(target, 64L);
+        Files.write(fileSystem.getPath("/content.bin"), new byte[128]);
+
+        IOException exception = assertThrows(IOException.class, fileSystem::close);
+
+        assertEquals("7z volume write made no progress", exception.getMessage());
+        assertEquals(1, target.rollbackCount());
+        assertEquals(true, target.allOpenedChannelsClosed());
+
+        fileSystem.close();
+    }
+
+    /// Verifies that split output factories reject ambiguous sizes, options, and path names.
+    @Test
+    public void rejectsInvalidSplitOutputConfiguration() throws IOException {
+        TestVolumeTarget target = new TestVolumeTarget(-1L, false);
+        assertThrows(IllegalArgumentException.class, () -> SevenZipArkivoFileSystem.create(target, 0L));
+        assertThrows(IllegalArgumentException.class, () -> SevenZipArkivoFileSystem.create(
+                target,
+                64L,
+                Map.of(SevenZipArkivoFileSystem.SPLIT_SIZE.key(), 32L)
+        ));
+        assertThrows(IllegalArgumentException.class, () -> SevenZipArkivoFileSystem.create(
+                target,
+                64L,
+                Map.of(ArkivoFileSystem.OPEN_OPTIONS.key(), Set.of(StandardOpenOption.WRITE))
+        ));
+
+        Path archivePath = createTemporaryArchivePath("invalid-split-name-");
+        try {
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> SevenZipArkivoFileSystem.open(archivePath, splitWriteEnvironment(64L, false))
+            );
+            assertEquals(false, Files.exists(archivePath));
         } finally {
             deleteTemporaryArchive(archivePath);
         }
@@ -1871,6 +2123,63 @@ public final class SevenZipArkivoFileSystemTest {
     private static void deleteTemporaryArchive(Path archivePath) throws IOException {
         Files.deleteIfExists(archivePath);
         Files.deleteIfExists(archivePath.getParent());
+    }
+
+    /// Returns a writable 7z environment with the requested path-backed split size.
+    private static Map<String, Object> splitWriteEnvironment(long splitSize, boolean createNew) {
+        Set<StandardOpenOption> openOptions = createNew
+                ? Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
+                : Set.of(
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE
+                );
+        return Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(), openOptions,
+                SevenZipArkivoFileSystem.SPLIT_SIZE.key(), splitSize
+        );
+    }
+
+    /// Returns one conventional numbered test volume path.
+    private static Path testVolumePath(Path firstVolumePath, int volumeNumber) {
+        if (volumeNumber <= 0) {
+            throw new IllegalArgumentException("volumeNumber must be positive");
+        }
+        String fileName = firstVolumePath.getFileName().toString();
+        int suffixStart = fileName.lastIndexOf('.') + 1;
+        int suffixWidth = fileName.length() - suffixStart;
+        String volumeText = Integer.toString(volumeNumber);
+        StringBuilder builder = new StringBuilder(fileName.substring(0, suffixStart));
+        for (int index = volumeText.length(); index < suffixWidth; index++) {
+            builder.append('0');
+        }
+        return firstVolumePath.resolveSibling(builder.append(volumeText).toString());
+    }
+
+    /// Returns the contiguous conventional test volumes that currently exist.
+    private static @Unmodifiable List<Path> existingTestVolumePaths(Path firstVolumePath) {
+        ArrayList<Path> paths = new ArrayList<>();
+        for (int volumeNumber = 1; ; volumeNumber++) {
+            Path path = testVolumePath(firstVolumePath, volumeNumber);
+            if (!Files.exists(path)) {
+                return List.copyOf(paths);
+            }
+            paths.add(path);
+        }
+    }
+
+    /// Deletes every file in a dedicated temporary archive directory and then the directory itself.
+    private static void deleteTemporaryArchiveDirectory(Path archivePath) throws IOException {
+        Path directory = Objects.requireNonNull(archivePath.getParent(), "archive directory");
+        if (!Files.exists(directory)) {
+            return;
+        }
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(directory)) {
+            for (Path child : stream) {
+                Files.deleteIfExists(child);
+            }
+        }
+        Files.deleteIfExists(directory);
     }
 
     /// Returns a minimal 7z archive with an empty next header.
@@ -3793,6 +4102,218 @@ public final class SevenZipArkivoFileSystemTest {
             }
         }
         return false;
+    }
+
+    /// Creates in-memory transactional volume output with configurable failures.
+    @NotNullByDefault
+    private static final class TestVolumeTarget implements ArkivoVolumeTarget {
+        /// The volume index whose open should fail, or a negative value when opens succeed.
+        private final long failVolumeIndex;
+
+        /// Whether commit should fail.
+        private final boolean failCommit;
+
+        /// Whether opened volume channels should make no write progress.
+        private final boolean zeroProgress;
+
+        /// The number of output transactions opened by this target.
+        private int openOutputCount;
+
+        /// The latest opened output transaction, or `null` before first use.
+        private @Nullable TestVolumeOutput output;
+
+        /// Creates an in-memory target with the requested failures.
+        private TestVolumeTarget(long failVolumeIndex, boolean failCommit) {
+            this(failVolumeIndex, failCommit, false);
+        }
+
+        /// Creates an in-memory target with the requested failures and progress behavior.
+        private TestVolumeTarget(long failVolumeIndex, boolean failCommit, boolean zeroProgress) {
+            this.failVolumeIndex = failVolumeIndex;
+            this.failCommit = failCommit;
+            this.zeroProgress = zeroProgress;
+        }
+
+        /// Opens one new in-memory output transaction.
+        @Override
+        public ArkivoVolumeOutput openOutput() {
+            openOutputCount++;
+            output = new TestVolumeOutput(failVolumeIndex, failCommit, zeroProgress);
+            return output;
+        }
+
+        /// Returns the number of output transactions opened by this target.
+        private int openOutputCount() {
+            return openOutputCount;
+        }
+
+        /// Returns committed volume snapshots, or an empty array when publication failed.
+        private byte @Unmodifiable [] @Unmodifiable [] committedVolumes() {
+            @Nullable TestVolumeOutput currentOutput = output;
+            return currentOutput != null ? currentOutput.committedVolumes() : new byte[0][];
+        }
+
+        /// Returns the number of effective rollback operations.
+        private int rollbackCount() {
+            @Nullable TestVolumeOutput currentOutput = output;
+            return currentOutput != null ? currentOutput.rollbackCount() : 0;
+        }
+
+        /// Returns whether every volume channel opened by the target has been closed.
+        private boolean allOpenedChannelsClosed() {
+            @Nullable TestVolumeOutput currentOutput = output;
+            return currentOutput == null || currentOutput.allOpenedChannelsClosed();
+        }
+    }
+
+    /// Records one in-memory multi-volume output transaction.
+    @NotNullByDefault
+    private static final class TestVolumeOutput implements ArkivoVolumeOutput {
+        /// The volume index whose open should fail, or a negative value when opens succeed.
+        private final long failVolumeIndex;
+
+        /// Whether commit should fail.
+        private final boolean failCommit;
+
+        /// Whether opened volume channels should make no write progress.
+        private final boolean zeroProgress;
+
+        /// Bytes written to each opened volume.
+        private final ArrayList<ByteArrayOutputStream> volumeBytes = new ArrayList<>();
+
+        /// Channels opened for each volume.
+        private final ArrayList<WritableByteChannel> channels = new ArrayList<>();
+
+        /// The number of effective rollback operations.
+        private int rollbackCount;
+
+        /// Whether all written volumes were committed.
+        private boolean committed;
+
+        /// Whether this transaction has committed or rolled back.
+        private boolean finished;
+
+        /// Creates one recording output transaction.
+        private TestVolumeOutput(long failVolumeIndex, boolean failCommit, boolean zeroProgress) {
+            this.failVolumeIndex = failVolumeIndex;
+            this.failCommit = failCommit;
+            this.zeroProgress = zeroProgress;
+        }
+
+        /// Opens the next in-memory volume channel.
+        @Override
+        public WritableByteChannel openVolume(long index) throws IOException {
+            if (finished) {
+                throw new IOException("volume output is finished");
+            }
+            if (index != channels.size()) {
+                throw new IllegalArgumentException("volume indexes must be contiguous");
+            }
+            if (!channels.isEmpty() && channels.get(channels.size() - 1).isOpen()) {
+                throw new IOException("previous volume is still open");
+            }
+            if (index == failVolumeIndex) {
+                throw new IOException("volume open failed");
+            }
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            WritableByteChannel channel = zeroProgress
+                    ? new ZeroProgressWritableChannel()
+                    : Channels.newChannel(bytes);
+            volumeBytes.add(bytes);
+            channels.add(channel);
+            return channel;
+        }
+
+        /// Commits all opened in-memory volumes.
+        @Override
+        public void commit(long finalVolumeIndex) throws IOException {
+            if (finished) {
+                throw new IOException("volume output is finished");
+            }
+            if (finalVolumeIndex != channels.size() - 1L) {
+                throw new IllegalArgumentException("finalVolumeIndex does not identify the last volume");
+            }
+            if (!allOpenedChannelsClosed()) {
+                throw new IOException("volume channel is still open");
+            }
+            if (failCommit) {
+                throw new IOException("volume commit failed");
+            }
+            committed = true;
+            finished = true;
+        }
+
+        /// Rolls back this transaction once.
+        @Override
+        public void rollback() {
+            if (finished) {
+                return;
+            }
+            rollbackCount++;
+            finished = true;
+        }
+
+        /// Closes this transaction and rolls it back when uncommitted.
+        @Override
+        public void close() {
+            rollback();
+        }
+
+        /// Returns committed volume snapshots, or an empty array when publication failed.
+        private byte @Unmodifiable [] @Unmodifiable [] committedVolumes() {
+            if (!committed) {
+                return new byte[0][];
+            }
+            byte[][] result = new byte[volumeBytes.size()][];
+            for (int index = 0; index < volumeBytes.size(); index++) {
+                result[index] = volumeBytes.get(index).toByteArray();
+            }
+            return result;
+        }
+
+        /// Returns the number of effective rollback operations.
+        private int rollbackCount() {
+            return rollbackCount;
+        }
+
+        /// Returns whether every opened volume channel is closed.
+        private boolean allOpenedChannelsClosed() {
+            for (WritableByteChannel channel : channels) {
+                if (channel.isOpen()) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    /// Writable channel that remains open but never accepts bytes.
+    @NotNullByDefault
+    private static final class ZeroProgressWritableChannel implements WritableByteChannel {
+        /// Whether this channel remains open.
+        private boolean open = true;
+
+        /// Reports zero bytes written without consuming the source buffer.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            if (!open) {
+                throw new ClosedChannelException();
+            }
+            return 0;
+        }
+
+        /// Returns whether this channel remains open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes this channel.
+        @Override
+        public void close() {
+            open = false;
+        }
     }
 
     /// Provides archive bytes through multiple in-memory split volumes.

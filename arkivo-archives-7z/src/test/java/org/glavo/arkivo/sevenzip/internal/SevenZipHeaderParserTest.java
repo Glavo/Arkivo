@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -15,6 +16,51 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Tests 7z metadata header parsing behavior.
 @NotNullByDefault
 public final class SevenZipHeaderParserTest {
+    /// Verifies that empty streams may omit unpack metadata before empty substream metadata.
+    @Test
+    public void emptyStreamsAllowSubStreamsInfoWithoutUnpackInfo() throws IOException {
+        assertEquals(
+                List.of(),
+                SevenZipHeaderParser.parseEntries(new byte[]{0x01, 0x04, 0x08, 0x00, 0x00, 0x00})
+        );
+    }
+
+    /// Verifies that packed streams require unpack metadata before substream metadata.
+    @Test
+    public void subStreamsInfoBeforeUnpackInfoIsRejected() {
+        IOException exception = assertThrows(
+                IOException.class,
+                () -> SevenZipHeaderParser.parseEntries(new byte[]{
+                        0x01,
+                        0x04,
+                        0x06, 0x00, 0x01, 0x09, 0x01, 0x00,
+                        0x08, 0x00,
+                        0x00,
+                        0x00
+                })
+        );
+
+        assertEquals("7z substreams appeared before folders", exception.getMessage());
+    }
+
+    /// Verifies that unpack metadata cannot be appended after an empty substream block.
+    @Test
+    public void unpackInfoAfterSubStreamsInfoIsRejected() {
+        IOException exception = assertThrows(
+                IOException.class,
+                () -> SevenZipHeaderParser.parseEntries(new byte[]{
+                        0x01,
+                        0x04,
+                        0x08, 0x00,
+                        0x07, 0x00,
+                        0x00,
+                        0x00
+                })
+        );
+
+        assertEquals("7z folders appeared after substreams", exception.getMessage());
+    }
+
     /// Verifies that encoded-header read failures are not replaced by runtime cleanup failures.
     @Test
     public void encodedHeaderReadFailureSuppressesRuntimeCloseFailure() {

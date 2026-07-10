@@ -9,6 +9,7 @@ import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ArkivoVolumeSource;
+import org.glavo.arkivo.ArkivoVolumeTarget;
 import org.glavo.arkivo.sevenzip.internal.SevenZipArkivoFileSystemConfig;
 import org.glavo.arkivo.sevenzip.internal.SevenZipArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -25,9 +26,9 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     public static final ArkivoFileSystemOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArkivoFileSystemOption.of("arkivo.7z", "passwordProvider", ArkivoPasswordProvider.class);
 
-    /// The environment option for a `Long` value reserved for split output volumes.
+    /// The environment option for the maximum `Long` byte size of each numbered output volume.
     ///
-    /// Current forward-only writes reject non-default split sizes.
+    /// Path-backed split output requires a conventional first-volume path such as `archive.7z.001`.
     public static final ArkivoFileSystemOption<Long> SPLIT_SIZE =
             ArkivoFileSystemOption.of(
                     "arkivo.7z",
@@ -96,6 +97,47 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
             throw new UnsupportedOperationException("7z volume sources cannot be opened with write archive options");
         }
         return new SevenZipArkivoFileSystemImpl(SevenZipArkivoFileSystemProvider.instance(), null, volumes, config);
+    }
+
+    /// Creates a forward-only 7z file system that publishes split output to a transactional volume target.
+    ///
+    /// The complete archive is assembled in a local seekable temporary file before volumes are published because 7z
+    /// finalization rewrites header data.
+    ///
+    /// The target is opened when the file system closes. A successful close commits every volume; failure rolls back
+    /// unpublished output.
+    public static SevenZipArkivoFileSystem create(ArkivoVolumeTarget target, long splitSize) throws IOException {
+        return create(target, splitSize, Map.of());
+    }
+
+    /// Creates a forward-only 7z file system over a transactional volume target with environment options.
+    ///
+    /// The complete archive is assembled in a local seekable temporary file before volumes are published.
+    ///
+    /// Archive open options and `SPLIT_SIZE` are determined by this factory and must not be supplied in the environment.
+    public static SevenZipArkivoFileSystem create(
+            ArkivoVolumeTarget target,
+            long splitSize,
+            Map<String, ?> environment
+    ) throws IOException {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(environment, "environment");
+        if (splitSize <= 0) {
+            throw new IllegalArgumentException("splitSize must be positive");
+        }
+        if (environment.containsKey(ArkivoFileSystem.OPEN_OPTIONS.key())) {
+            throw new IllegalArgumentException("7z volume target open options are determined by the factory");
+        }
+        if (environment.containsKey(SPLIT_SIZE.key())) {
+            throw new IllegalArgumentException("7z volume target splitSize must be provided as the factory argument");
+        }
+        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(environment);
+        return new SevenZipArkivoFileSystemImpl(
+                SevenZipArkivoFileSystemProvider.instance(),
+                target,
+                splitSize,
+                config
+        );
     }
 
     /// Returns the major 7z format version stored in the signature header.

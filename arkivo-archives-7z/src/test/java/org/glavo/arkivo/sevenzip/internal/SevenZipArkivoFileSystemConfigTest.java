@@ -28,6 +28,22 @@ public final class SevenZipArkivoFileSystemConfigTest {
         assertEquals(SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE, SevenZipArkivoFileSystemConfig.DEFAULTS.splitSize());
     }
 
+    /// Verifies that explicit 7z output factories receive writable default open options.
+    @Test
+    public void writerEnvironmentUsesWritableDefaults() {
+        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of());
+
+        assertEquals(true, config.archiveWritable());
+        assertEquals(
+                Set.of(
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE
+                ),
+                config.openOptions()
+        );
+    }
+
     /// Verifies that 7z file system option keys use the 7z namespace.
     @Test
     public void sevenZipOptionKeysUseSevenZipNamespace() {

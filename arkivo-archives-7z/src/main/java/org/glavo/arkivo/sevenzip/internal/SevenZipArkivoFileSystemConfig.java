@@ -28,6 +28,10 @@ public final class SevenZipArkivoFileSystemConfig {
     private static final @Unmodifiable Set<OpenOption> DEFAULT_READ_OPEN_OPTIONS =
             Set.of(StandardOpenOption.READ);
 
+    /// The default open options used by explicit 7z output factories.
+    private static final @Unmodifiable Set<OpenOption> DEFAULT_WRITE_OPEN_OPTIONS =
+            Set.of(StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+
     /// The default parsed 7z file system configuration.
     public static final SevenZipArkivoFileSystemConfig DEFAULTS = new SevenZipArkivoFileSystemConfig(
             DEFAULT_READ_OPEN_OPTIONS,
@@ -72,18 +76,32 @@ public final class SevenZipArkivoFileSystemConfig {
 
     /// Parses 7z file system configuration from an environment map.
     public static SevenZipArkivoFileSystemConfig fromEnvironment(Map<String, ?> environment) {
+        return fromEnvironment(environment, DEFAULT_READ_OPEN_OPTIONS);
+    }
+
+    /// Parses 7z output configuration from an environment map.
+    public static SevenZipArkivoFileSystemConfig fromWriterEnvironment(Map<String, ?> environment) {
+        return fromEnvironment(environment, DEFAULT_WRITE_OPEN_OPTIONS);
+    }
+
+    /// Parses 7z configuration using the requested default archive open options.
+    private static SevenZipArkivoFileSystemConfig fromEnvironment(
+            Map<String, ?> environment,
+            Set<? extends OpenOption> defaultOpenOptions
+    ) {
         Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(defaultOpenOptions, "defaultOpenOptions");
         if (environment.containsKey("arkivo.7z.password")) {
             throw new IllegalArgumentException(
                     "The arkivo.7z.password option has been removed; use arkivo.7z.passwordProvider instead"
             );
         }
-        if (environment.isEmpty()) {
+        if (environment.isEmpty() && defaultOpenOptions.equals(DEFAULT_READ_OPEN_OPTIONS)) {
             return DEFAULTS;
         }
 
         return new SevenZipArkivoFileSystemConfig(
-                ArkivoFileSystem.OPEN_OPTIONS.readOrDefault(environment, DEFAULT_READ_OPEN_OPTIONS),
+                ArkivoFileSystem.OPEN_OPTIONS.readOrDefault(environment, Set.copyOf(defaultOpenOptions)),
                 passwordProvider(environment),
                 splitSize(environment),
                 SevenZipArkivoFileSystem.ENCRYPT_HEADERS.readOrDefault(environment, false),

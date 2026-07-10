@@ -7,6 +7,7 @@ import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFormat;
 import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ArkivoVolumeSource;
+import org.glavo.arkivo.ArkivoVolumeTarget;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -69,5 +70,19 @@ public final class SevenZipArkivoFormat implements ArkivoFormat {
     /// Opens a multi-volume 7z archive file system with environment options.
     public ArkivoFileSystem open(ArkivoVolumeSource volumes, Map<String, ?> environment) throws IOException {
         return SevenZipArkivoFileSystem.open(volumes, environment);
+    }
+
+    /// Creates a forward-only 7z file system that publishes split output to a transactional volume target.
+    public ArkivoFileSystem create(ArkivoVolumeTarget target, long splitSize) throws IOException {
+        return SevenZipArkivoFileSystem.create(target, splitSize);
+    }
+
+    /// Creates a forward-only 7z file system over a transactional volume target with environment options.
+    public ArkivoFileSystem create(
+            ArkivoVolumeTarget target,
+            long splitSize,
+            Map<String, ?> environment
+    ) throws IOException {
+        return SevenZipArkivoFileSystem.create(target, splitSize, environment);
     }
 }

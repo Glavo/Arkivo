@@ -263,6 +263,7 @@ public final class SevenZipHeaderParser {
         PackInfo packInfo = PackInfo.EMPTY;
         FolderInfo[] folders = new FolderInfo[0];
         SubStreamsInfo subStreamsInfo = null;
+        boolean unpackInfoSeen = false;
         while (true) {
             int property = input.readId();
             switch (property) {
@@ -270,9 +271,15 @@ public final class SevenZipHeaderParser {
                     return streamsInfo(packInfo, folders, subStreamsInfo);
                 }
                 case K_PACK_INFO -> packInfo = readPackInfo(input);
-                case K_UNPACK_INFO -> folders = readUnPackInfo(input, externalData);
+                case K_UNPACK_INFO -> {
+                    if (subStreamsInfo != null) {
+                        throw new IOException("7z folders appeared after substreams");
+                    }
+                    folders = readUnPackInfo(input, externalData);
+                    unpackInfoSeen = true;
+                }
                 case K_SUBSTREAMS_INFO -> {
-                    if (folders.length == 0) {
+                    if (!unpackInfoSeen && packInfo.packSizes.length != 0) {
                         throw new IOException("7z substreams appeared before folders");
                     }
                     subStreamsInfo = readSubStreamsInfo(input, folders);

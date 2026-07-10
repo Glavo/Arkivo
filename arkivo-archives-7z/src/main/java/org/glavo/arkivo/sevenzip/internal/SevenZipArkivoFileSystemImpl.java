@@ -7,6 +7,7 @@ import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
 import org.apache.commons.compress.archivers.sevenz.SevenZMethod;
 import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile;
 import org.glavo.arkivo.ArkivoVolumeSource;
+import org.glavo.arkivo.ArkivoVolumeTarget;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoEntryAttributeView;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoEntryAttributes;
@@ -83,11 +84,17 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// The 7z provider that created this file system.
     private final SevenZipArkivoFileSystemProvider provider;
 
-    /// The archive path, or `null` when this file system is backed by explicit volumes.
+    /// The archive path, or `null` when backed by an explicit volume source or output target.
     private final @Nullable Path archivePath;
 
-    /// The volume source, or `null` when this file system is backed by a single archive path.
+    /// The volume source, or `null` when backed by an archive path or output target.
     private final @Nullable ArkivoVolumeSource volumes;
+
+    /// The explicit split output target, or `null` for path-backed or read-only file systems.
+    private final @Nullable ArkivoVolumeTarget outputTarget;
+
+    /// The explicit output target split size, or `NO_SPLIT_SIZE` when the configuration determines output behavior.
+    private final long outputSplitSize;
 
     /// The parsed file system configuration.
     private final SevenZipArkivoFileSystemConfig config;
@@ -106,6 +113,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// The writer used by forward-only write mode, or `null` in read mode.
     private final @Nullable SevenZOutputFile writer;
+
+    /// The staged split output published after the writer closes, or `null` for direct path writes and read mode.
+    private final @Nullable SevenZipSplitArchiveOutput splitOutput;
 
     /// Absolute archive paths emitted by forward-only write mode.
     private final HashSet<String> writtenEntries = new HashSet<>();
@@ -128,6 +138,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Whether the writer has been closed.
     private boolean writerClosed;
 
+    /// Whether split output publication or rollback has completed.
+    private boolean splitOutputClosed;
+
     /// Whether the close action has completed.
     private boolean closeActionCompleted;
 
@@ -141,7 +154,15 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             @Nullable ArkivoVolumeSource volumes,
             SevenZipArkivoFileSystemConfig config
     ) throws IOException {
-        this(provider, archivePath, volumes, config, null);
+        this(
+                provider,
+                archivePath,
+                volumes,
+                null,
+                SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE,
+                config,
+                null
+        );
     }
 
     /// Creates a 7z file system implementation with a close action.
@@ -152,35 +173,84 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             SevenZipArkivoFileSystemConfig config,
             @Nullable Runnable closeAction
     ) throws IOException {
+        this(
+                provider,
+                archivePath,
+                volumes,
+                null,
+                SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE,
+                config,
+                closeAction
+        );
+    }
+
+    /// Creates a forward-only 7z file system over an explicit transactional volume target.
+    public SevenZipArkivoFileSystemImpl(
+            SevenZipArkivoFileSystemProvider provider,
+            ArkivoVolumeTarget outputTarget,
+            long splitSize,
+            SevenZipArkivoFileSystemConfig config
+    ) throws IOException {
+        this(provider, null, null, outputTarget, splitSize, config, null);
+    }
+
+    /// Creates a 7z file system implementation with one input or output backing.
+    private SevenZipArkivoFileSystemImpl(
+            SevenZipArkivoFileSystemProvider provider,
+            @Nullable Path archivePath,
+            @Nullable ArkivoVolumeSource volumes,
+            @Nullable ArkivoVolumeTarget outputTarget,
+            long outputSplitSize,
+            SevenZipArkivoFileSystemConfig config,
+            @Nullable Runnable closeAction
+    ) throws IOException {
         super(Objects.requireNonNull(config, "config").threadSafety());
-        if (archivePath == null && volumes == null) {
-            throw new IllegalArgumentException("archivePath or volumes must be provided");
+        int backingCount = (archivePath != null ? 1 : 0)
+                + (volumes != null ? 1 : 0)
+                + (outputTarget != null ? 1 : 0);
+        if (backingCount != 1) {
+            throw new IllegalArgumentException("exactly one archive path, volume source, or volume target must be provided");
+        }
+        if (outputTarget != null && !config.archiveWritable()) {
+            throw new IllegalArgumentException("7z volume targets require write archive options");
+        }
+        if (!config.archiveWritable()
+                && config.splitSize() != SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
+            throw new IllegalArgumentException("7z splitSize requires write archive options");
         }
         this.provider = Objects.requireNonNull(provider, "provider");
         this.archivePath = archivePath != null ? archivePath.toAbsolutePath().normalize() : null;
         this.volumes = volumes;
+        this.outputTarget = outputTarget;
+        this.outputSplitSize = outputSplitSize;
         this.config = config;
         this.closeAction = closeAction;
         this.root = SevenZipArkivoPath.root(this);
         this.writtenDirectories.add("/");
         if (config.archiveWritable()) {
             validateWriteFeatures();
-            SevenZOutputFile openedWriter = null;
+            @Nullable SevenZOutputFile openedWriter = null;
+            @Nullable SevenZipSplitArchiveOutput openedSplitOutput = null;
             try {
-                openedWriter = openArchiveWriter();
+                WriterResources writerResources = openArchiveWriter();
+                openedWriter = writerResources.writer();
+                openedSplitOutput = writerResources.splitOutput();
                 openedWriter.setContentCompression(SevenZMethod.COPY);
             } catch (IOException | RuntimeException | Error exception) {
                 closeWriterAfterConstructionFailure(exception, openedWriter);
+                closeSplitOutputAfterConstructionFailure(exception, openedSplitOutput);
                 closeAfterConstructionFailure(exception);
                 throw exception;
             }
             this.writer = openedWriter;
+            this.splitOutput = openedSplitOutput;
             this.fileStore = SevenZipFileStore.WRITABLE;
             this.signatureHeader = WRITE_MODE_SIGNATURE_HEADER;
             this.entries = Map.of();
             this.children = Map.of("/", List.of());
         } else {
             this.writer = null;
+            this.splitOutput = null;
             this.fileStore = SevenZipFileStore.READ_ONLY;
             SevenZipArchiveMetadata archiveMetadata;
             try {
@@ -209,6 +279,20 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
+    /// Rolls back partially opened split output after construction fails.
+    private static void closeSplitOutputAfterConstructionFailure(
+            Throwable failure,
+            @Nullable SevenZipSplitArchiveOutput openedSplitOutput
+    ) {
+        if (openedSplitOutput != null) {
+            try {
+                openedSplitOutput.rollback();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure.addSuppressed(exception);
+            }
+        }
+    }
+
     /// Releases constructor-owned resources after archive metadata loading fails.
     private void closeAfterConstructionFailure(Throwable failure) {
         if (volumes != null) {
@@ -227,7 +311,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
-    /// Returns the archive URI, or `null` when this file system is backed by explicit volumes.
+    /// Returns the archive URI, or `null` when backed by an explicit volume source or output target.
     public @Nullable URI archiveUri() {
         return archivePath != null ? archivePath.toUri().normalize() : null;
     }
@@ -276,11 +360,11 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Closes this file system.
     @Override
     public void close() throws IOException {
-        if (!open && writerClosed && volumesClosed && closeActionCompleted) {
+        if (!open && writerClosed && splitOutputClosed && volumesClosed && closeActionCompleted) {
             return;
         }
         open = false;
-        Throwable failure = null;
+        @Nullable Throwable failure = null;
         if (!writerClosed) {
             try {
                 if (writer != null) {
@@ -289,6 +373,24 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 writerClosed = true;
             } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
+            }
+        }
+        if (!splitOutputClosed) {
+            try {
+                if (splitOutput != null) {
+                    if (failure == null) {
+                        splitOutput.commit();
+                    } else {
+                        splitOutput.rollback();
+                    }
+                }
+                splitOutputClosed = true;
+            } catch (IOException | RuntimeException | Error exception) {
+                if (failure != null) {
+                    failure.addSuppressed(exception);
+                } else {
+                    failure = exception;
+                }
             }
         }
         if (!volumesClosed) {
@@ -767,13 +869,22 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
-    /// Validates 7z write-mode features that are intentionally outside the forward-only writer scope.
+    /// Validates 7z write-mode backing and feature combinations.
     private void validateWriteFeatures() {
-        if (archivePath == null || volumes != null) {
+        if (volumes != null) {
             throw new UnsupportedOperationException("7z volume sources cannot be opened with write archive options");
         }
-        if (config.splitSize() != SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
-            throw new UnsupportedOperationException("7z split archive writes are not supported");
+        if (outputTarget != null) {
+            if (outputSplitSize <= 0) {
+                throw new IllegalArgumentException("splitSize must be positive");
+            }
+            if (config.splitSize() != SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
+                throw new IllegalArgumentException("Explicit 7z volume targets must provide splitSize separately");
+            }
+        } else if (config.splitSize() != SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
+            SevenZipSplitVolumePaths.requireFirstVolumePath(
+                    Objects.requireNonNull(archivePath, "archivePath")
+            );
         }
         if (config.passwordProvider() != null) {
             throw new UnsupportedOperationException("7z encrypted archive writes are not supported");
@@ -783,14 +894,27 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         }
     }
 
-    /// Opens the underlying archive writer.
-    private SevenZOutputFile openArchiveWriter() throws IOException {
-        if (archivePath == null) {
-            throw new IOException("7z archive path is not available");
+    /// Opens the underlying archive writer and optional split publisher.
+    private WriterResources openArchiveWriter() throws IOException {
+        @Nullable ArkivoVolumeTarget target = outputTarget;
+        long splitSize = outputSplitSize;
+        if (target == null && config.splitSize() != SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
+            Path currentArchivePath = Objects.requireNonNull(archivePath, "archivePath");
+            SevenZipPathVolumeTarget pathTarget =
+                    new SevenZipPathVolumeTarget(currentArchivePath, config.openOptions());
+            pathTarget.validateTargetOptions();
+            target = pathTarget;
+            splitSize = config.splitSize();
         }
-        SeekableByteChannel channel = Files.newByteChannel(archivePath, config.openOptions());
+        if (target != null) {
+            SevenZipSplitArchiveOutput splitOutput = SevenZipSplitArchiveOutput.open(target, splitSize);
+            return new WriterResources(splitOutput.writer(), splitOutput);
+        }
+
+        Path currentArchivePath = Objects.requireNonNull(archivePath, "archivePath");
+        SeekableByteChannel channel = Files.newByteChannel(currentArchivePath, config.openOptions());
         try {
-            return new SevenZOutputFile(channel);
+            return new WriterResources(new SevenZOutputFile(channel), null);
         } catch (IOException | RuntimeException | Error exception) {
             try {
                 channel.close();
@@ -798,6 +922,21 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 exception.addSuppressed(closeException);
             }
             throw exception;
+        }
+    }
+
+    /// Stores an opened archive writer and its optional split publisher.
+    ///
+    /// @param writer the seekable 7z archive writer
+    /// @param splitOutput the split publisher, or `null` for direct path output
+    @NotNullByDefault
+    private record WriterResources(
+            SevenZOutputFile writer,
+            @Nullable SevenZipSplitArchiveOutput splitOutput
+    ) {
+        /// Creates one writer resource set.
+        private WriterResources {
+            Objects.requireNonNull(writer, "writer");
         }
     }
 
