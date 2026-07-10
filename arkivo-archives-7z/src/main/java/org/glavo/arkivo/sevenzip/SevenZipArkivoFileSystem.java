@@ -42,6 +42,18 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
                     SevenZipArkivoFileSystem::compressionOptionValue
             );
 
+    /// The environment option for an optional `SevenZipFilter` applied before output compression.
+    ///
+    /// Values may be a complete filter object, a `SevenZipFilterMethod`, or a stable method name string. No filter is
+    /// applied by default.
+    public static final ArkivoFileSystemOption<SevenZipFilter> FILTER =
+            ArkivoFileSystemOption.of(
+                    "arkivo.7z",
+                    "filter",
+                    SevenZipFilter.class,
+                    SevenZipArkivoFileSystem::filterOptionValue
+            );
+
     /// The environment option for the maximum `Long` byte size of each numbered output volume.
     ///
     /// Path-backed split output requires a conventional first-volume path such as `archive.7z.001`.
@@ -201,6 +213,22 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
         }
         throw new IllegalArgumentException(
                 "Expected SevenZipCompression, SevenZipCompressionMethod, or String for key: " + COMPRESSION.key()
+        );
+    }
+
+    /// Converts a raw filter option value.
+    private static SevenZipFilter filterOptionValue(Object value) {
+        if (value instanceof SevenZipFilter filter) {
+            return filter;
+        }
+        if (value instanceof SevenZipFilterMethod method) {
+            return SevenZipFilter.of(method);
+        }
+        if (value instanceof String stringValue) {
+            return SevenZipFilter.of(SevenZipFilterMethod.parse(stringValue));
+        }
+        throw new IllegalArgumentException(
+                "Expected SevenZipFilter, SevenZipFilterMethod, or String for key: " + FILTER.key()
         );
     }
 

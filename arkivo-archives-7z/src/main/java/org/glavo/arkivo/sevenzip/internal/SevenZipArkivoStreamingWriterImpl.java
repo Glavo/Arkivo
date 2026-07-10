@@ -10,6 +10,7 @@ import org.glavo.arkivo.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoFileSystemProvider;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoStreamingWriter;
 import org.glavo.arkivo.sevenzip.SevenZipCompression;
+import org.glavo.arkivo.sevenzip.SevenZipFilter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -474,6 +475,12 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
         /// The entry-specific compression, or `null` to use the writer default.
         private @Nullable SevenZipCompression compression;
 
+        /// Whether this entry overrides the writer's default filter.
+        private boolean filterConfigured;
+
+        /// The entry-specific filter, or `null` to disable filtering when configured.
+        private @Nullable SevenZipFilter filter;
+
         /// Creates a pending 7z metadata view.
         private PendingSevenZipEntryAttributeView(PendingEntry entry) {
             this.entry = Objects.requireNonNull(entry, "entry");
@@ -542,6 +549,33 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
             }
         }
 
+        /// Sets the entry-specific filter override.
+        @Override
+        public void setFilter(SevenZipFilter filter) {
+            Objects.requireNonNull(filter, "filter");
+            lock();
+            try {
+                entry.ensurePending();
+                this.filter = filter;
+                this.filterConfigured = true;
+            } finally {
+                unlock();
+            }
+        }
+
+        /// Disables the writer's default filter for this entry.
+        @Override
+        public void clearFilter() {
+            lock();
+            try {
+                entry.ensurePending();
+                this.filter = null;
+                this.filterConfigured = true;
+            } finally {
+                unlock();
+            }
+        }
+
         /// Sets POSIX permissions while preserving low Windows attribute bits.
         private void setPermissions(Set<PosixFilePermission> permissions) {
             Objects.requireNonNull(permissions, "permissions");
@@ -569,7 +603,9 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
                     lastAccessTime,
                     creationTime,
                     windowsAttributes,
-                    compression
+                    compression,
+                    filterConfigured,
+                    filter
             );
         }
     }

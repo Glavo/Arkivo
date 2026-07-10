@@ -13,6 +13,7 @@ import org.glavo.arkivo.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoFileSystemProvider;
 import org.glavo.arkivo.sevenzip.SevenZipCompression;
+import org.glavo.arkivo.sevenzip.SevenZipFilter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -235,7 +236,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 WriterResources writerResources = openArchiveWriter(password.characters());
                 openedWriter = writerResources.writer();
                 openedSplitOutput = writerResources.splitOutput();
-                SevenZipCompressionSupport.applyTo(openedWriter, config.compression());
+                SevenZipContentMethodsSupport.applyTo(openedWriter, config.compression(), config.filter());
             } catch (IOException | RuntimeException | Error exception) {
                 closeWriterAfterConstructionFailure(exception, openedWriter);
                 closeSplitOutputAfterConstructionFailure(exception, openedSplitOutput);
@@ -1124,7 +1125,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         SevenZArchiveEntry entry = new SevenZArchiveEntry();
         entry.setName(writableEntryName(path));
         entry.setDirectory(directory);
-        metadata.applyTo(entry);
+        metadata.applyTo(entry, config.compression(), config.filter());
         requireWriter().putArchiveEntry(entry);
         entryOpen = true;
     }
@@ -1756,6 +1757,19 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         @Override
         public void setCompression(SevenZipCompression compression) {
             Objects.requireNonNull(compression, "compression");
+            throw new ReadOnlyFileSystemException();
+        }
+
+        /// Rejects filter mutation.
+        @Override
+        public void setFilter(SevenZipFilter filter) {
+            Objects.requireNonNull(filter, "filter");
+            throw new ReadOnlyFileSystemException();
+        }
+
+        /// Rejects clearing the filter.
+        @Override
+        public void clearFilter() {
             throw new ReadOnlyFileSystemException();
         }
     }

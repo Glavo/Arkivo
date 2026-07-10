@@ -9,6 +9,8 @@ import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.sevenzip.SevenZipCompressionMethod;
+import org.glavo.arkivo.sevenzip.SevenZipFilter;
+import org.glavo.arkivo.sevenzip.SevenZipFilterMethod;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -18,6 +20,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -37,6 +40,7 @@ public final class SevenZipArkivoFileSystemConfigTest {
 
         assertEquals(true, config.archiveWritable());
         assertEquals(SevenZipCompression.copy(), config.compression());
+        assertNull(config.filter());
         assertEquals(
                 Set.of(
                         StandardOpenOption.CREATE,
@@ -52,6 +56,7 @@ public final class SevenZipArkivoFileSystemConfigTest {
     public void sevenZipOptionKeysUseSevenZipNamespace() {
         assertEquals("arkivo.7z.passwordProvider", SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key());
         assertEquals("arkivo.7z.compression", SevenZipArkivoFileSystem.COMPRESSION.key());
+        assertEquals("arkivo.7z.filter", SevenZipArkivoFileSystem.FILTER.key());
         assertEquals("arkivo.7z.splitSize", SevenZipArkivoFileSystem.SPLIT_SIZE.key());
         assertEquals("arkivo.7z.encryptHeaders", SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key());
         assertEquals("arkivo.threadSafety", ArkivoFileSystem.THREAD_SAFETY.key());
@@ -65,12 +70,14 @@ public final class SevenZipArkivoFileSystemConfigTest {
         SevenZipArkivoFileSystem.SPLIT_SIZE.putString(environment, "1024");
         SevenZipArkivoFileSystem.ENCRYPT_HEADERS.putString(environment, "true");
         SevenZipArkivoFileSystem.COMPRESSION.putString(environment, "lzma2");
+        SevenZipArkivoFileSystem.FILTER.putString(environment, "bcj-x86");
 
         SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(environment);
 
         assertEquals(1024L, config.splitSize());
         assertEquals(true, config.encryptHeaders());
         assertEquals(SevenZipCompression.lzma2(), config.compression());
+        assertEquals(SevenZipFilter.bcjX86(), config.filter());
         assertEquals(ArkivoFileSystemThreadSafety.STRICT, config.threadSafety());
     }
 
@@ -115,6 +122,37 @@ public final class SevenZipArkivoFileSystemConfigTest {
                 () -> SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
                         SevenZipArkivoFileSystem.COMPRESSION.key(),
                         SevenZipCompression.lzma2()
+                ))
+        );
+    }
+
+    /// Verifies typed filter methods and complete configurations are normalized from environment values.
+    @Test
+    public void filterValues() {
+        SevenZipArkivoFileSystemConfig methodConfig = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+                SevenZipArkivoFileSystem.FILTER.key(),
+                SevenZipFilterMethod.BCJ_ARM_THUMB
+        ));
+        SevenZipFilter customFilter = SevenZipFilter.delta(7);
+        SevenZipArkivoFileSystemConfig completeConfig = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+                SevenZipArkivoFileSystem.FILTER.key(),
+                customFilter
+        ));
+
+        assertEquals(SevenZipFilter.bcjArmThumb(), methodConfig.filter());
+        assertSame(customFilter, completeConfig.filter());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+                        SevenZipArkivoFileSystem.FILTER.key(),
+                        "bcj-riscv"
+                ))
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+                        SevenZipArkivoFileSystem.FILTER.key(),
+                        SevenZipFilter.bcjX86()
                 ))
         );
     }

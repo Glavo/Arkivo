@@ -8,6 +8,7 @@ import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoFileSystem;
+import org.glavo.arkivo.sevenzip.SevenZipFilter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -38,6 +39,7 @@ public final class SevenZipArkivoFileSystemConfig {
             DEFAULT_READ_OPEN_OPTIONS,
             null,
             SevenZipCompression.copy(),
+            null,
             NO_SPLIT_SIZE,
             false,
             ArkivoFileSystemThreadSafety.CONCURRENT_READ
@@ -51,6 +53,9 @@ public final class SevenZipArkivoFileSystemConfig {
 
     /// The default compression applied to non-empty output entries.
     private final SevenZipCompression compression;
+
+    /// The preprocessing filter applied before default output compression, or `null` when disabled.
+    private final @Nullable SevenZipFilter filter;
 
     /// The maximum size of each output volume, or `NO_SPLIT_SIZE` when split output is disabled.
     private final long splitSize;
@@ -66,6 +71,7 @@ public final class SevenZipArkivoFileSystemConfig {
             Set<? extends OpenOption> openOptions,
             @Nullable ArkivoPasswordProvider passwordProvider,
             SevenZipCompression compression,
+            @Nullable SevenZipFilter filter,
             long splitSize,
             boolean encryptHeaders,
             ArkivoFileSystemThreadSafety threadSafety
@@ -76,6 +82,7 @@ public final class SevenZipArkivoFileSystemConfig {
         this.openOptions = normalizeOpenOptions(Objects.requireNonNull(openOptions, "openOptions"));
         this.passwordProvider = passwordProvider;
         this.compression = Objects.requireNonNull(compression, "compression");
+        this.filter = filter;
         this.splitSize = splitSize;
         this.encryptHeaders = encryptHeaders;
         this.threadSafety = Objects.requireNonNull(threadSafety, "threadSafety");
@@ -111,6 +118,7 @@ public final class SevenZipArkivoFileSystemConfig {
                 ArkivoFileSystem.OPEN_OPTIONS.readOrDefault(environment, Set.copyOf(defaultOpenOptions)),
                 passwordProvider(environment),
                 SevenZipArkivoFileSystem.COMPRESSION.readOrDefault(environment, SevenZipCompression.copy()),
+                SevenZipArkivoFileSystem.FILTER.read(environment),
                 splitSize(environment),
                 SevenZipArkivoFileSystem.ENCRYPT_HEADERS.readOrDefault(environment, false),
                 ArkivoFileSystem.THREAD_SAFETY.readOrDefault(
@@ -120,6 +128,9 @@ public final class SevenZipArkivoFileSystemConfig {
         );
         if (!config.archiveWritable() && SevenZipArkivoFileSystem.COMPRESSION.isPresent(environment)) {
             throw new IllegalArgumentException("7z compression requires write archive options");
+        }
+        if (!config.archiveWritable() && SevenZipArkivoFileSystem.FILTER.isPresent(environment)) {
+            throw new IllegalArgumentException("7z filter requires write archive options");
         }
         return config;
     }
@@ -142,6 +153,11 @@ public final class SevenZipArkivoFileSystemConfig {
     /// Returns the default compression applied to non-empty output entries.
     public SevenZipCompression compression() {
         return compression;
+    }
+
+    /// Returns the preprocessing filter applied before default output compression, or `null` when disabled.
+    public @Nullable SevenZipFilter filter() {
+        return filter;
     }
 
     /// Returns the maximum size of each output volume, or `NO_SPLIT_SIZE` when split output is disabled.

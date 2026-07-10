@@ -1033,7 +1033,7 @@ public final class SevenZipArkivoFileSystemTest {
                 try (SevenZFile sevenZFile = SevenZFile.builder().setPath(archivePath).get()) {
                     SevenZArchiveEntry entry = Objects.requireNonNull(sevenZFile.getNextEntry());
                     assertEquals(List.of(expectedMethods.get(index)), commonsContentMethods(entry));
-                    Object coderOptions = entry.getContentMethods().iterator().next().getOptions();
+                    @Nullable Object coderOptions = entry.getContentMethods().iterator().next().getOptions();
                     if (compression.method() == SevenZipCompressionMethod.LZMA) {
                         assertEquals(compression.parameter(), ((LZMA2Options) coderOptions).getDictSize());
                     } else if (compression.method() == SevenZipCompressionMethod.LZMA2) {
@@ -1052,9 +1052,77 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
-    /// Verifies an output-stream writer applies its configured default compression.
+    /// Verifies every configurable preprocessing filter through Arkivo and Commons Compress readers.
     @Test
-    public void createsCompressedArchiveInOutputStream() throws IOException {
+    public void createsArchivesWithAllFilterMethods() throws IOException {
+        List<SevenZipFilter> filters = List.of(
+                SevenZipFilter.delta(7),
+                SevenZipFilter.bcjX86(),
+                SevenZipFilter.bcjPpc(),
+                SevenZipFilter.bcjIa64(),
+                SevenZipFilter.bcjArm(),
+                SevenZipFilter.bcjArmThumb(),
+                SevenZipFilter.bcjSparc()
+        );
+        List<SevenZMethod> expectedMethods = List.of(
+                SevenZMethod.DELTA_FILTER,
+                SevenZMethod.BCJ_X86_FILTER,
+                SevenZMethod.BCJ_PPC_FILTER,
+                SevenZMethod.BCJ_IA64_FILTER,
+                SevenZMethod.BCJ_ARM_FILTER,
+                SevenZMethod.BCJ_ARM_THUMB_FILTER,
+                SevenZMethod.BCJ_SPARC_FILTER
+        );
+        byte[] content = new byte[16 * 1024];
+        for (int index = 0; index < content.length; index++) {
+            content[index] = (byte) (index * 29 + index / 7);
+        }
+
+        for (int index = 0; index < filters.size(); index++) {
+            SevenZipFilter filter = filters.get(index);
+            Path archivePath = createTemporaryArchivePath("filter-" + filter.method().optionName() + "-");
+            try {
+                try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
+                        archivePath,
+                        Map.of(
+                                SevenZipArkivoFileSystem.COMPRESSION.key(),
+                                SevenZipCompression.lzma2(64 * 1024),
+                                SevenZipArkivoFileSystem.FILTER.key(),
+                                filter
+                        )
+                )) {
+                    writeStreamingContent(writer, content);
+                }
+
+                try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                    assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/content.bin")));
+                }
+                try (SevenZFile sevenZFile = SevenZFile.builder().setPath(archivePath).get()) {
+                    SevenZArchiveEntry entry = Objects.requireNonNull(sevenZFile.getNextEntry());
+                    assertEquals(
+                            List.of(expectedMethods.get(index), SevenZMethod.LZMA2),
+                            commonsContentMethods(entry)
+                    );
+                    var configurations = entry.getContentMethods().iterator();
+                    @Nullable Object filterOptions = configurations.next().getOptions();
+                    if (filter.method() == SevenZipFilterMethod.DELTA) {
+                        assertEquals(filter.parameter(), ((Number) filterOptions).intValue());
+                    } else {
+                        assertNull(filterOptions);
+                    }
+                    try (var input = sevenZFile.getInputStream(entry)) {
+                        assertArrayEquals(content, input.readAllBytes());
+                    }
+                }
+            } finally {
+                deleteTemporaryArchive(archivePath);
+            }
+        }
+    }
+
+    /// Verifies an output-stream writer applies its configured default filter and compression.
+    @Test
+    public void createsFilteredCompressedArchiveInOutputStream() throws IOException {
         byte[] content = "output stream bzip2 content ".repeat(512).getBytes(StandardCharsets.UTF_8);
         TrackingOutputStream archiveOutput = new TrackingOutputStream();
 
@@ -1062,7 +1130,9 @@ public final class SevenZipArkivoFileSystemTest {
                 archiveOutput,
                 Map.of(
                         SevenZipArkivoFileSystem.COMPRESSION.key(),
-                        SevenZipCompression.bzip2(2)
+                        SevenZipCompression.bzip2(2),
+                        SevenZipArkivoFileSystem.FILTER.key(),
+                        SevenZipFilter.delta(5)
                 )
         )) {
             writeStreamingContent(writer, content);
@@ -1078,7 +1148,7 @@ public final class SevenZipArkivoFileSystemTest {
                 .setSeekableByteChannel(new MemorySeekableByteChannel(archiveOutput.toByteArray(), false))
                 .get()) {
             assertEquals(
-                    List.of(SevenZMethod.BZIP2),
+                    List.of(SevenZMethod.DELTA_FILTER, SevenZMethod.BZIP2),
                     commonsContentMethods(Objects.requireNonNull(sevenZFile.getNextEntry()))
             );
         }
@@ -1145,9 +1215,83 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
-    /// Verifies LZMA2 compression composes with AES encryption and transactional split output.
+    /// Verifies streaming entries can inherit, override, or clear the writer's default filter.
     @Test
-    public void createsCompressedEncryptedSplitArchive() throws IOException {
+    public void overridesAndClearsFilterPerStreamingEntry() throws IOException {
+        byte[] content = "entry filter override ".repeat(128).getBytes(StandardCharsets.UTF_8);
+        TrackingOutputStream archiveOutput = new TrackingOutputStream();
+        WritableByteChannel archiveChannel = Channels.newChannel(archiveOutput);
+
+        try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
+                archiveChannel,
+                Map.of(
+                        SevenZipArkivoFileSystem.COMPRESSION.key(),
+                        SevenZipCompression.lzma2(64 * 1024),
+                        SevenZipArkivoFileSystem.FILTER.key(),
+                        SevenZipFilter.delta(3)
+                )
+        )) {
+            writer.beginFile("inherited.bin");
+            try (OutputStream output = writer.openOutputStream()) {
+                output.write(content);
+            }
+
+            writer.beginFile("cleared.bin");
+            Objects.requireNonNull(writer.attributeView(SevenZipArkivoEntryAttributeView.class)).clearFilter();
+            try (OutputStream output = writer.openOutputStream()) {
+                output.write(content);
+            }
+
+            writer.beginFile("overridden.bin");
+            Objects.requireNonNull(writer.attributeView(SevenZipArkivoEntryAttributeView.class))
+                    .setFilter(SevenZipFilter.bcjX86());
+            try (OutputStream output = writer.openOutputStream()) {
+                output.write(content);
+            }
+
+            writer.beginFile("compressed.bin");
+            Objects.requireNonNull(writer.attributeView(SevenZipArkivoEntryAttributeView.class))
+                    .setCompression(SevenZipCompression.deflate(2));
+            try (OutputStream output = writer.openOutputStream()) {
+                output.write(content);
+            }
+        }
+
+        assertEquals(false, archiveChannel.isOpen());
+        byte[] archive = archiveOutput.toByteArray();
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                new SplitVolumeSource(new byte[][]{archive})
+        )) {
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/inherited.bin")));
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/cleared.bin")));
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/overridden.bin")));
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/compressed.bin")));
+        }
+        try (SevenZFile sevenZFile = SevenZFile.builder()
+                .setSeekableByteChannel(new MemorySeekableByteChannel(archive, false))
+                .get()) {
+            assertEquals(
+                    List.of(SevenZMethod.DELTA_FILTER, SevenZMethod.LZMA2),
+                    commonsContentMethods(Objects.requireNonNull(sevenZFile.getNextEntry()))
+            );
+            assertEquals(
+                    List.of(SevenZMethod.LZMA2),
+                    commonsContentMethods(Objects.requireNonNull(sevenZFile.getNextEntry()))
+            );
+            assertEquals(
+                    List.of(SevenZMethod.BCJ_X86_FILTER, SevenZMethod.LZMA2),
+                    commonsContentMethods(Objects.requireNonNull(sevenZFile.getNextEntry()))
+            );
+            assertEquals(
+                    List.of(SevenZMethod.DELTA_FILTER, SevenZMethod.DEFLATE),
+                    commonsContentMethods(Objects.requireNonNull(sevenZFile.getNextEntry()))
+            );
+        }
+    }
+
+    /// Verifies filtering and LZMA2 compression compose with AES encryption and transactional split output.
+    @Test
+    public void createsFilteredCompressedEncryptedSplitArchive() throws IOException {
         byte[] password = "compressed-password".getBytes(StandardCharsets.UTF_16LE);
         char[] passwordCharacters = "compressed-password".toCharArray();
         byte[] content = new byte[2048];
@@ -1163,6 +1307,8 @@ public final class SevenZipArkivoFileSystemTest {
                     Map.of(
                             SevenZipArkivoFileSystem.COMPRESSION.key(),
                             SevenZipCompression.lzma2(64 * 1024),
+                            SevenZipArkivoFileSystem.FILTER.key(),
+                            SevenZipFilter.bcjArm(),
                             SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                             ArkivoPasswordProvider.fixed(password)
                     )
@@ -1182,6 +1328,7 @@ public final class SevenZipArkivoFileSystemTest {
                 List<SevenZMethod> methods = commonsContentMethods(entry);
                 assertEquals(true, methods.contains(SevenZMethod.AES256SHA256));
                 assertEquals(true, methods.contains(SevenZMethod.LZMA2));
+                assertEquals(true, methods.contains(SevenZMethod.BCJ_ARM_FILTER));
                 try (var input = sevenZFile.getInputStream(entry)) {
                     assertArrayEquals(content, input.readAllBytes());
                 }
@@ -2052,6 +2199,19 @@ public final class SevenZipArkivoFileSystemTest {
                         ReadOnlyFileSystemException.class,
                         () -> sevenZipView.setTimes(lastModifiedTime, null, null)
                 );
+                assertThrows(
+                        ReadOnlyFileSystemException.class,
+                        () -> sevenZipView.setWindowsAttributes(0x01)
+                );
+                assertThrows(
+                        ReadOnlyFileSystemException.class,
+                        () -> sevenZipView.setCompression(SevenZipCompression.copy())
+                );
+                assertThrows(
+                        ReadOnlyFileSystemException.class,
+                        () -> sevenZipView.setFilter(SevenZipFilter.bcjX86())
+                );
+                assertThrows(ReadOnlyFileSystemException.class, sevenZipView::clearFilter);
                 assertEquals(
                         true,
                         Files.getFileStore(file).supportsFileAttributeView(SevenZipArkivoEntryAttributeView.class)

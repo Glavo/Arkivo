@@ -30,4 +30,12 @@ public interface SevenZipArkivoEntryAttributeView extends BasicFileAttributeView
     ///
     /// Compression is applied only when the entry has a non-empty data stream.
     void setCompression(SevenZipCompression compression) throws IOException;
+
+    /// Sets a preprocessing filter for this pending streaming entry instead of the writer default.
+    ///
+    /// The filter is applied only when the entry has a non-empty data stream.
+    void setFilter(SevenZipFilter filter) throws IOException;
+
+    /// Disables the writer's default preprocessing filter for this pending streaming entry.
+    void clearFilter() throws IOException;
 }
