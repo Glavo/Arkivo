@@ -5,6 +5,7 @@ package org.glavo.arkivo.zip;
 
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFormat;
+import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -44,6 +45,20 @@ public final class ZipArkivoFormat implements ArkivoFormat {
     /// Opens a ZIP archive file system with environment options.
     public ArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         return ZipArkivoFileSystem.open(path, environment);
+    }
+
+    /// Opens a read-only ZIP archive file system from a repeatable seekable channel source.
+    ///
+    /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    public ArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
+        return ZipArkivoFileSystem.open(source);
+    }
+
+    /// Opens a read-only ZIP archive file system from a repeatable seekable channel source with environment options.
+    ///
+    /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    public ArkivoFileSystem open(ArkivoSeekableChannelSource source, Map<String, ?> environment) throws IOException {
+        return ZipArkivoFileSystem.open(source, environment);
     }
 
     /// Opens a split ZIP archive file system.

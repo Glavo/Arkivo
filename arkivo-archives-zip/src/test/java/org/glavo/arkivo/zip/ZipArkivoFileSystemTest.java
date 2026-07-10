@@ -10,7 +10,10 @@ import org.glavo.arkivo.ArkivoCommitTarget;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoPasswordProvider;
+import org.glavo.arkivo.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.ArkivoVolumeOutput;
 import org.glavo.arkivo.ArkivoVolumeSource;
+import org.glavo.arkivo.ArkivoVolumeTarget;
 import org.glavo.arkivo.zip.internal.StreamingZipArkivoFileSystemImpl;
 import org.glavo.arkivo.zip.internal.StreamingZipArkivoReadFileSystemImpl;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemConfig;
@@ -34,10 +37,12 @@ import java.lang.reflect.Method;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonReadableChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.DirectoryNotEmptyException;
@@ -3300,6 +3305,57 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that streaming ZIP writers publish readable split archives to custom volume targets.
+    @Test
+    public void streamingWriterPublishesToCustomVolumeTarget() throws IOException {
+        byte[] content = new byte[512];
+        for (int index = 0; index < content.length; index++) {
+            content[index] = (byte) index;
+        }
+        TestVolumeTarget target = new TestVolumeTarget();
+
+        try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(target, 64L)) {
+            writer.beginFile("content.bin");
+            ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+            assertNotNull(view);
+            view.setMethod(ZipMethod.stored());
+            try (OutputStream output = writer.openOutputStream()) {
+                output.write(content);
+            }
+        }
+
+        TestVolumeOutput volumeOutput = target.output();
+        assertEquals(true, volumeOutput.volumeCount() > 1);
+        assertEquals(volumeOutput.volumeCount() - 1L, volumeOutput.finalVolumeIndex());
+        assertEquals(1, volumeOutput.commitCount());
+        assertEquals(0, volumeOutput.rollbackCount());
+        assertEquals(1, volumeOutput.closeCount());
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(volumeOutput.volumeSource())) {
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/content.bin")));
+        }
+    }
+
+    /// Verifies that a custom volume target is rolled back when opening a later volume fails.
+    @Test
+    public void streamingWriterRollsBackCustomVolumeTargetAfterWriteFailure() throws IOException {
+        byte[] content = new byte[512];
+        TestVolumeTarget target = new TestVolumeTarget(1);
+        ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(target, 64L);
+        writer.beginFile("content.bin");
+        ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+        assertNotNull(view);
+        view.setMethod(ZipMethod.stored());
+        OutputStream output = writer.openOutputStream();
+
+        assertThrows(IOException.class, () -> output.write(content));
+        assertThrows(IOException.class, writer::close);
+
+        TestVolumeOutput volumeOutput = target.output();
+        assertEquals(0, volumeOutput.commitCount());
+        assertEquals(1, volumeOutput.rollbackCount());
+        assertEquals(1, volumeOutput.closeCount());
+    }
+
     /// Verifies that replacement split output removes numbered volumes from the previous archive.
     @Test
     public void splitOutputReplacementRemovesStaleVolumes() throws IOException {
@@ -4902,6 +4958,66 @@ public final class ZipArkivoFileSystemTest {
         } finally {
             deleteTemporaryArchive(archivePath);
         }
+    }
+
+    /// Verifies that a repeatable seekable channel source supports random-access ZIP file system operations.
+    @Test
+    public void randomAccessFileSystemFromSeekableChannelSource() throws IOException {
+        byte[] preamble = new byte[]{7, 6, 5, 4};
+        TestSeekableChannelSource source = new TestSeekableChannelSource(
+                singleEntryZipWithPreambleAndAdjustedOffsets(preamble)
+        );
+
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(source)) {
+            assertEquals(preamble.length, fileSystem.preambleSize());
+            assertPreambleContent(preamble, fileSystem);
+            assertArrayEquals(new byte[0], Files.readAllBytes(fileSystem.getPath("/a")));
+            assertEquals(true, source.openCount() > 1);
+            assertEquals(true, source.allOpenedChannelsClosed());
+            assertEquals(0, source.closeCount());
+        }
+
+        assertEquals(true, source.allOpenedChannelsClosed());
+        assertEquals(1, source.closeCount());
+    }
+
+    /// Verifies that failed ZIP parsing closes channels opened from a seekable channel source.
+    @Test
+    public void failedSeekableChannelSourceReadClosesOpenedChannels() throws IOException {
+        TestSeekableChannelSource source = new TestSeekableChannelSource(new byte[0]);
+
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(source, Map.of())) {
+            assertThrows(IOException.class, fileSystem::preambleSize);
+            assertEquals(1, source.openCount());
+            assertEquals(true, source.allOpenedChannelsClosed());
+            assertEquals(0, source.closeCount());
+        }
+
+        assertEquals(1, source.closeCount());
+    }
+
+    /// Verifies that seekable channel sources reject writable ZIP file system configuration before taking ownership.
+    @Test
+    public void seekableChannelSourceRejectsWritableConfiguration() throws IOException {
+        TestSeekableChannelSource source = new TestSeekableChannelSource(emptyZipWithPreamble(new byte[0]));
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE
+                )
+        );
+
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> ZipArkivoFileSystem.open(source, environment)
+        );
+        assertEquals(0, source.openCount());
+        assertEquals(0, source.closeCount());
+
+        source.close();
+        assertEquals(1, source.closeCount());
     }
 
     /// Verifies that preamble detection handles ZIP offsets that already include the preamble size.
@@ -10193,6 +10309,322 @@ public final class ZipArkivoFileSystemTest {
         @Override
         public void close() {
             closed = true;
+        }
+    }
+
+    /// Repeatable single-archive source that records opened channel and source lifecycles.
+    @NotNullByDefault
+    private static final class TestSeekableChannelSource implements ArkivoSeekableChannelSource {
+        /// The archive bytes exposed by each opened channel.
+        private final byte @Unmodifiable [] content;
+
+        /// The channels opened from this source.
+        private final ArrayList<TestByteArraySeekableChannel> openedChannels = new ArrayList<>();
+
+        /// The number of times this source has been closed.
+        private int closeCount;
+
+        /// Creates a repeatable source over the given archive bytes.
+        private TestSeekableChannelSource(byte[] content) {
+            this.content = Objects.requireNonNull(content, "content").clone();
+        }
+
+        /// Opens an independent channel over the archive bytes.
+        @Override
+        public SeekableByteChannel openChannel() throws IOException {
+            if (closeCount > 0) {
+                throw new IOException("source is closed");
+            }
+            TestByteArraySeekableChannel channel = new TestByteArraySeekableChannel(content);
+            openedChannels.add(channel);
+            return channel;
+        }
+
+        /// Records that this source has been closed.
+        @Override
+        public void close() {
+            closeCount++;
+        }
+
+        /// Returns the number of channels opened from this source.
+        private int openCount() {
+            return openedChannels.size();
+        }
+
+        /// Returns whether every channel opened from this source has been closed.
+        private boolean allOpenedChannelsClosed() {
+            for (TestByteArraySeekableChannel channel : openedChannels) {
+                if (channel.isOpen()) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /// Returns the number of times this source has been closed.
+        private int closeCount() {
+            return closeCount;
+        }
+    }
+
+    /// Read-only seekable channel over an immutable byte array.
+    @NotNullByDefault
+    private static final class TestByteArraySeekableChannel implements SeekableByteChannel {
+        /// The immutable channel content.
+        private final byte @Unmodifiable [] content;
+
+        /// The current channel position.
+        private int position;
+
+        /// Whether this channel is open.
+        private boolean open = true;
+
+        /// Creates a read-only channel over the given content.
+        private TestByteArraySeekableChannel(byte[] content) {
+            this.content = Objects.requireNonNull(content, "content").clone();
+        }
+
+        /// Reads bytes from the current channel position.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            Objects.requireNonNull(destination, "destination");
+            ensureOpen();
+            if (!destination.hasRemaining()) {
+                return 0;
+            }
+            if (position >= content.length) {
+                return -1;
+            }
+            int count = Math.min(destination.remaining(), content.length - position);
+            destination.put(content, position, count);
+            position += count;
+            return count;
+        }
+
+        /// Always rejects writes.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            ensureOpen();
+            Objects.requireNonNull(source, "source");
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns the current channel position.
+        @Override
+        public long position() throws IOException {
+            ensureOpen();
+            return position;
+        }
+
+        /// Sets the current channel position.
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            ensureOpen();
+            if (newPosition < 0 || newPosition > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("newPosition is out of range");
+            }
+            position = (int) newPosition;
+            return this;
+        }
+
+        /// Returns the content size.
+        @Override
+        public long size() throws IOException {
+            ensureOpen();
+            return content.length;
+        }
+
+        /// Always rejects truncation.
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            ensureOpen();
+            if (size < 0) {
+                throw new IllegalArgumentException("size must not be negative");
+            }
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns whether this channel is open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Closes this channel.
+        @Override
+        public void close() {
+            open = false;
+        }
+
+        /// Requires this channel to be open.
+        private void ensureOpen() throws IOException {
+            if (!open) {
+                throw new ClosedChannelException();
+            }
+        }
+    }
+
+    /// Test target that creates one in-memory multi-volume output transaction.
+    @NotNullByDefault
+    private static final class TestVolumeTarget implements ArkivoVolumeTarget {
+        /// The sentinel used when no volume open should fail.
+        private static final int NO_FAILURE_VOLUME_INDEX = -1;
+
+        /// The volume index whose open operation should fail.
+        private final int failureVolumeIndex;
+
+        /// The output transaction opened from this target, or `null` before use.
+        private @Nullable TestVolumeOutput output;
+
+        /// Creates a target whose volume opens succeed.
+        private TestVolumeTarget() {
+            this(NO_FAILURE_VOLUME_INDEX);
+        }
+
+        /// Creates a target that fails while opening the given volume index.
+        private TestVolumeTarget(int failureVolumeIndex) {
+            if (failureVolumeIndex < NO_FAILURE_VOLUME_INDEX) {
+                throw new IllegalArgumentException("failureVolumeIndex is out of range");
+            }
+            this.failureVolumeIndex = failureVolumeIndex;
+        }
+
+        /// Opens the single output transaction supported by this test target.
+        @Override
+        public ArkivoVolumeOutput openOutput() throws IOException {
+            if (output != null) {
+                throw new IOException("volume target output is already open");
+            }
+            TestVolumeOutput openedOutput = new TestVolumeOutput(failureVolumeIndex);
+            output = openedOutput;
+            return openedOutput;
+        }
+
+        /// Returns the output transaction opened from this target.
+        private TestVolumeOutput output() {
+            return Objects.requireNonNull(output, "output");
+        }
+    }
+
+    /// In-memory multi-volume output that records commit, rollback, and close operations.
+    @NotNullByDefault
+    private static final class TestVolumeOutput implements ArkivoVolumeOutput {
+        /// The sentinel used before a final volume index has been committed.
+        private static final long NO_FINAL_VOLUME_INDEX = -1L;
+
+        /// The volume index whose open operation should fail.
+        private final int failureVolumeIndex;
+
+        /// The byte streams that receive individual volume content.
+        private final ArrayList<ByteArrayOutputStream> volumes = new ArrayList<>();
+
+        /// The final committed volume index, or `NO_FINAL_VOLUME_INDEX` before commit.
+        private long finalVolumeIndex = NO_FINAL_VOLUME_INDEX;
+
+        /// The number of commit calls.
+        private int commitCount;
+
+        /// The number of rollback calls.
+        private int rollbackCount;
+
+        /// The number of close calls.
+        private int closeCount;
+
+        /// Whether this output has been committed or rolled back.
+        private boolean finished;
+
+        /// Creates an in-memory volume output with the requested open failure index.
+        private TestVolumeOutput(int failureVolumeIndex) {
+            this.failureVolumeIndex = failureVolumeIndex;
+        }
+
+        /// Opens the next in-memory volume channel.
+        @Override
+        public WritableByteChannel openVolume(long index) throws IOException {
+            ensureOpen();
+            if (index < 0 || index > Integer.MAX_VALUE || index != volumes.size()) {
+                throw new IllegalArgumentException("Volume indexes must be opened once in ascending order");
+            }
+            if (index == failureVolumeIndex) {
+                throw new IOException("volume open failed");
+            }
+            ByteArrayOutputStream volume = new ByteArrayOutputStream();
+            volumes.add(volume);
+            return Channels.newChannel(volume);
+        }
+
+        /// Commits all in-memory volumes.
+        @Override
+        public void commit(long finalVolumeIndex) throws IOException {
+            ensureOpen();
+            if (finalVolumeIndex != volumes.size() - 1L) {
+                throw new IllegalArgumentException("finalVolumeIndex must identify the last opened volume");
+            }
+            this.finalVolumeIndex = finalVolumeIndex;
+            commitCount++;
+            finished = true;
+        }
+
+        /// Rolls back this in-memory output.
+        @Override
+        public void rollback() {
+            if (finished) {
+                return;
+            }
+            rollbackCount++;
+            finished = true;
+        }
+
+        /// Closes this output and rolls it back when unfinished.
+        @Override
+        public void close() {
+            closeCount++;
+            rollback();
+        }
+
+        /// Returns a readable source over the committed volume bytes.
+        private ArkivoVolumeSource volumeSource() {
+            if (commitCount == 0) {
+                throw new IllegalStateException("volume output has not been committed");
+            }
+            return index -> {
+                if (index < 0 || index >= volumes.size()) {
+                    return null;
+                }
+                return new TestByteArraySeekableChannel(volumes.get((int) index).toByteArray());
+            };
+        }
+
+        /// Returns the number of opened volumes.
+        private int volumeCount() {
+            return volumes.size();
+        }
+
+        /// Returns the final committed volume index.
+        private long finalVolumeIndex() {
+            return finalVolumeIndex;
+        }
+
+        /// Returns the number of commit calls.
+        private int commitCount() {
+            return commitCount;
+        }
+
+        /// Returns the number of rollback calls.
+        private int rollbackCount() {
+            return rollbackCount;
+        }
+
+        /// Returns the number of close calls.
+        private int closeCount() {
+            return closeCount;
+        }
+
+        /// Requires this output transaction to remain unfinished.
+        private void ensureOpen() throws IOException {
+            if (finished) {
+                throw new IOException("volume output is closed");
+            }
         }
     }
 

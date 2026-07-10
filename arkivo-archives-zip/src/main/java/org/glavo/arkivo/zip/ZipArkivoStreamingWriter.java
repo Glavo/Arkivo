@@ -4,6 +4,7 @@
 package org.glavo.arkivo.zip;
 
 import org.glavo.arkivo.ArkivoStreamingWriter;
+import org.glavo.arkivo.ArkivoVolumeTarget;
 import org.glavo.arkivo.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.zip.internal.ZipArkivoStreamingWriterImpl;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -66,6 +67,31 @@ public abstract sealed class ZipArkivoStreamingWriter extends ArkivoStreamingWri
         Objects.requireNonNull(environment, "environment");
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
         return ZipArkivoStreamingWriterImpl.open(output, config);
+    }
+
+    /// Opens a split streaming ZIP writer over a transactional volume target.
+    public static ZipArkivoStreamingWriter open(ArkivoVolumeTarget target, long splitSize) throws IOException {
+        return open(target, splitSize, Map.of());
+    }
+
+    /// Opens a split streaming ZIP writer over a transactional volume target with environment options.
+    public static ZipArkivoStreamingWriter open(
+            ArkivoVolumeTarget target,
+            long splitSize,
+            Map<String, ?> environment
+    ) throws IOException {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(environment, "environment");
+        if (splitSize <= 0) {
+            throw new IllegalArgumentException("splitSize must be positive");
+        }
+        if (environment.containsKey(ZipArkivoFileSystem.SPLIT_SIZE.key())) {
+            throw new IllegalArgumentException(
+                    "ZIP volume target splitSize must be provided as the factory argument"
+            );
+        }
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+        return ZipArkivoStreamingWriterImpl.open(target, splitSize, config);
     }
 
     /// Closes this streaming writer and finishes the ZIP stream.

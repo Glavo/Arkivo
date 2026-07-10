@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.zip.internal;
 
+import org.glavo.arkivo.ArkivoVolumeTarget;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
@@ -88,6 +89,20 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         return new ZipArkivoStreamingWriterImpl(new StreamingZipArkivoFileSystemImpl(
                 ZipArkivoFileSystemProvider.instance(),
                 Objects.requireNonNull(output, "output"),
+                config
+        ), config);
+    }
+
+    /// Opens a streaming ZIP writer over a transactional volume target.
+    public static ZipArkivoStreamingWriterImpl open(
+            ArkivoVolumeTarget target,
+            long splitSize,
+            ZipArkivoFileSystemConfig config
+    ) throws IOException {
+        return new ZipArkivoStreamingWriterImpl(new StreamingZipArkivoFileSystemImpl(
+                ZipArkivoFileSystemProvider.instance(),
+                Objects.requireNonNull(target, "target"),
+                splitSize,
                 config
         ), config);
     }
