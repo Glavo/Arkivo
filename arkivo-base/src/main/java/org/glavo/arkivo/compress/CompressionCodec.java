@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.compress;
 
+import org.glavo.arkivo.internal.ByteBufferCodecSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -41,14 +42,14 @@ public interface CompressionCodec {
     /// Returns whether this codec can decompress compressed bytes.
     boolean canDecompress();
 
-    /// Returns whether this codec provides a ByteBuffer one-shot compression path.
+    /// Returns whether this codec supports ByteBuffer one-shot compression.
     default boolean canCompressBuffers() {
-        return false;
+        return canCompress();
     }
 
-    /// Returns whether this codec provides a ByteBuffer one-shot decompression path.
+    /// Returns whether this codec supports ByteBuffer one-shot decompression.
     default boolean canDecompressBuffers() {
-        return false;
+        return canDecompress();
     }
 
     /// Returns whether the given byte prefix matches this codec's stream signature.
@@ -86,20 +87,18 @@ public interface CompressionCodec {
     /// Compresses all remaining bytes from `source` into `target`.
     ///
     /// Both buffers are advanced by the number of bytes consumed and produced.
-    /// Implementations may require specific buffer forms, such as direct buffers, when backed by native codecs.
+    /// The default implementation adapts the codec's channel operation and accepts heap or direct buffers.
+    /// Implementations may override this method with a path that requires specific buffer forms.
     default void compress(ByteBuffer source, ByteBuffer target) throws IOException {
-        Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(target, "target");
-        throw new UnsupportedOperationException("ByteBuffer compression is not supported");
+        ByteBufferCodecSupport.compress(this, source, target);
     }
 
     /// Decompresses all remaining bytes from `source` into `target`.
     ///
     /// Both buffers are advanced by the number of bytes consumed and produced.
-    /// Implementations may require specific buffer forms, such as direct buffers, when backed by native codecs.
+    /// The default implementation adapts the codec's channel operation and accepts heap or direct buffers.
+    /// Implementations may override this method with a path that requires specific buffer forms.
     default void decompress(ByteBuffer source, ByteBuffer target) throws IOException {
-        Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(target, "target");
-        throw new UnsupportedOperationException("ByteBuffer decompression is not supported");
+        ByteBufferCodecSupport.decompress(this, source, target);
     }
 }
