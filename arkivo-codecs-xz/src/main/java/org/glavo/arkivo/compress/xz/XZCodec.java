@@ -5,6 +5,7 @@ package org.glavo.arkivo.compress.xz;
 
 import org.glavo.arkivo.compress.CompressionCodec;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 import org.tukaani.xz.LZMA2Options;
 import org.tukaani.xz.XZInputStream;
 import org.tukaani.xz.XZOutputStream;
@@ -22,7 +23,7 @@ public final class XZCodec implements CompressionCodec {
     public static final String NAME = "xz";
 
     /// The XZ stream header magic bytes.
-    private static final byte[] HEADER_MAGIC = {
+    private static final byte @Unmodifiable [] HEADER_MAGIC = {
             (byte) 0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00
     };
 
@@ -46,6 +47,12 @@ public final class XZCodec implements CompressionCodec {
     @Override
     public boolean canDecompress() {
         return true;
+    }
+
+    /// Returns the number of leading bytes used to identify XZ streams.
+    @Override
+    public int probeSize() {
+        return HEADER_MAGIC.length;
     }
 
     /// Returns whether the given prefix starts with the XZ stream signature.

@@ -5,6 +5,7 @@ package org.glavo.arkivo.compress.gzip;
 
 import org.glavo.arkivo.compress.CompressionCodec;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -33,7 +34,7 @@ public final class GzipCodec implements CompressionCodec {
 
     /// Returns common gzip file extensions.
     @Override
-    public List<String> fileExtensions() {
+    public @Unmodifiable List<String> fileExtensions() {
         return List.of("gz", "gzip");
     }
 
@@ -47,6 +48,12 @@ public final class GzipCodec implements CompressionCodec {
     @Override
     public boolean canDecompress() {
         return true;
+    }
+
+    /// Returns the number of leading bytes used to identify gzip streams.
+    @Override
+    public int probeSize() {
+        return 2;
     }
 
     /// Returns whether the given prefix starts with the gzip stream signature.

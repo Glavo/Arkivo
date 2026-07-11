@@ -124,6 +124,10 @@ final class AllAggregationTest {
             IOException exception = assertThrows(IOException.class, () -> ArkivoFormats.detect(channel));
             assertEquals("Archive format probe made no progress", exception.getMessage());
             assertEquals(7L, channel.position());
+
+            IOException codecException = assertThrows(IOException.class, () -> CompressionCodecs.detect(channel));
+            assertEquals("Compression codec probe made no progress", codecException.getMessage());
+            assertEquals(7L, channel.position());
         }
     }
 
@@ -161,6 +165,40 @@ final class AllAggregationTest {
             assertFalse(compressed.hasRemaining(), codec.name());
             assertEquals(decoded.limit(), decoded.position(), codec.name());
             assertArrayEquals(expected, bufferBytes(decoded, decodedStart, decoded.position()), codec.name());
+        }
+    }
+
+    /// Verifies unified detection for every codec with a reliable stream signature.
+    @Test
+    void detectsAllSignatureBearingCompressionCodecs() throws IOException {
+        Set<String> expectedNames = Set.of("bzip2", "gzip", "xz", "zlib", "zstd");
+        Set<String> detectedNames = CompressionCodecs.installed()
+                .stream()
+                .filter(codec -> codec.probeSize() > 0)
+                .map(CompressionCodec::name)
+                .collect(Collectors.toUnmodifiableSet());
+        assertEquals(expectedNames, detectedNames);
+
+        byte[] content = "Arkivo compression probe".getBytes(StandardCharsets.UTF_8);
+        for (CompressionCodec codec : CompressionCodecs.installed()) {
+            if (codec.probeSize() == 0) {
+                continue;
+            }
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            try (OutputStream compressor = codec.compressTo(output)) {
+                compressor.write(content);
+            }
+            byte[] compressed = output.toByteArray();
+            ByteBuffer prefix = ByteBuffer.allocate(compressed.length + 2);
+            prefix.position(1);
+            prefix.put(compressed);
+            prefix.flip();
+            prefix.position(1);
+
+            @Nullable CompressionCodec detected = CompressionCodecs.detect(prefix);
+            assertNotNull(detected, codec.name());
+            assertEquals(codec.name(), detected.name());
+            assertEquals(1, prefix.position());
         }
     }
 

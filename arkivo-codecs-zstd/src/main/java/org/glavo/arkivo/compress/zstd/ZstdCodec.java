@@ -9,6 +9,7 @@ import com.github.luben.zstd.Zstd;
 import org.glavo.arkivo.compress.CompressionCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -31,7 +32,7 @@ public final class ZstdCodec implements CompressionCodec {
     private final int compressionLevel;
 
     /// The dictionary bytes, or `null` when no dictionary is configured.
-    private final byte @Nullable [] dictionary;
+    private final byte @Nullable @Unmodifiable [] dictionary;
 
     /// Creates a Zstandard codec.
     public ZstdCodec() {
@@ -55,7 +56,7 @@ public final class ZstdCodec implements CompressionCodec {
 
     /// Returns common Zstandard file extensions.
     @Override
-    public List<String> fileExtensions() {
+    public @Unmodifiable List<String> fileExtensions() {
         return List.of("zst", "zstd");
     }
 
@@ -106,6 +107,12 @@ public final class ZstdCodec implements CompressionCodec {
     @Override
     public boolean canDecompressBuffers() {
         return true;
+    }
+
+    /// Returns the number of leading bytes used to identify Zstandard streams.
+    @Override
+    public int probeSize() {
+        return 4;
     }
 
     /// Returns whether the given prefix starts with the Zstandard frame signature.

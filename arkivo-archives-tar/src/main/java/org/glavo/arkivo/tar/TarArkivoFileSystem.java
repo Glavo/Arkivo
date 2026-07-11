@@ -4,10 +4,14 @@
 package org.glavo.arkivo.tar;
 
 import org.glavo.arkivo.ArkivoFileSystem;
+import org.glavo.arkivo.ArkivoFileSystemOption;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.compress.CompressionCodec;
+import org.glavo.arkivo.compress.CompressionCodecs;
 import org.glavo.arkivo.tar.internal.TarArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -23,6 +27,18 @@ import java.util.Objects;
 /// under the system temporary directory by default. The file system owns and closes the selected edit storage.
 @NotNullByDefault
 public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permits TarArkivoFileSystemImpl {
+    /// The environment option for a compression codec wrapping the TAR byte stream.
+    ///
+    /// Values may be a CompressionCodec or stable codec name. Existing archives auto-detect installed codecs when
+    /// this option is absent. New archives remain uncompressed when it is absent.
+    public static final ArkivoFileSystemOption<CompressionCodec> COMPRESSION =
+            ArkivoFileSystemOption.of(
+                    "arkivo.tar",
+                    "compression",
+                    CompressionCodec.class,
+                    TarArkivoFileSystem::compressionOptionValue
+            );
+
     /// Creates a TAR archive file system base instance.
     protected TarArkivoFileSystem(ArkivoFileSystemThreadSafety threadSafety) {
         super(threadSafety);
@@ -61,5 +77,22 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(environment, "environment");
         return TarArkivoFileSystemImpl.open(TarArkivoFileSystemProvider.instance(), source, environment);
+    }
+
+    /// Converts a raw compression option value.
+    private static CompressionCodec compressionOptionValue(Object value) {
+        if (value instanceof CompressionCodec codec) {
+            return codec;
+        }
+        if (value instanceof String name) {
+            @Nullable CompressionCodec codec = CompressionCodecs.find(name);
+            if (codec != null) {
+                return codec;
+            }
+            throw new IllegalArgumentException("Compression codec is not installed: " + name);
+        }
+        throw new IllegalArgumentException(
+                "Expected CompressionCodec or String for key: " + COMPRESSION.key()
+        );
     }
 }

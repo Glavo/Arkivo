@@ -42,6 +42,12 @@ public final class ZlibCodec implements CompressionCodec {
         return true;
     }
 
+    /// Returns the number of leading bytes used to identify zlib streams.
+    @Override
+    public int probeSize() {
+        return 2;
+    }
+
     /// Returns whether the given prefix starts with a valid zlib header.
     @Override
     public boolean matches(ByteBuffer prefix) {

@@ -52,6 +52,13 @@ public interface CompressionCodec {
         return canDecompress();
     }
 
+    /// Returns the preferred number of leading bytes requested by generic codec detection.
+    ///
+    /// A codec may recognize a prefix containing fewer bytes. The returned value must not be negative.
+    default int probeSize() {
+        return 0;
+    }
+
     /// Returns whether the given byte prefix matches this codec's stream signature.
     ///
     /// The returned value is `false` when the codec has no reliable fixed signature or the prefix is too short.

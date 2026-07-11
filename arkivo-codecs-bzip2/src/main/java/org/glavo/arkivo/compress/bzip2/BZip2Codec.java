@@ -56,6 +56,12 @@ public final class BZip2Codec implements CompressionCodec {
         return true;
     }
 
+    /// Returns the number of leading bytes used to identify BZip2 streams.
+    @Override
+    public int probeSize() {
+        return 4;
+    }
+
     /// Returns whether the given prefix starts with the BZip2 stream signature.
     @Override
     public boolean matches(ByteBuffer prefix) {

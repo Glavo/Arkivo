@@ -10,17 +10,21 @@ import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ArkivoStoredContent;
+import org.glavo.arkivo.compress.CompressionCodec;
+import org.glavo.arkivo.compress.CompressionCodecs;
 import org.glavo.arkivo.internal.ArkivoFileStoreAttributes;
 import org.glavo.arkivo.tar.TarArkivoEntryAttributeView;
 import org.glavo.arkivo.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.tar.TarArkivoFileSystem;
 import org.glavo.arkivo.tar.TarArkivoFileSystemProvider;
+import org.glavo.arkivo.tar.TarArkivoFormat;
 import org.glavo.arkivo.tar.TarArkivoStreamingReader;
 import org.glavo.arkivo.tar.TarArkivoStreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -128,6 +132,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// The target used to publish a rewritten update-mode archive, or `null` outside update mode.
     private final @Nullable ArkivoCommitTarget commitTarget;
 
+    /// The compression codec wrapping the TAR stream, or `null` for an uncompressed archive.
+    private final @Nullable CompressionCodec compressionCodec;
+
     /// Whether this file system is read-only.
     private final boolean readOnly;
 
@@ -173,6 +180,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             boolean readOnly,
             boolean updateMode,
             @Nullable ArkivoCommitTarget commitTarget,
+            @Nullable CompressionCodec compressionCodec,
             Runnable closeAction
     ) {
         super(threadSafety);
@@ -198,6 +206,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         this.readOnly = readOnly;
         this.updateMode = updateMode;
         this.commitTarget = commitTarget;
+        this.compressionCodec = compressionCodec;
         this.rootPath = TarArkivoPath.root(this);
         this.writtenDirectories.add("");
         this.editStorageClosed = editStorage == null;
@@ -221,6 +230,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 environment,
                 Set.of(StandardOpenOption.READ)
         );
+        @Nullable CompressionCodec requestedCompression = TarArkivoFileSystem.COMPRESSION.read(environment);
         if (isArchiveUpdateOpen(openOptions)) {
             validateArchiveUpdateOptions(openOptions);
             if (ArkivoFileSystem.SOURCE_MUTATION_POLICY.isPresent(environment)) {
@@ -231,8 +241,16 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             try {
                 Map<String, Node> nodes;
                 boolean newArchive = !Files.exists(archivePath);
+                @Nullable CompressionCodec compressionCodec = requestedCompression;
                 if (!newArchive) {
-                    try (InputStream input = Files.newInputStream(archivePath, StandardOpenOption.READ)) {
+                    if (compressionCodec == null) {
+                        compressionCodec = detectCompression(archivePath);
+                    }
+                    requireDecompression(compressionCodec);
+                    try (InputStream input = openArchiveInput(
+                            Files.newInputStream(archivePath, StandardOpenOption.READ),
+                            compressionCodec
+                    )) {
                         nodes = readNodes(input, editStorage, ownedContents);
                     }
                 } else if (openOptions.contains(StandardOpenOption.CREATE)) {
@@ -240,6 +258,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 } else {
                     throw new NoSuchFileException(archivePath.toString());
                 }
+                requireCompression(compressionCodec);
                 @Nullable ArkivoCommitTarget commitTarget = ArkivoFileSystem.COMMIT_TARGET.read(environment);
                 if (commitTarget == null) {
                     commitTarget = ArkivoCommitTarget.atomicReplace(defaultCommitDirectory(archivePath));
@@ -258,6 +277,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                         false,
                         true,
                         commitTarget,
+                        compressionCodec,
                         closeAction
                 );
                 fileSystem.dirty = newArchive;
@@ -272,7 +292,11 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             if (ArkivoFileSystem.COMMIT_TARGET.read(environment) != null) {
                 throw new UnsupportedOperationException("TAR archive writes do not support commit targets");
             }
-            OutputStream output = Files.newOutputStream(archivePath, openOptions.toArray(OpenOption[]::new));
+            requireCompression(requestedCompression);
+            OutputStream output = openArchiveOutput(
+                    Files.newOutputStream(archivePath, openOptions.toArray(OpenOption[]::new)),
+                    requestedCompression
+            );
             return new TarArkivoFileSystemImpl(
                     provider,
                     archivePath,
@@ -287,6 +311,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     false,
                     false,
                     null,
+                    requestedCompression,
                     closeAction
             );
         }
@@ -295,8 +320,16 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         ArkivoEditStorage editStorage = editStorage(environment);
         Set<ArkivoStoredContent> ownedContents = identityContentSet();
         try {
+            @Nullable CompressionCodec compressionCodec = requestedCompression;
+            if (compressionCodec == null) {
+                compressionCodec = detectCompression(archivePath);
+            }
+            requireDecompression(compressionCodec);
             Map<String, Node> nodes;
-            try (InputStream input = Files.newInputStream(archivePath, openOptions.toArray(OpenOption[]::new))) {
+            try (InputStream input = openArchiveInput(
+                    Files.newInputStream(archivePath, openOptions.toArray(OpenOption[]::new)),
+                    compressionCodec
+            )) {
                 nodes = readNodes(input, editStorage, ownedContents);
             }
             return new TarArkivoFileSystemImpl(
@@ -313,6 +346,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     true,
                     false,
                     null,
+                    compressionCodec,
                     closeAction
             );
         } catch (IOException | RuntimeException | Error exception) {
@@ -333,6 +367,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
         ArkivoFileSystemThreadSafety threadSafety;
         ArkivoEditStorage editStorage;
+        @Nullable CompressionCodec requestedCompression;
         try {
             threadSafety = ArkivoFileSystem.THREAD_SAFETY.readOrDefault(
                     environment,
@@ -343,6 +378,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     Set.of(StandardOpenOption.READ)
             );
             validateArchiveReadOptions(openOptions);
+            requestedCompression = TarArkivoFileSystem.COMPRESSION.read(environment);
             editStorage = editStorage(environment);
         } catch (RuntimeException | Error exception) {
             closeSourceAfterOpenFailure(source, exception);
@@ -351,12 +387,21 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
         Set<ArkivoStoredContent> ownedContents = identityContentSet();
         try {
+            @Nullable CompressionCodec compressionCodec = requestedCompression;
+            if (compressionCodec == null) {
+                try (SeekableByteChannel probeChannel = source.openChannel()) {
+                    compressionCodec = detectCompression(probeChannel);
+                }
+            }
+            requireDecompression(compressionCodec);
             long archiveSize;
             Map<String, Node> nodes;
             try (SeekableByteChannel channel = source.openChannel()) {
                 archiveSize = channel.size();
                 channel.position(0L);
-                nodes = readNodes(Channels.newInputStream(channel), editStorage, ownedContents);
+                try (InputStream input = openArchiveInput(Channels.newInputStream(channel), compressionCodec)) {
+                    nodes = readNodes(input, editStorage, ownedContents);
+                }
             }
             return new TarArkivoFileSystemImpl(
                     provider,
@@ -372,6 +417,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     true,
                     false,
                     null,
+                    compressionCodec,
                     () -> {
                     }
             );
@@ -2173,6 +2219,104 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         return Objects.requireNonNull(editStorage, "editStorage");
     }
 
+    /// Detects a compression codec whose decoded path prefix is a valid TAR archive.
+    private static @Nullable CompressionCodec detectCompression(Path path) throws IOException {
+        try (SeekableByteChannel channel = Files.newByteChannel(path, StandardOpenOption.READ)) {
+            return detectCompression(channel);
+        }
+    }
+
+    /// Detects a compression codec whose decoded channel prefix is a valid TAR archive.
+    private static @Nullable CompressionCodec detectCompression(SeekableByteChannel channel) throws IOException {
+        @Nullable CompressionCodec candidate = CompressionCodecs.detect(channel);
+        if (candidate == null || !candidate.canDecompress()) {
+            return null;
+        }
+        channel.position(0L);
+        try (InputStream input = openArchiveInput(Channels.newInputStream(channel), candidate)) {
+            byte[] probe = new byte[TarArkivoFormat.instance().probeSize()];
+            int size = readPrefix(input, probe);
+            return TarArkivoFormat.instance().matches(ByteBuffer.wrap(probe, 0, size)) ? candidate : null;
+        } catch (IOException exception) {
+            return null;
+        }
+    }
+
+    /// Reads as many prefix bytes as possible without allowing a zero-progress loop.
+    private static int readPrefix(InputStream input, byte[] buffer) throws IOException {
+        int size = 0;
+        while (size < buffer.length) {
+            int count = input.read(buffer, size, buffer.length - size);
+            if (count < 0) {
+                break;
+            }
+            if (count == 0) {
+                throw new IOException("TAR compression probe made no progress");
+            }
+            size += count;
+        }
+        return size;
+    }
+
+    /// Opens a decoded TAR input stream and closes the source if decoder creation fails.
+    private static InputStream openArchiveInput(
+            InputStream source,
+            @Nullable CompressionCodec compressionCodec
+    ) throws IOException {
+        if (compressionCodec == null) {
+            return source;
+        }
+        try {
+            return compressionCodec.decompressFrom(source);
+        } catch (IOException | RuntimeException | Error exception) {
+            closeAfterOpenFailure(source, exception);
+            throw exception;
+        }
+    }
+
+    /// Opens an encoded TAR output stream and closes the target if encoder creation fails.
+    private static OutputStream openArchiveOutput(
+            OutputStream target,
+            @Nullable CompressionCodec compressionCodec
+    ) throws IOException {
+        if (compressionCodec == null) {
+            return target;
+        }
+        try {
+            return compressionCodec.compressTo(target);
+        } catch (IOException | RuntimeException | Error exception) {
+            closeAfterOpenFailure(target, exception);
+            throw exception;
+        }
+    }
+
+    /// Closes a stream after wrapper creation fails without hiding the primary failure.
+    private static void closeAfterOpenFailure(Closeable closeable, Throwable failure) {
+        try {
+            closeable.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            failure.addSuppressed(exception);
+        }
+    }
+
+    /// Requires the selected codec to support compression.
+    private static void requireCompression(@Nullable CompressionCodec compressionCodec) {
+        if (compressionCodec != null && !compressionCodec.canCompress()) {
+            throw new UnsupportedOperationException(
+                    "Compression codec does not support compression: " + compressionCodec.name()
+            );
+        }
+    }
+
+    /// Requires the selected codec to support decompression.
+    private static void requireDecompression(@Nullable CompressionCodec compressionCodec) {
+        if (compressionCodec != null && !compressionCodec.canDecompress()) {
+            throw new UnsupportedOperationException(
+                    "Compression codec does not support decompression: " + compressionCodec.name()
+            );
+        }
+    }
+
     /// Publishes all surviving update nodes through a complete TAR rewrite.
     private void commitUpdate() throws IOException {
         ArkivoCommitTarget target = Objects.requireNonNull(commitTarget, "commitTarget");
@@ -2186,7 +2330,10 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     StandardOpenOption.WRITE
             ));
                  TarArkivoStreamingWriterImpl archiveWriter =
-                         new TarArkivoStreamingWriterImpl(Channels.newOutputStream(channel))) {
+                         new TarArkivoStreamingWriterImpl(openArchiveOutput(
+                                 Channels.newOutputStream(channel),
+                                 compressionCodec
+                         ))) {
                 for (Node node : nodes.values()) {
                     if (node.path().isEmpty() || node.syntheticDirectory()) {
                         continue;
