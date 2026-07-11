@@ -3,8 +3,8 @@
 
 package org.glavo.arkivo.ar;
 
-import org.glavo.arkivo.ArkivoFormat;
 import org.glavo.arkivo.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.ArkivoStreamingFormat;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -17,10 +17,11 @@ import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /// Describes AR archive streaming support provided by Arkivo.
 @NotNullByDefault
-public final class ArArkivoFormat implements ArkivoFormat {
+public final class ArArkivoFormat implements ArkivoStreamingFormat {
     /// The stable AR format name.
     public static final String NAME = "ar";
 
@@ -93,12 +94,34 @@ public final class ArArkivoFormat implements ArkivoFormat {
     }
 
     /// Opens a streaming AR reader from an input stream.
+    @Override
     public ArArkivoStreamingReader openStreamingReader(InputStream source) {
         return ArArkivoStreamingReader.open(source);
     }
 
+    /// Opens a streaming AR reader from an input stream with environment options.
+    @Override
+    public ArArkivoStreamingReader openStreamingReader(
+            InputStream source,
+            Map<String, ?> environment
+    ) {
+        Objects.requireNonNull(environment, "environment");
+        return ArArkivoStreamingReader.open(source);
+    }
+
     /// Opens a streaming AR reader from a readable channel.
+    @Override
     public ArArkivoStreamingReader openStreamingReader(ReadableByteChannel source) {
+        return ArArkivoStreamingReader.open(source);
+    }
+
+    /// Opens a streaming AR reader from a readable channel with environment options.
+    @Override
+    public ArArkivoStreamingReader openStreamingReader(
+            ReadableByteChannel source,
+            Map<String, ?> environment
+    ) {
+        Objects.requireNonNull(environment, "environment");
         return ArArkivoStreamingReader.open(source);
     }
 

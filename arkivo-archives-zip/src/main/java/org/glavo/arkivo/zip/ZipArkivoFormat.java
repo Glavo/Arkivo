@@ -4,21 +4,23 @@
 package org.glavo.arkivo.zip;
 
 import org.glavo.arkivo.ArkivoFileSystem;
-import org.glavo.arkivo.ArkivoFormat;
 import org.glavo.arkivo.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.ArkivoStreamingFormat;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.ReadableByteChannel;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
 /// Describes the ZIP archive format support provided by Arkivo.
 @NotNullByDefault
-public final class ZipArkivoFormat implements ArkivoFormat {
+public final class ZipArkivoFormat implements ArkivoStreamingFormat {
     /// The stable ZIP format name.
     public static final String NAME = "zip";
 
@@ -100,5 +102,35 @@ public final class ZipArkivoFormat implements ArkivoFormat {
     /// Opens a split ZIP archive file system with environment options.
     public ArkivoFileSystem open(ArkivoVolumeSource volumes, Map<String, ?> environment) throws IOException {
         return ZipArkivoFileSystem.open(volumes, environment);
+    }
+
+    /// Opens a streaming ZIP reader from an input stream.
+    @Override
+    public ZipArkivoStreamingReader openStreamingReader(InputStream source) {
+        return ZipArkivoStreamingReader.open(source);
+    }
+
+    /// Opens a streaming ZIP reader from an input stream with environment options.
+    @Override
+    public ZipArkivoStreamingReader openStreamingReader(
+            InputStream source,
+            Map<String, ?> environment
+    ) {
+        return ZipArkivoStreamingReader.open(source, environment);
+    }
+
+    /// Opens a streaming ZIP reader from a readable channel.
+    @Override
+    public ZipArkivoStreamingReader openStreamingReader(ReadableByteChannel source) {
+        return ZipArkivoStreamingReader.open(source);
+    }
+
+    /// Opens a streaming ZIP reader from a readable channel with environment options.
+    @Override
+    public ZipArkivoStreamingReader openStreamingReader(
+            ReadableByteChannel source,
+            Map<String, ?> environment
+    ) {
+        return ZipArkivoStreamingReader.open(source, environment);
     }
 }

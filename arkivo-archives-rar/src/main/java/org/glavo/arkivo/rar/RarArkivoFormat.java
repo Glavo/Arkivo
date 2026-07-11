@@ -3,8 +3,8 @@
 
 package org.glavo.arkivo.rar;
 
-import org.glavo.arkivo.ArkivoFormat;
 import org.glavo.arkivo.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.ArkivoStreamingFormat;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -16,10 +16,11 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /// Describes RAR archive streaming support provided by Arkivo.
 @NotNullByDefault
-public final class RarArkivoFormat implements ArkivoFormat {
+public final class RarArkivoFormat implements ArkivoStreamingFormat {
     /// The stable RAR format name.
     public static final String NAME = "rar";
 
@@ -107,12 +108,34 @@ public final class RarArkivoFormat implements ArkivoFormat {
     }
 
     /// Opens a streaming RAR reader from an input stream.
+    @Override
     public RarArkivoStreamingReader openStreamingReader(InputStream source) {
         return RarArkivoStreamingReader.open(source);
     }
 
+    /// Opens a streaming RAR reader from an input stream with environment options.
+    @Override
+    public RarArkivoStreamingReader openStreamingReader(
+            InputStream source,
+            Map<String, ?> environment
+    ) {
+        Objects.requireNonNull(environment, "environment");
+        return RarArkivoStreamingReader.open(source);
+    }
+
     /// Opens a streaming RAR reader from a readable channel.
+    @Override
     public RarArkivoStreamingReader openStreamingReader(ReadableByteChannel source) {
+        return RarArkivoStreamingReader.open(source);
+    }
+
+    /// Opens a streaming RAR reader from a readable channel with environment options.
+    @Override
+    public RarArkivoStreamingReader openStreamingReader(
+            ReadableByteChannel source,
+            Map<String, ?> environment
+    ) {
+        Objects.requireNonNull(environment, "environment");
         return RarArkivoStreamingReader.open(source);
     }
 }

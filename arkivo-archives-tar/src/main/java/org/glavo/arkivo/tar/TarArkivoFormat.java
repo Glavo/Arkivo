@@ -3,8 +3,8 @@
 
 package org.glavo.arkivo.tar;
 
-import org.glavo.arkivo.ArkivoFormat;
 import org.glavo.arkivo.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.ArkivoStreamingFormat;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -20,7 +20,7 @@ import java.util.Map;
 
 /// Describes TAR archive streaming support provided by Arkivo.
 @NotNullByDefault
-public final class TarArkivoFormat implements ArkivoFormat {
+public final class TarArkivoFormat implements ArkivoStreamingFormat {
     /// The size of one TAR header or padding block.
     private static final int BLOCK_SIZE = 512;
 
@@ -121,11 +121,13 @@ public final class TarArkivoFormat implements ArkivoFormat {
     }
 
     /// Opens a streaming TAR reader from an input stream.
+    @Override
     public TarArkivoStreamingReader openStreamingReader(InputStream source) {
         return TarArkivoStreamingReader.open(source);
     }
 
     /// Opens a streaming TAR reader from an input stream with environment options.
+    @Override
     public TarArkivoStreamingReader openStreamingReader(
             InputStream source,
             Map<String, ?> environment
@@ -134,11 +136,13 @@ public final class TarArkivoFormat implements ArkivoFormat {
     }
 
     /// Opens a streaming TAR reader from a readable channel.
+    @Override
     public TarArkivoStreamingReader openStreamingReader(ReadableByteChannel source) {
         return TarArkivoStreamingReader.open(source);
     }
 
     /// Opens a streaming TAR reader from a readable channel with environment options.
+    @Override
     public TarArkivoStreamingReader openStreamingReader(
             ReadableByteChannel source,
             Map<String, ?> environment
