@@ -7,6 +7,7 @@ import org.glavo.arkivo.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.tar.TarArkivoStreamingReader;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -20,7 +21,9 @@ import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFileAttributes;
 import java.time.DateTimeException;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -45,11 +48,17 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     /// Whether the current entry body has already been opened.
     private boolean currentBodyOpened;
 
+    /// The sparse map for the current logical file body, or `null` for a contiguous body.
+    private @Nullable SparseMap currentSparseMap;
+
     /// The active global PAX key-value records.
     private final HashMap<String, String> globalPaxHeaders = new HashMap<>();
 
     /// The pending per-entry PAX key-value records.
     private @Nullable HashMap<String, String> pendingPaxHeaders;
+
+    /// The ordered pending per-entry PAX records, including repeated GNU sparse keys.
+    private @Nullable ArrayList<PaxRecord> pendingPaxRecords;
 
     /// The pending GNU long path value.
     private @Nullable String pendingLongPath;
@@ -104,6 +113,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             currentBodyRemaining = attributes.bodySize();
             currentPaddingRemaining = paddingSize(currentBodyRemaining);
             currentBodyOpened = false;
+            currentSparseMap = null;
 
             byte typeFlag = attributes.typeFlag();
             if (typeFlag == TarEntryAttributes.GNU_LONG_PATH_TYPE) {
@@ -127,11 +137,19 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 continue;
             }
 
-            TarEntryAttributes resolvedAttributes = applyPendingEntryMetadata(attributes);
-            currentAttributes = resolvedAttributes;
-            currentBodyRemaining = resolvedAttributes.bodySize();
+            ResolvedEntry resolvedEntry = applyPendingEntryMetadata(attributes);
+            TarEntryAttributes resolvedAttributes = resolvedEntry.attributes();
+            currentBodyRemaining = resolvedEntry.storedBodySize();
             currentPaddingRemaining = paddingSize(currentBodyRemaining);
             currentBodyOpened = false;
+            SparseSpec sparseSpec = resolvedEntry.sparseSpec();
+            if (sparseSpec != null) {
+                @Nullable @Unmodifiable List<SparseBlock> declaredBlocks = sparseSpec.blocks();
+                currentSparseMap = declaredBlocks != null
+                        ? validateSparseMap(sparseSpec.logicalSize(), declaredBlocks, currentBodyRemaining)
+                        : readSparseMapFromBody(sparseSpec.logicalSize());
+            }
+            currentAttributes = resolvedAttributes;
             return true;
         }
     }
@@ -166,7 +184,10 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         if (attributes.bodySize() == 0L) {
             return Channels.newChannel(InputStream.nullInputStream());
         }
-        return Channels.newChannel(new EntryInputStream());
+        SparseMap sparseMap = currentSparseMap;
+        return Channels.newChannel(sparseMap != null
+                ? new SparseEntryInputStream(sparseMap)
+                : new EntryInputStream());
     }
 
     /// Closes this streaming reader.
@@ -177,6 +198,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         }
         open = false;
         currentAttributes = null;
+        currentSparseMap = null;
         clearPendingEntryMetadata();
         globalPaxHeaders.clear();
         source.close();
@@ -316,8 +338,9 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     }
 
     /// Parses POSIX PAX key-value records.
-    private static HashMap<String, String> parsePaxHeaders(byte[] body) throws IOException {
+    private static ParsedPaxHeaders parsePaxHeaders(byte[] body) throws IOException {
         HashMap<String, String> records = new HashMap<>();
+        ArrayList<PaxRecord> orderedRecords = new ArrayList<>();
         int index = 0;
         while (index < body.length) {
             int space = index;
@@ -352,9 +375,10 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             String key = new String(body, space + 1, equals - space - 1, StandardCharsets.UTF_8);
             String value = new String(body, equals + 1, end - equals - 2, StandardCharsets.UTF_8);
             records.put(key, value);
+            orderedRecords.add(new PaxRecord(key, value));
             index = end;
         }
-        return records;
+        return new ParsedPaxHeaders(records, List.copyOf(orderedRecords));
     }
 
     /// Parses a non-negative decimal PAX integer value.
@@ -471,8 +495,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     }
 
     /// Merges global PAX records for subsequent real entries.
-    private void mergeGlobalPaxHeaders(HashMap<String, String> records) {
-        for (Map.Entry<String, String> record : records.entrySet()) {
+    private void mergeGlobalPaxHeaders(ParsedPaxHeaders headers) {
+        for (Map.Entry<String, String> record : headers.values().entrySet()) {
             if (record.getValue().isEmpty()) {
                 globalPaxHeaders.remove(record.getKey());
             } else {
@@ -482,17 +506,24 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     }
 
     /// Merges per-entry PAX records for the next real entry.
-    private void mergePendingPaxHeaders(HashMap<String, String> records) {
+    private void mergePendingPaxHeaders(ParsedPaxHeaders headers) {
+        HashMap<String, String> records = headers.values();
         HashMap<String, String> pending = pendingPaxHeaders;
         if (pending == null) {
             pendingPaxHeaders = records;
         } else {
             pending.putAll(records);
         }
+        ArrayList<PaxRecord> ordered = pendingPaxRecords;
+        if (ordered == null) {
+            pendingPaxRecords = new ArrayList<>(headers.orderedRecords());
+        } else {
+            ordered.addAll(headers.orderedRecords());
+        }
     }
 
     /// Applies pending GNU and PAX metadata to a real TAR entry.
-    private TarEntryAttributes applyPendingEntryMetadata(TarEntryAttributes attributes) throws IOException {
+    private ResolvedEntry applyPendingEntryMetadata(TarEntryAttributes attributes) throws IOException {
         try {
             String path = pendingLongPath != null ? pendingLongPath : attributes.path();
             @Nullable String linkName = pendingLongLink != null ? pendingLongLink : attributes.linkName();
@@ -548,25 +579,223 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             if (paxCreationTime != null) {
                 creationTime = parsePaxFileTime(paxCreationTime, "ctime");
             }
+            @Nullable SparseSpec sparseSpec = parseSparseSpec(path);
+            if (sparseSpec != null) {
+                if (!attributes.hasDataBody()) {
+                    throw new IOException("GNU sparse metadata requires a regular file entry");
+                }
+                path = sparseSpec.path();
+            }
             requireValidEntryPath(path);
 
-            return new TarEntryAttributes(
-                    path,
-                    attributes.typeFlag(),
-                    mode,
-                    userId,
-                    groupId,
-                    userName,
-                    groupName,
-                    linkName,
+            return new ResolvedEntry(
+                    new TarEntryAttributes(
+                            path,
+                            attributes.typeFlag(),
+                            mode,
+                            userId,
+                            groupId,
+                            userName,
+                            groupName,
+                            linkName,
+                            sparseSpec != null ? sparseSpec.logicalSize() : size,
+                            lastModifiedTime,
+                            lastAccessTime,
+                            creationTime
+                    ),
                     size,
-                    lastModifiedTime,
-                    lastAccessTime,
-                    creationTime
+                    sparseSpec
             );
         } finally {
             clearPendingEntryMetadata();
         }
+    }
+
+    /// Parses GNU PAX sparse metadata for the pending entry, or returns `null` for a contiguous entry.
+    private @Nullable SparseSpec parseSparseSpec(String defaultPath) throws IOException {
+        @Nullable String majorText = paxValue("GNU.sparse.major");
+        @Nullable String minorText = paxValue("GNU.sparse.minor");
+        @Nullable String realSizeText = paxValue("GNU.sparse.realsize");
+        @Nullable String sparseSizeText = paxValue("GNU.sparse.size");
+        @Nullable String blockCountText = paxValue("GNU.sparse.numblocks");
+        @Nullable String mapText = paxValue("GNU.sparse.map");
+        @Nullable String sparseName = paxOptionalStringValue("GNU.sparse.name");
+        boolean hasRepeatedMap = hasPendingPaxRecord("GNU.sparse.offset")
+                || hasPendingPaxRecord("GNU.sparse.numbytes");
+        if (majorText == null && minorText == null
+                && realSizeText == null && sparseSizeText == null
+                && blockCountText == null && mapText == null
+                && sparseName == null && !hasRepeatedMap) {
+            return null;
+        }
+
+        String path = sparseName != null ? sparseName : defaultPath;
+        if (majorText != null || minorText != null || realSizeText != null) {
+            if (majorText == null || minorText == null || realSizeText == null) {
+                throw new IOException("Incomplete GNU sparse version 1.0 metadata");
+            }
+            long major = parsePaxNonNegativeLong(majorText, "GNU.sparse.major");
+            long minor = parsePaxNonNegativeLong(minorText, "GNU.sparse.minor");
+            if (major != 1L || minor != 0L) {
+                throw new IOException("Unsupported GNU sparse format version: " + major + "." + minor);
+            }
+            long logicalSize = parsePaxNonNegativeLong(realSizeText, "GNU.sparse.realsize");
+            return new SparseSpec(path, logicalSize, null);
+        }
+
+        if (sparseSizeText == null || blockCountText == null) {
+            throw new IOException("Incomplete GNU sparse format 0.x metadata");
+        }
+        long logicalSize = parsePaxNonNegativeLong(sparseSizeText, "GNU.sparse.size");
+        int blockCount = parseSparseBlockCount(blockCountText);
+        @Unmodifiable List<SparseBlock> blocks;
+        if (mapText != null) {
+            blocks = parseSparseMapText(mapText, blockCount);
+        } else {
+            blocks = parseRepeatedSparseMap(blockCount);
+        }
+        return new SparseSpec(path, logicalSize, blocks);
+    }
+
+    /// Returns whether the pending PAX headers contain an ordered record with the given key.
+    private boolean hasPendingPaxRecord(String key) {
+        ArrayList<PaxRecord> records = pendingPaxRecords;
+        if (records == null) {
+            return false;
+        }
+        for (PaxRecord record : records) {
+            if (record.key().equals(key)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Parses and bounds a GNU sparse block count.
+    private static int parseSparseBlockCount(String value) throws IOException {
+        long count = parsePaxNonNegativeLong(value, "GNU.sparse.numblocks");
+        if (count > Integer.MAX_VALUE) {
+            throw new IOException("GNU sparse block count is too large");
+        }
+        return (int) count;
+    }
+
+    /// Parses a GNU sparse 0.1 comma-separated map.
+    private static @Unmodifiable List<SparseBlock> parseSparseMapText(
+            String map,
+            int expectedBlockCount
+    ) throws IOException {
+        if (map.isEmpty()) {
+            if (expectedBlockCount == 0) {
+                return List.of();
+            }
+            throw new IOException("GNU sparse map has the wrong block count");
+        }
+        String[] values = map.split(",", -1);
+        if (values.length != expectedBlockCount * 2L) {
+            throw new IOException("GNU sparse map has the wrong block count");
+        }
+        ArrayList<SparseBlock> blocks = new ArrayList<>();
+        for (int index = 0; index < values.length; index += 2) {
+            blocks.add(new SparseBlock(
+                    parsePaxNonNegativeLong(values[index], "GNU.sparse.map offset"),
+                    parsePaxNonNegativeLong(values[index + 1], "GNU.sparse.map size")
+            ));
+        }
+        return List.copyOf(blocks);
+    }
+
+    /// Parses a GNU sparse 0.0 map from repeated offset and size PAX records.
+    private @Unmodifiable List<SparseBlock> parseRepeatedSparseMap(int expectedBlockCount) throws IOException {
+        ArrayList<PaxRecord> records = pendingPaxRecords;
+        if (records == null) {
+            if (expectedBlockCount == 0) {
+                return List.of();
+            }
+            throw new IOException("GNU sparse map records are missing");
+        }
+        ArrayList<SparseBlock> blocks = new ArrayList<>();
+        long pendingOffset = -1L;
+        for (PaxRecord record : records) {
+            if (record.key().equals("GNU.sparse.offset")) {
+                if (pendingOffset >= 0L) {
+                    throw new IOException("GNU sparse map contains consecutive offsets");
+                }
+                pendingOffset = parsePaxNonNegativeLong(record.value(), "GNU.sparse.offset");
+            } else if (record.key().equals("GNU.sparse.numbytes")) {
+                if (pendingOffset < 0L) {
+                    throw new IOException("GNU sparse map size is missing its offset");
+                }
+                blocks.add(new SparseBlock(
+                        pendingOffset,
+                        parsePaxNonNegativeLong(record.value(), "GNU.sparse.numbytes")
+                ));
+                pendingOffset = -1L;
+            }
+        }
+        if (pendingOffset >= 0L) {
+            throw new IOException("GNU sparse map offset is missing its size");
+        }
+        if (blocks.size() != expectedBlockCount) {
+            throw new IOException("GNU sparse map has the wrong block count");
+        }
+        return List.copyOf(blocks);
+    }
+
+    /// Reads and validates a GNU sparse 1.0 map stored at the beginning of the entry body.
+    private SparseMap readSparseMapFromBody(long logicalSize) throws IOException {
+        SparseMapBodyReader reader = new SparseMapBodyReader();
+        long countValue = reader.readNumber("block count");
+        if (countValue > Integer.MAX_VALUE) {
+            throw new IOException("GNU sparse block count is too large");
+        }
+        int blockCount = (int) countValue;
+        ArrayList<SparseBlock> blocks = new ArrayList<>();
+        for (int index = 0; index < blockCount; index++) {
+            blocks.add(new SparseBlock(
+                    reader.readNumber("block offset"),
+                    reader.readNumber("block size")
+            ));
+        }
+        reader.finishPadding();
+        return validateSparseMap(logicalSize, blocks, currentBodyRemaining);
+    }
+
+    /// Validates sparse block ordering, logical bounds, and the packed data size.
+    private static SparseMap validateSparseMap(
+            long logicalSize,
+            @Unmodifiable List<SparseBlock> blocks,
+            long packedSize
+    ) throws IOException {
+        long previousEnd = 0L;
+        long totalPackedSize = 0L;
+        for (SparseBlock block : blocks) {
+            long offset = block.offset();
+            long size = block.size();
+            if (offset < previousEnd) {
+                throw new IOException("GNU sparse map blocks overlap or are out of order");
+            }
+            long end = checkedSparseAdd(offset, size, "block end");
+            if (end > logicalSize) {
+                throw new IOException("GNU sparse map block exceeds the logical file size");
+            }
+            totalPackedSize = checkedSparseAdd(totalPackedSize, size, "packed size");
+            previousEnd = end;
+        }
+        if (totalPackedSize != packedSize) {
+            throw new IOException(
+                    "GNU sparse packed size mismatch: expected " + totalPackedSize + " bytes, found " + packedSize
+            );
+        }
+        return new SparseMap(logicalSize, List.copyOf(blocks));
+    }
+
+    /// Adds non-negative sparse values and reports overflow as an archive error.
+    private static long checkedSparseAdd(long left, long right, String description) throws IOException {
+        if (right > Long.MAX_VALUE - left) {
+            throw new IOException("GNU sparse " + description + " is too large");
+        }
+        return left + right;
     }
 
     /// Requires a decoded TAR entry path to contain a usable archive-local path.
@@ -634,6 +863,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     /// Clears metadata that applies only to the next real entry.
     private void clearPendingEntryMetadata() {
         pendingPaxHeaders = null;
+        pendingPaxRecords = null;
         pendingLongPath = null;
         pendingLongLink = null;
     }
@@ -645,6 +875,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         currentBodyRemaining = 0L;
         currentPaddingRemaining = 0L;
         currentBodyOpened = false;
+        currentSparseMap = null;
     }
 
     /// Skips the requested number of bytes from the archive source.
@@ -666,6 +897,315 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     private void ensureOpen() throws IOException {
         if (!open) {
             throw new IOException("TAR streaming reader is closed");
+        }
+    }
+
+    /// Stores parsed PAX values together with their original ordered records.
+    ///
+    /// @param values         the last value for each PAX key
+    /// @param orderedRecords every PAX record in archive order
+    @NotNullByDefault
+    private record ParsedPaxHeaders(
+            HashMap<String, String> values,
+            @Unmodifiable List<PaxRecord> orderedRecords
+    ) {
+        /// Creates parsed PAX headers.
+        private ParsedPaxHeaders {
+            Objects.requireNonNull(values, "values");
+            orderedRecords = List.copyOf(orderedRecords);
+        }
+    }
+
+    /// Stores one ordered PAX key-value record.
+    ///
+    /// @param key   the PAX key
+    /// @param value the PAX value
+    @NotNullByDefault
+    private record PaxRecord(String key, String value) {
+        /// Creates an ordered PAX record.
+        private PaxRecord {
+            Objects.requireNonNull(key, "key");
+            Objects.requireNonNull(value, "value");
+        }
+    }
+
+    /// Stores resolved entry metadata and the physical body size used by TAR framing.
+    ///
+    /// @param attributes     the logical entry attributes exposed to callers
+    /// @param storedBodySize the physical body size declared by the TAR and PAX size fields
+    /// @param sparseSpec     the GNU sparse metadata, or `null` for a contiguous entry
+    @NotNullByDefault
+    private record ResolvedEntry(
+            TarEntryAttributes attributes,
+            long storedBodySize,
+            @Nullable SparseSpec sparseSpec
+    ) {
+        /// Creates resolved entry metadata.
+        private ResolvedEntry {
+            Objects.requireNonNull(attributes, "attributes");
+            if (storedBodySize < 0L) {
+                throw new IllegalArgumentException("storedBodySize must not be negative");
+            }
+        }
+    }
+
+    /// Stores GNU sparse metadata before a version 1.0 body map is read.
+    ///
+    /// @param path        the real logical entry path
+    /// @param logicalSize the expanded logical file size
+    /// @param blocks      the PAX-declared blocks, or `null` when the map is stored in the body
+    @NotNullByDefault
+    private record SparseSpec(
+            String path,
+            long logicalSize,
+            @Nullable @Unmodifiable List<SparseBlock> blocks
+    ) {
+        /// Creates a GNU sparse specification.
+        private SparseSpec {
+            Objects.requireNonNull(path, "path");
+            if (logicalSize < 0L) {
+                throw new IllegalArgumentException("logicalSize must not be negative");
+            }
+            if (blocks != null) {
+                blocks = List.copyOf(blocks);
+            }
+        }
+    }
+
+    /// Stores one non-hole extent in a sparse logical file.
+    ///
+    /// @param offset the absolute logical file offset
+    /// @param size   the number of packed data bytes
+    @NotNullByDefault
+    private record SparseBlock(long offset, long size) {
+        /// Creates a sparse data block.
+        private SparseBlock {
+            if (offset < 0L || size < 0L) {
+                throw new IllegalArgumentException("Sparse block values must not be negative");
+            }
+        }
+    }
+
+    /// Stores a validated sparse map for the current entry body.
+    ///
+    /// @param logicalSize the expanded logical file size
+    /// @param blocks      the ordered non-hole extents
+    @NotNullByDefault
+    private record SparseMap(long logicalSize, @Unmodifiable List<SparseBlock> blocks) {
+        /// Creates a validated sparse map.
+        private SparseMap {
+            if (logicalSize < 0L) {
+                throw new IllegalArgumentException("logicalSize must not be negative");
+            }
+            blocks = List.copyOf(blocks);
+        }
+    }
+
+    /// Parses a GNU sparse 1.0 map directly from the current physical entry body.
+    @NotNullByDefault
+    private final class SparseMapBodyReader {
+        /// The number of unpadded map bytes consumed from the body.
+        private long byteCount;
+
+        /// Reads one newline-terminated non-negative decimal map number.
+        private long readNumber(String description) throws IOException {
+            long value = 0L;
+            boolean hasDigit = false;
+            while (true) {
+                if (currentBodyRemaining == 0L) {
+                    throw new EOFException("Unexpected end of GNU sparse map");
+                }
+                int next = source.read();
+                if (next < 0) {
+                    throw new EOFException("Unexpected end of GNU sparse map");
+                }
+                currentBodyRemaining--;
+                byteCount++;
+                if (next == '\n') {
+                    if (!hasDigit) {
+                        throw new IOException("GNU sparse " + description + " is empty");
+                    }
+                    return value;
+                }
+                if (next < '0' || next > '9') {
+                    throw new IOException("Invalid GNU sparse " + description);
+                }
+                int digit = next - '0';
+                if (value > (Long.MAX_VALUE - digit) / 10L) {
+                    throw new IOException("GNU sparse " + description + " is too large");
+                }
+                value = value * 10L + digit;
+                hasDigit = true;
+            }
+        }
+
+        /// Consumes and validates null padding through the next TAR block boundary.
+        private void finishPadding() throws IOException {
+            long padding = paddingSize(byteCount);
+            if (padding > currentBodyRemaining) {
+                throw new EOFException("Unexpected end of GNU sparse map padding");
+            }
+            for (long index = 0L; index < padding; index++) {
+                int next = source.read();
+                if (next < 0) {
+                    throw new EOFException("Unexpected end of GNU sparse map padding");
+                }
+                currentBodyRemaining--;
+                if (next != 0) {
+                    throw new IOException("GNU sparse map padding must contain only null bytes");
+                }
+            }
+        }
+    }
+
+    /// Expands the current packed sparse body into its logical byte stream.
+    @NotNullByDefault
+    private final class SparseEntryInputStream extends InputStream {
+        /// The validated sparse map.
+        private final SparseMap sparseMap;
+
+        /// A reusable single-byte read buffer.
+        private final byte[] singleByte = new byte[1];
+
+        /// The current logical file position.
+        private long logicalPosition;
+
+        /// The index of the current sparse data block.
+        private int blockIndex;
+
+        /// Creates a sparse entry input stream.
+        private SparseEntryInputStream(SparseMap sparseMap) {
+            this.sparseMap = Objects.requireNonNull(sparseMap, "sparseMap");
+        }
+
+        /// Reads one expanded logical byte.
+        @Override
+        public int read() throws IOException {
+            int count = read(singleByte, 0, 1);
+            return count < 0 ? -1 : Byte.toUnsignedInt(singleByte[0]);
+        }
+
+        /// Reads expanded logical bytes, synthesizing zeros for sparse holes.
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            ensureOpen();
+            Objects.checkFromIndexSize(offset, length, buffer.length);
+            if (length == 0) {
+                return 0;
+            }
+            if (logicalPosition == sparseMap.logicalSize()) {
+                return -1;
+            }
+
+            int total = 0;
+            while (total < length && logicalPosition < sparseMap.logicalSize()) {
+                advanceCompletedBlocks();
+                @Nullable SparseBlock block = currentBlock();
+                if (block == null || logicalPosition < block.offset()) {
+                    long holeEnd = block != null ? block.offset() : sparseMap.logicalSize();
+                    int count = (int) Math.min(length - total, holeEnd - logicalPosition);
+                    java.util.Arrays.fill(buffer, offset + total, offset + total + count, (byte) 0);
+                    logicalPosition += count;
+                    total += count;
+                    continue;
+                }
+
+                long blockEnd = block.offset() + block.size();
+                int requested = (int) Math.min(length - total, blockEnd - logicalPosition);
+                int read = source.read(buffer, offset + total, requested);
+                if (read < 0) {
+                    throw new EOFException("Unexpected end of GNU sparse entry data");
+                }
+                if (read == 0) {
+                    throw new IOException("GNU sparse entry read made no progress");
+                }
+                currentBodyRemaining -= read;
+                logicalPosition += read;
+                total += read;
+            }
+            return total;
+        }
+
+        /// Skips expanded logical bytes while consuming packed data extents as needed.
+        @Override
+        public long skip(long count) throws IOException {
+            ensureOpen();
+            if (count <= 0L || logicalPosition == sparseMap.logicalSize()) {
+                return 0L;
+            }
+            long available = sparseMap.logicalSize() - logicalPosition;
+            long target = logicalPosition + Math.min(count, available);
+            long start = logicalPosition;
+            while (logicalPosition < target) {
+                advanceCompletedBlocks();
+                @Nullable SparseBlock block = currentBlock();
+                if (block == null || logicalPosition < block.offset()) {
+                    long holeEnd = block != null ? block.offset() : sparseMap.logicalSize();
+                    logicalPosition = Math.min(target, holeEnd);
+                    continue;
+                }
+                long blockEnd = block.offset() + block.size();
+                skipPackedData(Math.min(target - logicalPosition, blockEnd - logicalPosition));
+            }
+            return logicalPosition - start;
+        }
+
+        /// Returns immediately available logical bytes from the current hole or data block.
+        @Override
+        public int available() throws IOException {
+            ensureOpen();
+            if (logicalPosition == sparseMap.logicalSize()) {
+                return 0;
+            }
+            advanceCompletedBlocks();
+            @Nullable SparseBlock block = currentBlock();
+            long available;
+            if (block == null || logicalPosition < block.offset()) {
+                long holeEnd = block != null ? block.offset() : sparseMap.logicalSize();
+                available = holeEnd - logicalPosition;
+            } else {
+                long blockRemaining = block.offset() + block.size() - logicalPosition;
+                available = Math.min(blockRemaining, source.available());
+            }
+            return (int) Math.min(Integer.MAX_VALUE, available);
+        }
+
+        /// Advances past sparse blocks ending at the current logical position.
+        private void advanceCompletedBlocks() {
+            @Unmodifiable List<SparseBlock> blocks = sparseMap.blocks();
+            while (blockIndex < blocks.size()) {
+                SparseBlock block = blocks.get(blockIndex);
+                if (logicalPosition < block.offset() + block.size()) {
+                    return;
+                }
+                blockIndex++;
+            }
+        }
+
+        /// Returns the current sparse block, or `null` after the final data block.
+        private @Nullable SparseBlock currentBlock() {
+            @Unmodifiable List<SparseBlock> blocks = sparseMap.blocks();
+            return blockIndex < blocks.size() ? blocks.get(blockIndex) : null;
+        }
+
+        /// Skips an exact number of packed data bytes.
+        private void skipPackedData(long count) throws IOException {
+            long remaining = count;
+            while (remaining > 0L) {
+                long skipped = source.skip(remaining);
+                if (skipped > remaining) {
+                    throw new IOException("Invalid GNU sparse entry skip result");
+                }
+                if (skipped == 0L) {
+                    if (source.read() < 0) {
+                        throw new EOFException("Unexpected end of GNU sparse entry data");
+                    }
+                    skipped = 1L;
+                }
+                currentBodyRemaining -= skipped;
+                logicalPosition += skipped;
+                remaining -= skipped;
+            }
         }
     }
 
