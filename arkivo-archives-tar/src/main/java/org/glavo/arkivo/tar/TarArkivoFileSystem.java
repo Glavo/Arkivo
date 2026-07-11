@@ -25,6 +25,8 @@ import java.util.Objects;
 /// select another publication policy.
 /// Indexed read and update sessions stage entry bodies through `ArkivoFileSystem.EDIT_STORAGE`, using temporary files
 /// under the system temporary directory by default. The file system owns and closes the selected edit storage.
+/// GNU sparse entries are staged as expanded logical files; an update commit normalizes old GNU `S` entries to regular
+/// TAR entries while preserving their expanded content and metadata.
 @NotNullByDefault
 public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permits TarArkivoFileSystemImpl {
     /// The environment option for a compression codec wrapping the TAR byte stream.

@@ -154,7 +154,8 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         beginEntry(path, EntryType.HARD_LINK, hardLinkTargetText(target));
     }
 
-    /// Writes an indexed TAR entry snapshot while preserving its type and metadata.
+    /// Writes an indexed TAR entry snapshot while preserving its logical type and metadata.
+    /// Old GNU sparse entries are normalized to regular files because indexed storage exposes their expanded bodies.
     void writeSnapshot(
             TarArkivoEntryAttributes attributes,
             @Nullable ReadableByteChannel body,
@@ -172,7 +173,9 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
             throw new IllegalStateException("A TAR streaming entry body is still open");
         }
 
-        byte typeFlag = attributes.typeFlag();
+        byte typeFlag = attributes.typeFlag() == TarEntryAttributes.OLD_GNU_SPARSE_TYPE
+                ? TarEntryAttributes.REGULAR_TYPE
+                : attributes.typeFlag();
         boolean storesBody = typeFlag == TarEntryAttributes.REGULAR_TYPE
                 || typeFlag == TarEntryAttributes.OLD_REGULAR_TYPE
                 || attributes.isOther();

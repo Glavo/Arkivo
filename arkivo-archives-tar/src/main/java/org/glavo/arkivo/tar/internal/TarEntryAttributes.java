@@ -40,6 +40,9 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
     /// The GNU TAR type flag for a long symbolic link metadata entry.
     static final byte GNU_LONG_LINK_TYPE = 'K';
 
+    /// The old GNU TAR type flag for a sparse regular file.
+    static final byte OLD_GNU_SPARSE_TYPE = 'S';
+
     /// The POSIX PAX type flag for per-entry extended metadata.
     static final byte PAX_EXTENDED_HEADER_TYPE = 'x';
 
@@ -247,6 +250,8 @@ final class TarEntryAttributes implements TarArkivoEntryAttributes, PosixFileAtt
 
     /// Returns whether this entry stores file data in its own TAR body.
     boolean hasDataBody() {
-        return typeFlag == REGULAR_TYPE || typeFlag == OLD_REGULAR_TYPE;
+        return typeFlag == REGULAR_TYPE
+                || typeFlag == OLD_REGULAR_TYPE
+                || typeFlag == OLD_GNU_SPARSE_TYPE;
     }
 }

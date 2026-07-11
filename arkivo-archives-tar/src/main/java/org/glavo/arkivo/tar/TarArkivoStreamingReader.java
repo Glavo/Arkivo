@@ -20,7 +20,7 @@ import java.util.Objects;
 /// Reads TAR entries from a forward-only stream.
 ///
 /// Entry body channels expose the declared body of regular and format-specific entry types.
-/// GNU PAX sparse formats 0.0, 0.1, and 1.0 are exposed as expanded logical file bodies.
+/// Old GNU sparse entries and GNU PAX sparse formats 0.0, 0.1, and 1.0 are exposed as expanded logical file bodies.
 /// Closing the reader closes its backing input stream or channel.
 @NotNullByDefault
 public abstract sealed class TarArkivoStreamingReader extends ArkivoStreamingReader

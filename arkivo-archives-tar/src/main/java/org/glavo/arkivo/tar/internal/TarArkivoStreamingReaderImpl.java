@@ -33,6 +33,27 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     /// The TAR record size.
     private static final int RECORD_SIZE = 512;
 
+    /// The byte offset of old GNU sparse descriptors in the main header.
+    private static final int OLD_GNU_SPARSE_OFFSET = 386;
+
+    /// The number of old GNU sparse descriptors in the main header.
+    private static final int OLD_GNU_MAIN_SPARSE_COUNT = 4;
+
+    /// The number of old GNU sparse descriptors in an extension header.
+    private static final int OLD_GNU_EXTENSION_SPARSE_COUNT = 21;
+
+    /// The byte width of one old GNU sparse descriptor.
+    private static final int OLD_GNU_SPARSE_DESCRIPTOR_SIZE = 24;
+
+    /// The byte offset of the main old GNU sparse extension flag.
+    private static final int OLD_GNU_MAIN_EXTENSION_FLAG_OFFSET = 482;
+
+    /// The byte offset of the old GNU sparse logical size.
+    private static final int OLD_GNU_REAL_SIZE_OFFSET = 483;
+
+    /// The byte offset of an old GNU sparse extension header continuation flag.
+    private static final int OLD_GNU_EXTENSION_FLAG_OFFSET = 504;
+
     /// The backing archive input stream.
     private final InputStream source;
 
@@ -137,7 +158,10 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 continue;
             }
 
-            ResolvedEntry resolvedEntry = applyPendingEntryMetadata(attributes);
+            @Nullable OldGnuSparseSpec oldGnuSparseSpec = typeFlag == TarEntryAttributes.OLD_GNU_SPARSE_TYPE
+                    ? readOldGnuSparseSpec(header)
+                    : null;
+            ResolvedEntry resolvedEntry = applyPendingEntryMetadata(attributes, oldGnuSparseSpec);
             TarEntryAttributes resolvedAttributes = resolvedEntry.attributes();
             currentBodyRemaining = resolvedEntry.storedBodySize();
             currentPaddingRemaining = paddingSize(currentBodyRemaining);
@@ -208,19 +232,33 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     /// Parses one TAR header block.
     private static TarEntryAttributes parseHeader(byte[] header) throws IOException {
         validateChecksum(header);
+        byte typeFlag = header[156];
         String name = readString(header, 0, 100);
-        String prefix = readString(header, 345, 155);
+        String prefix = typeFlag == TarEntryAttributes.OLD_GNU_SPARSE_TYPE
+                ? ""
+                : readString(header, 345, 155);
         String path = prefix.isEmpty() ? name : prefix + "/" + name;
         if (path.isEmpty()) {
             throw new IOException("TAR entry is missing a path");
         }
 
-        byte typeFlag = header[156];
         long size = parseNonNegativeNumeric(header, 124, 12, "entry size");
         FileTime lastModifiedTime = fileTimeFromEpochSecond(
                 parseNumeric(header, 136, 12, "modification time"),
                 "modification time"
         );
+        FileTime lastAccessTime = lastModifiedTime;
+        FileTime creationTime = lastModifiedTime;
+        if (typeFlag == TarEntryAttributes.OLD_GNU_SPARSE_TYPE) {
+            lastAccessTime = fileTimeFromEpochSecond(
+                    parseNumeric(header, 345, 12, "old GNU access time"),
+                    "old GNU access time"
+            );
+            creationTime = fileTimeFromEpochSecond(
+                    parseNumeric(header, 357, 12, "old GNU change time"),
+                    "old GNU change time"
+            );
+        }
         return new TarEntryAttributes(
                 path,
                 typeFlag,
@@ -232,9 +270,69 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 emptyToNull(readString(header, 157, 100)),
                 size,
                 lastModifiedTime,
-                lastModifiedTime,
-                lastModifiedTime
+                lastAccessTime,
+                creationTime
         );
+    }
+
+    /// Reads the fixed sparse descriptors and any chained extension headers for an old GNU sparse entry.
+    private OldGnuSparseSpec readOldGnuSparseSpec(byte[] header) throws IOException {
+        if (header[OLD_GNU_REAL_SIZE_OFFSET] == 0) {
+            throw new IOException("Old GNU sparse entry is missing its logical size");
+        }
+        long logicalSize = parseNonNegativeNumeric(
+                header,
+                OLD_GNU_REAL_SIZE_OFFSET,
+                12,
+                "old GNU sparse logical size"
+        );
+        ArrayList<SparseBlock> blocks = new ArrayList<>();
+        appendOldGnuSparseBlocks(
+                header,
+                OLD_GNU_SPARSE_OFFSET,
+                OLD_GNU_MAIN_SPARSE_COUNT,
+                blocks
+        );
+
+        boolean hasExtension = header[OLD_GNU_MAIN_EXTENSION_FLAG_OFFSET] != 0;
+        while (hasExtension) {
+            byte[] extension = source.readNBytes(RECORD_SIZE);
+            if (extension.length != RECORD_SIZE) {
+                throw new EOFException("Unexpected end of old GNU sparse extension header");
+            }
+            appendOldGnuSparseBlocks(extension, 0, OLD_GNU_EXTENSION_SPARSE_COUNT, blocks);
+            hasExtension = extension[OLD_GNU_EXTENSION_FLAG_OFFSET] != 0;
+        }
+        return new OldGnuSparseSpec(logicalSize, List.copyOf(blocks));
+    }
+
+    /// Appends old GNU sparse descriptors until the first unused descriptor.
+    private static void appendOldGnuSparseBlocks(
+            byte[] header,
+            int offset,
+            int count,
+            ArrayList<SparseBlock> blocks
+    ) throws IOException {
+        for (int index = 0; index < count; index++) {
+            int descriptorOffset = offset + index * OLD_GNU_SPARSE_DESCRIPTOR_SIZE;
+            if (header[descriptorOffset] == 0) {
+                return;
+            }
+            blocks.add(new SparseBlock(
+                    parseNonNegativeNumeric(
+                            header,
+                            descriptorOffset,
+                            12,
+                            "old GNU sparse block offset"
+                    ),
+                    parseNonNegativeNumeric(
+                            header,
+                            descriptorOffset + 12,
+                            12,
+                            "old GNU sparse block size"
+                    )
+            ));
+        }
     }
 
     /// Validates the TAR header checksum.
@@ -523,7 +621,10 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     }
 
     /// Applies pending GNU and PAX metadata to a real TAR entry.
-    private ResolvedEntry applyPendingEntryMetadata(TarEntryAttributes attributes) throws IOException {
+    private ResolvedEntry applyPendingEntryMetadata(
+            TarEntryAttributes attributes,
+            @Nullable OldGnuSparseSpec oldGnuSparseSpec
+    ) throws IOException {
         try {
             String path = pendingLongPath != null ? pendingLongPath : attributes.path();
             @Nullable String linkName = pendingLongLink != null ? pendingLongLink : attributes.linkName();
@@ -580,11 +681,20 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 creationTime = parsePaxFileTime(paxCreationTime, "ctime");
             }
             @Nullable SparseSpec sparseSpec = parseSparseSpec(path);
+            if (sparseSpec != null && oldGnuSparseSpec != null) {
+                throw new IOException("Old GNU and GNU PAX sparse metadata cannot be combined");
+            }
             if (sparseSpec != null) {
                 if (!attributes.hasDataBody()) {
                     throw new IOException("GNU sparse metadata requires a regular file entry");
                 }
                 path = sparseSpec.path();
+            } else if (oldGnuSparseSpec != null) {
+                sparseSpec = new SparseSpec(
+                        path,
+                        oldGnuSparseSpec.logicalSize(),
+                        oldGnuSparseSpec.blocks()
+                );
             }
             requireValidEntryPath(path);
 
@@ -926,6 +1036,24 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         private PaxRecord {
             Objects.requireNonNull(key, "key");
             Objects.requireNonNull(value, "value");
+        }
+    }
+
+    /// Stores sparse metadata read from an old GNU main header and its extension headers.
+    ///
+    /// @param logicalSize the expanded logical file size
+    /// @param blocks      the ordered non-hole extents
+    @NotNullByDefault
+    private record OldGnuSparseSpec(
+            long logicalSize,
+            @Unmodifiable List<SparseBlock> blocks
+    ) {
+        /// Creates an old GNU sparse specification.
+        private OldGnuSparseSpec {
+            if (logicalSize < 0L) {
+                throw new IllegalArgumentException("logicalSize must not be negative");
+            }
+            blocks = List.copyOf(blocks);
         }
     }
 

@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.tar;
 
+import org.glavo.arkivo.ArkivoFileSystem;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -14,9 +15,15 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -24,7 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies GNU PAX sparse TAR expansion, validation, and file system integration.
+/// Verifies old GNU and GNU PAX sparse TAR expansion, validation, and file system integration.
 @NotNullByDefault
 final class TarArkivoSparseTest {
     /// The expanded content represented by the standard sparse test map.
@@ -121,6 +128,70 @@ final class TarArkivoSparseTest {
         }
     }
 
+    /// Verifies old GNU sparse headers with more than one chained extension header.
+    @Test
+    void readsOldGnuSparseExtensionChain() throws IOException {
+        ArrayList<OldGnuSparseBlock> blocks = new ArrayList<>();
+        byte[] packedContent = new byte[26];
+        byte[] expandedContent = new byte[54];
+        for (int index = 0; index < packedContent.length; index++) {
+            int offset = index * 2 + 1;
+            byte value = (byte) ('a' + index);
+            blocks.add(new OldGnuSparseBlock(offset, 1L));
+            packedContent[index] = value;
+            expandedContent[offset] = value;
+        }
+        byte[] archive = oldGnuSparseArchive(blocks, expandedContent.length, packedContent, false);
+
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive)
+        )) {
+            assertTrue(reader.next());
+            TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+            assertEquals("value.bin", attributes.path());
+            assertEquals((byte) 'S', attributes.typeFlag());
+            assertTrue(attributes.isRegularFile());
+            assertFalse(attributes.isOther());
+            assertEquals(expandedContent.length, attributes.size());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(11L)), attributes.lastAccessTime());
+            assertEquals(FileTime.from(Instant.ofEpochSecond(12L)), attributes.creationTime());
+            try (InputStream body = reader.openInputStream()) {
+                assertArrayEquals(expandedContent, body.readAllBytes());
+            }
+            assertFalse(reader.next());
+        }
+    }
+
+    /// Verifies advancing after only part of an old GNU sparse logical body was consumed.
+    @Test
+    void advancesAfterPartiallyConsumedOldGnuSparseEntry() throws IOException {
+        byte[] archive = oldGnuSparseArchive(
+                List.of(
+                        new OldGnuSparseBlock(2L, 3L),
+                        new OldGnuSparseBlock(8L, 2L)
+                ),
+                EXPANDED_CONTENT.length,
+                PACKED_CONTENT,
+                true
+        );
+
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive)
+        )) {
+            assertTrue(reader.next());
+            try (InputStream body = reader.openInputStream()) {
+                assertArrayEquals(new byte[]{0, 0, 'a', 'b'}, body.readNBytes(4));
+            }
+
+            assertTrue(reader.next());
+            assertEquals("next.txt", reader.readAttributes(TarArkivoEntryAttributes.class).path());
+            try (InputStream body = reader.openInputStream()) {
+                assertArrayEquals("next".getBytes(StandardCharsets.UTF_8), body.readAllBytes());
+            }
+            assertFalse(reader.next());
+        }
+    }
+
     /// Verifies that indexed TAR file systems expose expanded sparse content.
     @Test
     void exposesExpandedSparseContentThroughFileSystem() throws IOException {
@@ -141,6 +212,75 @@ final class TarArkivoSparseTest {
                 Path entry = fileSystem.getPath("/value.bin");
                 assertEquals(EXPANDED_CONTENT.length, Files.size(entry));
                 assertArrayEquals(EXPANDED_CONTENT, Files.readAllBytes(entry));
+            }
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+    }
+
+    /// Verifies that indexed TAR file systems expose expanded old GNU sparse content.
+    @Test
+    void exposesExpandedOldGnuSparseContentThroughFileSystem() throws IOException {
+        byte[] archive = oldGnuSparseArchive(
+                List.of(
+                        new OldGnuSparseBlock(2L, 3L),
+                        new OldGnuSparseBlock(8L, 2L)
+                ),
+                EXPANDED_CONTENT.length,
+                PACKED_CONTENT,
+                false
+        );
+        Path archivePath = Files.createTempFile("arkivo-old-gnu-sparse-", ".tar");
+        try {
+            Files.write(archivePath, archive);
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath)) {
+                Path entry = fileSystem.getPath("/value.bin");
+                assertEquals(EXPANDED_CONTENT.length, Files.size(entry));
+                assertArrayEquals(EXPANDED_CONTENT, Files.readAllBytes(entry));
+            }
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+    }
+
+    /// Verifies that a file system update rewrites expanded old GNU sparse entries as valid regular files.
+    @Test
+    void normalizesOldGnuSparseEntryDuringFileSystemUpdate() throws IOException {
+        byte[] archive = oldGnuSparseArchive(
+                List.of(
+                        new OldGnuSparseBlock(2L, 3L),
+                        new OldGnuSparseBlock(8L, 2L)
+                ),
+                EXPANDED_CONTENT.length,
+                PACKED_CONTENT,
+                false
+        );
+        Path archivePath = Files.createTempFile("arkivo-old-gnu-sparse-update-", ".tar");
+        try {
+            Files.write(archivePath, archive);
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+            );
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, environment)) {
+                Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
+            }
+
+            try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(Files.newInputStream(archivePath))) {
+                assertTrue(reader.next());
+                TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+                assertEquals("value.bin", attributes.path());
+                assertEquals((byte) '0', attributes.typeFlag());
+                try (InputStream body = reader.openInputStream()) {
+                    assertArrayEquals(EXPANDED_CONTENT, body.readAllBytes());
+                }
+
+                assertTrue(reader.next());
+                assertEquals("added.txt", reader.readAttributes(TarArkivoEntryAttributes.class).path());
+                try (InputStream body = reader.openInputStream()) {
+                    assertEquals("added", new String(body.readAllBytes(), StandardCharsets.UTF_8));
+                }
+                assertFalse(reader.next());
             }
         } finally {
             Files.deleteIfExists(archivePath);
@@ -205,6 +345,47 @@ final class TarArkivoSparseTest {
         assertTrue(exception.getMessage().contains("padding"));
     }
 
+    /// Verifies rejection of malformed old GNU maps and truncated extension headers.
+    @Test
+    void rejectsInvalidOldGnuSparseEntries() throws IOException {
+        byte[] overlapping = oldGnuSparseArchive(
+                List.of(
+                        new OldGnuSparseBlock(2L, 4L),
+                        new OldGnuSparseBlock(5L, 1L)
+                ),
+                12L,
+                PACKED_CONTENT,
+                false
+        );
+        IOException overlapException = assertThrows(IOException.class, () -> readFirstEntry(overlapping));
+        assertTrue(overlapException.getMessage().contains("overlap"));
+
+        byte[] sizeMismatch = oldGnuSparseArchive(
+                List.of(new OldGnuSparseBlock(2L, 4L)),
+                12L,
+                PACKED_CONTENT,
+                false
+        );
+        IOException sizeException = assertThrows(IOException.class, () -> readFirstEntry(sizeMismatch));
+        assertTrue(sizeException.getMessage().contains("packed size mismatch"));
+
+        byte[] withExtension = oldGnuSparseArchive(
+                List.of(
+                        new OldGnuSparseBlock(0L, 1L),
+                        new OldGnuSparseBlock(2L, 1L),
+                        new OldGnuSparseBlock(4L, 1L),
+                        new OldGnuSparseBlock(6L, 1L),
+                        new OldGnuSparseBlock(8L, 1L)
+                ),
+                10L,
+                PACKED_CONTENT,
+                false
+        );
+        byte[] truncated = Arrays.copyOf(withExtension, 612);
+        IOException extensionException = assertThrows(IOException.class, () -> readFirstEntry(truncated));
+        assertTrue(extensionException.getMessage().contains("extension header"));
+    }
+
     /// Reads and verifies the standard sparse archive fixture.
     private static void assertSparseArchive(byte[] archive) throws IOException {
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
@@ -247,6 +428,86 @@ final class TarArkivoSparseTest {
         }
         output.write(new byte[1024]);
         return output.toByteArray();
+    }
+
+    /// Creates an old GNU sparse archive and optionally appends a regular entry.
+    private static byte[] oldGnuSparseArchive(
+            @Unmodifiable List<OldGnuSparseBlock> blocks,
+            long logicalSize,
+            byte[] storedBody,
+            boolean appendRegularEntry
+    ) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeOldGnuSparseHeader(output, blocks, logicalSize, storedBody.length);
+
+        int blockIndex = 4;
+        while (blockIndex < blocks.size()) {
+            byte[] extension = new byte[512];
+            int extensionEnd = Math.min(blockIndex + 21, blocks.size());
+            for (int index = blockIndex; index < extensionEnd; index++) {
+                writeOldGnuSparseBlock(extension, (index - blockIndex) * 24, blocks.get(index));
+            }
+            blockIndex = extensionEnd;
+            extension[504] = blockIndex < blocks.size() ? (byte) 1 : 0;
+            output.write(extension);
+        }
+
+        writeBody(output, storedBody);
+        if (appendRegularEntry) {
+            byte[] content = "next".getBytes(StandardCharsets.UTF_8);
+            writeHeader(output, "next.txt", content.length, '0');
+            writeBody(output, content);
+        }
+        output.write(new byte[1024]);
+        return output.toByteArray();
+    }
+
+    /// Writes one old GNU sparse main header.
+    private static void writeOldGnuSparseHeader(
+            ByteArrayOutputStream output,
+            @Unmodifiable List<OldGnuSparseBlock> blocks,
+            long logicalSize,
+            int storedSize
+    ) throws IOException {
+        byte[] header = new byte[512];
+        writeString(header, 0, 100, "value.bin");
+        writeOctal(header, 100, 8, 0644);
+        writeOctal(header, 108, 8, 0L);
+        writeOctal(header, 116, 8, 0L);
+        writeOctal(header, 124, 12, storedSize);
+        writeOctal(header, 136, 12, 10L);
+        for (int index = 148; index < 156; index++) {
+            header[index] = ' ';
+        }
+        header[156] = 'S';
+        writeRawString(header, 257, 6, "ustar ");
+        header[263] = ' ';
+        writeOctal(header, 345, 12, 11L);
+        writeOctal(header, 357, 12, 12L);
+        writeOctal(header, 369, 12, 0L);
+        int mainBlockCount = Math.min(4, blocks.size());
+        for (int index = 0; index < mainBlockCount; index++) {
+            writeOldGnuSparseBlock(header, 386 + index * 24, blocks.get(index));
+        }
+        header[482] = blocks.size() > 4 ? (byte) 1 : 0;
+        writeOctal(header, 483, 12, logicalSize);
+
+        int checksum = 0;
+        for (byte value : header) {
+            checksum += Byte.toUnsignedInt(value);
+        }
+        writeChecksum(header, checksum);
+        output.write(header);
+    }
+
+    /// Writes one fixed-width old GNU sparse descriptor.
+    private static void writeOldGnuSparseBlock(
+            byte[] target,
+            int offset,
+            OldGnuSparseBlock block
+    ) {
+        writeOctal(target, offset, 12, block.offset());
+        writeOctal(target, offset + 12, 12, block.size());
     }
 
     /// Creates a GNU sparse 1.0 body containing a padded textual map and packed data.
@@ -358,5 +619,19 @@ final class TarArkivoSparseTest {
         System.arraycopy(bytes, 0, header, 148, bytes.length);
         header[154] = 0;
         header[155] = ' ';
+    }
+
+    /// Stores one old GNU sparse data extent used by archive fixtures.
+    ///
+    /// @param offset the absolute logical file offset
+    /// @param size   the number of packed bytes
+    @NotNullByDefault
+    private record OldGnuSparseBlock(long offset, long size) {
+        /// Creates an old GNU sparse block fixture.
+        private OldGnuSparseBlock {
+            if (offset < 0L || size < 0L) {
+                throw new IllegalArgumentException("Sparse block values must not be negative");
+            }
+        }
     }
 }
