@@ -20,12 +20,14 @@ import java.util.Objects;
 /// Opens RAR archives as read-only NIO file systems.
 ///
 /// Readable stored-entry bodies are cached through `ArkivoFileSystem.EDIT_STORAGE`, using temporary files under the
-/// system temporary directory by default. The file system owns and closes the selected edit storage. RAR5 AES-256
-/// encrypted headers and single-volume stored entries are supported through `PASSWORD_PROVIDER`; RAR4 encryption and
-/// encrypted entry bodies split across volumes are not readable.
+/// system temporary directory by default. The file system owns and closes the selected edit storage. RAR 3.x AES-128
+/// and RAR5 AES-256 encrypted headers and single-volume stored entries are supported through `PASSWORD_PROVIDER`.
+/// Legacy RAR encryption before AES and encrypted entry bodies split across volumes are not readable.
 @NotNullByDefault
 public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permits RarArkivoFileSystemImpl {
-    /// The environment option for an `ArkivoPasswordProvider` whose archive-level password decrypts RAR5 data.
+    /// The environment option for an `ArkivoPasswordProvider` whose archive-level password decrypts RAR data.
+    ///
+    /// RAR3 and RAR4 interpret provider bytes as UTF-16LE. RAR5 interprets provider bytes as UTF-8.
     public static final ArkivoFileSystemOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArkivoFileSystemOption.of("arkivo.rar", "passwordProvider", ArkivoPasswordProvider.class);
 
@@ -42,7 +44,7 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// Opens a RAR archive file system with environment options.
     ///
     /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for cached readable entry bodies. `PASSWORD_PROVIDER` supplies
-    /// passwords for RAR5 encrypted headers and stored entries.
+    /// passwords for encrypted RAR headers and stored entries.
     public static RarArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
@@ -60,7 +62,7 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
     /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for cached readable entry bodies. `PASSWORD_PROVIDER` supplies
-    /// passwords for RAR5 encrypted headers and stored entries.
+    /// passwords for encrypted RAR headers and stored entries.
     public static RarArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
             Map<String, ?> environment
@@ -78,7 +80,7 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     ///
     /// The returned file system owns the volume source and selected edit storage after this method returns successfully.
     /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for cached readable entry bodies. `PASSWORD_PROVIDER` supplies
-    /// the archive-level password for RAR5 encrypted headers and stored entries.
+    /// the archive-level password for encrypted RAR headers and stored entries.
     public static RarArkivoFileSystem open(ArkivoVolumeSource volumes, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(volumes, "volumes");
         Objects.requireNonNull(environment, "environment");

@@ -15,9 +15,9 @@ import java.util.Objects;
 
 /// Reads RAR entries from a forward-only stream.
 ///
-/// RAR5 AES-256 encrypted headers and single-volume stored entries use the archive-level password from
-/// `RarArkivoFileSystem.PASSWORD_PROVIDER`. RAR4 encryption and encrypted entry bodies split across volumes are not
-/// readable.
+/// RAR 3.x AES-128 and RAR5 AES-256 encrypted headers and single-volume stored entries use the archive-level password
+/// from `RarArkivoFileSystem.PASSWORD_PROVIDER`. RAR3 and RAR4 password bytes are UTF-16LE; RAR5 password bytes are
+/// UTF-8. Legacy RAR encryption before AES and encrypted entry bodies split across volumes are not readable.
 @NotNullByDefault
 public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingReader
         permits RarArkivoStreamingReaderImpl {

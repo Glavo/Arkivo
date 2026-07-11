@@ -113,6 +113,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// RAR4 file header flag indicating that the name field includes Unicode metadata.
     private static final long RAR4_FILE_FLAG_UNICODE = 0x0200L;
 
+    /// RAR4 file header flag indicating that an eight-byte encryption salt is present.
+    private static final long RAR4_FILE_FLAG_SALT = 0x0400L;
+
     /// The raw RAR4 host operating system value for MS-DOS entries.
     private static final int RAR4_HOST_OS_MSDOS = 0;
 
@@ -231,7 +234,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// The backing archive input stream.
     private final InputStream source;
 
-    /// The password provider for RAR5 encrypted headers and entries, or `null` when none is configured.
+    /// The password provider for encrypted RAR headers and entries, or `null` when none is configured.
     private final @Nullable ArkivoPasswordProvider passwordProvider;
 
     /// The CRC32 calculator reused for header validation.
@@ -246,8 +249,8 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// The current physical file-part attributes, or `null` when no entry part is active.
     private @Nullable RarEntryAttributes currentPartAttributes;
 
-    /// The RAR5 encryption metadata for the current physical file part, or `null` when it is not encrypted.
-    private @Nullable Rar5EncryptionInfo currentPartEncryption;
+    /// The encryption metadata for the current physical file part, or `null` when it is not encrypted.
+    private @Nullable RarEncryptionInfo currentPartEncryption;
 
     /// The remaining packed bytes in the current entry data area.
     private long currentPackedRemaining;
@@ -272,6 +275,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// The active RAR5 AES key for encrypted archive headers, or `null` before an encryption header.
     private byte @Nullable [] archiveHeaderKey;
+
+    /// Whether subsequent RAR4 headers are independently salt-prefixed and AES encrypted.
+    private boolean rar3HeadersEncrypted;
 
     /// Whether the RAR signature has been consumed.
     private boolean signatureRead;
@@ -399,15 +405,61 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         return Channels.newChannel(new EntryInputStream());
     }
 
-    /// Opens and authenticates one RAR5 AES-encrypted stored entry body.
+    /// Opens and authenticates one AES-encrypted stored entry body.
     private ReadableByteChannel openEncryptedChannel(RarEntryAttributes attributes) throws IOException {
-        Rar5EncryptionInfo encryptionInfo = currentPartEncryption;
+        RarEncryptionInfo encryptionInfo = currentPartEncryption;
         if (encryptionInfo == null) {
-            throw new IOException("Encrypted RAR4 entries are not supported");
+            throw new IOException("RAR entry encryption metadata is unavailable");
         }
         if (attributes.unpackedSize() == RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE) {
-            throw new IOException("Encrypted RAR5 stored entry has an unknown unpacked size");
+            throw new IOException("Encrypted RAR stored entry has an unknown unpacked size");
         }
+        if (encryptionInfo instanceof Rar3EncryptionInfo rar3EncryptionInfo) {
+            return openRar3EncryptedChannel(attributes, rar3EncryptionInfo);
+        }
+        return openRar5EncryptedChannel(attributes, (Rar5EncryptionInfo) encryptionInfo);
+    }
+
+    /// Opens one RAR 3.x AES-128 encrypted stored entry body.
+    private ReadableByteChannel openRar3EncryptedChannel(
+            RarEntryAttributes attributes,
+            Rar3EncryptionInfo encryptionInfo
+    ) throws IOException {
+        if (!isRar3AesVersion(encryptionInfo.extractionVersion())) {
+            throw new IOException("Unsupported legacy RAR encryption version: " + encryptionInfo.extractionVersion());
+        }
+        ArkivoPasswordProvider provider = passwordProvider;
+        if (provider == null) {
+            throw new IOException("RAR3 password provider is required for encrypted entry: " + attributes.path());
+        }
+
+        byte @Nullable [] password = provider.passwordForArchive();
+        if (password == null) {
+            throw new IOException("RAR3 password provider did not supply an archive password");
+        }
+        try (Rar3Crypto.DerivedKeys keys = Rar3Crypto.deriveKeys(password, encryptionInfo.salt())) {
+            byte[] key = keys.key();
+            byte[] initializationVector = keys.initializationVector();
+            try {
+                return startEncryptedChannel(
+                        attributes,
+                        Rar3Crypto.decryptor(key, initializationVector),
+                        null
+                );
+            } finally {
+                Rar3Crypto.clear(key);
+                Rar3Crypto.clear(initializationVector);
+            }
+        } finally {
+            Rar3Crypto.clear(password);
+        }
+    }
+
+    /// Opens one RAR5 AES-256 encrypted stored entry body.
+    private ReadableByteChannel openRar5EncryptedChannel(
+            RarEntryAttributes attributes,
+            Rar5EncryptionInfo encryptionInfo
+    ) throws IOException {
         ArkivoPasswordProvider provider = passwordProvider;
         if (provider == null) {
             throw new IOException("RAR5 password provider is required for encrypted entry: " + attributes.path());
@@ -429,26 +481,39 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
             byte[] aesKey = keys.aesKey();
             try {
-                EncryptedEntryInputStream encryptedInput = new EncryptedEntryInputStream(
+                return startEncryptedChannel(
+                        attributes,
                         Rar5Crypto.decryptor(aesKey, encryptionInfo.initializationVector()),
-                        attributes.unpackedSize()
+                        encryptionInfo.tweakedChecksums() ? keys.hashKey() : null
                 );
-                currentEncryptedInput = encryptedInput;
-                currentHashKey = encryptionInfo.tweakedChecksums() ? keys.hashKey() : null;
-                currentBodyOpened = true;
-                currentCrcActive = attributes.dataCrc32() != RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE;
-                currentCrcVerified = false;
-                currentExpectedCrc32 = attributes.dataCrc32();
-                if (currentCrcActive) {
-                    dataCrc32.reset();
-                }
-                return Channels.newChannel(encryptedInput);
             } finally {
                 Rar5Crypto.clear(aesKey);
             }
         } finally {
             Rar5Crypto.clear(password);
         }
+    }
+
+    /// Installs one initialized decryptor as the active encrypted entry body.
+    private ReadableByteChannel startEncryptedChannel(
+            RarEntryAttributes attributes,
+            RarCbcDecryptor decryptor,
+            byte @Nullable [] hashKey
+    ) {
+        EncryptedEntryInputStream encryptedInput = new EncryptedEntryInputStream(
+                decryptor,
+                attributes.unpackedSize()
+        );
+        currentEncryptedInput = encryptedInput;
+        currentHashKey = hashKey;
+        currentBodyOpened = true;
+        currentCrcActive = attributes.dataCrc32() != RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE;
+        currentCrcVerified = false;
+        currentExpectedCrc32 = attributes.dataCrc32();
+        if (currentCrcActive) {
+            dataCrc32.reset();
+        }
+        return Channels.newChannel(encryptedInput);
     }
 
     /// Closes this streaming reader.
@@ -465,6 +530,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         clearCurrentEncryptionState();
         Rar5Crypto.clear(archiveHeaderKey);
         archiveHeaderKey = null;
+        rar3HeadersEncrypted = false;
         source.close();
         sourceClosed = true;
     }
@@ -517,6 +583,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (source instanceof RarVolumeInputStream volumeInput && volumeInput.advanceAtHeaderBoundary()) {
             Rar5Crypto.clear(archiveHeaderKey);
             archiveHeaderKey = null;
+            rar3HeadersEncrypted = false;
         }
         if (rarVersion == RAR_VERSION_4) {
             return readRar4BlockHeader();
@@ -695,7 +762,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// Parses an archive encryption header, authenticates its password, and enables encrypted-header reads.
     private void enableEncryptedHeaders(BlockHeader block) throws IOException {
         if (block.version() != RAR_VERSION_5) {
-            throw new IOException("Encrypted RAR4 headers are not supported");
+            throw new IOException("RAR archive encryption headers are only valid in RAR5");
         }
         if (archiveHeaderKey != null) {
             throw new IOException("RAR5 archive contains duplicate encryption headers");
@@ -757,34 +824,128 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Reads the next RAR4 block header, or `null` at archive EOF.
     private @Nullable BlockHeader readRar4BlockHeader() throws IOException {
-        byte[] prefix = new byte[7];
+        return rar3HeadersEncrypted ? readEncryptedRar4BlockHeader() : readPlainRar4BlockHeader();
+    }
+
+    /// Reads the next unencrypted RAR4 block header, or `null` at archive EOF.
+    private @Nullable BlockHeader readPlainRar4BlockHeader() throws IOException {
+        byte[] header = new byte[7];
         int first = source.read();
         if (first < 0) {
             return null;
         }
-        prefix[0] = (byte) first;
-        readFully(prefix, 1, prefix.length - 1, "Unexpected end of RAR4 header");
+        header[0] = (byte) first;
+        readFully(header, 1, header.length - 1, "Unexpected end of RAR4 header");
 
-        int headerSize = littleEndianUInt16(prefix, 5);
-        if (headerSize < prefix.length) {
+        int headerSize = littleEndianUInt16(header, 5);
+        if (headerSize < header.length) {
             throw new IOException("RAR4 header is too small");
         }
         if (headerSize > MAX_HEADER_SIZE) {
             throw new IOException("RAR4 header is too large");
         }
+        header = Arrays.copyOf(header, headerSize);
+        readFully(header, 7, header.length - 7, "Unexpected end of RAR4 header");
+        return decodeRar4BlockHeader(header);
+    }
 
-        byte[] headerData = new byte[headerSize - Short.BYTES];
-        System.arraycopy(prefix, Short.BYTES, headerData, 0, prefix.length - Short.BYTES);
-        readFully(
-                headerData,
-                prefix.length - Short.BYTES,
-                headerData.length - (prefix.length - Short.BYTES),
-                "Unexpected end of RAR4 header"
-        );
+    /// Reads and decrypts the next independently salted RAR 3.x archive header.
+    private @Nullable BlockHeader readEncryptedRar4BlockHeader() throws IOException {
+        ArkivoPasswordProvider provider = passwordProvider;
+        if (provider == null) {
+            throw new IOException("RAR3 password provider is required for encrypted headers");
+        }
+        byte @Nullable [] password = provider.passwordForArchive();
+        if (password == null) {
+            throw new IOException("RAR3 password provider did not supply an archive password");
+        }
+
+        byte[] salt = new byte[Rar3Crypto.SALT_SIZE];
+        byte[] firstCiphertext = new byte[Rar3Crypto.BLOCK_SIZE];
+        byte[] firstPlaintext = new byte[Rar3Crypto.BLOCK_SIZE];
+        byte[] ciphertext = new byte[Rar3Crypto.BLOCK_SIZE];
+        byte[] decryptedBlock = new byte[Rar3Crypto.BLOCK_SIZE];
+        byte @Nullable [] plaintext = null;
+        byte @Nullable [] key = null;
+        byte @Nullable [] initializationVector = null;
+        Rar3Crypto.@Nullable CbcDecryptor decryptor = null;
+        try {
+            int first = source.read();
+            if (first < 0) {
+                return null;
+            }
+            salt[0] = (byte) first;
+            readFully(salt, 1, salt.length - 1, "Unexpected end of RAR3 encrypted header salt");
+
+            try (Rar3Crypto.DerivedKeys keys = Rar3Crypto.deriveKeys(password, salt)) {
+                key = keys.key();
+                initializationVector = keys.initializationVector();
+            }
+            decryptor = Rar3Crypto.decryptor(
+                    Objects.requireNonNull(key, "key"),
+                    Objects.requireNonNull(initializationVector, "initializationVector")
+            );
+
+            try {
+                readFully(
+                        firstCiphertext,
+                        0,
+                        firstCiphertext.length,
+                        "Unexpected end of RAR3 encrypted header"
+                );
+                decryptor.decryptBlock(firstCiphertext, firstPlaintext);
+                int headerSize = littleEndianUInt16(firstPlaintext, 5);
+                if (headerSize < 7 || headerSize > MAX_HEADER_SIZE) {
+                    throw new IOException("Invalid decrypted RAR4 header size");
+                }
+
+                int encryptedHeaderSize = alignedHeaderSize(headerSize);
+                plaintext = new byte[encryptedHeaderSize];
+                System.arraycopy(firstPlaintext, 0, plaintext, 0, firstPlaintext.length);
+                for (int offset = Rar3Crypto.BLOCK_SIZE;
+                     offset < encryptedHeaderSize;
+                     offset += Rar3Crypto.BLOCK_SIZE) {
+                    readFully(ciphertext, 0, ciphertext.length, "Unexpected end of RAR3 encrypted header");
+                    decryptor.decryptBlock(ciphertext, decryptedBlock);
+                    System.arraycopy(decryptedBlock, 0, plaintext, offset, decryptedBlock.length);
+                }
+
+                byte[] header = Arrays.copyOf(plaintext, headerSize);
+                try {
+                    return decodeRar4BlockHeader(header);
+                } finally {
+                    Rar3Crypto.clear(header);
+                }
+            } catch (IOException exception) {
+                throw new IOException("Incorrect RAR3 archive password or corrupt encrypted header", exception);
+            }
+        } finally {
+            if (decryptor != null) {
+                decryptor.clear();
+            }
+            Rar3Crypto.clear(password);
+            Rar3Crypto.clear(salt);
+            Rar3Crypto.clear(key);
+            Rar3Crypto.clear(initializationVector);
+            Rar3Crypto.clear(firstCiphertext);
+            Rar3Crypto.clear(firstPlaintext);
+            Rar3Crypto.clear(ciphertext);
+            Rar3Crypto.clear(decryptedBlock);
+            Rar3Crypto.clear(plaintext);
+        }
+    }
+
+    /// Validates and decodes one complete plaintext RAR4 block header.
+    private BlockHeader decodeRar4BlockHeader(byte[] header) throws IOException {
+        if (header.length < 7 || littleEndianUInt16(header, 5) != header.length) {
+            throw new IOException("Invalid RAR4 header size");
+        }
+
+        byte[] headerData = Arrays.copyOfRange(header, Short.BYTES, header.length);
 
         headerCrc32.reset();
         headerCrc32.update(headerData, 0, headerData.length);
-        if ((headerCrc32.getValue() & 0xffffL) != littleEndianUInt16(prefix, 0)) {
+        if ((headerCrc32.getValue() & 0xffffL) != littleEndianUInt16(header, 0)) {
             throw new IOException("Invalid RAR4 header CRC16");
         }
 
@@ -792,7 +953,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         long flags = littleEndianUInt16(headerData, 1);
         int type = rar4HeaderType(rawType);
         if (type == HEADER_TYPE_MAIN && (flags & RAR4_MAIN_FLAG_PASSWORD) != 0) {
-            throw new IOException("Encrypted RAR headers are not supported");
+            rar3HeadersEncrypted = true;
         }
 
         long dataSize = 0L;
@@ -835,7 +996,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// Parses a RAR file header block.
     private static ParsedFileHeader parseFileHeader(BlockHeader block) throws IOException {
         if (block.version() == RAR_VERSION_4) {
-            return new ParsedFileHeader(parseRar4FileHeader(block), null);
+            return parseRar4FileHeader(block);
         }
         return parseRar5FileHeader(block);
     }
@@ -926,11 +1087,11 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Returns the AES-block-aligned physical size for an encrypted stored file.
     private static long alignedEncryptedSize(long unpackedSize) throws IOException {
-        long remainder = unpackedSize % Rar5Crypto.BLOCK_SIZE;
+        long remainder = unpackedSize % RarCbcDecryptor.BLOCK_SIZE;
         if (remainder == 0L) {
             return unpackedSize;
         }
-        long padding = Rar5Crypto.BLOCK_SIZE - remainder;
+        long padding = RarCbcDecryptor.BLOCK_SIZE - remainder;
         if (unpackedSize > Long.MAX_VALUE - padding) {
             throw new IOException("RAR encrypted file size is too large");
         }
@@ -938,14 +1099,14 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     }
 
     /// Parses a RAR4 file header block.
-    private static RarEntryAttributes parseRar4FileHeader(BlockHeader block) throws IOException {
+    private static ParsedFileHeader parseRar4FileHeader(BlockHeader block) throws IOException {
         HeaderReader reader = new HeaderReader(block.headerData(), block.fieldsOffset(), block.extraOffset());
         long lowPackedSize = reader.readUInt32("RAR4 packed size");
         long lowUnpackedSize = reader.readUInt32("RAR4 unpacked size");
         int rawHostOs = reader.readUnsignedByte("RAR4 host OS");
         long dataCrc32 = reader.readUInt32("RAR4 data CRC32");
         FileTime lastModifiedTime = fileTimeFromDosTime((int) reader.readUInt32("RAR4 modification time"));
-        reader.readUnsignedByte("RAR4 extraction version");
+        int extractionVersion = reader.readUnsignedByte("RAR4 extraction version");
         int rawMethod = reader.readUnsignedByte("RAR4 compression method");
         int nameLength = reader.readUInt16("RAR4 name length");
         long fileAttributes = reader.readUInt32("RAR4 file attributes");
@@ -964,48 +1125,68 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             throw new IOException("RAR4 file header packed size is inconsistent");
         }
 
-        String path = validatePath(decodeRar4Name(
-                reader.readBytes(nameLength, "RAR4 entry name"),
-                (block.flags() & RAR4_FILE_FLAG_UNICODE) != 0
-        ));
+        byte[] nameBytes = reader.readBytes(nameLength, "RAR4 entry name");
+        String path = validatePath(decodeRar4Name(nameBytes, (block.flags() & RAR4_FILE_FLAG_UNICODE) != 0));
+        byte @Nullable [] salt = (block.flags() & RAR4_FILE_FLAG_SALT) != 0
+                ? reader.readBytes(Rar3Crypto.SALT_SIZE, "RAR4 file encryption salt")
+                : null;
         int hostOs = rar4HostOs(rawHostOs);
         int compressionMethod = rar4CompressionMethod(rawMethod);
         boolean directory = (rawMethod & RAR4_DICTIONARY_MASK) == RAR4_FILE_IS_DIRECTORY
                 || rar4FileAttributesMarkDirectory(rawHostOs, fileAttributes);
         boolean encrypted = (block.flags() & RAR4_FILE_FLAG_PASSWORD) != 0;
+        @Nullable Rar3EncryptionInfo encryptionInfo = encrypted
+                ? new Rar3EncryptionInfo(extractionVersion, salt)
+                : null;
         boolean splitFilePart =
                 (block.flags() & (RAR4_FILE_FLAG_CONTINUE_PREVIOUS | RAR4_FILE_FLAG_CONTINUE_NEXT)) != 0;
-        if (!directory && compressionMethod == 0 && !splitFilePart && packedSize != unpackedSize) {
-            throw new IOException("RAR4 stored file packed and unpacked sizes differ");
+        if (!directory && compressionMethod == 0 && !splitFilePart) {
+            long expectedPackedSize = encrypted && isRar3AesVersion(extractionVersion)
+                    ? alignedEncryptedSize(unpackedSize)
+                    : unpackedSize;
+            if (packedSize != expectedPackedSize) {
+                throw new IOException("RAR4 stored file packed and unpacked sizes differ");
+            }
         }
 
-        return new RarEntryAttributes(
-                path,
-                directory,
-                false,
-                false,
-                null,
-                RarArkivoEntryAttributes.NO_REDIRECTION_TYPE,
-                0L,
-                null,
-                null,
-                null,
-                RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE,
-                RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE,
-                hostOs,
-                fileAttributes,
-                compressionMethod,
-                packedSize,
-                unpackedSize,
-                dataCrc32,
-                null,
-                encrypted,
-                (block.flags() & RAR4_FILE_FLAG_CONTINUE_PREVIOUS) != 0,
-                (block.flags() & RAR4_FILE_FLAG_CONTINUE_NEXT) != 0,
-                lastModifiedTime,
-                lastModifiedTime,
-                lastModifiedTime
+        return new ParsedFileHeader(
+                new RarEntryAttributes(
+                        path,
+                        directory,
+                        false,
+                        false,
+                        null,
+                        RarArkivoEntryAttributes.NO_REDIRECTION_TYPE,
+                        0L,
+                        null,
+                        null,
+                        null,
+                        RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE,
+                        RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE,
+                        hostOs,
+                        fileAttributes,
+                        compressionMethod,
+                        packedSize,
+                        unpackedSize,
+                        dataCrc32,
+                        null,
+                        encrypted,
+                        (block.flags() & RAR4_FILE_FLAG_CONTINUE_PREVIOUS) != 0,
+                        (block.flags() & RAR4_FILE_FLAG_CONTINUE_NEXT) != 0,
+                        lastModifiedTime,
+                        lastModifiedTime,
+                        lastModifiedTime
+                ),
+                encryptionInfo
         );
+    }
+
+    /// Returns whether a RAR4 extraction version selects the RAR 3.x AES-128 scheme.
+    private static boolean isRar3AesVersion(int extractionVersion) {
+        return extractionVersion != 13
+                && extractionVersion != 15
+                && extractionVersion != 20
+                && extractionVersion != 26;
     }
 
     /// Combines two little-endian unsigned 32-bit halves into a positive signed `long`.
@@ -1708,15 +1889,38 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// Stores one parsed file header together with internal encryption metadata.
     ///
     /// @param attributes the public entry attributes
-    /// @param encryptionInfo the RAR5 encryption metadata, or `null` for an unencrypted or RAR4 entry
+    /// @param encryptionInfo the format-specific encryption metadata, or `null` for an unencrypted entry
     @NotNullByDefault
     private record ParsedFileHeader(
             RarEntryAttributes attributes,
-            @Nullable Rar5EncryptionInfo encryptionInfo
+            @Nullable RarEncryptionInfo encryptionInfo
     ) {
         /// Creates one parsed file header result.
         private ParsedFileHeader {
             Objects.requireNonNull(attributes, "attributes");
+        }
+    }
+
+    /// Marks validated encryption metadata for one physical RAR file body.
+    @NotNullByDefault
+    private sealed interface RarEncryptionInfo permits Rar3EncryptionInfo, Rar5EncryptionInfo {
+    }
+
+    /// Stores RAR 3.x encryption parameters for one file body.
+    ///
+    /// @param extractionVersion the RAR extraction version selecting the encryption scheme
+    /// @param salt the optional eight-byte AES derivation salt
+    @NotNullByDefault
+    private record Rar3EncryptionInfo(
+            int extractionVersion,
+            byte @Nullable @Unmodifiable [] salt
+    ) implements RarEncryptionInfo {
+        /// Creates immutable RAR 3.x encryption metadata.
+        private Rar3EncryptionInfo {
+            if (extractionVersion < 0 || salt != null && salt.length != Rar3Crypto.SALT_SIZE) {
+                throw new IllegalArgumentException("Invalid RAR3 encryption metadata");
+            }
+            salt = salt != null ? salt.clone() : null;
         }
     }
 
@@ -1734,7 +1938,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             byte @Unmodifiable [] salt,
             byte @Unmodifiable [] initializationVector,
             byte @Nullable @Unmodifiable [] passwordCheck
-    ) {
+    ) implements RarEncryptionInfo {
         /// Creates immutable RAR5 encryption metadata.
         private Rar5EncryptionInfo {
             if (kdfLog < 0 || kdfLog > Rar5Crypto.MAX_KDF_LOG
@@ -1949,13 +2153,13 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     @NotNullByDefault
     private final class EncryptedEntryInputStream extends InputStream {
         /// The stateful AES-CBC decryptor.
-        private final Rar5Crypto.CbcDecryptor decryptor;
+        private final RarCbcDecryptor decryptor;
 
         /// One ciphertext block read from the archive.
-        private final byte[] ciphertext = new byte[Rar5Crypto.BLOCK_SIZE];
+        private final byte[] ciphertext = new byte[RarCbcDecryptor.BLOCK_SIZE];
 
         /// One decrypted plaintext block.
-        private final byte[] plaintext = new byte[Rar5Crypto.BLOCK_SIZE];
+        private final byte[] plaintext = new byte[RarCbcDecryptor.BLOCK_SIZE];
 
         /// A reusable buffer used while draining skipped logical data.
         private final byte[] discard = new byte[8192];
@@ -1976,7 +2180,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         private boolean entryOpen = true;
 
         /// Creates an encrypted stored-entry stream.
-        private EncryptedEntryInputStream(Rar5Crypto.CbcDecryptor decryptor, long logicalSize) {
+        private EncryptedEntryInputStream(RarCbcDecryptor decryptor, long logicalSize) {
             this.decryptor = Objects.requireNonNull(decryptor, "decryptor");
             if (logicalSize < 0L) {
                 throw new IllegalArgumentException("logicalSize must not be negative");
@@ -2072,25 +2276,25 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
         /// Reads and decrypts one complete AES block from the physical entry body.
         private void fillPlaintextBlock() throws IOException {
-            if (currentPackedRemaining < Rar5Crypto.BLOCK_SIZE) {
-                throw new EOFException("Unexpected end of encrypted RAR5 entry data");
+            if (currentPackedRemaining < RarCbcDecryptor.BLOCK_SIZE) {
+                throw new EOFException("Unexpected end of encrypted RAR entry data");
             }
             readFully(
                     ciphertext,
                     0,
                     ciphertext.length,
-                    "Unexpected end of encrypted RAR5 entry data"
+                    "Unexpected end of encrypted RAR entry data"
             );
             currentPackedRemaining -= ciphertext.length;
             decryptor.decryptBlock(ciphertext, plaintext);
             blockPosition = 0;
-            blockLimit = (int) Math.min(Rar5Crypto.BLOCK_SIZE, logicalRemaining);
+            blockLimit = (int) Math.min(RarCbcDecryptor.BLOCK_SIZE, logicalRemaining);
         }
 
         /// Requires all ciphertext bytes to be consumed and verifies the logical CRC32.
         private void verifyEncryptedBodyComplete() throws IOException {
             if (currentPackedRemaining != 0L) {
-                throw new IOException("RAR5 encrypted stored entry has unexpected trailing ciphertext");
+                throw new IOException("RAR encrypted stored entry has unexpected trailing ciphertext");
             }
             verifyCurrentCrcIfComplete();
         }

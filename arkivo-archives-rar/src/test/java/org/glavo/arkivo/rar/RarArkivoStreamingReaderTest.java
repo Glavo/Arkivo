@@ -79,6 +79,14 @@ public final class RarArkivoStreamingReaderTest {
     /// RAR4 file header flag indicating that the name field includes Unicode metadata.
     private static final long RAR4_FILE_FLAG_UNICODE = 0x0200L;
 
+    /// The UTF-16LE password used by RAR 3.x AES fixtures.
+    private static final byte @Unmodifiable [] RAR3_PASSWORD =
+            "rar3 password".getBytes(StandardCharsets.UTF_16LE);
+
+    /// The eight-byte salt used by RAR 3.x encrypted file fixtures.
+    private static final byte @Unmodifiable [] RAR3_FILE_SALT =
+            new byte[]{0x01, 0x23, 0x45, 0x67, (byte) 0x89, (byte) 0xab, (byte) 0xcd, (byte) 0xef};
+
     /// The password used by RAR5 encrypted archive fixtures.
     private static final byte @Unmodifiable [] RAR5_PASSWORD =
             "correct horse battery staple".getBytes(StandardCharsets.UTF_8);
@@ -1025,6 +1033,256 @@ public final class RarArkivoStreamingReaderTest {
         }
     }
 
+    /// Verifies RAR 3.x AES-128 stored entry streaming, CRC validation, and file-system caching.
+    @Test
+    public void readsRar3EncryptedStoredEntry() throws IOException {
+        byte[] content = "RAR3 encrypted stored content".getBytes(StandardCharsets.UTF_8);
+        byte[] after = "after".getBytes(StandardCharsets.UTF_8);
+        Rar4EncryptedFixture encrypted = rar4EncryptedStoredFile("secret.txt", content, RAR3_FILE_SALT);
+        byte[] archive = rar4EncryptedArchive(
+                encrypted,
+                storedFile("after.txt", 1_700_000_001L, 0100644, after, null)
+        );
+        Map<String, Object> environment = rar3PasswordEnvironment(RAR3_PASSWORD);
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                environment
+        )) {
+            assertEquals(true, reader.next());
+            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
+            assertEquals("secret.txt", attributes.path());
+            assertEquals(true, attributes.isEncrypted());
+            assertEquals(content.length, attributes.unpackedSize());
+            assertEquals((content.length + 15) & ~15, attributes.packedSize());
+            try (var body = reader.openInputStream()) {
+                assertArrayEquals(content, body.readAllBytes());
+            }
+            assertEquals(true, reader.next());
+            try (var body = reader.openInputStream()) {
+                assertArrayEquals(after, body.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                environment
+        )) {
+            assertEquals(true, reader.next());
+            try (var body = reader.openInputStream()) {
+                assertArrayEquals(Arrays.copyOf(content, 4), body.readNBytes(4));
+            }
+            assertEquals(true, reader.next());
+            assertEquals("after.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
+        }
+
+        Path archivePath = createTemporaryArchivePath("rar3-encrypted-entry-");
+        Files.write(archivePath, archive);
+        try {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archivePath, environment)) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/secret.txt")));
+                assertArrayEquals(after, Files.readAllBytes(fileSystem.getPath("/after.txt")));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies unsalted RAR 3.x AES file encryption used by older archives.
+    @Test
+    public void readsUnsaltedRar3EncryptedStoredEntry() throws IOException {
+        byte[] content = "unsalted RAR3 content".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = rar4EncryptedArchive(rar4EncryptedStoredFile("unsalted.txt", content, null));
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                Channels.newChannel(new ByteArrayInputStream(archive)),
+                rar3PasswordEnvironment(RAR3_PASSWORD)
+        )) {
+            assertEquals(true, reader.next());
+            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
+            assertEquals(true, attributes.isEncrypted());
+            assertEquals((content.length + 15) & ~15, attributes.packedSize());
+            try (var body = reader.openInputStream()) {
+                assertArrayEquals(content, body.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies metadata-only access without a password and CRC-based RAR3 wrong-password detection.
+    @Test
+    public void rejectsIncorrectRar3EntryPassword() throws IOException {
+        byte[] content = "RAR3 password check".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = rar4EncryptedArchive(rar4EncryptedStoredFile(
+                "secret.txt",
+                content,
+                RAR3_FILE_SALT
+        ));
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            assertEquals(true, reader.next());
+            assertEquals(true, reader.readAttributes(RarArkivoEntryAttributes.class).isEncrypted());
+            assertEquals(false, reader.next());
+        }
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                rar3PasswordEnvironment("wrong".getBytes(StandardCharsets.UTF_16LE))
+        )) {
+            assertEquals(true, reader.next());
+            var body = reader.openInputStream();
+            IOException exception = assertThrows(IOException.class, body::readAllBytes);
+            assertEquals(true, exception.getMessage().contains("Invalid RAR entry CRC32"));
+            assertThrows(IOException.class, body::close);
+        }
+    }
+
+    /// Verifies that pre-AES RAR encryption versions remain explicitly unsupported.
+    @Test
+    public void rejectsLegacyRarEncryption() throws IOException {
+        byte[] content = "legacy encrypted data".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = rar4LegacyEncryptedArchive(
+                storedFile("legacy.txt", 1_700_000_000L, 0100644, content, null)
+        );
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            assertEquals(true, reader.next());
+            assertEquals(true, reader.readAttributes(RarArkivoEntryAttributes.class).isEncrypted());
+            IOException exception = assertThrows(IOException.class, reader::openInputStream);
+            assertEquals(true, exception.getMessage().contains("Unsupported legacy RAR encryption version: 20"));
+        }
+    }
+
+    /// Verifies independently salted RAR 3.x encrypted headers and file data through the indexed file system.
+    @Test
+    public void readsRar3EncryptedHeadersThroughFileSystem() throws IOException {
+        byte[] content = "hidden RAR3 name and content".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = rar4EncryptedHeaderArchive(rar4EncryptedStoredFile(
+                "hidden/value.txt",
+                content,
+                RAR3_FILE_SALT
+        ));
+        Path archivePath = createTemporaryArchivePath("rar3-encrypted-headers-");
+        Files.write(archivePath, archive);
+        try {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                    archivePath,
+                    rar3PasswordEnvironment(RAR3_PASSWORD)
+            )) {
+                Path entry = fileSystem.getPath("/hidden/value.txt");
+                assertArrayEquals(content, Files.readAllBytes(entry));
+                assertEquals(true, Files.readAttributes(entry, RarArkivoEntryAttributes.class).isEncrypted());
+            }
+
+            IOException incorrectPassword = assertThrows(
+                    IOException.class,
+                    () -> RarArkivoFileSystem.open(
+                            archivePath,
+                            rar3PasswordEnvironment("wrong".getBytes(StandardCharsets.UTF_16LE))
+                    )
+            );
+            assertEquals(true, incorrectPassword.getMessage().contains("Incorrect RAR3 archive password"));
+
+            IOException missingPassword = assertThrows(
+                    IOException.class,
+                    () -> RarArkivoFileSystem.open(archivePath)
+            );
+            assertEquals(true, missingPassword.getMessage().contains("password provider is required"));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that damaged RAR 3.x encrypted headers are rejected before exposing entry metadata.
+    @Test
+    public void rejectsCorruptRar3EncryptedHeader() throws IOException {
+        Rar4EncryptedFixture encrypted = rar4EncryptedStoredFile(
+                "damaged.txt",
+                "damaged header".getBytes(StandardCharsets.UTF_8),
+                RAR3_FILE_SALT
+        );
+        byte[] archive = rar4EncryptedHeaderArchive(encrypted);
+        int mainHeaderSize = rar4BlockHeader(0x73, 0x0080L, new byte[6]).length;
+        int memberHeaderSize = rar4MemberHeader(encrypted.member(), true, encrypted.salt()).length;
+        int encryptedMemberHeaderSize = (memberHeaderSize + 15) & ~15;
+        int lastCiphertextByte = RAR4_SIGNATURE.length
+                + mainHeaderSize
+                + RAR3_FILE_SALT.length
+                + encryptedMemberHeaderSize
+                - 1;
+        archive[lastCiphertextByte] ^= 0x01;
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                rar3PasswordEnvironment(RAR3_PASSWORD)
+        )) {
+            IOException exception = assertThrows(IOException.class, reader::next);
+            assertEquals(true, exception.getMessage().contains("Incorrect RAR3 archive password or corrupt encrypted header"));
+        }
+    }
+
+    /// Verifies that independently encrypted RAR4 volumes reinstall header state after each volume signature.
+    @Test
+    public void readsRar3EncryptedHeadersAcrossVolumes() throws IOException {
+        byte[] firstContent = "first RAR3 encrypted volume".getBytes(StandardCharsets.UTF_8);
+        byte[] secondContent = "second RAR3 encrypted volume".getBytes(StandardCharsets.UTF_8);
+        byte[] firstVolume = rar4EncryptedHeaderArchiveVolume(
+                true,
+                0,
+                rar4EncryptedStoredFile("first.txt", firstContent, RAR3_FILE_SALT)
+        );
+        byte[] secondVolume = rar4EncryptedHeaderArchiveVolume(
+                false,
+                16,
+                rar4EncryptedStoredFile("second.txt", secondContent, RAR3_FILE_SALT)
+        );
+        List<byte[]> contents = List.of(firstVolume, secondVolume);
+        ArkivoVolumeSource volumes = index -> index >= 0L && index < contents.size()
+                ? new TestByteArraySeekableChannel(contents.get((int) index))
+                : null;
+
+        try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                volumes,
+                rar3PasswordEnvironment(RAR3_PASSWORD)
+        )) {
+            assertArrayEquals(firstContent, Files.readAllBytes(fileSystem.getPath("/first.txt")));
+            assertArrayEquals(secondContent, Files.readAllBytes(fileSystem.getPath("/second.txt")));
+        }
+    }
+
+    /// Verifies that every provider-owned RAR3 password result is cleared after key derivation.
+    @Test
+    public void clearsRar3PasswordProviderResults() throws IOException {
+        byte[] content = "cleared RAR3 password".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = rar4EncryptedHeaderArchive(rar4EncryptedStoredFile(
+                "secret.txt",
+                content,
+                RAR3_FILE_SALT
+        ));
+        List<byte[]> suppliedPasswords = new ArrayList<>();
+        ArkivoPasswordProvider passwordProvider = () -> {
+            byte[] password = RAR3_PASSWORD.clone();
+            suppliedPasswords.add(password);
+            return password;
+        };
+        Path archivePath = createTemporaryArchivePath("rar3-password-clear-");
+        Files.write(archivePath, archive);
+        try {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(RarArkivoFileSystem.PASSWORD_PROVIDER.key(), passwordProvider)
+            )) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/secret.txt")));
+            }
+            assertEquals(3, suppliedPasswords.size());
+            for (byte[] suppliedPassword : suppliedPasswords) {
+                assertArrayEquals(new byte[suppliedPassword.length], suppliedPassword);
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies RAR5 AES-encrypted stored entry streaming, password checks, tweaked CRC32, and partial-body draining.
     @Test
     public void readsRar5EncryptedStoredEntry() throws IOException {
@@ -1497,6 +1755,80 @@ public final class RarArkivoStreamingReaderTest {
         return rar4ArchiveVolume(true, members);
     }
 
+    /// Creates one RAR4 archive containing an AES-encrypted stored member and optional plain members.
+    private static byte[] rar4EncryptedArchive(
+            Rar4EncryptedFixture encrypted,
+            Member... plainMembers
+    ) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(RAR4_SIGNATURE);
+        writeRar4Block(output, 0x73, 0, new byte[6], new byte[0]);
+        writeRar4Member(output, encrypted.member(), true, encrypted.salt());
+        for (Member member : plainMembers) {
+            writeRar4Member(output, member);
+        }
+        writeRar4Block(output, 0x7b, 0, new byte[0], new byte[0]);
+        return output.toByteArray();
+    }
+
+    /// Creates one RAR4 archive whose stored member advertises a pre-AES encryption version.
+    private static byte[] rar4LegacyEncryptedArchive(Member member) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(RAR4_SIGNATURE);
+        writeRar4Block(output, 0x73, 0, new byte[6], new byte[0]);
+        output.write(rar4MemberHeader(member, true, null, 20));
+        output.write(member.body());
+        writeRar4Block(output, 0x7b, 0, new byte[0], new byte[0]);
+        return output.toByteArray();
+    }
+
+    /// Creates one RAR4 archive with independently salted AES-encrypted headers and file data.
+    private static byte[] rar4EncryptedHeaderArchive(Rar4EncryptedFixture encrypted) throws IOException {
+        return rar4EncryptedHeaderArchiveVolume(false, 0, encrypted);
+    }
+
+    /// Creates one independently header-encrypted RAR4 archive volume.
+    private static byte[] rar4EncryptedHeaderArchiveVolume(
+            boolean nextVolume,
+            int headerSaltOffset,
+            Rar4EncryptedFixture encrypted
+    ) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(RAR4_SIGNATURE);
+        writeRar4Block(output, 0x73, 0x0080L, new byte[6], new byte[0]);
+
+        writeRar3EncryptedHeader(
+                output,
+                rar4MemberHeader(encrypted.member(), true, encrypted.salt()),
+                rar3HeaderSalt(headerSaltOffset)
+        );
+        output.write(encrypted.member().body());
+        writeRar3EncryptedHeader(
+                output,
+                rar4BlockHeader(0x7b, nextVolume ? 0x0001L : 0L, new byte[0]),
+                rar3HeaderSalt(headerSaltOffset + 1)
+        );
+        return output.toByteArray();
+    }
+
+    /// Writes one salt-prefixed, zero-padded RAR 3.x AES encrypted header.
+    private static void writeRar3EncryptedHeader(
+            ByteArrayOutputStream output,
+            byte[] header,
+            byte[] salt
+    ) throws IOException {
+        TestRar3Keys keys = deriveRar3Keys(RAR3_PASSWORD, salt);
+        output.write(salt);
+        output.write(encryptRar3Aes(header, keys.key(), keys.initializationVector()));
+    }
+
+    /// Returns one deterministic salt for a synthetic encrypted RAR4 header.
+    private static byte[] rar3HeaderSalt(int index) {
+        byte[] salt = RAR3_FILE_SALT.clone();
+        salt[0] ^= (byte) (0x40 + index);
+        return salt;
+    }
+
     /// Creates one RAR4 archive volume.
     private static byte[] rar4ArchiveVolume(boolean includeEndHeader, Member... members) throws IOException {
         return rar4ArchiveVolume(includeEndHeader, false, members);
@@ -1676,10 +2008,43 @@ public final class RarArkivoStreamingReaderTest {
 
     /// Writes one RAR4 member block.
     private static void writeRar4Member(ByteArrayOutputStream output, Member member) throws IOException {
+        writeRar4Member(output, member, false, null);
+    }
+
+    /// Writes one RAR4 member block with optional RAR 3.x AES metadata.
+    private static void writeRar4Member(
+            ByteArrayOutputStream output,
+            Member member,
+            boolean encrypted,
+            byte @Nullable [] encryptionSalt
+    ) throws IOException {
         if (member.service()) {
             return;
         }
 
+        output.write(rar4MemberHeader(member, encrypted, encryptionSalt));
+        output.write(member.body());
+    }
+
+    /// Encodes one complete RAR4 member header with optional RAR 3.x AES metadata.
+    private static byte[] rar4MemberHeader(
+            Member member,
+            boolean encrypted,
+            byte @Nullable [] encryptionSalt
+    ) throws IOException {
+        return rar4MemberHeader(member, encrypted, encryptionSalt, 29);
+    }
+
+    /// Encodes one complete RAR4 member header with an explicit extraction version.
+    private static byte[] rar4MemberHeader(
+            Member member,
+            boolean encrypted,
+            byte @Nullable [] encryptionSalt,
+            int extractionVersion
+    ) throws IOException {
+        if (extractionVersion < 0 || extractionVersion > 0xff) {
+            throw new IllegalArgumentException("RAR4 extraction version must fit in one byte");
+        }
         boolean unicodeName = needsRar4UnicodeName(member.path());
         byte[] name = rar4NameBytes(member.path(), unicodeName);
         ByteArrayOutputStream fields = new ByteArrayOutputStream();
@@ -1688,11 +2053,14 @@ public final class RarArkivoStreamingReaderTest {
         fields.write(3);
         writeUInt32(fields, member.crc32());
         writeUInt32(fields, rar4DosTime(member.modificationTime()));
-        fields.write(29);
+        fields.write(extractionVersion);
         fields.write(member.compressionMethod() == 0 ? 0x30 : 0x30 + member.compressionMethod());
         writeUInt16(fields, name.length);
         writeUInt32(fields, member.attributes());
         fields.write(name);
+        if (encryptionSalt != null) {
+            fields.write(encryptionSalt);
+        }
 
         long flags = 0x8000L;
         if (member.continuesFromPreviousVolume()) {
@@ -1704,7 +2072,13 @@ public final class RarArkivoStreamingReaderTest {
         if (unicodeName) {
             flags |= RAR4_FILE_FLAG_UNICODE;
         }
-        writeRar4Block(output, 0x74, flags, fields.toByteArray(), member.body());
+        if (encrypted) {
+            flags |= 0x0004L;
+        }
+        if (encryptionSalt != null) {
+            flags |= 0x0400L;
+        }
+        return rar4BlockHeader(0x74, flags, fields.toByteArray());
     }
 
     /// Returns whether a RAR4 fixture name needs Unicode metadata.
@@ -1782,6 +2156,12 @@ public final class RarArkivoStreamingReaderTest {
             byte[] fields,
             byte[] data
     ) throws IOException {
+        output.write(rar4BlockHeader(type, flags, fields));
+        output.write(data);
+    }
+
+    /// Encodes one complete RAR4 block header including its CRC16 field.
+    private static byte[] rar4BlockHeader(int type, long flags, byte[] fields) throws IOException {
         ByteArrayOutputStream headerData = new ByteArrayOutputStream();
         headerData.write(type);
         writeUInt16(headerData, flags);
@@ -1791,9 +2171,10 @@ public final class RarArkivoStreamingReaderTest {
         byte[] headerDataBytes = headerData.toByteArray();
         CRC32 headerCrc32 = new CRC32();
         headerCrc32.update(headerDataBytes, 0, headerDataBytes.length);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
         writeUInt16(output, headerCrc32.getValue());
         output.write(headerDataBytes);
-        output.write(data);
+        return output.toByteArray();
     }
 
     /// Concatenates two byte arrays.
@@ -1844,6 +2225,32 @@ public final class RarArkivoStreamingReaderTest {
                 false,
                 false
         );
+    }
+
+    /// Creates an AES-encrypted RAR 3.x stored member fixture.
+    private static Rar4EncryptedFixture rar4EncryptedStoredFile(
+            String path,
+            byte[] content,
+            byte @Nullable [] salt
+    ) throws IOException {
+        TestRar3Keys keys = deriveRar3Keys(RAR3_PASSWORD, salt);
+        byte[] encryptedBody = encryptRar3Aes(content, keys.key(), keys.initializationVector());
+        Member member = new Member(
+                path,
+                1_700_000_000L,
+                0100644,
+                false,
+                false,
+                0,
+                crc32(content),
+                content.length,
+                encryptedBody,
+                null,
+                false,
+                false,
+                false
+        );
+        return new Rar4EncryptedFixture(member, salt);
     }
 
     /// Creates an AES-encrypted RAR5 stored member with plain or password-dependent CRC32 metadata.
@@ -2210,6 +2617,61 @@ public final class RarArkivoStreamingReaderTest {
         return crc32.getValue();
     }
 
+    /// Returns environment options containing one fixed UTF-16LE RAR3 password provider.
+    private static Map<String, Object> rar3PasswordEnvironment(byte[] password) {
+        return Map.of(
+                RarArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                ArkivoPasswordProvider.fixed(password)
+        );
+    }
+
+    /// Independently derives RAR 3.x fixture keys for passwords shorter than one SHA-1 block.
+    private static TestRar3Keys deriveRar3Keys(byte[] password, byte @Nullable [] salt) throws IOException {
+        byte[] seed = salt != null ? concatenate(password, salt) : password.clone();
+        byte[] counter = new byte[3];
+        byte[] initializationVector = new byte[16];
+        try {
+            MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+            for (int round = 0; round < 0x40000; round++) {
+                sha1.update(seed);
+                counter[0] = (byte) round;
+                counter[1] = (byte) (round >>> 8);
+                counter[2] = (byte) (round >>> 16);
+                sha1.update(counter);
+                if (round % 0x4000 == 0) {
+                    byte[] snapshot = ((MessageDigest) sha1.clone()).digest();
+                    initializationVector[round / 0x4000] = snapshot[snapshot.length - 1];
+                }
+            }
+            byte[] digest = sha1.digest();
+            byte[] key = new byte[16];
+            for (int word = 0; word < 4; word++) {
+                int offset = word * Integer.BYTES;
+                key[offset] = digest[offset + 3];
+                key[offset + 1] = digest[offset + 2];
+                key[offset + 2] = digest[offset + 1];
+                key[offset + 3] = digest[offset];
+            }
+            return new TestRar3Keys(key, initializationVector);
+        } catch (GeneralSecurityException | CloneNotSupportedException exception) {
+            throw new IOException("RAR3 test cryptographic primitives are unavailable", exception);
+        }
+    }
+
+    /// Encrypts zero-padded bytes with independently derived RAR 3.x AES-128-CBC parameters.
+    private static byte[] encryptRar3Aes(byte[] plaintext, byte[] key, byte[] initializationVector)
+            throws IOException {
+        int encryptedSize = (plaintext.length + 15) & ~15;
+        byte[] padded = Arrays.copyOf(plaintext, encryptedSize);
+        try {
+            Cipher cipher = Cipher.getInstance("AES/CBC/NoPadding");
+            cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"), new IvParameterSpec(initializationVector));
+            return cipher.doFinal(padded);
+        } catch (GeneralSecurityException exception) {
+            throw new IOException("RAR3 test AES encryption is unavailable", exception);
+        }
+    }
+
     /// Returns environment options containing one fixed RAR5 password provider.
     private static Map<String, Object> rar5PasswordEnvironment(byte[] password) {
         return Map.of(
@@ -2520,6 +2982,41 @@ public final class RarArkivoStreamingReaderTest {
         /// Writes raw bytes.
         private void write(byte[] bytes) throws IOException {
             output.write(bytes);
+        }
+    }
+
+    /// Stores one RAR4 member together with its file-encryption salt.
+    ///
+    /// @param member the encrypted member metadata and ciphertext
+    /// @param salt the eight-byte RAR 3.x derivation salt, or `null` for unsalted encryption
+    @NotNullByDefault
+    private record Rar4EncryptedFixture(
+            Member member,
+            byte @Nullable @Unmodifiable [] salt
+    ) {
+        /// Creates one immutable encrypted RAR4 fixture member.
+        private Rar4EncryptedFixture {
+            Objects.requireNonNull(member, "member");
+            if (salt != null && salt.length != 8) {
+                throw new IllegalArgumentException("RAR4 fixture salt must contain eight bytes");
+            }
+            salt = salt != null ? salt.clone() : null;
+        }
+    }
+
+    /// Stores independently derived RAR3 fixture key material.
+    ///
+    /// @param key the AES-128 encryption key
+    /// @param initializationVector the AES-CBC initialization vector
+    @NotNullByDefault
+    private record TestRar3Keys(
+            byte @Unmodifiable [] key,
+            byte @Unmodifiable [] initializationVector
+    ) {
+        /// Creates immutable fixture key material.
+        private TestRar3Keys {
+            key = key.clone();
+            initializationVector = initializationVector.clone();
         }
     }
 

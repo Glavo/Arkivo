@@ -231,7 +231,7 @@ final class Rar5Crypto {
 
     /// Decrypts independent AES blocks while applying RAR5 CBC chaining.
     @NotNullByDefault
-    static final class CbcDecryptor {
+    static final class CbcDecryptor implements RarCbcDecryptor {
         /// The AES electronic-codebook primitive used for one block at a time.
         private final Cipher aes;
 
@@ -259,7 +259,8 @@ final class Rar5Crypto {
         }
 
         /// Decrypts one complete ciphertext block into the target array.
-        void decryptBlock(byte[] ciphertext, byte[] target) throws IOException {
+        @Override
+        public void decryptBlock(byte[] ciphertext, byte[] target) throws IOException {
             if (cleared) {
                 throw new IOException("RAR5 AES decryptor has been cleared");
             }
@@ -278,7 +279,8 @@ final class Rar5Crypto {
         }
 
         /// Clears the mutable CBC chaining state and prevents further decryption.
-        void clear() {
+        @Override
+        public void clear() {
             if (cleared) {
                 return;
             }
