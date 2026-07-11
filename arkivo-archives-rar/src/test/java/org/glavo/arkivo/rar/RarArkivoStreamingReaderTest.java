@@ -5,6 +5,7 @@ package org.glavo.arkivo.rar;
 
 import org.glavo.arkivo.ArkivoEditStorage;
 import org.glavo.arkivo.ArkivoFileSystem;
+import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ArkivoStoredContent;
 import org.glavo.arkivo.ArkivoVolumeSource;
@@ -13,11 +14,16 @@ import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
+import javax.crypto.Cipher;
+import javax.crypto.Mac;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
@@ -42,9 +48,12 @@ import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -69,6 +78,31 @@ public final class RarArkivoStreamingReaderTest {
 
     /// RAR4 file header flag indicating that the name field includes Unicode metadata.
     private static final long RAR4_FILE_FLAG_UNICODE = 0x0200L;
+
+    /// The password used by RAR5 encrypted archive fixtures.
+    private static final byte @Unmodifiable [] RAR5_PASSWORD =
+            "correct horse battery staple".getBytes(StandardCharsets.UTF_8);
+
+    /// The PBKDF2 salt used by RAR5 encrypted file fixtures.
+    private static final byte @Unmodifiable [] RAR5_FILE_SALT = new byte[]{
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f
+    };
+
+    /// The PBKDF2 salt used by encrypted archive header fixtures.
+    private static final byte @Unmodifiable [] RAR5_HEADER_SALT = new byte[]{
+            0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+            0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f
+    };
+
+    /// The AES-CBC initialization vector used by encrypted file fixtures.
+    private static final byte @Unmodifiable [] RAR5_FILE_IV = new byte[]{
+            0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+            0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f
+    };
+
+    /// The small PBKDF2 iteration exponent used by fast unit-test fixtures.
+    private static final int RAR5_KDF_LOG = 3;
 
     /// Verifies that explicit volume sources and configured cached-content storage are both owned by the file system.
     @Test
@@ -792,6 +826,52 @@ public final class RarArkivoStreamingReaderTest {
         }
     }
 
+    /// Verifies that RAR4 and RAR5 end markers can direct top-level iteration to a following volume.
+    @Test
+    public void readsEntriesAfterNextVolumeEndMarker() throws IOException {
+        Member first = storedFile(
+                "first.txt",
+                1_700_000_000L,
+                0100644,
+                "first".getBytes(StandardCharsets.UTF_8),
+                null
+        );
+        Member second = storedFile(
+                "second.txt",
+                1_700_000_001L,
+                0100644,
+                "second".getBytes(StandardCharsets.UTF_8),
+                null
+        );
+
+        assertEndMarkedVolumes(
+                archiveVolume(true, true, first),
+                archiveVolume(true, false, second)
+        );
+        assertEndMarkedVolumes(
+                rar4ArchiveVolume(true, true, first),
+                rar4ArchiveVolume(true, false, second)
+        );
+    }
+
+    /// Verifies two entries exposed by volumes separated with a next-volume end marker.
+    private static void assertEndMarkedVolumes(byte[] firstVolume, byte[] secondVolume) throws IOException {
+        List<byte[]> contents = List.of(firstVolume, secondVolume);
+        ArkivoVolumeSource volumes = index -> index >= 0L && index < contents.size()
+                ? new TestByteArraySeekableChannel(contents.get((int) index))
+                : null;
+        try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(volumes)) {
+            assertArrayEquals(
+                    "first".getBytes(StandardCharsets.UTF_8),
+                    Files.readAllBytes(fileSystem.getPath("/first.txt"))
+            );
+            assertArrayEquals(
+                    "second".getBytes(StandardCharsets.UTF_8),
+                    Files.readAllBytes(fileSystem.getPath("/second.txt"))
+            );
+        }
+    }
+
     /// Verifies that stored RAR5 entries can be read from conventional `partN.rar` paths.
     @Test
     public void opensStoredSplitEntryFromPartPath() throws IOException {
@@ -942,6 +1022,262 @@ public final class RarArkivoStreamingReaderTest {
             IOException exception = assertThrows(IOException.class, reader::openInputStream);
             assertEquals(true, exception.getMessage().contains("Unsupported RAR compression method"));
             assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies RAR5 AES-encrypted stored entry streaming, password checks, tweaked CRC32, and partial-body draining.
+    @Test
+    public void readsRar5EncryptedStoredEntry() throws IOException {
+        byte[] content = "RAR5 encrypted stored content".getBytes(StandardCharsets.UTF_8);
+        byte[] after = "after".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = archive(
+                encryptedStoredFile("secret.txt", content, true),
+                storedFile("after.txt", 1_700_000_001L, 0100644, after, null)
+        );
+        Map<String, Object> environment = rar5PasswordEnvironment(RAR5_PASSWORD);
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                environment
+        )) {
+            assertEquals(true, reader.next());
+            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
+            assertEquals("secret.txt", attributes.path());
+            assertEquals(true, attributes.isEncrypted());
+            assertEquals(content.length, attributes.unpackedSize());
+            assertEquals((content.length + 15) & ~15, attributes.packedSize());
+            try (var body = reader.openInputStream()) {
+                assertArrayEquals(content, body.readAllBytes());
+            }
+            assertEquals(true, reader.next());
+            try (var body = reader.openInputStream()) {
+                assertArrayEquals(after, body.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                environment
+        )) {
+            assertEquals(true, reader.next());
+            try (var body = reader.openInputStream()) {
+                assertArrayEquals(Arrays.copyOf(content, 5), body.readNBytes(5));
+            }
+            assertEquals(true, reader.next());
+            assertEquals("after.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
+        }
+    }
+
+    /// Verifies the channel environment overload and zero-length AES entry boundary.
+    @Test
+    public void readsEmptyRar5EncryptedStoredEntryFromChannel() throws IOException {
+        byte[] archive = archive(encryptedStoredFile("empty.bin", new byte[0], true));
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                Channels.newChannel(new ByteArrayInputStream(archive)),
+                rar5PasswordEnvironment(RAR5_PASSWORD)
+        )) {
+            assertEquals(true, reader.next());
+            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
+            assertEquals(0L, attributes.packedSize());
+            assertEquals(0L, attributes.unpackedSize());
+            try (var body = reader.openInputStream()) {
+                assertArrayEquals(new byte[0], body.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that an archive can index encrypted file metadata without retaining unreadable ciphertext as content.
+    @Test
+    public void indexesRar5EncryptedStoredEntryWithoutPasswordProvider() throws IOException {
+        byte[] archive = archive(encryptedStoredFile(
+                "secret.txt",
+                "secret".getBytes(StandardCharsets.UTF_8),
+                true
+        ));
+        Path archivePath = createTemporaryArchivePath("rar5-encrypted-metadata-");
+        Files.write(archivePath, archive);
+        try {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archivePath)) {
+                Path entry = fileSystem.getPath("/secret.txt");
+                assertEquals(true, Files.readAttributes(entry, RarArkivoEntryAttributes.class).isEncrypted());
+                IOException exception = assertThrows(IOException.class, () -> Files.readAllBytes(entry));
+                assertEquals(true, exception.getMessage().contains("content is not available"));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that metadata can be skipped without a password and an incorrect password is rejected before data.
+    @Test
+    public void rejectsIncorrectRar5EntryPassword() throws IOException {
+        byte[] archive = archive(encryptedStoredFile(
+                "secret.txt",
+                "secret".getBytes(StandardCharsets.UTF_8),
+                false
+        ));
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            assertEquals(true, reader.next());
+            assertEquals(true, reader.readAttributes(RarArkivoEntryAttributes.class).isEncrypted());
+            assertEquals(false, reader.next());
+        }
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                rar5PasswordEnvironment("wrong".getBytes(StandardCharsets.UTF_8))
+        )) {
+            assertEquals(true, reader.next());
+            IOException exception = assertThrows(IOException.class, reader::openInputStream);
+            assertEquals(true, exception.getMessage().contains("Incorrect RAR5 password"));
+        }
+    }
+
+    /// Verifies that encrypted RAR5 headers and entry data are available through the indexed file system.
+    @Test
+    public void readsRar5EncryptedHeadersThroughFileSystem() throws IOException {
+        byte[] content = "hidden name and content".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = encryptedHeaderArchive(encryptedStoredFile("hidden/value.txt", content, true));
+        Path archivePath = createTemporaryArchivePath("rar5-encrypted-headers-");
+        Files.write(archivePath, archive);
+        try {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                    archivePath,
+                    rar5PasswordEnvironment(RAR5_PASSWORD)
+            )) {
+                Path entry = fileSystem.getPath("/hidden/value.txt");
+                assertArrayEquals(content, Files.readAllBytes(entry));
+                assertEquals(true, Files.readAttributes(entry, RarArkivoEntryAttributes.class).isEncrypted());
+            }
+
+            IOException exception = assertThrows(
+                    IOException.class,
+                    () -> RarArkivoFileSystem.open(
+                            archivePath,
+                            rar5PasswordEnvironment("wrong".getBytes(StandardCharsets.UTF_8))
+                    )
+            );
+            assertEquals(true, exception.getMessage().contains("Incorrect RAR5 archive password"));
+
+            IOException missingPassword = assertThrows(
+                    IOException.class,
+                    () -> RarArkivoFileSystem.open(archivePath)
+            );
+            assertEquals(true, missingPassword.getMessage().contains("password provider is required"));
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that provider-owned return values are cleared after header and entry key derivation.
+    @Test
+    public void clearsRar5PasswordProviderResults() throws IOException {
+        byte[] content = "cleared password".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = encryptedHeaderArchive(encryptedStoredFile("secret.txt", content, true));
+        List<byte[]> suppliedPasswords = new ArrayList<>();
+        ArkivoPasswordProvider passwordProvider = () -> {
+            byte[] password = RAR5_PASSWORD.clone();
+            suppliedPasswords.add(password);
+            return password;
+        };
+        Path archivePath = createTemporaryArchivePath("rar5-password-clear-");
+        Files.write(archivePath, archive);
+        try {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(RarArkivoFileSystem.PASSWORD_PROVIDER.key(), passwordProvider)
+            )) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/secret.txt")));
+            }
+            assertEquals(2, suppliedPasswords.size());
+            for (byte[] suppliedPassword : suppliedPasswords) {
+                assertArrayEquals(new byte[suppliedPassword.length], suppliedPassword);
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that each encrypted RAR5 volume authenticates and installs its own header key.
+    @Test
+    public void readsRar5EncryptedHeadersAcrossVolumes() throws IOException {
+        byte[] firstContent = "first encrypted volume".getBytes(StandardCharsets.UTF_8);
+        byte[] secondContent = "second encrypted volume".getBytes(StandardCharsets.UTF_8);
+        Path firstVolume = createTemporaryArchivePath("rar5-encrypted-volume-");
+        Path secondVolume = firstVolume.resolveSibling("encrypted.part2.rar");
+        Files.write(firstVolume, encryptedHeaderArchiveVolume(
+                true,
+                0,
+                encryptedStoredFile("first.txt", firstContent, true)
+        ));
+        Files.write(secondVolume, encryptedHeaderArchiveVolume(
+                false,
+                32,
+                encryptedStoredFile("second.txt", secondContent, true)
+        ));
+
+        try {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                    ArkivoVolumeSource.of(List.of(firstVolume, secondVolume)),
+                    rar5PasswordEnvironment(RAR5_PASSWORD)
+            )) {
+                assertArrayEquals(firstContent, Files.readAllBytes(fileSystem.getPath("/first.txt")));
+                assertArrayEquals(secondContent, Files.readAllBytes(fileSystem.getPath("/second.txt")));
+            }
+        } finally {
+            Files.deleteIfExists(secondVolume);
+            deleteTemporaryArchive(firstVolume);
+        }
+    }
+
+    /// Verifies that password-dependent CRC32 mismatches are reported after decryption.
+    @Test
+    public void rejectsCorruptedRar5EncryptedStoredEntry() throws IOException {
+        Member encrypted = encryptedStoredFile(
+                "corrupt.bin",
+                "corrupt me".getBytes(StandardCharsets.UTF_8),
+                true
+        );
+        Member wrongCrc = new Member(
+                encrypted.path(),
+                encrypted.modificationTime(),
+                encrypted.attributes(),
+                encrypted.directory(),
+                encrypted.symbolicLink(),
+                encrypted.compressionMethod(),
+                encrypted.crc32() ^ 1L,
+                encrypted.unpackedSize(),
+                encrypted.body(),
+                encrypted.extraArea(),
+                encrypted.service(),
+                encrypted.continuesFromPreviousVolume(),
+                encrypted.continuesInNextVolume()
+        );
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive(wrongCrc)),
+                rar5PasswordEnvironment(RAR5_PASSWORD)
+        )) {
+            assertEquals(true, reader.next());
+            var body = reader.openInputStream();
+            IOException exception = assertThrows(IOException.class, body::readAllBytes);
+            assertEquals(true, exception.getMessage().contains("Invalid RAR entry CRC32"));
+            IOException closeException = assertThrows(IOException.class, body::close);
+            assertEquals(true, closeException.getMessage().contains("Invalid RAR entry CRC32"));
+            body.close();
+        }
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive(wrongCrc)),
+                rar5PasswordEnvironment(RAR5_PASSWORD)
+        )) {
+            assertEquals(true, reader.next());
+            var body = reader.openInputStream();
+            assertEquals(true, body.read() >= 0);
+            IOException exception = assertThrows(IOException.class, body::close);
+            assertEquals(true, exception.getMessage().contains("Invalid RAR entry CRC32"));
         }
     }
 
@@ -1163,6 +1499,15 @@ public final class RarArkivoStreamingReaderTest {
 
     /// Creates one RAR4 archive volume.
     private static byte[] rar4ArchiveVolume(boolean includeEndHeader, Member... members) throws IOException {
+        return rar4ArchiveVolume(includeEndHeader, false, members);
+    }
+
+    /// Creates one RAR4 archive volume with an optional next-volume end marker.
+    private static byte[] rar4ArchiveVolume(
+            boolean includeEndHeader,
+            boolean nextVolume,
+            Member... members
+    ) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         output.write(RAR4_SIGNATURE);
         writeRar4Block(output, 0x73, 0, new byte[6], new byte[0]);
@@ -1170,13 +1515,22 @@ public final class RarArkivoStreamingReaderTest {
             writeRar4Member(output, member);
         }
         if (includeEndHeader) {
-            writeRar4Block(output, 0x7b, 0, new byte[0], new byte[0]);
+            writeRar4Block(output, 0x7b, nextVolume ? 0x0001L : 0L, new byte[0], new byte[0]);
         }
         return output.toByteArray();
     }
 
     /// Creates one RAR5 archive volume.
     private static byte[] archiveVolume(boolean includeEndHeader, Member... members) throws IOException {
+        return archiveVolume(includeEndHeader, false, members);
+    }
+
+    /// Creates one RAR5 archive volume with an optional next-volume end marker.
+    private static byte[] archiveVolume(
+            boolean includeEndHeader,
+            boolean nextVolume,
+            Member... members
+    ) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         output.write(RAR5_SIGNATURE);
         writeBlock(output, 1, 0, fields(writer -> writer.writeVint(0)), new byte[0], new byte[0]);
@@ -1184,9 +1538,131 @@ public final class RarArkivoStreamingReaderTest {
             writeMember(output, member);
         }
         if (includeEndHeader) {
-            writeBlock(output, 5, 0, fields(writer -> writer.writeVint(0)), new byte[0], new byte[0]);
+            writeBlock(
+                    output,
+                    5,
+                    0,
+                    fields(writer -> writer.writeVint(nextVolume ? 0x0001L : 0L)),
+                    new byte[0],
+                    new byte[0]
+            );
         }
         return output.toByteArray();
+    }
+
+    /// Creates one RAR5 archive whose headers and stored members are AES encrypted.
+    private static byte[] encryptedHeaderArchive(Member... members) throws IOException {
+        return encryptedHeaderArchiveVolume(false, 0, members);
+    }
+
+    /// Creates one RAR5 archive volume whose headers and stored members are AES encrypted.
+    private static byte[] encryptedHeaderArchiveVolume(
+            boolean nextVolume,
+            int headerIndexOffset,
+            Member... members
+    ) throws IOException {
+        byte[] headerSalt = headerSalt(headerIndexOffset);
+        TestRar5Keys keys = deriveRar5Keys(RAR5_PASSWORD, headerSalt, RAR5_KDF_LOG);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(RAR5_SIGNATURE);
+        writeBlock(
+                output,
+                4,
+                0L,
+                archiveEncryptionFields(keys, headerSalt),
+                new byte[0],
+                new byte[0]
+        );
+
+        int headerIndex = headerIndexOffset;
+        writeEncryptedHeaderBlock(
+                output,
+                keys.aesKey(),
+                headerInitializationVector(headerIndex++),
+                1,
+                0L,
+                fields(writer -> writer.writeVint(0L)),
+                new byte[0],
+                new byte[0]
+        );
+        for (Member member : members) {
+            writeEncryptedMember(output, keys.aesKey(), headerInitializationVector(headerIndex++), member);
+        }
+        writeEncryptedHeaderBlock(
+                output,
+                keys.aesKey(),
+                headerInitializationVector(headerIndex),
+                5,
+                0L,
+                fields(writer -> writer.writeVint(nextVolume ? 0x0001L : 0L)),
+                new byte[0],
+                new byte[0]
+        );
+        return output.toByteArray();
+    }
+
+    /// Writes one member whose header is protected by archive header encryption.
+    private static void writeEncryptedMember(
+            ByteArrayOutputStream output,
+            byte[] headerKey,
+            byte[] headerInitializationVector,
+            Member member
+    ) throws IOException {
+        int type = member.service() ? 3 : 2;
+        byte[] extraArea = member.service() ? new byte[0] : member.extraArea();
+        writeEncryptedHeaderBlock(
+                output,
+                headerKey,
+                headerInitializationVector,
+                type,
+                blockFlags(member),
+                fileFields(member, !member.service()),
+                extraArea,
+                member.body()
+        );
+    }
+
+    /// Writes one independently IV-protected encrypted header followed by its data area.
+    private static void writeEncryptedHeaderBlock(
+            ByteArrayOutputStream output,
+            byte[] headerKey,
+            byte[] initializationVector,
+            int type,
+            long flags,
+            byte[] fields,
+            byte[] extraArea,
+            byte[] data
+    ) throws IOException {
+        byte[] header = blockHeader(type, flags, fields, extraArea, data.length);
+        output.write(initializationVector);
+        output.write(encryptRar5Aes(header, headerKey, initializationVector));
+        output.write(data);
+    }
+
+    /// Returns deterministic per-header initialization vectors for encrypted-header fixtures.
+    private static byte[] headerInitializationVector(int index) {
+        byte[] result = RAR5_FILE_IV.clone();
+        result[0] ^= (byte) (0x40 + index);
+        return result;
+    }
+
+    /// Returns a deterministic per-volume salt for encrypted-header fixtures.
+    private static byte[] headerSalt(int headerIndexOffset) {
+        byte[] result = RAR5_HEADER_SALT.clone();
+        result[result.length - 1] ^= (byte) headerIndexOffset;
+        return result;
+    }
+
+    /// Encodes archive encryption header fields with password verification data.
+    private static byte[] archiveEncryptionFields(TestRar5Keys keys, byte[] salt) throws IOException {
+        return fields(writer -> {
+            writer.writeVint(0L);
+            writer.writeVint(0x0001L);
+            writer.write(new byte[]{(byte) RAR5_KDF_LOG});
+            writer.write(salt);
+            writer.write(keys.passwordCheck());
+            writer.write(passwordCheckChecksum(keys.passwordCheck()));
+        });
     }
 
     /// Writes one RAR5 member block.
@@ -1370,6 +1846,43 @@ public final class RarArkivoStreamingReaderTest {
         );
     }
 
+    /// Creates an AES-encrypted RAR5 stored member with plain or password-dependent CRC32 metadata.
+    private static Member encryptedStoredFile(String path, byte[] content, boolean tweakedChecksum) throws IOException {
+        TestRar5Keys keys = deriveRar5Keys(RAR5_PASSWORD, RAR5_FILE_SALT, RAR5_KDF_LOG);
+        long contentCrc32 = crc32(content);
+        long storedCrc32 = tweakedChecksum ? keyedRar5Crc32(contentCrc32, keys.hashKey()) : contentCrc32;
+        byte[] encryptedBody = encryptRar5Aes(content, keys.aesKey(), RAR5_FILE_IV);
+        byte[] encryptionRecord = fileEncryptionRecord(keys, tweakedChecksum);
+        return new Member(
+                path,
+                1_700_000_000L,
+                0100644,
+                false,
+                false,
+                0,
+                storedCrc32,
+                content.length,
+                encryptedBody,
+                encryptionRecord,
+                false,
+                false,
+                false
+        );
+    }
+
+    /// Encodes one RAR5 file encryption extra record.
+    private static byte[] fileEncryptionRecord(TestRar5Keys keys, boolean tweakedChecksum) throws IOException {
+        return extraRecord(0x01, fields(writer -> {
+            writer.writeVint(0L);
+            writer.writeVint(tweakedChecksum ? 0x0003L : 0x0001L);
+            writer.write(new byte[]{(byte) RAR5_KDF_LOG});
+            writer.write(RAR5_FILE_SALT);
+            writer.write(RAR5_FILE_IV);
+            writer.write(keys.passwordCheck());
+            writer.write(passwordCheckChecksum(keys.passwordCheck()));
+        }));
+    }
+
     /// Creates a stored file member that is split across physical archive parts.
     private static Member splitStoredFilePart(
             String path,
@@ -1499,13 +2012,25 @@ public final class RarArkivoStreamingReaderTest {
             byte[] extraArea,
             byte[] data
     ) throws IOException {
+        output.write(blockHeader(type, flags, fields, extraArea, data.length));
+        output.write(data);
+    }
+
+    /// Returns one complete RAR5 block header without its data area.
+    private static byte[] blockHeader(
+            int type,
+            long flags,
+            byte[] fields,
+            byte[] extraArea,
+            long dataSize
+    ) throws IOException {
         ByteArrayOutputStream headerData = new ByteArrayOutputStream();
         VintWriter writer = new VintWriter(headerData);
         long headerFlags = flags;
         if (extraArea.length > 0) {
             headerFlags |= 0x0001L;
         }
-        if (data.length > 0) {
+        if (dataSize > 0L) {
             headerFlags |= 0x0002L;
         }
         writer.writeVint(type);
@@ -1513,8 +2038,8 @@ public final class RarArkivoStreamingReaderTest {
         if (extraArea.length > 0) {
             writer.writeVint(extraArea.length);
         }
-        if (data.length > 0) {
-            writer.writeVint(data.length);
+        if (dataSize > 0L) {
+            writer.writeVint(dataSize);
         }
         writer.write(fields);
         writer.write(extraArea);
@@ -1525,10 +2050,11 @@ public final class RarArkivoStreamingReaderTest {
         headerCrc32.update(headerSizeBytes, 0, headerSizeBytes.length);
         headerCrc32.update(headerDataBytes, 0, headerDataBytes.length);
 
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
         writeUInt32(output, headerCrc32.getValue());
         output.write(headerSizeBytes);
         output.write(headerDataBytes);
-        output.write(data);
+        return output.toByteArray();
     }
 
     /// Creates a Unix owner extra area.
@@ -1682,6 +2208,98 @@ public final class RarArkivoStreamingReaderTest {
         CRC32 crc32 = new CRC32();
         crc32.update(data, 0, data.length);
         return crc32.getValue();
+    }
+
+    /// Returns environment options containing one fixed RAR5 password provider.
+    private static Map<String, Object> rar5PasswordEnvironment(byte[] password) {
+        return Map.of(
+                RarArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                ArkivoPasswordProvider.fixed(password)
+        );
+    }
+
+    /// Independently derives the three RAR5 PBKDF2 outputs used by encrypted fixtures.
+    private static TestRar5Keys deriveRar5Keys(byte[] password, byte[] salt, int kdfLog) throws IOException {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(password, "HmacSHA256"));
+            byte[] saltBlock = Arrays.copyOf(salt, salt.length + Integer.BYTES);
+            saltBlock[salt.length + 3] = 1;
+            byte[] value = mac.doFinal(saltBlock);
+            byte[] accumulated = value.clone();
+            for (int iteration = 1; iteration < 1 << kdfLog; iteration++) {
+                value = accumulateRar5Pbkdf2Round(mac, value, accumulated);
+            }
+            byte[] aesKey = accumulated.clone();
+            for (int iteration = 0; iteration < 16; iteration++) {
+                value = accumulateRar5Pbkdf2Round(mac, value, accumulated);
+            }
+            byte[] hashKey = accumulated.clone();
+            for (int iteration = 0; iteration < 16; iteration++) {
+                value = accumulateRar5Pbkdf2Round(mac, value, accumulated);
+            }
+            byte[] passwordCheck = new byte[8];
+            for (int index = 0; index < accumulated.length; index++) {
+                passwordCheck[index % passwordCheck.length] ^= accumulated[index];
+            }
+            return new TestRar5Keys(aesKey, hashKey, passwordCheck);
+        } catch (GeneralSecurityException exception) {
+            throw new IOException("RAR5 test cryptographic primitives are unavailable", exception);
+        }
+    }
+
+    /// Advances one independently implemented RAR5 PBKDF2 round.
+    private static byte[] accumulateRar5Pbkdf2Round(Mac mac, byte[] previous, byte[] accumulated) {
+        byte[] next = mac.doFinal(previous);
+        for (int index = 0; index < accumulated.length; index++) {
+            accumulated[index] ^= next[index];
+        }
+        return next;
+    }
+
+    /// Encrypts zero-padded bytes with RAR5 AES-256-CBC fixture parameters.
+    private static byte[] encryptRar5Aes(byte[] plaintext, byte[] key, byte[] initializationVector)
+            throws IOException {
+        int encryptedSize = (plaintext.length + 15) & ~15;
+        byte[] padded = Arrays.copyOf(plaintext, encryptedSize);
+        try {
+            Cipher cipher = Cipher.getInstance("AES/CBC/NoPadding");
+            cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"), new IvParameterSpec(initializationVector));
+            return cipher.doFinal(padded);
+        } catch (GeneralSecurityException exception) {
+            throw new IOException("RAR5 test AES encryption is unavailable", exception);
+        }
+    }
+
+    /// Returns the SHA-256 prefix authenticating an eight-byte RAR5 password check.
+    private static byte[] passwordCheckChecksum(byte[] passwordCheck) throws IOException {
+        try {
+            return Arrays.copyOf(MessageDigest.getInstance("SHA-256").digest(passwordCheck), 4);
+        } catch (GeneralSecurityException exception) {
+            throw new IOException("RAR5 test SHA-256 is unavailable", exception);
+        }
+    }
+
+    /// Converts a plain CRC32 value into the RAR5 password-dependent checksum representation.
+    private static long keyedRar5Crc32(long crc32, byte[] hashKey) throws IOException {
+        byte[] rawCrc = new byte[]{
+                (byte) crc32,
+                (byte) (crc32 >>> 8),
+                (byte) (crc32 >>> 16),
+                (byte) (crc32 >>> 24)
+        };
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(hashKey, "HmacSHA256"));
+            byte[] digest = mac.doFinal(rawCrc);
+            long result = 0L;
+            for (int index = 0; index < digest.length; index++) {
+                result ^= (long) Byte.toUnsignedInt(digest[index]) << ((index & 3) * Byte.SIZE);
+            }
+            return result & 0xffff_ffffL;
+        } catch (GeneralSecurityException exception) {
+            throw new IOException("RAR5 test HMAC-SHA256 is unavailable", exception);
+        }
     }
 
     /// Converts an epoch second value to a RAR4 DOS timestamp.
@@ -1944,6 +2562,25 @@ public final class RarArkivoStreamingReaderTest {
             }
             body = body.clone();
             extraArea = extraArea != null ? extraArea.clone() : new byte[0];
+        }
+    }
+
+    /// Stores independently derived RAR5 fixture key material.
+    ///
+    /// @param aesKey the AES-256 encryption key
+    /// @param hashKey the password-dependent checksum key
+    /// @param passwordCheck the folded password verification value
+    @NotNullByDefault
+    private record TestRar5Keys(
+            byte @Unmodifiable [] aesKey,
+            byte @Unmodifiable [] hashKey,
+            byte @Unmodifiable [] passwordCheck
+    ) {
+        /// Creates immutable fixture key material.
+        private TestRar5Keys {
+            aesKey = aesKey.clone();
+            hashKey = hashKey.clone();
+            passwordCheck = passwordCheck.clone();
         }
     }
 

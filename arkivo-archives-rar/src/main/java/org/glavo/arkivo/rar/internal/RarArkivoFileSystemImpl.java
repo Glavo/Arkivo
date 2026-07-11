@@ -177,7 +177,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                 return Files.newByteChannel(splitVolumePaths.get((int) index), openOptions);
             })
                     : Files.newInputStream(archivePath, openOptions.toArray(OpenOption[]::new))) {
-                nodes = readNodes(input, editStorage, ownedContents);
+                nodes = readNodes(input, editStorage, ownedContents, environment);
             }
             return new RarArkivoFileSystemImpl(
                     provider,
@@ -240,7 +240,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         try {
             Map<String, Node> nodes;
             try (InputStream input = new RarVolumeInputStream(volumes)) {
-                nodes = readNodes(input, editStorage, ownedContents);
+                nodes = readNodes(input, editStorage, ownedContents, environment);
             }
             return new RarArkivoFileSystemImpl(
                     provider,
@@ -859,13 +859,15 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     private static Map<String, Node> readNodes(
             InputStream input,
             ArkivoEditStorage editStorage,
-            Set<ArkivoStoredContent> ownedContents
+            Set<ArkivoStoredContent> ownedContents,
+            Map<String, ?> environment
     ) throws IOException {
         LinkedHashMap<String, Node> nodes = new LinkedHashMap<>();
         Node root = new Node("", rootAttributes(), true, null);
         nodes.put("", root);
+        boolean encryptedContentAvailable = RarArkivoFileSystem.PASSWORD_PROVIDER.read(environment) != null;
 
-        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(input)) {
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(input, environment)) {
             while (reader.next()) {
                 RarEntryAttributes attributes = (RarEntryAttributes) reader.readAttributes(RarArkivoEntryAttributes.class);
                 String path = normalizeEntryPath(attributes.path());
@@ -882,7 +884,8 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                         nodeAttributes = attributesWithResolvedSize(attributes, content.size());
                     }
                 } else if (attributes.isRegularFile() && attributes.compressionMethod() == 0
-                        && !attributes.isEncrypted()
+                        && (!attributes.isEncrypted() || encryptedContentAvailable)
+                        && (!attributes.isEncrypted() || !attributes.continuesInNextVolume())
                         && !attributes.continuesFromPreviousVolume()) {
                     try (InputStream entryInput = reader.openInputStream()) {
                         content = storeInput(

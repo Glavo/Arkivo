@@ -94,6 +94,21 @@ final class RarVolumeInputStream extends InputStream {
         closeCurrentVolume();
     }
 
+    /// Advances to the next volume when the current channel ends exactly at a block-header boundary.
+    ///
+    /// @return whether a continuation volume was opened and its signature was consumed
+    boolean advanceAtHeaderBoundary() throws IOException {
+        ensureOpen();
+        SeekableByteChannel channel = currentChannel;
+        if (channel == null || channel.position() != channel.size()) {
+            return false;
+        }
+
+        closeCurrentVolume();
+        long volumeIndex = nextVolumeIndex;
+        return openNextVolume() && volumeIndex > 0L;
+    }
+
     /// Opens the next available volume.
     private boolean openNextVolume() throws IOException {
         if (endOfVolumes) {
