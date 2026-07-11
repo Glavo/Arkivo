@@ -38,7 +38,7 @@ final class ArArkivoChannelSourceTest {
         TrackingSource source = new TrackingSource(archivePath, false);
         try {
             Files.write(archivePath, archive);
-            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(source)) {
+            try (ArArkivoFileSystem fileSystem = ArArkivoFormat.instance().open(source)) {
                 Path entry = fileSystem.getPath("/value.txt");
                 assertArrayEquals("value".getBytes(StandardCharsets.UTF_8), Files.readAllBytes(entry));
                 assertTrue(source.openedChannelClosed());

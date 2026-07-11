@@ -7,11 +7,14 @@ import org.glavo.arkivo.ArkivoFormat;
 import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 
 /// Describes RAR archive streaming support provided by Arkivo.
@@ -36,6 +39,37 @@ public final class RarArkivoFormat implements ArkivoFormat {
     @Override
     public String name() {
         return NAME;
+    }
+
+    /// Returns common RAR archive file extensions.
+    @Override
+    public @Unmodifiable List<String> fileExtensions() {
+        return List.of("rar");
+    }
+
+    /// Returns the number of leading bytes used to identify RAR4 and RAR5 archives.
+    @Override
+    public int probeSize() {
+        return 8;
+    }
+
+    /// Returns whether the prefix starts with a RAR4 or RAR5 archive signature.
+    @Override
+    public boolean matches(ByteBuffer prefix) {
+        int position = prefix.position();
+        if (prefix.remaining() < 7
+                || prefix.get(position) != 'R'
+                || prefix.get(position + 1) != 'a'
+                || prefix.get(position + 2) != 'r'
+                || prefix.get(position + 3) != '!'
+                || prefix.get(position + 4) != 0x1a
+                || prefix.get(position + 5) != 0x07) {
+            return false;
+        }
+        int version = Byte.toUnsignedInt(prefix.get(position + 6));
+        return version == 0 || version == 1
+                && prefix.remaining() >= 8
+                && prefix.get(position + 7) == 0;
     }
 
     /// Opens a RAR archive file system.

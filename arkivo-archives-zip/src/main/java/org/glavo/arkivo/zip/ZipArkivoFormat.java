@@ -8,9 +8,12 @@ import org.glavo.arkivo.ArkivoFormat;
 import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 
 /// Describes the ZIP archive format support provided by Arkivo.
@@ -35,6 +38,34 @@ public final class ZipArkivoFormat implements ArkivoFormat {
     @Override
     public String name() {
         return NAME;
+    }
+
+    /// Returns common ZIP-based archive file extensions.
+    @Override
+    public @Unmodifiable List<String> fileExtensions() {
+        return List.of("zip", "jar");
+    }
+
+    /// Returns the number of leading bytes used to identify ZIP archives.
+    @Override
+    public int probeSize() {
+        return 4;
+    }
+
+    /// Returns whether the prefix starts with a ZIP archive signature.
+    @Override
+    public boolean matches(ByteBuffer prefix) {
+        int position = prefix.position();
+        if (prefix.remaining() < 4
+                || prefix.get(position) != 'P'
+                || prefix.get(position + 1) != 'K') {
+            return false;
+        }
+        int third = Byte.toUnsignedInt(prefix.get(position + 2));
+        int fourth = Byte.toUnsignedInt(prefix.get(position + 3));
+        return third == 3 && fourth == 4
+                || third == 5 && fourth == 6
+                || third == 7 && fourth == 8;
     }
 
     /// Opens a ZIP archive file system.
