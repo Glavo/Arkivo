@@ -24,7 +24,6 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
-import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -80,6 +79,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+
+import static org.glavo.arkivo.tar.internal.TarCompressionStreams.openArchiveInput;
+import static org.glavo.arkivo.tar.internal.TarCompressionStreams.openArchiveOutput;
+import static org.glavo.arkivo.tar.internal.TarCompressionStreams.requireCompression;
+import static org.glavo.arkivo.tar.internal.TarCompressionStreams.requireDecompression;
 
 /// Implements a TAR archive file system backed by an in-memory index or a forward-only writer.
 @NotNullByDefault
@@ -2256,65 +2260,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             size += count;
         }
         return size;
-    }
-
-    /// Opens a decoded TAR input stream and closes the source if decoder creation fails.
-    private static InputStream openArchiveInput(
-            InputStream source,
-            @Nullable CompressionCodec compressionCodec
-    ) throws IOException {
-        if (compressionCodec == null) {
-            return source;
-        }
-        try {
-            return compressionCodec.decompressFrom(source);
-        } catch (IOException | RuntimeException | Error exception) {
-            closeAfterOpenFailure(source, exception);
-            throw exception;
-        }
-    }
-
-    /// Opens an encoded TAR output stream and closes the target if encoder creation fails.
-    private static OutputStream openArchiveOutput(
-            OutputStream target,
-            @Nullable CompressionCodec compressionCodec
-    ) throws IOException {
-        if (compressionCodec == null) {
-            return target;
-        }
-        try {
-            return compressionCodec.compressTo(target);
-        } catch (IOException | RuntimeException | Error exception) {
-            closeAfterOpenFailure(target, exception);
-            throw exception;
-        }
-    }
-
-    /// Closes a stream after wrapper creation fails without hiding the primary failure.
-    private static void closeAfterOpenFailure(Closeable closeable, Throwable failure) {
-        try {
-            closeable.close();
-        } catch (IOException | RuntimeException | Error exception) {
-            failure.addSuppressed(exception);
-        }
-    }
-
-    /// Requires the selected codec to support compression.
-    private static void requireCompression(@Nullable CompressionCodec compressionCodec) {
-        if (compressionCodec != null && !compressionCodec.canCompress()) {
-            throw new UnsupportedOperationException(
-                    "Compression codec does not support compression: " + compressionCodec.name()
-            );
-        }
-    }
-
-    /// Requires the selected codec to support decompression.
-    private static void requireDecompression(@Nullable CompressionCodec compressionCodec) {
-        if (compressionCodec != null && !compressionCodec.canDecompress()) {
-            throw new UnsupportedOperationException(
-                    "Compression codec does not support decompression: " + compressionCodec.name()
-            );
-        }
     }
 
     /// Publishes all surviving update nodes through a complete TAR rewrite.

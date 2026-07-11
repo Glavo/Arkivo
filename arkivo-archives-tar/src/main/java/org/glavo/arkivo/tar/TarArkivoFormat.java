@@ -125,9 +125,25 @@ public final class TarArkivoFormat implements ArkivoFormat {
         return TarArkivoStreamingReader.open(source);
     }
 
+    /// Opens a streaming TAR reader from an input stream with environment options.
+    public TarArkivoStreamingReader openStreamingReader(
+            InputStream source,
+            Map<String, ?> environment
+    ) throws IOException {
+        return TarArkivoStreamingReader.open(source, environment);
+    }
+
     /// Opens a streaming TAR reader from a readable channel.
     public TarArkivoStreamingReader openStreamingReader(ReadableByteChannel source) {
         return TarArkivoStreamingReader.open(source);
+    }
+
+    /// Opens a streaming TAR reader from a readable channel with environment options.
+    public TarArkivoStreamingReader openStreamingReader(
+            ReadableByteChannel source,
+            Map<String, ?> environment
+    ) throws IOException {
+        return TarArkivoStreamingReader.open(source, environment);
     }
 
     /// Opens a streaming TAR writer over an output stream.
@@ -135,9 +151,25 @@ public final class TarArkivoFormat implements ArkivoFormat {
         return TarArkivoStreamingWriter.open(output);
     }
 
+    /// Opens a streaming TAR writer over an output stream with environment options.
+    public TarArkivoStreamingWriter openStreamingWriter(
+            OutputStream output,
+            Map<String, ?> environment
+    ) throws IOException {
+        return TarArkivoStreamingWriter.open(output, environment);
+    }
+
     /// Opens a streaming TAR writer over a writable channel.
     public TarArkivoStreamingWriter openStreamingWriter(WritableByteChannel output) {
         return TarArkivoStreamingWriter.open(output);
+    }
+
+    /// Opens a streaming TAR writer over a writable channel with environment options.
+    public TarArkivoStreamingWriter openStreamingWriter(
+            WritableByteChannel output,
+            Map<String, ?> environment
+    ) throws IOException {
+        return TarArkivoStreamingWriter.open(output, environment);
     }
 
     /// Returns whether the given absolute block is filled with zero bytes.
