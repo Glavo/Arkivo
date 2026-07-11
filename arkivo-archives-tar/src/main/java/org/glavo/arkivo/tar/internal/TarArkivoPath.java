@@ -260,10 +260,14 @@ final class TarArkivoPath implements Path {
     @Override
     public URI toUri() {
         TarArkivoPath absolutePath = (TarArkivoPath) toAbsolutePath().normalize();
+        @Nullable URI archiveUri = fileSystem.archiveUri();
+        if (archiveUri == null) {
+            throw new UnsupportedOperationException("TAR paths backed by channel sources cannot be converted to URIs");
+        }
         return URI.create(
                 TarArkivoFileSystemProvider.SCHEME
                         + ":"
-                        + fileSystem.archiveUri().toASCIIString()
+                        + archiveUri.toASCIIString()
                         + "!/"
                         + uriPath(absolutePath.names)
         );

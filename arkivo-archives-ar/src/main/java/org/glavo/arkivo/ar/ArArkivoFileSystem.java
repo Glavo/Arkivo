@@ -5,6 +5,7 @@ package org.glavo.arkivo.ar;
 
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ar.internal.ArArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -41,5 +42,25 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
         return ArArkivoFileSystemProvider.instance().newFileSystem(path, environment);
+    }
+
+    /// Opens a read-only AR archive file system from a repeatable seekable channel source.
+    ///
+    /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    public static ArArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
+        return open(source, Map.of());
+    }
+
+    /// Opens a read-only AR archive file system from a repeatable seekable channel source with environment options.
+    ///
+    /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for indexed member bodies.
+    public static ArArkivoFileSystem open(
+            ArkivoSeekableChannelSource source,
+            Map<String, ?> environment
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(environment, "environment");
+        return ArArkivoFileSystemImpl.open(ArArkivoFileSystemProvider.instance(), source, environment);
     }
 }

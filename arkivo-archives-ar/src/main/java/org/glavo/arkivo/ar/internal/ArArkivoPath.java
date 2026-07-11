@@ -260,10 +260,14 @@ final class ArArkivoPath implements Path {
     @Override
     public URI toUri() {
         ArArkivoPath absolutePath = (ArArkivoPath) toAbsolutePath().normalize();
+        @Nullable URI archiveUri = fileSystem.archiveUri();
+        if (archiveUri == null) {
+            throw new UnsupportedOperationException("AR paths backed by channel sources cannot be converted to URIs");
+        }
         return URI.create(
                 ArArkivoFileSystemProvider.SCHEME
                         + ":"
-                        + fileSystem.archiveUri().toASCIIString()
+                        + archiveUri.toASCIIString()
                         + "!/"
                         + uriPath(absolutePath.names)
         );

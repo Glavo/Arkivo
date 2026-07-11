@@ -8,6 +8,7 @@ import org.glavo.arkivo.ArkivoCommitTarget;
 import org.glavo.arkivo.ArkivoEditStorage;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ArkivoStoredContent;
 import org.glavo.arkivo.ar.ArArkivoEntryAttributeView;
 import org.glavo.arkivo.ar.ArArkivoEntryAttributes;
@@ -89,14 +90,23 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// The largest AR member size representable by the fixed-width header field.
     private static final long MAX_MEMBER_SIZE = 9_999_999_999L;
 
+    /// The sentinel used when the source archive size is path-backed or unknown.
+    private static final long UNKNOWN_ARCHIVE_SIZE = -1L;
+
     /// The file system provider that owns this file system.
     private final ArArkivoFileSystemProvider provider;
 
     /// The source archive path.
-    private final Path archivePath;
+    private final @Nullable Path archivePath;
 
     /// The archive URI used by generated entry URIs.
-    private final URI archiveUri;
+    private final @Nullable URI archiveUri;
+
+    /// The owned channel source, or `null` for path-backed file systems.
+    private final @Nullable ArkivoSeekableChannelSource channelSource;
+
+    /// The captured channel-source size, or `UNKNOWN_ARCHIVE_SIZE` for path-backed file systems.
+    private final long sourceArchiveSize;
 
     /// The action invoked when this file system closes.
     private final Runnable closeAction;
@@ -149,11 +159,16 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// Whether the provider close action has completed.
     private boolean closeActionCompleted;
 
+    /// Whether the owned channel source has been closed.
+    private boolean channelSourceClosed;
+
     /// Creates an AR file system instance.
     private ArArkivoFileSystemImpl(
             ArArkivoFileSystemProvider provider,
-            Path archivePath,
-            URI archiveUri,
+            @Nullable Path archivePath,
+            @Nullable URI archiveUri,
+            @Nullable ArkivoSeekableChannelSource channelSource,
+            long sourceArchiveSize,
             ArkivoFileSystemThreadSafety threadSafety,
             Map<String, Node> nodes,
             @Nullable ArkivoEditStorage editStorage,
@@ -165,9 +180,20 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             Runnable closeAction
     ) {
         super(threadSafety);
+        if ((archivePath == null) != (archiveUri == null)) {
+            throw new IllegalArgumentException("archivePath and archiveUri must both be present or absent");
+        }
+        if ((archivePath == null) == (channelSource == null)) {
+            throw new IllegalArgumentException("exactly one archive source must be provided");
+        }
+        if (sourceArchiveSize < UNKNOWN_ARCHIVE_SIZE) {
+            throw new IllegalArgumentException("sourceArchiveSize must be unknown or non-negative");
+        }
         this.provider = Objects.requireNonNull(provider, "provider");
-        this.archivePath = Objects.requireNonNull(archivePath, "archivePath");
-        this.archiveUri = Objects.requireNonNull(archiveUri, "archiveUri");
+        this.archivePath = archivePath;
+        this.archiveUri = archiveUri;
+        this.channelSource = channelSource;
+        this.sourceArchiveSize = sourceArchiveSize;
         this.closeAction = Objects.requireNonNull(closeAction, "closeAction");
         this.nodes = updateMode ? new LinkedHashMap<>(nodes) : Map.copyOf(nodes);
         this.editStorage = editStorage;
@@ -179,6 +205,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         this.rootPath = ArArkivoPath.root(this);
         this.writtenDirectories.add("");
         this.editStorageClosed = editStorage == null;
+        this.channelSourceClosed = channelSource == null;
     }
 
     /// Opens an AR file system from an archive path.
@@ -225,6 +252,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                         provider,
                         archivePath,
                         archiveUri,
+                        null,
+                        UNKNOWN_ARCHIVE_SIZE,
                         threadSafety,
                         nodes,
                         editStorage,
@@ -252,6 +281,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     provider,
                     archivePath,
                     archiveUri,
+                    null,
+                    UNKNOWN_ARCHIVE_SIZE,
                     threadSafety,
                     rootNodes(),
                     null,
@@ -276,6 +307,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     provider,
                     archivePath,
                     archiveUri,
+                    null,
+                    UNKNOWN_ARCHIVE_SIZE,
                     threadSafety,
                     nodes,
                     editStorage,
@@ -292,6 +325,67 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
     }
 
+    /// Opens a read-only AR file system from a repeatable seekable channel source.
+    public static ArArkivoFileSystemImpl open(
+            ArArkivoFileSystemProvider provider,
+            ArkivoSeekableChannelSource source,
+            Map<String, ?> environment
+    ) throws IOException {
+        Objects.requireNonNull(provider, "provider");
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(environment, "environment");
+
+        ArkivoFileSystemThreadSafety threadSafety;
+        ArkivoEditStorage editStorage;
+        try {
+            threadSafety = ArkivoFileSystem.THREAD_SAFETY.readOrDefault(
+                    environment,
+                    ArkivoFileSystemThreadSafety.CONCURRENT_READ
+            );
+            Set<OpenOption> openOptions = ArkivoFileSystem.OPEN_OPTIONS.readOrDefault(
+                    environment,
+                    Set.of(StandardOpenOption.READ)
+            );
+            validateArchiveReadOptions(openOptions);
+            editStorage = editStorage(environment);
+        } catch (RuntimeException | Error exception) {
+            closeSourceAfterOpenFailure(source, exception);
+            throw exception;
+        }
+
+        Set<ArkivoStoredContent> ownedContents = identityContentSet();
+        try {
+            long archiveSize;
+            Map<String, Node> nodes;
+            try (SeekableByteChannel channel = source.openChannel()) {
+                archiveSize = channel.size();
+                channel.position(0L);
+                nodes = readNodes(Channels.newInputStream(channel), editStorage, ownedContents);
+            }
+            return new ArArkivoFileSystemImpl(
+                    provider,
+                    null,
+                    null,
+                    source,
+                    archiveSize,
+                    threadSafety,
+                    nodes,
+                    editStorage,
+                    ownedContents,
+                    null,
+                    true,
+                    false,
+                    null,
+                    () -> {
+                    }
+            );
+        } catch (IOException | RuntimeException | Error exception) {
+            closeOpenedStorage(editStorage, ownedContents, exception);
+            closeSourceAfterOpenFailure(source, exception);
+            throw exception;
+        }
+    }
+
     /// Returns the provider that owns this file system.
     @Override
     public ArArkivoFileSystemProvider provider() {
@@ -302,7 +396,11 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     @Override
     public void close() throws IOException {
         try (CloseOperation ignored = beginCloseOperation()) {
-            if (open || !ownedContents.isEmpty() || !editStorageClosed || !closeActionCompleted) {
+            if (open
+                    || !ownedContents.isEmpty()
+                    || !editStorageClosed
+                    || !channelSourceClosed
+                    || !closeActionCompleted) {
                 @Nullable Throwable failure = null;
                 if (open) {
                     @Nullable UpdateMemberByteChannel updateChannel = activeUpdateChannel;
@@ -331,6 +429,14 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     open = false;
                 }
                 failure = closeIndexedStorage(failure);
+                if (!channelSourceClosed) {
+                    try {
+                        Objects.requireNonNull(channelSource, "channelSource").close();
+                        channelSourceClosed = true;
+                    } catch (IOException | RuntimeException | Error exception) {
+                        failure = appendFailure(failure, exception);
+                    }
+                }
                 if (!closeActionCompleted) {
                     try {
                         closeAction.run();
@@ -463,7 +569,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Returns the archive URI used by generated entry URIs.
-    URI archiveUri() {
+    @Nullable URI archiveUri() {
         return archiveUri;
     }
 
@@ -2069,7 +2175,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// Publishes all surviving update nodes through a complete AR rewrite.
     private void commitUpdate() throws IOException {
         ArkivoCommitTarget target = Objects.requireNonNull(commitTarget, "commitTarget");
-        ArkivoCommitOutput output = target.openOutput(archivePath);
+        Path sourcePath = Objects.requireNonNull(archivePath, "archivePath");
+        ArkivoCommitOutput output = target.openOutput(sourcePath);
         Throwable failure = null;
         try {
             try (SeekableByteChannel channel = output.openChannel(Set.of(
@@ -2117,6 +2224,15 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         Path absolutePath = archivePath.toAbsolutePath();
         @Nullable Path parent = absolutePath.getParent();
         return parent != null ? parent : absolutePath.getFileSystem().getPath(".").toAbsolutePath();
+    }
+
+    /// Closes a channel source after an open failure and suppresses any cleanup failure.
+    private static void closeSourceAfterOpenFailure(ArkivoSeekableChannelSource source, Throwable failure) {
+        try {
+            source.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            failure.addSuppressed(exception);
+        }
     }
 
     /// Adds a secondary failure as suppressed when a primary failure already exists.
@@ -2674,7 +2790,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         /// Returns the archive file store name.
         @Override
         public String name() {
-            return archivePath.toString();
+            @Nullable Path path = archivePath;
+            return path != null ? path.toString() : "ar";
         }
 
         /// Returns the archive file store type.
@@ -2692,7 +2809,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         /// Returns total space when known.
         @Override
         public long getTotalSpace() throws IOException {
-            return Files.size(archivePath);
+            @Nullable Path path = archivePath;
+            return path != null ? Files.size(path) : sourceArchiveSize;
         }
 
         /// Returns unallocated space.

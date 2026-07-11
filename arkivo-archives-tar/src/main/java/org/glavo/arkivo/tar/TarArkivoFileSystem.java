@@ -5,6 +5,7 @@ package org.glavo.arkivo.tar;
 
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.tar.internal.TarArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -40,5 +41,25 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
         return TarArkivoFileSystemProvider.instance().newFileSystem(path, environment);
+    }
+
+    /// Opens a read-only TAR archive file system from a repeatable seekable channel source.
+    ///
+    /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    public static TarArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
+        return open(source, Map.of());
+    }
+
+    /// Opens a read-only TAR archive file system from a repeatable seekable channel source with environment options.
+    ///
+    /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for indexed entry bodies.
+    public static TarArkivoFileSystem open(
+            ArkivoSeekableChannelSource source,
+            Map<String, ?> environment
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(environment, "environment");
+        return TarArkivoFileSystemImpl.open(TarArkivoFileSystemProvider.instance(), source, environment);
     }
 }

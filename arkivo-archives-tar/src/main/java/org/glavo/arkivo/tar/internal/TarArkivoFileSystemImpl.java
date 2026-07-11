@@ -8,6 +8,7 @@ import org.glavo.arkivo.ArkivoCommitTarget;
 import org.glavo.arkivo.ArkivoEditStorage;
 import org.glavo.arkivo.ArkivoFileSystem;
 import org.glavo.arkivo.ArkivoFileSystemThreadSafety;
+import org.glavo.arkivo.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.ArkivoStoredContent;
 import org.glavo.arkivo.internal.ArkivoFileStoreAttributes;
 import org.glavo.arkivo.tar.TarArkivoEntryAttributeView;
@@ -85,14 +86,23 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// The Unix epoch timestamp used for new update-mode entries.
     private static final FileTime UNIX_EPOCH = FileTime.fromMillis(0L);
 
+    /// The sentinel used when the source archive size is path-backed or unknown.
+    private static final long UNKNOWN_ARCHIVE_SIZE = -1L;
+
     /// The file system provider that owns this file system.
     private final TarArkivoFileSystemProvider provider;
 
     /// The source archive path.
-    private final Path archivePath;
+    private final @Nullable Path archivePath;
 
     /// The archive URI used by generated entry URIs.
-    private final URI archiveUri;
+    private final @Nullable URI archiveUri;
+
+    /// The owned channel source, or `null` for path-backed file systems.
+    private final @Nullable ArkivoSeekableChannelSource channelSource;
+
+    /// The captured channel-source size, or `UNKNOWN_ARCHIVE_SIZE` for path-backed file systems.
+    private final long sourceArchiveSize;
 
     /// The action invoked when this file system closes.
     private final Runnable closeAction;
@@ -145,11 +155,16 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Whether the provider close action has completed.
     private boolean closeActionCompleted;
 
+    /// Whether the owned channel source has been closed.
+    private boolean channelSourceClosed;
+
     /// Creates a TAR file system instance.
     private TarArkivoFileSystemImpl(
             TarArkivoFileSystemProvider provider,
-            Path archivePath,
-            URI archiveUri,
+            @Nullable Path archivePath,
+            @Nullable URI archiveUri,
+            @Nullable ArkivoSeekableChannelSource channelSource,
+            long sourceArchiveSize,
             ArkivoFileSystemThreadSafety threadSafety,
             Map<String, Node> nodes,
             @Nullable ArkivoEditStorage editStorage,
@@ -161,9 +176,20 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             Runnable closeAction
     ) {
         super(threadSafety);
+        if ((archivePath == null) != (archiveUri == null)) {
+            throw new IllegalArgumentException("archivePath and archiveUri must both be present or absent");
+        }
+        if ((archivePath == null) == (channelSource == null)) {
+            throw new IllegalArgumentException("exactly one archive source must be provided");
+        }
+        if (sourceArchiveSize < UNKNOWN_ARCHIVE_SIZE) {
+            throw new IllegalArgumentException("sourceArchiveSize must be unknown or non-negative");
+        }
         this.provider = Objects.requireNonNull(provider, "provider");
-        this.archivePath = Objects.requireNonNull(archivePath, "archivePath");
-        this.archiveUri = Objects.requireNonNull(archiveUri, "archiveUri");
+        this.archivePath = archivePath;
+        this.archiveUri = archiveUri;
+        this.channelSource = channelSource;
+        this.sourceArchiveSize = sourceArchiveSize;
         this.closeAction = Objects.requireNonNull(closeAction, "closeAction");
         this.nodes = updateMode ? new LinkedHashMap<>(nodes) : Map.copyOf(nodes);
         this.editStorage = editStorage;
@@ -175,6 +201,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         this.rootPath = TarArkivoPath.root(this);
         this.writtenDirectories.add("");
         this.editStorageClosed = editStorage == null;
+        this.channelSourceClosed = channelSource == null;
     }
 
     /// Opens a TAR file system from an archive path.
@@ -221,6 +248,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                         provider,
                         archivePath,
                         archiveUri,
+                        null,
+                        UNKNOWN_ARCHIVE_SIZE,
                         threadSafety,
                         nodes,
                         editStorage,
@@ -248,6 +277,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     provider,
                     archivePath,
                     archiveUri,
+                    null,
+                    UNKNOWN_ARCHIVE_SIZE,
                     threadSafety,
                     rootNodes(),
                     null,
@@ -272,6 +303,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     provider,
                     archivePath,
                     archiveUri,
+                    null,
+                    UNKNOWN_ARCHIVE_SIZE,
                     threadSafety,
                     nodes,
                     editStorage,
@@ -288,6 +321,67 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
     }
 
+    /// Opens a read-only TAR file system from a repeatable seekable channel source.
+    public static TarArkivoFileSystemImpl open(
+            TarArkivoFileSystemProvider provider,
+            ArkivoSeekableChannelSource source,
+            Map<String, ?> environment
+    ) throws IOException {
+        Objects.requireNonNull(provider, "provider");
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(environment, "environment");
+
+        ArkivoFileSystemThreadSafety threadSafety;
+        ArkivoEditStorage editStorage;
+        try {
+            threadSafety = ArkivoFileSystem.THREAD_SAFETY.readOrDefault(
+                    environment,
+                    ArkivoFileSystemThreadSafety.CONCURRENT_READ
+            );
+            Set<OpenOption> openOptions = ArkivoFileSystem.OPEN_OPTIONS.readOrDefault(
+                    environment,
+                    Set.of(StandardOpenOption.READ)
+            );
+            validateArchiveReadOptions(openOptions);
+            editStorage = editStorage(environment);
+        } catch (RuntimeException | Error exception) {
+            closeSourceAfterOpenFailure(source, exception);
+            throw exception;
+        }
+
+        Set<ArkivoStoredContent> ownedContents = identityContentSet();
+        try {
+            long archiveSize;
+            Map<String, Node> nodes;
+            try (SeekableByteChannel channel = source.openChannel()) {
+                archiveSize = channel.size();
+                channel.position(0L);
+                nodes = readNodes(Channels.newInputStream(channel), editStorage, ownedContents);
+            }
+            return new TarArkivoFileSystemImpl(
+                    provider,
+                    null,
+                    null,
+                    source,
+                    archiveSize,
+                    threadSafety,
+                    nodes,
+                    editStorage,
+                    ownedContents,
+                    null,
+                    true,
+                    false,
+                    null,
+                    () -> {
+                    }
+            );
+        } catch (IOException | RuntimeException | Error exception) {
+            closeOpenedStorage(editStorage, ownedContents, exception);
+            closeSourceAfterOpenFailure(source, exception);
+            throw exception;
+        }
+    }
+
     /// Returns the provider that owns this file system.
     @Override
     public TarArkivoFileSystemProvider provider() {
@@ -298,7 +392,11 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     @Override
     public void close() throws IOException {
         try (CloseOperation ignored = beginCloseOperation()) {
-            if (open || !ownedContents.isEmpty() || !editStorageClosed || !closeActionCompleted) {
+            if (open
+                    || !ownedContents.isEmpty()
+                    || !editStorageClosed
+                    || !channelSourceClosed
+                    || !closeActionCompleted) {
                 @Nullable Throwable failure = null;
                 if (open) {
                     @Nullable UpdateEntryByteChannel updateChannel = activeUpdateChannel;
@@ -327,6 +425,14 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     open = false;
                 }
                 failure = closeIndexedStorage(failure);
+                if (!channelSourceClosed) {
+                    try {
+                        Objects.requireNonNull(channelSource, "channelSource").close();
+                        channelSourceClosed = true;
+                    } catch (IOException | RuntimeException | Error exception) {
+                        failure = appendFailure(failure, exception);
+                    }
+                }
                 if (!closeActionCompleted) {
                     try {
                         closeAction.run();
@@ -459,7 +565,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     }
 
     /// Returns the archive URI used by generated entry URIs.
-    URI archiveUri() {
+    @Nullable URI archiveUri() {
         return archiveUri;
     }
 
@@ -2070,7 +2176,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Publishes all surviving update nodes through a complete TAR rewrite.
     private void commitUpdate() throws IOException {
         ArkivoCommitTarget target = Objects.requireNonNull(commitTarget, "commitTarget");
-        ArkivoCommitOutput output = target.openOutput(archivePath);
+        Path sourcePath = Objects.requireNonNull(archivePath, "archivePath");
+        ArkivoCommitOutput output = target.openOutput(sourcePath);
         Throwable failure = null;
         try {
             try (SeekableByteChannel channel = output.openChannel(Set.of(
@@ -2118,6 +2225,15 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         Path absolutePath = archivePath.toAbsolutePath();
         @Nullable Path parent = absolutePath.getParent();
         return parent != null ? parent : absolutePath.getFileSystem().getPath(".").toAbsolutePath();
+    }
+
+    /// Closes a channel source after an open failure and suppresses any cleanup failure.
+    private static void closeSourceAfterOpenFailure(ArkivoSeekableChannelSource source, Throwable failure) {
+        try {
+            source.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            failure.addSuppressed(exception);
+        }
     }
 
     /// Adds a secondary failure as suppressed when a primary failure already exists.
@@ -2628,7 +2744,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         /// Returns the archive file store name.
         @Override
         public String name() {
-            return archivePath.toString();
+            @Nullable Path path = archivePath;
+            return path != null ? path.toString() : "tar";
         }
 
         /// Returns the archive file store type.
@@ -2646,7 +2763,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         /// Returns total space when known.
         @Override
         public long getTotalSpace() throws IOException {
-            return Files.size(archivePath);
+            @Nullable Path path = archivePath;
+            return path != null ? Files.size(path) : sourceArchiveSize;
         }
 
         /// Returns unallocated space.
