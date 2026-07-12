@@ -28,7 +28,9 @@ public final class StandardCodecOptions {
     public static final CodecOption<WorkerCount> WORKER_COUNT =
             CodecOption.of("compression.workerCount", WorkerCount.class);
 
-    /// Limits the total number of uncompressed bytes produced by decompression.
+    /// Limits decompression to a non-negative number of caller-visible bytes.
+    ///
+    /// A decoder throws DecompressionLimitException after confirming that additional output exists.
     public static final CodecOption<Long> MAX_OUTPUT_SIZE =
             CodecOption.of("decompression.maxOutputSize", Long.class);
 

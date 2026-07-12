@@ -11,6 +11,7 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.glavo.arkivo.codec.deflate.internal.DeflateChannelDecoder;
 import org.glavo.arkivo.codec.deflate.internal.DeflateChannelEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -39,7 +40,7 @@ public final class DeflateCodec implements CompressionCodec {
                     CompressionFeature.DIRECT_BYTE_BUFFER
             ),
             Set.of(StandardCodecOptions.COMPRESSION_LEVEL),
-            Set.of()
+            Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE)
     );
 
     /// Creates a raw deflate codec.
@@ -95,7 +96,11 @@ public final class DeflateCodec implements CompressionCodec {
         ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "deflate decompression");
-        return new DeflateChannelDecoder(source, ownership);
+        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
+        return StandardCodecOptionSupport.limitOutput(
+                new DeflateChannelDecoder(source, ownership),
+                maximumOutputSize
+        );
     }
 
     /// Resolves and validates the compression level for one encoder context.

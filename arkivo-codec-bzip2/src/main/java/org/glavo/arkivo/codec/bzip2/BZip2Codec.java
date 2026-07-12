@@ -11,6 +11,7 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2InputStream;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2OutputStream;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -37,7 +38,7 @@ public final class BZip2Codec implements CompressionCodec {
             CompressionFeature.ONE_SHOT_COMPRESSION,
             CompressionFeature.ONE_SHOT_DECOMPRESSION,
             CompressionFeature.DIRECT_BYTE_BUFFER
-    ), Set.of(StandardCodecOptions.COMPRESSION_LEVEL), Set.of());
+    ), Set.of(StandardCodecOptions.COMPRESSION_LEVEL), Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE));
 
     /// Creates a BZip2 codec.
     public BZip2Codec() {
@@ -131,6 +132,10 @@ public final class BZip2Codec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "BZip2 decompression");
-        return new BZip2InputStream(source, ownership);
+        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
+        return StandardCodecOptionSupport.limitOutput(
+                new BZip2InputStream(source, ownership),
+                maximumOutputSize
+        );
     }
 }

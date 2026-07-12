@@ -13,6 +13,7 @@ import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
+import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.EncodeDirective;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -29,6 +30,7 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies the first-class channel contract across all installed codec providers.
@@ -175,6 +177,73 @@ final class CodecChannelContractTest {
                 }
             }
             assertArrayEquals(input, decoded.array(), codec.name());
+        }
+    }
+
+    /// Verifies every decompressor enforces exact, exceeded, and invalid output limits consistently.
+    @Test
+    void enforcesMaximumOutputSizeAcrossAllCodecs() throws IOException {
+        byte[] input = ("bounded decompression output " + "0123456789abcdef".repeat(256))
+                .getBytes(StandardCharsets.UTF_8);
+        CodecOptions exactOptions = CodecOptions.builder()
+                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, (long) input.length)
+                .build();
+        long smallerLimit = input.length - 1L;
+        CodecOptions smallerOptions = CodecOptions.builder()
+                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, smallerLimit)
+                .build();
+        CodecOptions invalidOptions = CodecOptions.builder()
+                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, -1L)
+                .build();
+
+        for (CompressionCodec codec : CompressionCodecs.installed()) {
+            if (!codec.canCompress() || !codec.canDecompress()) {
+                continue;
+            }
+            assertTrue(
+                    codec.capabilities().decompressionOptions().contains(StandardCodecOptions.MAX_OUTPUT_SIZE),
+                    codec.name()
+            );
+
+            ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
+            codec.compress(
+                    Channels.newChannel(new ByteArrayInputStream(input)),
+                    Channels.newChannel(compressedBytes)
+            );
+
+            ByteArrayOutputStream exactBytes = new ByteArrayOutputStream();
+            CodecTransferResult exactResult = codec.decompress(
+                    Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
+                    Channels.newChannel(exactBytes),
+                    exactOptions
+            );
+            assertEquals(input.length, exactResult.outputBytes(), codec.name());
+            assertArrayEquals(input, exactBytes.toByteArray(), codec.name());
+
+            ReadableByteChannel limitedSource = Channels.newChannel(
+                    new ByteArrayInputStream(compressedBytes.toByteArray())
+            );
+            ByteArrayOutputStream limitedBytes = new ByteArrayOutputStream();
+            WritableByteChannel limitedTarget = Channels.newChannel(limitedBytes);
+            DecompressionLimitException exception = assertThrows(
+                    DecompressionLimitException.class,
+                    () -> codec.decompress(limitedSource, limitedTarget, smallerOptions),
+                    codec.name()
+            );
+            assertEquals(smallerLimit, exception.maximumOutputSize(), codec.name());
+            assertEquals(smallerLimit, limitedBytes.size(), codec.name());
+            assertTrue(limitedSource.isOpen(), codec.name());
+            assertTrue(limitedTarget.isOpen(), codec.name());
+
+            ReadableByteChannel invalidSource = Channels.newChannel(
+                    new ByteArrayInputStream(compressedBytes.toByteArray())
+            );
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> codec.openDecoder(invalidSource, invalidOptions, ChannelOwnership.RETAIN),
+                    codec.name()
+            );
+            assertTrue(invalidSource.isOpen(), codec.name());
         }
     }
 }

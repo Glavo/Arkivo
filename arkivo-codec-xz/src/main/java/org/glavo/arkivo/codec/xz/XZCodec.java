@@ -13,6 +13,7 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.glavo.arkivo.codec.xz.internal.XzChannelDecoder;
 import org.glavo.arkivo.codec.xz.internal.XzChannelEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -47,7 +48,7 @@ public final class XZCodec implements CompressionCodec {
             CompressionFeature.ONE_SHOT_DECOMPRESSION,
             CompressionFeature.DIRECT_BYTE_BUFFER,
             CompressionFeature.CONCATENATED_FRAMES
-    ), Set.of(DICTIONARY_SIZE, StandardCodecOptions.CHECKSUM, CHECK_TYPE), Set.of());
+    ), Set.of(DICTIONARY_SIZE, StandardCodecOptions.CHECKSUM, CHECK_TYPE), Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE));
 
     /// The XZ stream header magic bytes.
     private static final byte @Unmodifiable [] HEADER_MAGIC = {
@@ -127,6 +128,10 @@ public final class XZCodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "XZ decompression");
-        return new XzChannelDecoder(source, ownership);
+        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
+        return StandardCodecOptionSupport.limitOutput(
+                new XzChannelDecoder(source, ownership),
+                maximumOutputSize
+        );
     }
 }

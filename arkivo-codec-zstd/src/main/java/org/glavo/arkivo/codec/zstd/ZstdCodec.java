@@ -16,6 +16,7 @@ import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.glavo.arkivo.codec.WorkerCount;
 import org.glavo.arkivo.codec.zstd.internal.ZstdChannelDecoder;
 import org.glavo.arkivo.codec.zstd.internal.ZstdChannelEncoder;
@@ -58,7 +59,7 @@ public final class ZstdCodec implements CompressionCodec {
                     StandardCodecOptions.WORKER_COUNT,
                     StandardCodecOptions.PLEDGED_SOURCE_SIZE
             ),
-            Set.of(StandardCodecOptions.DICTIONARY)
+            Set.of(StandardCodecOptions.DICTIONARY, StandardCodecOptions.MAX_OUTPUT_SIZE)
     );
 
     /// The requested Zstandard compression level.
@@ -193,7 +194,11 @@ public final class ZstdCodec implements CompressionCodec {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "Zstandard decompression");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(ownership, "ownership");
-        return new ZstdChannelDecoder(source, ownership, createDecoderContext(options));
+        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
+        return StandardCodecOptionSupport.limitOutput(
+                new ZstdChannelDecoder(source, ownership, createDecoderContext(options)),
+                maximumOutputSize
+        );
     }
 
     /// Creates and configures one native compression context.

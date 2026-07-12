@@ -11,6 +11,7 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.glavo.arkivo.codec.zlib.internal.ZlibChannelDecoder;
 import org.glavo.arkivo.codec.zlib.internal.ZlibChannelEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -40,7 +41,7 @@ public final class ZlibCodec implements CompressionCodec {
                     CompressionFeature.DIRECT_BYTE_BUFFER
             ),
             Set.of(StandardCodecOptions.COMPRESSION_LEVEL),
-            Set.of()
+            Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE)
     );
 
     /// Creates a zlib codec.
@@ -117,7 +118,11 @@ public final class ZlibCodec implements CompressionCodec {
         ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "zlib decompression");
-        return new ZlibChannelDecoder(source, ownership);
+        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
+        return StandardCodecOptionSupport.limitOutput(
+                new ZlibChannelDecoder(source, ownership),
+                maximumOutputSize
+        );
     }
 
     /// Resolves and validates the compression level for one encoder context.

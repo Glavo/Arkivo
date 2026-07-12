@@ -11,6 +11,7 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.glavo.arkivo.codec.gzip.internal.GzipChannelDecoder;
 import org.glavo.arkivo.codec.gzip.internal.GzipChannelEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -43,7 +44,7 @@ public final class GzipCodec implements CompressionCodec {
                     CompressionFeature.CONCATENATED_FRAMES
             ),
             Set.of(StandardCodecOptions.COMPRESSION_LEVEL),
-            Set.of()
+            Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE)
     );
 
     /// Creates a gzip codec.
@@ -120,7 +121,11 @@ public final class GzipCodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "gzip decompression");
-        return new GzipChannelDecoder(source, ownership);
+        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
+        return StandardCodecOptionSupport.limitOutput(
+                new GzipChannelDecoder(source, ownership),
+                maximumOutputSize
+        );
     }
 
     /// Resolves and validates the compression level for one encoder context.

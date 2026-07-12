@@ -11,6 +11,8 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
+import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.glavo.arkivo.codec.lzma.internal.LzmaChannelDecoder;
 import org.glavo.arkivo.codec.lzma.internal.LzmaChannelEncoder;
 import org.glavo.arkivo.codec.lzma.internal.LzmaProperties;
@@ -43,7 +45,7 @@ public final class LZMACodec implements CompressionCodec {
             CompressionFeature.ONE_SHOT_COMPRESSION,
             CompressionFeature.ONE_SHOT_DECOMPRESSION,
             CompressionFeature.DIRECT_BYTE_BUFFER
-    ), Set.of(DICTIONARY_SIZE), Set.of());
+    ), Set.of(DICTIONARY_SIZE), Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE));
 
     /// Creates an LZMA codec.
     public LZMACodec() {
@@ -85,6 +87,10 @@ public final class LZMACodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "LZMA decompression");
-        return new LzmaChannelDecoder(source, ownership);
+        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
+        return StandardCodecOptionSupport.limitOutput(
+                new LzmaChannelDecoder(source, ownership),
+                maximumOutputSize
+        );
     }
 }
