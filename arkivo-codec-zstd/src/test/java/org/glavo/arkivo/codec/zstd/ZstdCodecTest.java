@@ -3,13 +3,13 @@
 
 package org.glavo.arkivo.codec.zstd;
 
+import com.github.luben.zstd.Zstd;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.ChecksumMode;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionFeature;
-import org.glavo.arkivo.codec.CompressionLevel;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.WorkerCount;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -189,6 +189,8 @@ public final class ZstdCodecTest {
         returned[1] = 9;
         assertArrayEquals(new byte[]{1, 2, 3}, codec.dictionary());
         assertNull(codec.withoutDictionary().dictionary());
+        assertEquals(-1L, new ZstdCodec().withCompressionLevel(-1L).compressionLevel());
+        assertEquals(ZstdCodec.DEFAULT_COMPRESSION_LEVEL, new ZstdCodec().compressionLevel());
     }
 
     /// Verifies per-operation channel options and advertised capabilities.
@@ -198,7 +200,7 @@ public final class ZstdCodecTest {
         byte[] dictionaryBytes = "shared zstd dictionary".getBytes(StandardCharsets.UTF_8);
         CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes);
         CodecOptions compressionOptions = CodecOptions.builder()
-                .set(StandardCodecOptions.COMPRESSION_LEVEL, new CompressionLevel(-2))
+                .set(StandardCodecOptions.COMPRESSION_LEVEL, -2L)
                 .set(StandardCodecOptions.DICTIONARY, dictionary)
                 .set(StandardCodecOptions.CHECKSUM, ChecksumMode.ENABLED)
                 .set(StandardCodecOptions.WORKER_COUNT, new WorkerCount(0))
@@ -228,7 +230,9 @@ public final class ZstdCodecTest {
         assertEquals(true, codec.capabilities().compressionOptions().contains(
                 StandardCodecOptions.COMPRESSION_LEVEL
         ));
-        assertEquals(true, Objects.requireNonNull(codec.capabilities().compressionLevels()).contains(-2));
+        assertEquals(true, codec.minimumCompressionLevel() <= -2);
+        assertEquals(true, codec.maximumCompressionLevel() >= -2);
+        assertEquals(Zstd.defaultCompressionLevel(), codec.defaultCompressionLevel());
     }
 
     /// Compresses and decompresses the given bytes.

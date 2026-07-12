@@ -4,7 +4,6 @@
 package org.glavo.arkivo.codec;
 
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.util.Objects;
@@ -15,13 +14,11 @@ import java.util.Set;
 /// @param features supported operation features
 /// @param compressionOptions options accepted when opening an encoder
 /// @param decompressionOptions options accepted when opening a decoder
-/// @param compressionLevels supported compression-level range, or `null` when levels are unsupported
 @NotNullByDefault
 public record CompressionCapabilities(
         @Unmodifiable Set<CompressionFeature> features,
         @Unmodifiable Set<CodecOption<?>> compressionOptions,
-        @Unmodifiable Set<CodecOption<?>> decompressionOptions,
-        @Nullable CompressionLevelRange compressionLevels
+        @Unmodifiable Set<CodecOption<?>> decompressionOptions
 ) {
     /// Creates an immutable capability description.
     public CompressionCapabilities {
@@ -32,7 +29,7 @@ public record CompressionCapabilities(
 
     /// Creates capabilities without operation-specific options.
     public static CompressionCapabilities of(@Unmodifiable Set<CompressionFeature> features) {
-        return new CompressionCapabilities(features, Set.of(), Set.of(), null);
+        return new CompressionCapabilities(features, Set.of(), Set.of());
     }
 
     /// Returns whether the codec supports the given feature.

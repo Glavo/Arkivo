@@ -9,8 +9,8 @@ import org.jetbrains.annotations.NotNullByDefault;
 @NotNullByDefault
 public final class StandardCodecOptions {
     /// Selects an algorithm-specific compression level.
-    public static final CodecOption<CompressionLevel> COMPRESSION_LEVEL =
-            CodecOption.of("compression.level", CompressionLevel.class);
+    public static final CodecOption<Long> COMPRESSION_LEVEL =
+            CodecOption.of("compression.level", Long.class);
 
     /// Supplies raw dictionary content for compression or decompression.
     public static final CodecOption<CompressionDictionary> DICTIONARY =

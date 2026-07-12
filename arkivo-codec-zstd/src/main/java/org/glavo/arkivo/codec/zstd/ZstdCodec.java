@@ -15,8 +15,6 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
-import org.glavo.arkivo.codec.CompressionLevel;
-import org.glavo.arkivo.codec.CompressionLevelRange;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.WorkerCount;
 import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
@@ -39,7 +37,7 @@ public final class ZstdCodec implements CompressionCodec {
     public static final String NAME = "zstd";
 
     /// The sentinel compression level that asks Zstandard to use its default level.
-    public static final int DEFAULT_COMPRESSION_LEVEL = -1;
+    public static final long DEFAULT_COMPRESSION_LEVEL = Long.MIN_VALUE;
 
     /// The supported Zstandard operations and options.
     private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(
@@ -58,16 +56,11 @@ public final class ZstdCodec implements CompressionCodec {
                     StandardCodecOptions.CHECKSUM,
                     StandardCodecOptions.WORKER_COUNT
             ),
-            Set.of(StandardCodecOptions.DICTIONARY),
-            new CompressionLevelRange(
-                    Zstd.minCompressionLevel(),
-                    Zstd.maxCompressionLevel(),
-                    Zstd.defaultCompressionLevel()
-            )
+            Set.of(StandardCodecOptions.DICTIONARY)
     );
 
     /// The requested Zstandard compression level.
-    private final int compressionLevel;
+    private final long compressionLevel;
 
     /// The dictionary bytes, or `null` when no dictionary is configured.
     private final byte @Nullable @Unmodifiable [] dictionary;
@@ -78,10 +71,10 @@ public final class ZstdCodec implements CompressionCodec {
     }
 
     /// Creates a configured Zstandard codec.
-    private ZstdCodec(int compressionLevel, byte @Nullable [] dictionary) {
+    private ZstdCodec(long compressionLevel, byte @Nullable [] dictionary) {
         if (compressionLevel != DEFAULT_COMPRESSION_LEVEL
-                && (compressionLevel < Zstd.minCompressionLevel()
-                || compressionLevel > Zstd.maxCompressionLevel())) {
+                && (compressionLevel < minimumCompressionLevel()
+                || compressionLevel > maximumCompressionLevel())) {
             throw new IllegalArgumentException("compressionLevel is out of range");
         }
         this.compressionLevel = compressionLevel;
@@ -107,7 +100,7 @@ public final class ZstdCodec implements CompressionCodec {
     }
 
     /// Returns the requested compression level.
-    public int compressionLevel() {
+    public long compressionLevel() {
         return compressionLevel;
     }
 
@@ -117,8 +110,26 @@ public final class ZstdCodec implements CompressionCodec {
     }
 
     /// Returns a codec configured with the given compression level.
-    public ZstdCodec withCompressionLevel(int compressionLevel) {
+    public ZstdCodec withCompressionLevel(long compressionLevel) {
         return new ZstdCodec(compressionLevel, dictionary);
+    }
+
+    /// Returns the minimum Zstandard compression level.
+    @Override
+    public long minimumCompressionLevel() {
+        return Zstd.minCompressionLevel();
+    }
+
+    /// Returns the maximum Zstandard compression level.
+    @Override
+    public long maximumCompressionLevel() {
+        return Zstd.maxCompressionLevel();
+    }
+
+    /// Returns the default Zstandard compression level.
+    @Override
+    public long defaultCompressionLevel() {
+        return Zstd.defaultCompressionLevel();
     }
 
     /// Returns a codec configured with the given dictionary bytes.
@@ -192,14 +203,14 @@ public final class ZstdCodec implements CompressionCodec {
             ZstdOutputStream output,
             CodecOptions options
     ) throws IOException {
-        @Nullable CompressionLevel requestedLevel = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
+        @Nullable Long requestedLevel = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
         if (requestedLevel != null) {
-            if (!Objects.requireNonNull(CAPABILITIES.compressionLevels()).contains(requestedLevel.value())) {
+            if (requestedLevel < minimumCompressionLevel() || requestedLevel > maximumCompressionLevel()) {
                 throw new IllegalArgumentException("Zstandard compression level is out of range");
             }
-            output.setLevel(requestedLevel.value());
+            output.setLevel(Math.toIntExact(requestedLevel));
         } else if (compressionLevel != DEFAULT_COMPRESSION_LEVEL) {
-            output.setLevel(compressionLevel);
+            output.setLevel(Math.toIntExact(compressionLevel));
         }
 
         @Nullable CompressionDictionary requestedDictionary = options.get(StandardCodecOptions.DICTIONARY);
@@ -249,7 +260,7 @@ public final class ZstdCodec implements CompressionCodec {
             throw new IOException("Zstandard ByteBuffer compression target buffer must be writable");
         }
         int level = compressionLevel != DEFAULT_COMPRESSION_LEVEL
-                ? compressionLevel
+                ? Math.toIntExact(compressionLevel)
                 : Zstd.defaultCompressionLevel();
         long result;
         if (dictionary != null) {

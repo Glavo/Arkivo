@@ -83,6 +83,27 @@ public interface CompressionCodec {
         return UNKNOWN_SIZE;
     }
 
+    /// Returns the minimum supported compression level.
+    ///
+    /// The default implementation rejects codecs that do not advertise compression-level configuration.
+    default long minimumCompressionLevel() {
+        throw new UnsupportedOperationException("Compression levels are not supported by " + name());
+    }
+
+    /// Returns the maximum supported compression level.
+    ///
+    /// The default implementation rejects codecs that do not advertise compression-level configuration.
+    default long maximumCompressionLevel() {
+        throw new UnsupportedOperationException("Compression levels are not supported by " + name());
+    }
+
+    /// Returns the codec's default compression level.
+    ///
+    /// The default implementation rejects codecs that do not advertise compression-level configuration.
+    default long defaultCompressionLevel() {
+        throw new UnsupportedOperationException("Compression levels are not supported by " + name());
+    }
+
     /// Opens a configured encoder context over the target channel.
     CompressionEncoder openEncoder(
             WritableByteChannel target,

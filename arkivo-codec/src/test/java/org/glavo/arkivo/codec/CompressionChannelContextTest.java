@@ -118,7 +118,7 @@ final class CompressionChannelContextTest {
     @Test
     void rejectsUnsupportedOptions() {
         CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.COMPRESSION_LEVEL, new CompressionLevel(3))
+                .set(StandardCodecOptions.COMPRESSION_LEVEL, 3L)
                 .build();
         WritableByteChannel target = Channels.newChannel(new ByteArrayOutputStream());
 
@@ -126,6 +126,9 @@ final class CompressionChannelContextTest {
                 UnsupportedOperationException.class,
                 () -> CODEC.openEncoder(target, options, ChannelOwnership.RETAIN)
         );
+        assertThrows(UnsupportedOperationException.class, CODEC::minimumCompressionLevel);
+        assertThrows(UnsupportedOperationException.class, CODEC::maximumCompressionLevel);
+        assertThrows(UnsupportedOperationException.class, CODEC::defaultCompressionLevel);
         assertTrue(target.isOpen());
     }
 
