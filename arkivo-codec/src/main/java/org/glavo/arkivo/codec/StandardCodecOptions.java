@@ -17,8 +17,8 @@ public final class StandardCodecOptions {
             CodecOption.of("compression.dictionary", CompressionDictionary.class);
 
     /// Declares the exact uncompressed source size before compression starts.
-    public static final CodecOption<ByteSize> PLEDGED_SOURCE_SIZE =
-            CodecOption.of("compression.pledgedSourceSize", ByteSize.class);
+    public static final CodecOption<Long> PLEDGED_SOURCE_SIZE =
+            CodecOption.of("compression.pledgedSourceSize", Long.class);
 
     /// Selects checksum generation or verification behavior.
     public static final CodecOption<ChecksumMode> CHECKSUM =
@@ -29,12 +29,12 @@ public final class StandardCodecOptions {
             CodecOption.of("compression.workerCount", WorkerCount.class);
 
     /// Limits the total number of uncompressed bytes produced by decompression.
-    public static final CodecOption<ByteSize> MAX_OUTPUT_SIZE =
-            CodecOption.of("decompression.maxOutputSize", ByteSize.class);
+    public static final CodecOption<Long> MAX_OUTPUT_SIZE =
+            CodecOption.of("decompression.maxOutputSize", Long.class);
 
     /// Limits the decoding window size in bytes.
-    public static final CodecOption<ByteSize> MAX_WINDOW_SIZE =
-            CodecOption.of("decompression.maxWindowSize", ByteSize.class);
+    public static final CodecOption<Long> MAX_WINDOW_SIZE =
+            CodecOption.of("decompression.maxWindowSize", Long.class);
 
     /// Creates no instances.
     private StandardCodecOptions() {
