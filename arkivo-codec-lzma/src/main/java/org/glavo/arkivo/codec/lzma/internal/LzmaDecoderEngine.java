@@ -7,7 +7,6 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.util.Objects;
 
 /// Decodes raw LZMA symbols while retaining dictionary and probability state across optional LZMA2 chunks.
@@ -169,7 +168,7 @@ final class LzmaDecoderEngine {
     }
 
     /// Starts one range-coded raw stream or LZMA2 chunk.
-    void startChunk(InputStream input, long expectedSize, boolean allowEndMarker) throws IOException {
+    void startChunk(LzmaChannelInput input, long expectedSize, boolean allowEndMarker) throws IOException {
         Objects.requireNonNull(input, "input");
         if (expectedSize < -1L) {
             throw new IllegalArgumentException("LZMA expected size must be nonnegative or -1");

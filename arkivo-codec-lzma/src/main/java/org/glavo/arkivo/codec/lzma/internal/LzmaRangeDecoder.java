@@ -7,7 +7,6 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.EOFException;
 import java.io.IOException;
-import java.io.InputStream;
 import java.util.Objects;
 
 /// Decodes the adaptive binary range coding used by LZMA probability models.
@@ -20,7 +19,7 @@ final class LzmaRangeDecoder {
     private static final int PROBABILITY_MOVE_BITS = 5;
 
     /// The compressed range-coded source.
-    private final InputStream input;
+    private final LzmaChannelInput input;
 
     /// The current unsigned 32-bit range.
     private long range = 0xffff_ffffL;
@@ -29,7 +28,7 @@ final class LzmaRangeDecoder {
     private long code;
 
     /// Creates and initializes a range decoder from its five-byte prefix.
-    LzmaRangeDecoder(InputStream input) throws IOException {
+    LzmaRangeDecoder(LzmaChannelInput input) throws IOException {
         this.input = Objects.requireNonNull(input, "input");
         if (readRequiredByte() != 0) {
             throw new IOException("Invalid LZMA range coder prefix");

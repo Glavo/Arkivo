@@ -8,6 +8,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.util.Objects;
 
@@ -16,6 +17,9 @@ import java.util.Objects;
 public final class LzmaInputStream extends InputStream {
     /// The compressed source owned by this stream.
     private final InputStream input;
+
+    /// The channel-backed compressed-byte source.
+    private final LzmaChannelInput channelInput;
 
     /// The raw LZMA decoder engine.
     private final LzmaDecoderEngine decoder;
@@ -39,6 +43,7 @@ public final class LzmaInputStream extends InputStream {
             int dictionarySize
     ) throws IOException {
         this.input = Objects.requireNonNull(input, "input");
+        channelInput = new LzmaChannelInput(Channels.newChannel(input), 1);
         LzmaProperties properties;
         try {
             properties = LzmaProperties.decode(propertyByte, dictionarySize);
@@ -48,7 +53,7 @@ public final class LzmaInputStream extends InputStream {
         decoder = new LzmaDecoderEngine(properties.dictionarySize());
         decoder.configure(properties.propertyByte());
         decoder.resetDictionary();
-        decoder.startChunk(input, expectedSize, expectedSize < 0L);
+        decoder.startChunk(channelInput, expectedSize, expectedSize < 0L);
     }
 
     /// Creates an LZMA-alone decoder from its parsed header.

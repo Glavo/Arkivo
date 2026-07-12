@@ -6,7 +6,6 @@ package org.glavo.arkivo.codec.lzma.internal;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
-import java.io.OutputStream;
 import java.util.Objects;
 
 /// Encodes raw LZMA symbols with a bounded streaming lookahead and hash-based match finder.
@@ -140,7 +139,7 @@ final class LzmaEncoderEngine {
     private boolean finished;
 
     /// Creates a configured streaming LZMA encoder.
-    LzmaEncoderEngine(OutputStream output, LzmaProperties properties) {
+    LzmaEncoderEngine(LzmaChannelOutput output, LzmaProperties properties) {
         this.properties = Objects.requireNonNull(properties, "properties");
         rangeEncoder = new LzmaRangeEncoder(Objects.requireNonNull(output, "output"));
         dictionary = new byte[properties.allocatedDictionarySize()];

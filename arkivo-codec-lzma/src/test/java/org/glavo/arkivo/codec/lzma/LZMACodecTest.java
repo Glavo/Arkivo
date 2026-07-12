@@ -3,9 +3,15 @@
 
 package org.glavo.arkivo.codec.lzma;
 
+import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.lzma.internal.LzmaInputStream;
+import org.glavo.arkivo.codec.lzma.internal.Lzma2ChannelDecoder;
+import org.glavo.arkivo.codec.lzma.internal.Lzma2ChannelEncoder;
 import org.glavo.arkivo.codec.lzma.internal.Lzma2InputStream;
 import org.glavo.arkivo.codec.lzma.internal.Lzma2OutputStream;
 import org.glavo.arkivo.codec.lzma.internal.LzmaOutputStream;
@@ -22,6 +28,10 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Objects;
@@ -29,7 +39,9 @@ import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Tests LZMA codec behavior.
 @NotNullByDefault
@@ -254,6 +266,109 @@ public final class LZMACodecTest {
         );
         output.write(content);
         assertThrows(IOException.class, output::close);
+    }
+
+    /// Verifies direct LZMA-alone channels, dictionary configuration, counters, and ownership.
+    @Test
+    public void directChannelsExposeDictionaryCountersAndOwnership() throws IOException {
+        byte[] content = patternedContent(180_123);
+        ByteBuffer source = ByteBuffer.allocateDirect(content.length).put(content).flip();
+        ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
+        WritableByteChannel compressedTarget = Channels.newChannel(compressedBytes);
+        CodecOptions options = CodecOptions.builder()
+                .set(LZMACodec.DICTIONARY_SIZE, 1L << 16)
+                .build();
+
+        CompressionEncoder encoder = new LZMACodec().openEncoder(
+                compressedTarget,
+                options,
+                ChannelOwnership.RETAIN
+        );
+        assertEquals(content.length, encoder.write(source));
+        encoder.finish();
+        assertEquals(content.length, encoder.inputBytes());
+        assertEquals(compressedBytes.size(), encoder.outputBytes());
+        assertFalse(encoder.isOpen());
+        assertTrue(compressedTarget.isOpen());
+        byte[] encoded = compressedBytes.toByteArray();
+        assertEquals(1 << 16, littleEndianInt(encoded, 1));
+
+        ReadableByteChannel compressedSource = Channels.newChannel(new ByteArrayInputStream(encoded));
+        CompressionDecoder decoder = new LZMACodec().openDecoder(
+                compressedSource,
+                CodecOptions.EMPTY,
+                ChannelOwnership.CLOSE
+        );
+        ByteBuffer decoded = ByteBuffer.allocateDirect(content.length);
+        while (decoded.hasRemaining()) {
+            assertTrue(decoder.read(decoded) > 0);
+        }
+        assertEquals(-1, decoder.read(ByteBuffer.allocateDirect(1)));
+        assertEquals(content.length, decoder.outputBytes());
+        decoder.close();
+        assertFalse(compressedSource.isOpen());
+        decoded.flip();
+        byte[] actual = new byte[decoded.remaining()];
+        decoded.get(actual);
+        assertArrayEquals(content, actual);
+
+        CodecOptions invalid = CodecOptions.builder()
+                .set(LZMACodec.DICTIONARY_SIZE, (long) LzmaProperties.MAXIMUM_DICTIONARY_SIZE + 1L)
+                .build();
+        assertThrows(IllegalArgumentException.class, () -> new LZMACodec().openEncoder(
+                Channels.newChannel(new ByteArrayOutputStream()),
+                invalid,
+                ChannelOwnership.RETAIN
+        ));
+    }
+
+    /// Verifies reusable direct LZMA2 channel contexts and their progress counters.
+    @Test
+    public void directLzma2ContextsRoundTripLargeInput() throws IOException {
+        byte[] content = mixedLzma2Content();
+        ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
+        WritableByteChannel target = Channels.newChannel(compressedBytes);
+        Lzma2ChannelEncoder encoder = new Lzma2ChannelEncoder(
+                target,
+                ChannelOwnership.RETAIN,
+                1 << 20
+        );
+        ByteBuffer source = ByteBuffer.allocateDirect(content.length).put(content).flip();
+        assertEquals(content.length, encoder.write(source));
+        encoder.finish();
+        assertEquals(content.length, encoder.inputBytes());
+        assertEquals(compressedBytes.size(), encoder.outputBytes());
+        assertTrue(target.isOpen());
+
+        ReadableByteChannel compressedSource = Channels.newChannel(
+                new ByteArrayInputStream(compressedBytes.toByteArray())
+        );
+        Lzma2ChannelDecoder decoder = new Lzma2ChannelDecoder(
+                compressedSource,
+                ChannelOwnership.RETAIN,
+                1 << 20
+        );
+        ByteBuffer decoded = ByteBuffer.allocateDirect(content.length);
+        while (decoded.hasRemaining()) {
+            assertTrue(decoder.read(decoded) > 0);
+        }
+        assertEquals(-1, decoder.read(ByteBuffer.allocateDirect(1)));
+        assertEquals(content.length, decoder.outputBytes());
+        assertTrue(decoder.inputBytes() > 0L);
+        decoder.close();
+        assertTrue(compressedSource.isOpen());
+        decoded.flip();
+        byte[] actual = new byte[decoded.remaining()];
+        decoded.get(actual);
+        assertArrayEquals(content, actual);
+    }
+
+    /// Reads one little-endian 32-bit value from a byte array.
+    private static int littleEndianInt(byte[] bytes, int offset) {
+        return Byte.toUnsignedInt(bytes[offset])
+                | Byte.toUnsignedInt(bytes[offset + 1]) << 8
+                | Byte.toUnsignedInt(bytes[offset + 2]) << 16
+                | Byte.toUnsignedInt(bytes[offset + 3]) << 24;
     }
 
     /// Compresses and decompresses the given bytes.

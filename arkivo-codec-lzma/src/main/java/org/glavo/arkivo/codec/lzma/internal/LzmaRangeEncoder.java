@@ -6,14 +6,13 @@ package org.glavo.arkivo.codec.lzma.internal;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
-import java.io.OutputStream;
 import java.util.Objects;
 
 /// Encodes adaptive binary probabilities with the range coder used by LZMA.
 @NotNullByDefault
 final class LzmaRangeEncoder {
     /// The destination for range-coded bytes.
-    private final OutputStream output;
+    private final LzmaChannelOutput output;
 
     /// The low end of the active coding interval.
     private long low;
@@ -28,7 +27,7 @@ final class LzmaRangeEncoder {
     private int cacheSize = 1;
 
     /// Creates a range encoder targeting the supplied stream.
-    LzmaRangeEncoder(OutputStream output) {
+    LzmaRangeEncoder(LzmaChannelOutput output) {
         this.output = Objects.requireNonNull(output, "output");
     }
 

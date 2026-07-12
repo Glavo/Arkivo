@@ -7,6 +7,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.util.Objects;
 
@@ -18,6 +19,9 @@ public final class LzmaOutputStream extends OutputStream {
 
     /// The compressed destination owned by this stream.
     private final OutputStream output;
+
+    /// The channel-backed compressed-byte target.
+    private final LzmaChannelOutput channelOutput;
 
     /// The raw LZMA encoder engine.
     private final LzmaEncoderEngine encoder;
@@ -77,12 +81,13 @@ public final class LzmaOutputStream extends OutputStream {
             endMarker = true;
         }
         this.output = Objects.requireNonNull(output, "output");
+        channelOutput = new LzmaChannelOutput(Channels.newChannel(output));
         this.expectedSize = expectedSize;
         this.endMarker = endMarker;
         if (standalone) {
-            writeHeader(output, properties, expectedSize);
+            writeHeader(channelOutput, properties, expectedSize);
         }
-        encoder = new LzmaEncoderEngine(output, properties);
+        encoder = new LzmaEncoderEngine(channelOutput, properties);
     }
 
     /// Writes one uncompressed byte.
@@ -107,6 +112,7 @@ public final class LzmaOutputStream extends OutputStream {
     @Override
     public void flush() throws IOException {
         ensureOpen();
+        channelOutput.flush();
         output.flush();
     }
 
@@ -123,6 +129,7 @@ public final class LzmaOutputStream extends OutputStream {
                 throw new IOException("LZMA input does not match the declared uncompressed size");
             }
             encoder.finish(endMarker);
+            channelOutput.flush();
         } catch (IOException exception) {
             failure = exception;
         }
@@ -142,7 +149,7 @@ public final class LzmaOutputStream extends OutputStream {
 
     /// Writes the 13-byte LZMA-alone header.
     private static void writeHeader(
-            OutputStream output,
+            LzmaChannelOutput output,
             LzmaProperties properties,
             long expectedSize
     ) throws IOException {
@@ -152,7 +159,7 @@ public final class LzmaOutputStream extends OutputStream {
     }
 
     /// Writes a fixed-width little-endian integer.
-    private static void writeLittleEndian(OutputStream output, long value, int length) throws IOException {
+    private static void writeLittleEndian(LzmaChannelOutput output, long value, int length) throws IOException {
         for (int index = 0; index < length; index++) {
             output.write((int) (value >>> (index * 8)) & 0xff);
         }

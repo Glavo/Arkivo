@@ -3,33 +3,39 @@
 
 package org.glavo.arkivo.codec.lzma.internal;
 
+import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CompressionDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.ByteArrayInputStream;
 import java.io.EOFException;
 import java.io.IOException;
-import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.ReadableByteChannel;
 import java.util.Objects;
 
-/// Decodes a raw LZMA2 stream with strict chunk reset and size validation.
+/// Decodes a raw LZMA2 stream directly from a channel.
 @NotNullByDefault
-public final class Lzma2InputStream extends InputStream {
+public final class Lzma2ChannelDecoder implements CompressionDecoder {
     /// The largest compressed LZMA2 chunk size.
     private static final int MAXIMUM_COMPRESSED_SIZE = 1 << 16;
 
-    /// The compressed source owned by this stream.
-    private final InputStream input;
+    /// The compressed-data source.
+    private final ReadableByteChannel source;
+
+    /// Whether this context owns the source.
+    private final ChannelOwnership ownership;
+
+    /// The buffered compressed-byte source.
+    private final LzmaChannelInput input;
 
     /// The shared LZMA state and dictionary across chunks.
     private final LzmaDecoderEngine decoder;
 
-    /// The reusable single-byte buffer.
-    private final byte[] singleByte = new byte[1];
-
-    /// The active compressed chunk buffer, or `null` for uncompressed chunks.
+    /// The active compressed chunk source.
     private @Nullable LzmaChannelInput compressedChunk;
 
     /// Remaining output bytes in the active chunk.
@@ -47,40 +53,42 @@ public final class Lzma2InputStream extends InputStream {
     /// Whether the stream end control byte has been read.
     private boolean endReached;
 
-    /// Whether this stream has closed.
-    private boolean closed;
+    /// The number of uncompressed bytes returned to callers.
+    private long outputBytes;
+
+    /// Whether this decoder remains open.
+    private boolean open = true;
 
     /// Creates a raw LZMA2 decoder with the externally declared dictionary size.
-    public Lzma2InputStream(InputStream input, int dictionarySize) {
-        this.input = Objects.requireNonNull(input, "input");
+    public Lzma2ChannelDecoder(
+            ReadableByteChannel source,
+            ChannelOwnership ownership,
+            int dictionarySize
+    ) {
+        this.source = Objects.requireNonNull(source, "source");
+        this.ownership = Objects.requireNonNull(ownership, "ownership");
+        input = new LzmaChannelInput(source, 8192);
         decoder = new LzmaDecoderEngine(dictionarySize);
     }
 
-    /// Reads one uncompressed byte.
+    /// Reads uncompressed bytes across LZMA2 chunk boundaries.
     @Override
-    public int read() throws IOException {
-        int count = read(singleByte, 0, 1);
-        return count < 0 ? -1 : Byte.toUnsignedInt(singleByte[0]);
-    }
-
-    /// Reads uncompressed bytes across any number of LZMA2 chunks.
-    @Override
-    public int read(byte[] bytes, int offset, int length) throws IOException {
-        Objects.checkFromIndexSize(offset, length, bytes.length);
+    public int read(ByteBuffer target) throws IOException {
+        Objects.requireNonNull(target, "target");
         ensureOpen();
-        if (length == 0) {
+        if (!target.hasRemaining()) {
             return 0;
         }
-        int total = 0;
-        while (total < length) {
+        int start = target.position();
+        while (target.hasRemaining()) {
             if (chunkRemaining == 0) {
                 finishCompressedChunk();
                 if (endReached) {
-                    return total == 0 ? -1 : total;
+                    break;
                 }
                 readChunkHeader();
                 if (endReached) {
-                    return total == 0 ? -1 : total;
+                    break;
                 }
             }
 
@@ -89,37 +97,49 @@ public final class Lzma2InputStream extends InputStream {
                 if (value < 0) {
                     throw new IOException("LZMA2 chunk ended before its declared output size");
                 }
-                bytes[offset + total] = (byte) value;
-                total++;
+                target.put((byte) value);
                 chunkRemaining--;
             } else {
-                int copied = Math.min(length - total, chunkRemaining);
+                int copied = Math.min(target.remaining(), chunkRemaining);
                 for (int index = 0; index < copied; index++) {
-                    int value = readRequiredByte();
-                    bytes[offset + total + index] = (byte) decoder.putUncompressedByte(value);
+                    target.put((byte) decoder.putUncompressedByte(readRequiredByte()));
                 }
-                total += copied;
                 chunkRemaining -= copied;
             }
         }
-        return total;
+        int count = target.position() - start;
+        outputBytes += count;
+        return count == 0 && endReached ? -1 : count;
     }
 
-    /// Returns bytes remaining in the active chunk without parsing another chunk header.
+    /// Returns the number of logical compressed bytes consumed.
     @Override
-    public int available() throws IOException {
-        ensureOpen();
-        return compressed ? chunkRemaining : Math.min(chunkRemaining, input.available());
+    public long inputBytes() {
+        return input.byteCount();
     }
 
-    /// Closes the compressed source.
+    /// Returns the number of uncompressed bytes returned to callers.
+    @Override
+    public long outputBytes() {
+        return outputBytes;
+    }
+
+    /// Returns whether this decoder remains open.
+    @Override
+    public boolean isOpen() {
+        return open;
+    }
+
+    /// Closes this decoder and an owned source channel.
     @Override
     public void close() throws IOException {
-        if (closed) {
+        if (!open) {
             return;
         }
-        closed = true;
-        input.close();
+        open = false;
+        if (ownership == ChannelOwnership.CLOSE) {
+            source.close();
+        }
     }
 
     /// Parses and applies the next LZMA2 chunk header.
@@ -129,7 +149,6 @@ public final class Lzma2InputStream extends InputStream {
             endReached = true;
             return;
         }
-
         if (control >= 0xe0 || control == 0x01) {
             decoder.resetDictionary();
             propertiesRequired = true;
@@ -145,7 +164,6 @@ public final class Lzma2InputStream extends InputStream {
             if (compressedSize > MAXIMUM_COMPRESSED_SIZE) {
                 throw new IOException("Invalid LZMA2 compressed chunk size");
             }
-
             if (control >= 0xc0) {
                 int property = readRequiredByte();
                 try {
@@ -177,15 +195,16 @@ public final class Lzma2InputStream extends InputStream {
         chunkRemaining = readUnsignedShort() + 1;
     }
 
-    /// Verifies the canonical range-coder termination of a completed compressed chunk.
+    /// Verifies the canonical range-coder termination of a compressed chunk.
     private void finishCompressedChunk() throws IOException {
-        if (!compressed || compressedChunk == null) {
+        LzmaChannelInput chunk = compressedChunk;
+        if (!compressed || chunk == null) {
             return;
         }
         if (decoder.readByte() >= 0 || !decoder.chunkEnded()) {
             throw new IOException("LZMA2 chunk exceeds its declared output size");
         }
-        if (!decoder.rangeFinished() || compressedChunk.available() != 0) {
+        if (!decoder.rangeFinished() || chunk.available() != 0) {
             throw new IOException("LZMA2 chunk has a non-canonical range-coder ending");
         }
         compressed = false;
@@ -206,12 +225,7 @@ public final class Lzma2InputStream extends InputStream {
             if (count < 0) {
                 throw new EOFException("Truncated LZMA2 compressed chunk");
             }
-            if (count == 0) {
-                int value = readRequiredByte();
-                bytes[offset++] = (byte) value;
-            } else {
-                offset += count;
-            }
+            offset += count;
         }
         return bytes;
     }
@@ -225,9 +239,9 @@ public final class Lzma2InputStream extends InputStream {
         return value;
     }
 
-    /// Requires this stream to remain open.
-    private void ensureOpen() throws IOException {
-        if (closed) {
+    /// Requires this decoder to remain open.
+    private void ensureOpen() throws ClosedChannelException {
+        if (!open) {
             throw new ClosedChannelException();
         }
     }
