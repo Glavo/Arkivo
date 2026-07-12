@@ -45,7 +45,7 @@ public final class LZMACodec implements CompressionCodec {
             CompressionFeature.ONE_SHOT_COMPRESSION,
             CompressionFeature.ONE_SHOT_DECOMPRESSION,
             CompressionFeature.DIRECT_BYTE_BUFFER
-    ), Set.of(DICTIONARY_SIZE), Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE));
+    ), Set.of(DICTIONARY_SIZE), Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE, StandardCodecOptions.MAX_WINDOW_SIZE));
 
     /// Creates an LZMA codec.
     public LZMACodec() {
@@ -87,9 +87,10 @@ public final class LZMACodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "LZMA decompression");
+        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
         long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
         return StandardCodecOptionSupport.limitOutput(
-                new LzmaChannelDecoder(source, ownership),
+                new LzmaChannelDecoder(source, ownership, maximumWindowSize),
                 maximumOutputSize
         );
     }

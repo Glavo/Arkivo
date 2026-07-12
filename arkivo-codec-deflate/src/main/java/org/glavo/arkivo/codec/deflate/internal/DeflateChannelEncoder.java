@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -58,9 +59,33 @@ public final class DeflateChannelEncoder implements CompressionEncoder {
             ChannelOwnership ownership,
             int compressionLevel
     ) {
+        this(target, ownership, compressionLevel, null);
+    }
+
+    /// Creates a raw deflate encoder with an optional preset dictionary.
+    ///
+    /// @param target compressed-data target
+    /// @param ownership whether this context closes the target
+    /// @param compressionLevel JDK deflate compression level
+    /// @param dictionary preset dictionary, or null
+    public DeflateChannelEncoder(
+            WritableByteChannel target,
+            ChannelOwnership ownership,
+            int compressionLevel,
+            @Nullable CompressionDictionary dictionary
+    ) {
         this.target = Objects.requireNonNull(target, "target");
         this.ownership = Objects.requireNonNull(ownership, "ownership");
-        this.deflater = new Deflater(compressionLevel, true);
+        Deflater created = new Deflater(compressionLevel, true);
+        try {
+            if (dictionary != null) {
+                created.setDictionary(dictionary.bytes());
+            }
+        } catch (RuntimeException | Error exception) {
+            created.end();
+            throw exception;
+        }
+        this.deflater = created;
     }
 
     /// Consumes uncompressed bytes and writes any immediately available compressed output.

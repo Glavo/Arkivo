@@ -7,6 +7,7 @@ import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionLimitException;
+import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -44,6 +45,39 @@ final class StandardCodecOptionSupportTest {
         );
     }
 
+    /// Verifies maximum window resolution and required-window enforcement.
+    @Test
+    void validatesMaximumWindowSize() throws IOException {
+        assertEquals(
+                CompressionCodec.UNKNOWN_SIZE,
+                StandardCodecOptionSupport.maximumWindowSize(CodecOptions.EMPTY)
+        );
+        assertEquals(
+                0L,
+                StandardCodecOptionSupport.maximumWindowSize(CodecOptions.builder()
+                        .set(StandardCodecOptions.MAX_WINDOW_SIZE, 0L)
+                        .build())
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> StandardCodecOptionSupport.maximumWindowSize(CodecOptions.builder()
+                        .set(StandardCodecOptions.MAX_WINDOW_SIZE, -1L)
+                        .build())
+        );
+
+        StandardCodecOptionSupport.requireWindowSize(4_096L, 4_096L);
+        StandardCodecOptionSupport.requireWindowSize(CompressionCodec.UNKNOWN_SIZE, Long.MAX_VALUE);
+        DecompressionWindowLimitException exception = assertThrows(
+                DecompressionWindowLimitException.class,
+                () -> StandardCodecOptionSupport.requireWindowSize(4_095L, 4_096L)
+        );
+        assertEquals(4_095L, exception.maximumWindowSize());
+        assertEquals(4_096L, exception.requiredWindowSize());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> StandardCodecOptionSupport.requireWindowSize(0L, -1L)
+        );
+    }
     /// Verifies an absent limit preserves the original decoder identity.
     @Test
     void preservesDecoderWithoutLimit() {

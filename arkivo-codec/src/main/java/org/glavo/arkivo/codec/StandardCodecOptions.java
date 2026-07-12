@@ -34,7 +34,9 @@ public final class StandardCodecOptions {
     public static final CodecOption<Long> MAX_OUTPUT_SIZE =
             CodecOption.of("decompression.maxOutputSize", Long.class);
 
-    /// Limits the decoding window size in bytes.
+    /// Limits a format's declared or fixed decoding window to a non-negative number of bytes.
+    ///
+    /// Only codecs with an LZ-style history window advertise this option.
     public static final CodecOption<Long> MAX_WINDOW_SIZE =
             CodecOption.of("decompression.maxWindowSize", Long.class);
 

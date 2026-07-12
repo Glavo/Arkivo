@@ -59,7 +59,7 @@ public final class ZstdCodec implements CompressionCodec {
                     StandardCodecOptions.WORKER_COUNT,
                     StandardCodecOptions.PLEDGED_SOURCE_SIZE
             ),
-            Set.of(StandardCodecOptions.DICTIONARY, StandardCodecOptions.MAX_OUTPUT_SIZE)
+            Set.of(StandardCodecOptions.DICTIONARY, StandardCodecOptions.MAX_OUTPUT_SIZE, StandardCodecOptions.MAX_WINDOW_SIZE)
     );
 
     /// The requested Zstandard compression level.
@@ -194,9 +194,10 @@ public final class ZstdCodec implements CompressionCodec {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "Zstandard decompression");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(ownership, "ownership");
+        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
         long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
         return StandardCodecOptionSupport.limitOutput(
-                new ZstdChannelDecoder(source, ownership, createDecoderContext(options)),
+                new ZstdChannelDecoder(source, ownership, createDecoderContext(options), maximumWindowSize),
                 maximumOutputSize
         );
     }

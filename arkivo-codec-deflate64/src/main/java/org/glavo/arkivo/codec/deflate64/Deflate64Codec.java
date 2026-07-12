@@ -38,7 +38,10 @@ public final class Deflate64Codec implements CompressionCodec {
             CompressionFeature.ONE_SHOT_DECOMPRESSION,
             CompressionFeature.FLUSH,
             CompressionFeature.DIRECT_BYTE_BUFFER
-    ), Set.of(StandardCodecOptions.COMPRESSION_LEVEL), Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE));
+    ), Set.of(StandardCodecOptions.COMPRESSION_LEVEL), Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE, StandardCodecOptions.MAX_WINDOW_SIZE));
+
+    /// The fixed Deflate64 history-window size.
+    private static final long DECODING_WINDOW_SIZE = 1L << 16;
 
     /// Creates a Deflate64 codec.
     public Deflate64Codec() {
@@ -110,6 +113,8 @@ public final class Deflate64Codec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "Deflate64 decompression");
+        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
+        StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, DECODING_WINDOW_SIZE);
         long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
         return StandardCodecOptionSupport.limitOutput(
                 new Deflate64InputStream(source, ownership),

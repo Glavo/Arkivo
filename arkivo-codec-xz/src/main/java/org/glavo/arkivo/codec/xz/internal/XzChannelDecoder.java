@@ -4,7 +4,10 @@
 package org.glavo.arkivo.codec.xz.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressionWindowLimitException;
+import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.delta.DeltaTransform;
 import org.glavo.arkivo.codec.lzma.internal.Lzma2ChannelDecoder;
@@ -40,6 +43,9 @@ public final class XzChannelDecoder implements CompressionDecoder {
     /// Whether stream padding may be followed by another XZ stream.
     private final boolean concatenated;
 
+    /// The maximum permitted LZMA2 dictionary size, or the unknown sentinel.
+    private final long maximumWindowSize;
+
     /// Completed block records awaiting validation against the Index.
     private final List<BlockRecord> records = new ArrayList<>();
 
@@ -60,7 +66,7 @@ public final class XzChannelDecoder implements CompressionDecoder {
 
     /// Creates a decoder accepting concatenated XZ streams and stream padding.
     public XzChannelDecoder(ReadableByteChannel source, ChannelOwnership ownership) throws IOException {
-        this(source, ownership, true);
+        this(source, ownership, true, CompressionCodec.UNKNOWN_SIZE);
     }
 
     /// Creates a decoder with explicit concatenated-stream behavior.
@@ -69,9 +75,20 @@ public final class XzChannelDecoder implements CompressionDecoder {
             ChannelOwnership ownership,
             boolean concatenated
     ) throws IOException {
+        this(source, ownership, concatenated, CompressionCodec.UNKNOWN_SIZE);
+    }
+
+    /// Creates a decoder with explicit concatenation and maximum-window behavior.
+    public XzChannelDecoder(
+            ReadableByteChannel source,
+            ChannelOwnership ownership,
+            boolean concatenated,
+            long maximumWindowSize
+    ) throws IOException {
         this.source = Objects.requireNonNull(source, "source");
         this.ownership = Objects.requireNonNull(ownership, "ownership");
         this.concatenated = concatenated;
+        this.maximumWindowSize = maximumWindowSize;
         input = new XzChannelInput(source);
         startStream();
     }
@@ -363,6 +380,8 @@ public final class XzChannelDecoder implements CompressionDecoder {
                     chain = openFilter(chain, filters[index]);
                 }
                 filterChain = chain;
+            } catch (DecompressionWindowLimitException exception) {
+                throw exception;
             } catch (IOException exception) {
                 throw new IOException("Invalid XZ Block Header", exception);
             }
@@ -462,10 +481,12 @@ public final class XzChannelDecoder implements CompressionDecoder {
                 if (properties.length != 1) {
                     throw new IOException("XZ LZMA2 filter requires one property byte");
                 }
+                int dictionarySize = XzSupport.lzma2DictionarySize(Byte.toUnsignedInt(properties[0]));
+                StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, dictionarySize);
                 return new Lzma2ChannelDecoder(
                         downstream,
                         ChannelOwnership.RETAIN,
-                        XzSupport.lzma2DictionarySize(Byte.toUnsignedInt(properties[0])),
+                        dictionarySize,
                         1
                 );
             }

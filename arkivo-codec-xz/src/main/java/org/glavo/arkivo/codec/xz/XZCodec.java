@@ -48,7 +48,7 @@ public final class XZCodec implements CompressionCodec {
             CompressionFeature.ONE_SHOT_DECOMPRESSION,
             CompressionFeature.DIRECT_BYTE_BUFFER,
             CompressionFeature.CONCATENATED_FRAMES
-    ), Set.of(DICTIONARY_SIZE, StandardCodecOptions.CHECKSUM, CHECK_TYPE), Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE));
+    ), Set.of(DICTIONARY_SIZE, StandardCodecOptions.CHECKSUM, CHECK_TYPE), Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE, StandardCodecOptions.MAX_WINDOW_SIZE));
 
     /// The XZ stream header magic bytes.
     private static final byte @Unmodifiable [] HEADER_MAGIC = {
@@ -128,9 +128,10 @@ public final class XZCodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "XZ decompression");
+        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
         long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
         return StandardCodecOptionSupport.limitOutput(
-                new XzChannelDecoder(source, ownership),
+                new XzChannelDecoder(source, ownership, true, maximumWindowSize),
                 maximumOutputSize
         );
     }

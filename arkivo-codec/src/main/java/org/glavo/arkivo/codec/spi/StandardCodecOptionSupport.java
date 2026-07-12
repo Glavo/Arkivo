@@ -7,6 +7,7 @@ import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionLimitException;
+import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -35,6 +36,32 @@ public final class StandardCodecOptionSupport {
             throw new IllegalArgumentException("Maximum decompressed output size must not be negative");
         }
         return requested;
+    }
+
+    /// Resolves and validates the configured maximum decoding window size.
+    ///
+    /// Returns `CompressionCodec.UNKNOWN_SIZE` when no limit is configured.
+    public static long maximumWindowSize(CodecOptions options) {
+        Objects.requireNonNull(options, "options");
+        @Nullable Long requested = options.get(StandardCodecOptions.MAX_WINDOW_SIZE);
+        if (requested == null) {
+            return CompressionCodec.UNKNOWN_SIZE;
+        }
+        if (requested < 0L) {
+            throw new IllegalArgumentException("Maximum decoding window size must not be negative");
+        }
+        return requested;
+    }
+
+    /// Rejects a required decoding window that exceeds a validated configured maximum.
+    public static void requireWindowSize(long maximumWindowSize, long requiredWindowSize)
+            throws DecompressionWindowLimitException {
+        if (requiredWindowSize < 0L) {
+            throw new IllegalArgumentException("requiredWindowSize must not be negative");
+        }
+        if (maximumWindowSize >= 0L && requiredWindowSize > maximumWindowSize) {
+            throw new DecompressionWindowLimitException(maximumWindowSize, requiredWindowSize);
+        }
     }
 
     /// Applies a validated maximum output size to a decoder.

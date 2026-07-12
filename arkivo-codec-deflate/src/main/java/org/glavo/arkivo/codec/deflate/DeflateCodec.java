@@ -24,6 +24,9 @@ import java.util.Set;
 import java.util.zip.Deflater;
 
 /// Provides raw deflate compression and decompression channels.
+///
+/// Raw Deflate carries no dictionary identifier or content checksum, so callers must supply the exact dictionary used
+/// by the encoder; a different dictionary is not always detectable.
 @NotNullByDefault
 public final class DeflateCodec implements CompressionCodec {
     /// The stable raw deflate codec name.
@@ -37,11 +40,19 @@ public final class DeflateCodec implements CompressionCodec {
                     CompressionFeature.ONE_SHOT_COMPRESSION,
                     CompressionFeature.ONE_SHOT_DECOMPRESSION,
                     CompressionFeature.FLUSH,
+                    CompressionFeature.DICTIONARY,
                     CompressionFeature.DIRECT_BYTE_BUFFER
             ),
-            Set.of(StandardCodecOptions.COMPRESSION_LEVEL),
-            Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE)
+            Set.of(StandardCodecOptions.COMPRESSION_LEVEL, StandardCodecOptions.DICTIONARY),
+            Set.of(
+                    StandardCodecOptions.DICTIONARY,
+                    StandardCodecOptions.MAX_OUTPUT_SIZE,
+                    StandardCodecOptions.MAX_WINDOW_SIZE
+            )
     );
+
+    /// The fixed Deflate history-window size.
+    private static final long DECODING_WINDOW_SIZE = 1L << 15;
 
     /// Creates a raw deflate codec.
     public DeflateCodec() {
@@ -81,11 +92,16 @@ public final class DeflateCodec implements CompressionCodec {
     @Override
     public CompressionEncoder openEncoder(
             WritableByteChannel target,
-        CodecOptions options,
-        ChannelOwnership ownership
+            CodecOptions options,
+            ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.compressionOptions(), "deflate compression");
-        return new DeflateChannelEncoder(target, ownership, compressionLevel(options));
+        return new DeflateChannelEncoder(
+                target,
+                ownership,
+                compressionLevel(options),
+                options.get(StandardCodecOptions.DICTIONARY)
+        );
     }
 
     /// Opens a configured raw deflate decoder over the source channel.
@@ -93,12 +109,14 @@ public final class DeflateCodec implements CompressionCodec {
     public CompressionDecoder openDecoder(
             ReadableByteChannel source,
             CodecOptions options,
-        ChannelOwnership ownership
+            ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "deflate decompression");
+        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
+        StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, DECODING_WINDOW_SIZE);
         long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
         return StandardCodecOptionSupport.limitOutput(
-                new DeflateChannelDecoder(source, ownership),
+                new DeflateChannelDecoder(source, ownership, options.get(StandardCodecOptions.DICTIONARY)),
                 maximumOutputSize
         );
     }

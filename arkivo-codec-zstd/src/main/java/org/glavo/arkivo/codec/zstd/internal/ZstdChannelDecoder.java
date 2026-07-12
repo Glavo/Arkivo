@@ -6,7 +6,9 @@ package org.glavo.arkivo.codec.zstd.internal;
 import com.github.luben.zstd.ZstdDecompressCtx;
 import com.github.luben.zstd.ZstdDirectBufferDecompressingStreamNoFinalizer;
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.EOFException;
@@ -39,6 +41,12 @@ public final class ZstdChannelDecoder implements CompressionDecoder {
             ZstdDirectBufferDecompressingStreamNoFinalizer.recommendedTargetBufferSize()
     );
 
+    /// The maximum permitted frame window size, or the unknown sentinel.
+    private final long maximumWindowSize;
+
+    /// Whether the leading frame window has been validated.
+    private boolean windowValidated;
+
     /// The number of compressed bytes read from the source.
     private long inputBytes;
 
@@ -61,9 +69,21 @@ public final class ZstdChannelDecoder implements CompressionDecoder {
             ChannelOwnership ownership,
             ZstdDecompressCtx context
     ) {
+        this(source, ownership, context, CompressionCodec.UNKNOWN_SIZE);
+    }
+
+    /// Creates a decoder with an optional maximum frame window size.
+    public ZstdChannelDecoder(
+            ReadableByteChannel source,
+            ChannelOwnership ownership,
+            ZstdDecompressCtx context,
+            long maximumWindowSize
+    ) {
         this.source = Objects.requireNonNull(source, "source");
         this.ownership = Objects.requireNonNull(ownership, "ownership");
         this.context = Objects.requireNonNull(context, "context");
+        this.maximumWindowSize = maximumWindowSize;
+        windowValidated = maximumWindowSize < 0L;
         inputBuffer.limit(0);
         outputBuffer.limit(0);
     }
@@ -149,16 +169,36 @@ public final class ZstdChannelDecoder implements CompressionDecoder {
     /// Reads another compressed chunk into the owned direct input buffer.
     private boolean readCompressedInput() throws IOException {
         inputBuffer.clear();
-        int read = source.read(inputBuffer);
-        if (read < 0) {
-            return false;
+        while (true) {
+            int read = source.read(inputBuffer);
+            if (read < 0) {
+                inputBuffer.flip();
+                if (!inputBuffer.hasRemaining()) {
+                    return false;
+                }
+                windowValidated = true;
+                return true;
+            }
+            if (read == 0) {
+                throw new IOException("Zstandard source channel made no progress");
+            }
+            inputBytes += read;
+            inputBuffer.flip();
+            if (windowValidated) {
+                return true;
+            }
+
+            long requiredWindowSize = ZstdFrameHeader.requiredWindowSize(inputBuffer);
+            if (requiredWindowSize != ZstdFrameHeader.NEED_MORE_INPUT) {
+                StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, requiredWindowSize);
+                windowValidated = true;
+                return true;
+            }
+            inputBuffer.compact();
+            if (!inputBuffer.hasRemaining()) {
+                throw new IOException("Zstandard frame header exceeds the input buffer");
+            }
         }
-        if (read == 0) {
-            throw new IOException("Zstandard source channel made no progress");
-        }
-        inputBytes += read;
-        inputBuffer.flip();
-        return true;
     }
 
     /// Requires the decoder to remain open.

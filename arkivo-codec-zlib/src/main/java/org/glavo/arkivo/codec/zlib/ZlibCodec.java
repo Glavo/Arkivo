@@ -38,10 +38,15 @@ public final class ZlibCodec implements CompressionCodec {
                     CompressionFeature.ONE_SHOT_COMPRESSION,
                     CompressionFeature.ONE_SHOT_DECOMPRESSION,
                     CompressionFeature.FLUSH,
+                    CompressionFeature.DICTIONARY,
                     CompressionFeature.DIRECT_BYTE_BUFFER
             ),
-            Set.of(StandardCodecOptions.COMPRESSION_LEVEL),
-            Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE)
+            Set.of(StandardCodecOptions.COMPRESSION_LEVEL, StandardCodecOptions.DICTIONARY),
+            Set.of(
+                    StandardCodecOptions.DICTIONARY,
+                    StandardCodecOptions.MAX_OUTPUT_SIZE,
+                    StandardCodecOptions.MAX_WINDOW_SIZE
+            )
     );
 
     /// Creates a zlib codec.
@@ -104,10 +109,15 @@ public final class ZlibCodec implements CompressionCodec {
     public CompressionEncoder openEncoder(
             WritableByteChannel target,
             CodecOptions options,
-        ChannelOwnership ownership
+            ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.compressionOptions(), "zlib compression");
-        return new ZlibChannelEncoder(target, ownership, compressionLevel(options));
+        return new ZlibChannelEncoder(
+                target,
+                ownership,
+                compressionLevel(options),
+                options.get(StandardCodecOptions.DICTIONARY)
+        );
     }
 
     /// Opens a configured zlib decoder over the source channel.
@@ -115,12 +125,18 @@ public final class ZlibCodec implements CompressionCodec {
     public CompressionDecoder openDecoder(
             ReadableByteChannel source,
             CodecOptions options,
-        ChannelOwnership ownership
+            ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "zlib decompression");
+        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
         long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
         return StandardCodecOptionSupport.limitOutput(
-                new ZlibChannelDecoder(source, ownership),
+                new ZlibChannelDecoder(
+                        source,
+                        ownership,
+                        maximumWindowSize,
+                        options.get(StandardCodecOptions.DICTIONARY)
+                ),
                 maximumOutputSize
         );
     }

@@ -4,7 +4,9 @@
 package org.glavo.arkivo.codec.lzma.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.EOFException;
@@ -37,6 +39,15 @@ public final class LzmaChannelDecoder implements CompressionDecoder {
 
     /// Creates an LZMA-alone decoder and consumes its header.
     public LzmaChannelDecoder(ReadableByteChannel source, ChannelOwnership ownership) throws IOException {
+        this(source, ownership, CompressionCodec.UNKNOWN_SIZE);
+    }
+
+    /// Creates an LZMA-alone decoder with an optional maximum dictionary size.
+    public LzmaChannelDecoder(
+            ReadableByteChannel source,
+            ChannelOwnership ownership,
+            long maximumWindowSize
+    ) throws IOException {
         this.source = Objects.requireNonNull(source, "source");
         this.ownership = Objects.requireNonNull(ownership, "ownership");
         input = new LzmaChannelInput(source, 8192);
@@ -52,6 +63,7 @@ public final class LzmaChannelDecoder implements CompressionDecoder {
         } catch (IllegalArgumentException exception) {
             throw new IOException("Invalid LZMA properties", exception);
         }
+        StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, properties.dictionarySize());
         decoder = new LzmaDecoderEngine(properties.dictionarySize());
         decoder.configure(properties.propertyByte());
         decoder.resetDictionary();

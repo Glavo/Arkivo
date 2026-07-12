@@ -44,8 +44,11 @@ public final class GzipCodec implements CompressionCodec {
                     CompressionFeature.CONCATENATED_FRAMES
             ),
             Set.of(StandardCodecOptions.COMPRESSION_LEVEL),
-            Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE)
+            Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE, StandardCodecOptions.MAX_WINDOW_SIZE)
     );
+
+    /// The fixed Deflate history-window size used by gzip members.
+    private static final long DECODING_WINDOW_SIZE = 1L << 15;
 
     /// Creates a gzip codec.
     public GzipCodec() {
@@ -121,6 +124,8 @@ public final class GzipCodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "gzip decompression");
+        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
+        StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, DECODING_WINDOW_SIZE);
         long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
         return StandardCodecOptionSupport.limitOutput(
                 new GzipChannelDecoder(source, ownership),

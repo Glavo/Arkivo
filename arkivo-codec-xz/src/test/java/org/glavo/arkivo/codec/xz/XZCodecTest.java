@@ -10,6 +10,7 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.xz.internal.XzInputStream;
 import org.glavo.arkivo.codec.xz.internal.XzOutputStream;
@@ -310,6 +311,41 @@ public final class XZCodecTest {
                 conflicting,
                 ChannelOwnership.RETAIN
         ));
+    }
+
+    /// Verifies that the decoder enforces the LZMA2 dictionary size declared by an XZ block.
+    @Test
+    public void decoderEnforcesDeclaredDictionarySize() throws IOException {
+        long dictionarySize = 1L << 16;
+        byte[] content = patternedContent(240_321);
+        ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
+        XZCodec codec = new XZCodec();
+        codec.compress(
+                Channels.newChannel(new ByteArrayInputStream(content)),
+                Channels.newChannel(compressedBytes),
+                CodecOptions.builder().set(XZCodec.DICTIONARY_SIZE, dictionarySize).build()
+        );
+
+        ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
+        codec.decompress(
+                Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
+                Channels.newChannel(decodedBytes),
+                CodecOptions.builder().set(StandardCodecOptions.MAX_WINDOW_SIZE, dictionarySize).build()
+        );
+        assertArrayEquals(content, decodedBytes.toByteArray());
+
+        DecompressionWindowLimitException exception = assertThrows(
+                DecompressionWindowLimitException.class,
+                () -> codec.decompress(
+                        Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
+                        Channels.newChannel(new ByteArrayOutputStream()),
+                        CodecOptions.builder()
+                                .set(StandardCodecOptions.MAX_WINDOW_SIZE, dictionarySize - 1L)
+                                .build()
+                )
+        );
+        assertEquals(dictionarySize - 1L, exception.maximumWindowSize());
+        assertEquals(dictionarySize, exception.requiredWindowSize());
     }
 
     /// Compresses and decompresses the given bytes.

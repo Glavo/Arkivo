@@ -5,7 +5,10 @@ package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
+
 import java.io.EOFException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -28,7 +31,7 @@ public final class DeflateChannelDecoder implements CompressionDecoder {
     private final ChannelOwnership ownership;
 
     /// The JDK raw inflate context.
-    private final Inflater inflater = new Inflater(true);
+    private final Inflater inflater;
 
     /// The direct compressed-input staging buffer.
     private final ByteBuffer inputBuffer = ByteBuffer.allocateDirect(INPUT_BUFFER_SIZE);
@@ -47,8 +50,31 @@ public final class DeflateChannelDecoder implements CompressionDecoder {
     /// @param source compressed-data source
     /// @param ownership whether this context closes the source
     public DeflateChannelDecoder(ReadableByteChannel source, ChannelOwnership ownership) {
+        this(source, ownership, null);
+    }
+
+    /// Creates a raw deflate decoder with an optional preset dictionary.
+    ///
+    /// @param source compressed-data source
+    /// @param ownership whether this context closes the source
+    /// @param dictionary preset dictionary, or null
+    public DeflateChannelDecoder(
+            ReadableByteChannel source,
+            ChannelOwnership ownership,
+            @Nullable CompressionDictionary dictionary
+    ) {
         this.source = Objects.requireNonNull(source, "source");
         this.ownership = Objects.requireNonNull(ownership, "ownership");
+        Inflater created = new Inflater(true);
+        try {
+            if (dictionary != null) {
+                created.setDictionary(dictionary.bytes());
+            }
+        } catch (RuntimeException | Error exception) {
+            created.end();
+            throw exception;
+        }
+        this.inflater = created;
         inputBuffer.limit(0);
     }
 

@@ -4,8 +4,12 @@
 package org.glavo.arkivo.codec.zlib.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -29,10 +33,19 @@ public final class ZlibChannelDecoder implements CompressionDecoder {
     private final ChannelOwnership ownership;
 
     /// The JDK zlib-wrapped inflate context.
-    private final Inflater inflater = new Inflater(false);
+    private final Inflater inflater;
 
     /// The direct compressed-input staging buffer.
     private final ByteBuffer inputBuffer = ByteBuffer.allocateDirect(INPUT_BUFFER_SIZE);
+
+    /// The maximum permitted zlib window size, or the unknown sentinel.
+    private final long maximumWindowSize;
+
+    /// The configured preset dictionary, or null.
+    private final @Nullable CompressionDictionary dictionary;
+
+    /// Whether the zlib window declaration has been validated.
+    private boolean windowValidated;
 
     /// The number of compressed bytes read from the source.
     private long inputBytes;
@@ -48,8 +61,40 @@ public final class ZlibChannelDecoder implements CompressionDecoder {
     /// @param source compressed-data source
     /// @param ownership whether this context closes the source
     public ZlibChannelDecoder(ReadableByteChannel source, ChannelOwnership ownership) {
+        this(source, ownership, CompressionCodec.UNKNOWN_SIZE, null);
+    }
+
+    /// Creates a zlib decoder with an optional maximum declared window size.
+    ///
+    /// @param source compressed-data source
+    /// @param ownership whether this context closes the source
+    /// @param maximumWindowSize maximum permitted window size, or the unknown sentinel
+    public ZlibChannelDecoder(
+            ReadableByteChannel source,
+            ChannelOwnership ownership,
+            long maximumWindowSize
+    ) {
+        this(source, ownership, maximumWindowSize, null);
+    }
+
+    /// Creates a zlib decoder with optional window and preset-dictionary configuration.
+    ///
+    /// @param source compressed-data source
+    /// @param ownership whether this context closes the source
+    /// @param maximumWindowSize maximum permitted window size, or the unknown sentinel
+    /// @param dictionary preset dictionary, or null
+    public ZlibChannelDecoder(
+            ReadableByteChannel source,
+            ChannelOwnership ownership,
+            long maximumWindowSize,
+            @Nullable CompressionDictionary dictionary
+    ) {
         this.source = Objects.requireNonNull(source, "source");
         this.ownership = Objects.requireNonNull(ownership, "ownership");
+        this.inflater = new Inflater(false);
+        this.maximumWindowSize = maximumWindowSize;
+        this.dictionary = dictionary;
+        windowValidated = maximumWindowSize < 0L;
         inputBuffer.limit(0);
     }
 
@@ -80,7 +125,8 @@ public final class ZlibChannelDecoder implements CompressionDecoder {
                 return -1;
             }
             if (inflater.needsDictionary()) {
-                throw new IOException("Zlib stream requires a preset dictionary");
+                applyDictionary();
+                continue;
             }
             if (!inflater.needsInput()) {
                 throw new IOException("Zlib decoder made no progress");
@@ -126,18 +172,64 @@ public final class ZlibChannelDecoder implements CompressionDecoder {
     /// Reads another compressed chunk and supplies it to the inflater.
     private boolean readCompressedInput() throws IOException {
         inputBuffer.clear();
-        int read = source.read(inputBuffer);
-        if (read < 0) {
-            return false;
-        }
-        if (read == 0) {
-            throw new IOException("Zlib source channel made no progress");
-        }
+        while (true) {
+            int read = source.read(inputBuffer);
+            if (read < 0) {
+                inputBuffer.flip();
+                if (!inputBuffer.hasRemaining()) {
+                    return false;
+                }
+                windowValidated = true;
+                inflater.setInput(inputBuffer);
+                return true;
+            }
+            if (read == 0) {
+                throw new IOException("Zlib source channel made no progress");
+            }
 
-        inputBytes += read;
-        inputBuffer.flip();
-        inflater.setInput(inputBuffer);
-        return true;
+            inputBytes += read;
+            inputBuffer.flip();
+            if (windowValidated || inputBuffer.remaining() >= Short.BYTES) {
+                validateWindowSize();
+                inflater.setInput(inputBuffer);
+                return true;
+            }
+            inputBuffer.compact();
+        }
+    }
+
+    /// Validates the window size encoded by a complete two-byte zlib header.
+    private void validateWindowSize() throws IOException {
+        if (windowValidated) {
+            return;
+        }
+        int position = inputBuffer.position();
+        int compressionMethodAndInfo = Byte.toUnsignedInt(inputBuffer.get(position));
+        int flags = Byte.toUnsignedInt(inputBuffer.get(position + 1));
+        int header = (compressionMethodAndInfo << 8) | flags;
+        int compressionMethod = compressionMethodAndInfo & 0x0f;
+        int windowBits = (compressionMethodAndInfo >>> 4) + 8;
+        if (compressionMethod == 8 && windowBits <= 15 && header % 31 == 0) {
+            StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, 1L << windowBits);
+        }
+        windowValidated = true;
+    }
+
+    /// Applies and validates the configured dictionary requested by the current zlib stream.
+    private void applyDictionary() throws IOException {
+        long requiredIdentifier = Integer.toUnsignedLong(inflater.getAdler());
+        if (dictionary == null) {
+            throw new IOException("Zlib stream requires preset dictionary " + requiredIdentifier);
+        }
+        if (dictionary.id() != CompressionDictionary.UNKNOWN_ID
+                && dictionary.id() != requiredIdentifier) {
+            throw new IOException("Configured zlib dictionary identifier does not match " + requiredIdentifier);
+        }
+        try {
+            inflater.setDictionary(dictionary.bytes());
+        } catch (IllegalArgumentException exception) {
+            throw new IOException("Configured zlib dictionary does not match " + requiredIdentifier, exception);
+        }
     }
 
     /// Requires the decoder to remain open.

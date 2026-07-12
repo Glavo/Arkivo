@@ -3,8 +3,14 @@
 
 package org.glavo.arkivo.codec.zlib;
 
+import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFeature;
+import org.glavo.arkivo.codec.DecompressionWindowLimitException;
+import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -14,11 +20,18 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Objects;
+import java.util.zip.Adler32;
+import java.util.zip.Deflater;
+import java.util.zip.DeflaterOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests zlib codec behavior.
 @NotNullByDefault
@@ -50,6 +63,137 @@ public final class ZlibCodecTest {
         assertEquals(false, codec.matches(ByteBuffer.wrap(new byte[]{0x78, 0x00})));
     }
 
+    /// Verifies that the decoder derives its limit from the zlib header's declared window size.
+    @Test
+    public void decoderEnforcesDeclaredWindowSize() throws IOException {
+        byte[] content = "small zlib window".getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
+        ZlibCodec codec = new ZlibCodec();
+        codec.compress(
+                Channels.newChannel(new ByteArrayInputStream(content)),
+                Channels.newChannel(compressedBytes)
+        );
+        byte[] compressed = withMinimumWindowHeader(compressedBytes.toByteArray());
+
+        ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
+        codec.decompress(
+                Channels.newChannel(new ByteArrayInputStream(compressed)),
+                Channels.newChannel(decodedBytes),
+                CodecOptions.builder().set(StandardCodecOptions.MAX_WINDOW_SIZE, 256L).build()
+        );
+        assertArrayEquals(content, decodedBytes.toByteArray());
+
+        DecompressionWindowLimitException exception = assertThrows(
+                DecompressionWindowLimitException.class,
+                () -> codec.decompress(
+                        Channels.newChannel(new ByteArrayInputStream(compressed)),
+                        Channels.newChannel(new ByteArrayOutputStream()),
+                        CodecOptions.builder().set(StandardCodecOptions.MAX_WINDOW_SIZE, 255L).build()
+                )
+        );
+        assertEquals(255L, exception.maximumWindowSize());
+        assertEquals(256L, exception.requiredWindowSize());
+
+        IOException malformed = assertThrows(
+                IOException.class,
+                () -> codec.decompress(
+                        Channels.newChannel(new ByteArrayInputStream(new byte[]{0x78, 0x00})),
+                        Channels.newChannel(new ByteArrayOutputStream()),
+                        CodecOptions.builder().set(StandardCodecOptions.MAX_WINDOW_SIZE, 0L).build()
+                )
+        );
+        assertFalse(malformed instanceof DecompressionWindowLimitException);
+    }
+
+    /// Verifies zlib preset dictionary negotiation, identifiers, and JDK interoperability.
+    @Test
+    public void presetDictionaryInteroperability() throws IOException {
+        byte[] dictionaryBytes = (
+                "Arkivo zlib preset dictionary common phrase 0123456789;"
+        ).repeat(128).getBytes(StandardCharsets.UTF_8);
+        byte[] input = Arrays.copyOfRange(dictionaryBytes, dictionaryBytes.length - 512, dictionaryBytes.length);
+        Adler32 adler32 = new Adler32();
+        adler32.update(dictionaryBytes);
+        CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes, adler32.getValue());
+        CodecOptions options = CodecOptions.builder()
+                .set(StandardCodecOptions.DICTIONARY, dictionary)
+                .build();
+        ZlibCodec codec = new ZlibCodec();
+
+        assertEquals(true, codec.capabilities().supports(CompressionFeature.DICTIONARY));
+        ByteArrayOutputStream compressedByCodec = new ByteArrayOutputStream();
+        codec.compress(
+                Channels.newChannel(new ByteArrayInputStream(input)),
+                Channels.newChannel(compressedByCodec),
+                options
+        );
+        ByteArrayOutputStream decodedByCodec = new ByteArrayOutputStream();
+        codec.decompress(
+                Channels.newChannel(new ByteArrayInputStream(compressedByCodec.toByteArray())),
+                Channels.newChannel(decodedByCodec),
+                options
+        );
+        assertArrayEquals(input, decodedByCodec.toByteArray());
+
+        ByteArrayOutputStream compressedByJdk = new ByteArrayOutputStream();
+        Deflater deflater = new Deflater(Deflater.BEST_COMPRESSION, false);
+        deflater.setDictionary(dictionaryBytes);
+        try (OutputStream output = new DeflaterOutputStream(compressedByJdk, deflater)) {
+            output.write(input);
+        }
+        ByteArrayOutputStream decodedJdkStream = new ByteArrayOutputStream();
+        codec.decompress(
+                Channels.newChannel(new ByteArrayInputStream(compressedByJdk.toByteArray())),
+                Channels.newChannel(decodedJdkStream),
+                options
+        );
+        assertArrayEquals(input, decodedJdkStream.toByteArray());
+
+        assertThrows(
+                IOException.class,
+                () -> codec.decompress(
+                        Channels.newChannel(new ByteArrayInputStream(compressedByJdk.toByteArray())),
+                        Channels.newChannel(new ByteArrayOutputStream())
+                )
+        );
+        CodecOptions wrongBytes = CodecOptions.builder()
+                .set(
+                        StandardCodecOptions.DICTIONARY,
+                        CompressionDictionary.of(new byte[dictionaryBytes.length])
+                )
+                .build();
+        assertThrows(
+                IOException.class,
+                () -> codec.decompress(
+                        Channels.newChannel(new ByteArrayInputStream(compressedByJdk.toByteArray())),
+                        Channels.newChannel(new ByteArrayOutputStream()),
+                        wrongBytes
+                )
+        );
+
+        CompressionDictionary wrongIdentifier =
+                CompressionDictionary.of(dictionaryBytes, adler32.getValue() + 1L);
+        CodecOptions wrongIdentifierOptions = CodecOptions.builder()
+                .set(StandardCodecOptions.DICTIONARY, wrongIdentifier)
+                .build();
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> codec.openEncoder(
+                        Channels.newChannel(new ByteArrayOutputStream()),
+                        wrongIdentifierOptions,
+                        ChannelOwnership.RETAIN
+                )
+        );
+        assertThrows(
+                IOException.class,
+                () -> codec.decompress(
+                        Channels.newChannel(new ByteArrayInputStream(compressedByJdk.toByteArray())),
+                        Channels.newChannel(new ByteArrayOutputStream()),
+                        wrongIdentifierOptions
+                )
+        );
+    }
+
     /// Compresses and decompresses the given bytes.
     private static byte[] roundTrip(CompressionCodec codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
@@ -60,5 +204,21 @@ public final class ZlibCodecTest {
         try (InputStream inputStream = codec.decompressFrom(new ByteArrayInputStream(compressed.toByteArray()))) {
             return inputStream.readAllBytes();
         }
+    }
+
+    /// Returns a copy whose valid zlib header declares the minimum 256-byte window.
+    private static byte[] withMinimumWindowHeader(byte[] compressed) {
+        byte[] adjusted = compressed.clone();
+        int compressionMethodAndFlags = 0x08;
+        int flags = Byte.toUnsignedInt(adjusted[1]) & 0xe0;
+        for (int check = 0; check < 32; check++) {
+            int candidate = flags | check;
+            if (((compressionMethodAndFlags << 8) | candidate) % 31 == 0) {
+                adjusted[0] = (byte) compressionMethodAndFlags;
+                adjusted[1] = (byte) candidate;
+                return adjusted;
+            }
+        }
+        throw new AssertionError("Unable to construct a valid zlib header");
     }
 }

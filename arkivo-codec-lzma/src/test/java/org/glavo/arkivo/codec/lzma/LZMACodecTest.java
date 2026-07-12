@@ -9,6 +9,8 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.DecompressionWindowLimitException;
+import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.lzma.internal.LzmaInputStream;
 import org.glavo.arkivo.codec.lzma.internal.Lzma2ChannelDecoder;
 import org.glavo.arkivo.codec.lzma.internal.Lzma2ChannelEncoder;
@@ -320,6 +322,41 @@ public final class LZMACodecTest {
                 invalid,
                 ChannelOwnership.RETAIN
         ));
+    }
+
+    /// Verifies that the decoder enforces the dictionary size declared by an LZMA-alone header.
+    @Test
+    public void decoderEnforcesDeclaredDictionarySize() throws IOException {
+        long dictionarySize = 1L << 16;
+        byte[] content = patternedContent(180_123);
+        ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
+        LZMACodec codec = new LZMACodec();
+        codec.compress(
+                Channels.newChannel(new ByteArrayInputStream(content)),
+                Channels.newChannel(compressedBytes),
+                CodecOptions.builder().set(LZMACodec.DICTIONARY_SIZE, dictionarySize).build()
+        );
+
+        ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
+        codec.decompress(
+                Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
+                Channels.newChannel(decodedBytes),
+                CodecOptions.builder().set(StandardCodecOptions.MAX_WINDOW_SIZE, dictionarySize).build()
+        );
+        assertArrayEquals(content, decodedBytes.toByteArray());
+
+        DecompressionWindowLimitException exception = assertThrows(
+                DecompressionWindowLimitException.class,
+                () -> codec.decompress(
+                        Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
+                        Channels.newChannel(new ByteArrayOutputStream()),
+                        CodecOptions.builder()
+                                .set(StandardCodecOptions.MAX_WINDOW_SIZE, dictionarySize - 1L)
+                                .build()
+                )
+        );
+        assertEquals(dictionarySize - 1L, exception.maximumWindowSize());
+        assertEquals(dictionarySize, exception.requiredWindowSize());
     }
 
     /// Verifies reusable direct LZMA2 channel contexts and their progress counters.

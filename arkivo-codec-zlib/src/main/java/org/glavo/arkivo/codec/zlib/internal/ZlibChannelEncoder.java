@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.zlib.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -13,6 +14,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
+import java.util.zip.Adler32;
 import java.util.zip.Deflater;
 
 /// Encodes zlib data directly between ByteBuffers and a target channel.
@@ -58,9 +60,51 @@ public final class ZlibChannelEncoder implements CompressionEncoder {
             ChannelOwnership ownership,
             int compressionLevel
     ) {
+        this(target, ownership, compressionLevel, null);
+    }
+
+    /// Creates a zlib encoder with an optional preset dictionary.
+    ///
+    /// @param target compressed-data target
+    /// @param ownership whether this context closes the target
+    /// @param compressionLevel JDK deflate compression level
+    /// @param dictionary preset dictionary, or null
+    public ZlibChannelEncoder(
+            WritableByteChannel target,
+            ChannelOwnership ownership,
+            int compressionLevel,
+            @Nullable CompressionDictionary dictionary
+    ) {
         this.target = Objects.requireNonNull(target, "target");
         this.ownership = Objects.requireNonNull(ownership, "ownership");
-        this.deflater = new Deflater(compressionLevel, false);
+        byte @Nullable [] dictionaryBytes = null;
+        if (dictionary != null) {
+            dictionaryBytes = dictionary.bytes();
+            validateDictionaryIdentifier(dictionary, dictionaryBytes);
+        }
+
+        Deflater created = new Deflater(compressionLevel, false);
+        try {
+            if (dictionaryBytes != null) {
+                created.setDictionary(dictionaryBytes);
+            }
+        } catch (RuntimeException | Error exception) {
+            created.end();
+            throw exception;
+        }
+        this.deflater = created;
+    }
+
+    /// Validates a known zlib dictionary identifier against its Adler-32 checksum.
+    private static void validateDictionaryIdentifier(CompressionDictionary dictionary, byte[] bytes) {
+        if (dictionary.id() == CompressionDictionary.UNKNOWN_ID) {
+            return;
+        }
+        Adler32 adler32 = new Adler32();
+        adler32.update(bytes);
+        if (dictionary.id() != adler32.getValue()) {
+            throw new IllegalArgumentException("Zlib dictionary identifier does not match its Adler-32 checksum");
+        }
     }
 
     /// Consumes uncompressed bytes and writes any immediately available compressed output.

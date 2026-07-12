@@ -3,8 +3,12 @@
 
 package org.glavo.arkivo.codec.deflate;
 
+import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFeature;
+import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -15,6 +19,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Objects;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
@@ -23,6 +28,7 @@ import java.util.zip.InflaterInputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests raw deflate codec behavior.
 @NotNullByDefault
@@ -95,6 +101,60 @@ public final class DeflateCodecTest {
                 Channels.newChannel(decodedByChannelTransfer)
         );
         assertArrayEquals(input, decodedByChannelTransfer.toByteArray());
+    }
+
+    /// Verifies raw Deflate preset dictionaries across Arkivo and JDK channel implementations.
+    @Test
+    public void presetDictionaryInteroperability() throws IOException {
+        byte[] dictionaryBytes = (
+                "Arkivo raw Deflate preset dictionary common phrase 0123456789;"
+        ).repeat(128).getBytes(StandardCharsets.UTF_8);
+        byte[] input = Arrays.copyOfRange(dictionaryBytes, dictionaryBytes.length - 512, dictionaryBytes.length);
+        CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes);
+        CodecOptions options = CodecOptions.builder()
+                .set(StandardCodecOptions.DICTIONARY, dictionary)
+                .build();
+        DeflateCodec codec = new DeflateCodec();
+
+        assertEquals(true, codec.capabilities().supports(CompressionFeature.DICTIONARY));
+        ByteArrayOutputStream compressedByCodec = new ByteArrayOutputStream();
+        codec.compress(
+                Channels.newChannel(new ByteArrayInputStream(input)),
+                Channels.newChannel(compressedByCodec),
+                options
+        );
+
+        Inflater inflater = new Inflater(true);
+        inflater.setDictionary(dictionaryBytes);
+        try (InputStream decoded = new InflaterInputStream(
+                new ByteArrayInputStream(compressedByCodec.toByteArray()),
+                inflater
+        )) {
+            assertArrayEquals(input, decoded.readAllBytes());
+        }
+
+        ByteArrayOutputStream compressedByJdk = new ByteArrayOutputStream();
+        Deflater deflater = new Deflater(Deflater.BEST_COMPRESSION, true);
+        deflater.setDictionary(dictionaryBytes);
+        try (OutputStream output = new DeflaterOutputStream(compressedByJdk, deflater)) {
+            output.write(input);
+        }
+
+        ByteArrayOutputStream decodedByCodec = new ByteArrayOutputStream();
+        codec.decompress(
+                Channels.newChannel(new ByteArrayInputStream(compressedByJdk.toByteArray())),
+                Channels.newChannel(decodedByCodec),
+                options
+        );
+        assertArrayEquals(input, decodedByCodec.toByteArray());
+
+        assertThrows(
+                IOException.class,
+                () -> codec.decompress(
+                        Channels.newChannel(new ByteArrayInputStream(compressedByJdk.toByteArray())),
+                        Channels.newChannel(new ByteArrayOutputStream())
+                )
+        );
     }
 
     /// Compresses and decompresses the given bytes.
