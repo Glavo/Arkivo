@@ -10,10 +10,11 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
+import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2InputStream;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2OutputStream;
-import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
@@ -30,12 +31,13 @@ public final class BZip2Codec implements CompressionCodec {
     public static final String NAME = "bzip2";
 
     /// The supported BZip2 operations.
-    private static final CompressionCapabilities CAPABILITIES = CompressionCapabilities.of(Set.of(
+    private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(Set.of(
             CompressionFeature.COMPRESSION,
             CompressionFeature.DECOMPRESSION,
             CompressionFeature.ONE_SHOT_COMPRESSION,
-            CompressionFeature.ONE_SHOT_DECOMPRESSION
-    ));
+            CompressionFeature.ONE_SHOT_DECOMPRESSION,
+            CompressionFeature.DIRECT_BYTE_BUFFER
+    ), Set.of(StandardCodecOptions.COMPRESSION_LEVEL), Set.of());
 
     /// Creates a BZip2 codec.
     public BZip2Codec() {
@@ -63,6 +65,24 @@ public final class BZip2Codec implements CompressionCodec {
     @Override
     public CompressionCapabilities capabilities() {
         return CAPABILITIES;
+    }
+
+    /// Returns the minimum BZip2 block-size level.
+    @Override
+    public long minimumCompressionLevel() {
+        return 1L;
+    }
+
+    /// Returns the maximum BZip2 block-size level.
+    @Override
+    public long maximumCompressionLevel() {
+        return 9L;
+    }
+
+    /// Returns the default BZip2 block-size level.
+    @Override
+    public long defaultCompressionLevel() {
+        return BZip2OutputStream.DEFAULT_BLOCK_SIZE;
     }
 
     /// Returns the number of leading bytes used to identify BZip2 streams.
@@ -95,7 +115,12 @@ public final class BZip2Codec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.compressionOptions(), "BZip2 compression");
-        return StreamCodecAdapters.openEncoder(target, ownership, BZip2OutputStream::new);
+        @Nullable Long requested = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
+        long level = requested != null ? requested : defaultCompressionLevel();
+        if (level < minimumCompressionLevel() || level > maximumCompressionLevel()) {
+            throw new IllegalArgumentException("BZip2 compression level must be between 1 and 9: " + level);
+        }
+        return new BZip2OutputStream(target, ownership, (int) level);
     }
 
     /// Opens a configured BZip2 decoder over the source channel.
@@ -106,6 +131,6 @@ public final class BZip2Codec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "BZip2 decompression");
-        return StreamCodecAdapters.openDecoder(source, ownership, BZip2InputStream::new);
+        return new BZip2InputStream(source, ownership);
     }
 }
