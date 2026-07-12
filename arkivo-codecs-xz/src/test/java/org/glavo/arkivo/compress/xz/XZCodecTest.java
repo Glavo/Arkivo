@@ -5,8 +5,8 @@ package org.glavo.arkivo.compress.xz;
 
 import org.glavo.arkivo.compress.CompressionCodec;
 import org.glavo.arkivo.compress.CompressionCodecs;
-import org.glavo.arkivo.internal.XzInputStream;
-import org.glavo.arkivo.internal.XzOutputStream;
+import org.glavo.arkivo.compress.xz.internal.XzInputStream;
+import org.glavo.arkivo.compress.xz.internal.XzOutputStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.tukaani.xz.ARM64Options;

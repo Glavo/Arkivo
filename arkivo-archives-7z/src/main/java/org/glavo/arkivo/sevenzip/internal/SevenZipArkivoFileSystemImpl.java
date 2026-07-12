@@ -801,10 +801,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             SeekableByteChannel channel =
                     new SevenZipFileSliceChannel(openArchiveChannel(), metadata.dataOffset(), metadata.size());
             if (metadata.crc32() != SevenZipEntryMetadata.UNKNOWN_CRC32) {
-                return new SevenZipCrc32ByteChannel(channel, metadata.size(), metadata.crc32());
+                return new SevenZipCRC32ByteChannel(channel, metadata.size(), metadata.crc32());
             }
             if (metadata.packedCrc32() != SevenZipEntryMetadata.UNKNOWN_CRC32) {
-                return new SevenZipCrc32ByteChannel(
+                return new SevenZipCRC32ByteChannel(
                         channel,
                         metadata.size(),
                         metadata.packedCrc32(),
@@ -1175,7 +1175,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                         packedStream.size()
                 );
                 if (packedStream.crc32() != SevenZipEntryMetadata.UNKNOWN_CRC32) {
-                    channel = new SevenZipCrc32ByteChannel(
+                    channel = new SevenZipCRC32ByteChannel(
                             channel,
                             packedStream.size(),
                             packedStream.crc32(),

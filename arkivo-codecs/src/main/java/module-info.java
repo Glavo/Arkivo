@@ -6,6 +6,8 @@ module org.glavo.arkivo.codecs {
     requires transitive org.glavo.arkivo.base;
     requires transitive org.glavo.arkivo.codecs.bzip2;
     requires transitive org.glavo.arkivo.codecs.deflate;
+    requires transitive org.glavo.arkivo.codecs.deflate64;
+    requires transitive org.glavo.arkivo.codecs.filters;
     requires transitive org.glavo.arkivo.codecs.gzip;
     requires transitive org.glavo.arkivo.codecs.lzma;
     requires transitive org.glavo.arkivo.codecs.xz;

@@ -3,11 +3,11 @@
 
 package org.glavo.arkivo.sevenzip.internal;
 
-import org.glavo.arkivo.internal.BcjFilters;
-import org.glavo.arkivo.internal.ByteFilterInputStream;
-import org.glavo.arkivo.internal.ByteFilterOutputStream;
-import org.glavo.arkivo.internal.ByteFilterTransform;
-import org.glavo.arkivo.internal.DeltaFilter;
+import org.glavo.arkivo.compress.filter.BCJFilters;
+import org.glavo.arkivo.compress.filter.ByteFilterInputStream;
+import org.glavo.arkivo.compress.filter.ByteFilterOutputStream;
+import org.glavo.arkivo.compress.filter.ByteFilterTransform;
+import org.glavo.arkivo.compress.filter.DeltaFilter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.tukaani.xz.ARMOptions;
@@ -60,21 +60,21 @@ public final class SevenZipNativeFilterTest {
     /// Verifies every 7z BCJ architecture against XZ with cross-buffer instructions and a nonzero start offset.
     @Test
     public void bcjInteroperabilityAcrossChunks() throws IOException {
-        assertBcjInteroperability(x86Sample(), x86Options(), BcjFilters::x86);
-        assertBcjInteroperability(powerPcSample(), powerPcOptions(), BcjFilters::powerPc);
-        assertBcjInteroperability(ia64Sample(), ia64Options(), BcjFilters::ia64);
-        assertBcjInteroperability(armSample(), armOptions(), BcjFilters::arm);
-        assertBcjInteroperability(armThumbSample(), armThumbOptions(), BcjFilters::armThumb);
-        assertBcjInteroperability(sparcSample(), sparcOptions(), BcjFilters::sparc);
+        assertBcjInteroperability(x86Sample(), x86Options(), BCJFilters::x86);
+        assertBcjInteroperability(powerPcSample(), powerPcOptions(), BCJFilters::powerPc);
+        assertBcjInteroperability(ia64Sample(), ia64Options(), BCJFilters::ia64);
+        assertBcjInteroperability(armSample(), armOptions(), BCJFilters::arm);
+        assertBcjInteroperability(armThumbSample(), armThumbOptions(), BCJFilters::armThumb);
+        assertBcjInteroperability(sparcSample(), sparcOptions(), BCJFilters::sparc);
     }
 
     /// Verifies that a tail shorter than one x86 instruction passes through unchanged.
     @Test
     public void incompleteInstructionTailPassesThrough() throws IOException {
         byte[] original = new byte[]{(byte) 0xe8, 1, 2, 3};
-        byte[] encoded = encodeNatively(original, BcjFilters.x86(true, 0));
+        byte[] encoded = encodeNatively(original, BCJFilters.x86(true, 0));
         assertArrayEquals(original, encoded);
-        assertArrayEquals(original, decodeNatively(encoded, BcjFilters.x86(false, 0)));
+        assertArrayEquals(original, decodeNatively(encoded, BCJFilters.x86(false, 0)));
     }
 
     /// Verifies one BCJ encoder and decoder against XZ.

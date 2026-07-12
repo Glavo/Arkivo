@@ -87,11 +87,11 @@ final class Rar20Cipher implements RarLegacyCipher {
     private void derivePermutation(byte[] password) {
         for (int pass = 0; pass < 256; pass++) {
             for (int passwordOffset = 0; passwordOffset < password.length; passwordOffset += 2) {
-                int cursor = RarLegacyCrc.word(Byte.toUnsignedInt(password[passwordOffset]) - pass) & 0xff;
+                int cursor = RarLegacyCRC.word(Byte.toUnsignedInt(password[passwordOffset]) - pass) & 0xff;
                 int secondByte = passwordOffset + 1 < password.length
                         ? Byte.toUnsignedInt(password[passwordOffset + 1])
                         : 0;
-                int target = RarLegacyCrc.word(secondByte + pass) & 0xff;
+                int target = RarLegacyCRC.word(secondByte + pass) & 0xff;
                 int distance = 1;
                 while (cursor != target) {
                     int swapIndex = cursor + passwordOffset + distance & 0xff;
@@ -143,7 +143,7 @@ final class Rar20Cipher implements RarLegacyCipher {
     /// XORs four CRC words into the key selected by each byte position.
     private void updateKeys(byte[] data, int offset) {
         for (int index = 0; index < BLOCK_SIZE; index++) {
-            keys[index & 3] ^= RarLegacyCrc.word(Byte.toUnsignedInt(data[offset + index]));
+            keys[index & 3] ^= RarLegacyCRC.word(Byte.toUnsignedInt(data[offset + index]));
         }
     }
 

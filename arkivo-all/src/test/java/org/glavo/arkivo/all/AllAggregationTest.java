@@ -52,7 +52,10 @@ final class AllAggregationTest {
                 .collect(Collectors.toUnmodifiableSet());
 
         assertEquals(Set.of("7z", "ar", "rar", "tar", "zip"), archiveNames);
-        assertEquals(Set.of("bzip2", "deflate", "gzip", "lzma", "xz", "zlib", "zstd"), codecNames);
+        assertEquals(
+                Set.of("bzip2", "deflate", "deflate64", "gzip", "lzma", "xz", "zlib", "zstd"),
+                codecNames
+        );
     }
 
     /// Verifies unified signature detection and archive format descriptors.
@@ -131,7 +134,7 @@ final class AllAggregationTest {
         }
     }
 
-    /// Verifies ByteBuffer round trips through every aggregated compression codec.
+    /// Verifies ByteBuffer round trips through every aggregated bidirectional compression codec.
     @Test
     void roundTripsBuffersThroughAllAggregatedCodecs() throws IOException {
         byte[] expected = "Arkivo ByteBuffer codec round trip\n"
@@ -139,8 +142,9 @@ final class AllAggregationTest {
                 .getBytes(StandardCharsets.UTF_8);
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            assertTrue(codec.canCompressBuffers(), codec.name());
-            assertTrue(codec.canDecompressBuffers(), codec.name());
+            if (!codec.canCompressBuffers() || !codec.canDecompressBuffers()) {
+                continue;
+            }
 
             ByteBuffer source = ByteBuffer.allocateDirect(expected.length + 4);
             source.position(2);

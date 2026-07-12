@@ -13,10 +13,7 @@ module org.glavo.arkivo.base {
             org.glavo.arkivo.archives.rar,
             org.glavo.arkivo.archives.sevenzip,
             org.glavo.arkivo.archives.tar,
-            org.glavo.arkivo.archives.zip,
-            org.glavo.arkivo.codecs.bzip2,
-            org.glavo.arkivo.codecs.lzma,
-            org.glavo.arkivo.codecs.xz;
+            org.glavo.arkivo.archives.zip;
 
     uses org.glavo.arkivo.ArkivoFormat;
     uses org.glavo.arkivo.compress.CompressionCodec;

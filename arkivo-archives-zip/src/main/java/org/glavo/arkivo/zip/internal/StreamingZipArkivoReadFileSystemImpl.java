@@ -5,12 +5,12 @@ package org.glavo.arkivo.zip.internal;
 
 import com.github.luben.zstd.ZstdDecompressCtx;
 import com.github.luben.zstd.ZstdInputStream;
-import org.glavo.arkivo.internal.LzmaInputStream;
-import org.glavo.arkivo.internal.XzInputStream;
+import org.glavo.arkivo.compress.lzma.internal.LzmaInputStream;
+import org.glavo.arkivo.compress.xz.internal.XzInputStream;
 import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
-import org.glavo.arkivo.internal.BZip2InputStream;
-import org.glavo.arkivo.internal.Deflate64InputStream;
+import org.glavo.arkivo.compress.bzip2.internal.BZip2InputStream;
+import org.glavo.arkivo.compress.deflate64.internal.Deflate64InputStream;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;

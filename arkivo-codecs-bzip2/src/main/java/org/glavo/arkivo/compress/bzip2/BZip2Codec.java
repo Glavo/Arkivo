@@ -4,8 +4,8 @@
 package org.glavo.arkivo.compress.bzip2;
 
 import org.glavo.arkivo.compress.CompressionCodec;
-import org.glavo.arkivo.internal.BZip2InputStream;
-import org.glavo.arkivo.internal.BZip2OutputStream;
+import org.glavo.arkivo.compress.bzip2.internal.BZip2InputStream;
+import org.glavo.arkivo.compress.bzip2.internal.BZip2OutputStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 

@@ -5,11 +5,11 @@ package org.glavo.arkivo.compress.lzma;
 
 import org.glavo.arkivo.compress.CompressionCodec;
 import org.glavo.arkivo.compress.CompressionCodecs;
-import org.glavo.arkivo.internal.LzmaInputStream;
-import org.glavo.arkivo.internal.Lzma2InputStream;
-import org.glavo.arkivo.internal.Lzma2OutputStream;
-import org.glavo.arkivo.internal.LzmaOutputStream;
-import org.glavo.arkivo.internal.LzmaProperties;
+import org.glavo.arkivo.compress.lzma.internal.LzmaInputStream;
+import org.glavo.arkivo.compress.lzma.internal.Lzma2InputStream;
+import org.glavo.arkivo.compress.lzma.internal.Lzma2OutputStream;
+import org.glavo.arkivo.compress.lzma.internal.LzmaOutputStream;
+import org.glavo.arkivo.compress.lzma.internal.LzmaProperties;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.tukaani.xz.LZMA2Options;

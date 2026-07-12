@@ -20,12 +20,12 @@ final class Rar15Cipher implements RarLegacyCipher {
     Rar15Cipher(byte[] password) {
         Objects.requireNonNull(password, "password");
         int passwordCrc = 0xffff_ffff;
-        for (byte value : password) passwordCrc = RarLegacyCrc.update(passwordCrc, value);
+        for (byte value : password) passwordCrc = RarLegacyCRC.update(passwordCrc, value);
         keys[0] = passwordCrc & 0xffff;
         keys[1] = passwordCrc >>> 16;
         for (byte value : password) {
             int unsigned = Byte.toUnsignedInt(value);
-            int crcWord = RarLegacyCrc.word(unsigned);
+            int crcWord = RarLegacyCRC.word(unsigned);
             keys[2] = (keys[2] ^ unsigned ^ crcWord) & 0xffff;
             keys[3] = keys[3] + unsigned + (crcWord >>> 16) & 0xffff;
         }
@@ -45,7 +45,7 @@ final class Rar15Cipher implements RarLegacyCipher {
         int limit = offset + length;
         for (int position = offset; position < limit; position++) {
             keys[0] = keys[0] + 0x1234 & 0xffff;
-            int crcWord = RarLegacyCrc.word((keys[0] & 0x1fe) >>> 1);
+            int crcWord = RarLegacyCRC.word((keys[0] & 0x1fe) >>> 1);
             keys[1] = (keys[1] ^ crcWord) & 0xffff;
             keys[2] = keys[2] - (crcWord >>> 16) & 0xffff;
             keys[0] = (keys[0] ^ keys[2]) & 0xffff;

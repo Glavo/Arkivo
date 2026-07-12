@@ -4,8 +4,8 @@
 package org.glavo.arkivo.compress.lzma;
 
 import org.glavo.arkivo.compress.CompressionCodec;
-import org.glavo.arkivo.internal.LzmaInputStream;
-import org.glavo.arkivo.internal.LzmaOutputStream;
+import org.glavo.arkivo.compress.lzma.internal.LzmaInputStream;
+import org.glavo.arkivo.compress.lzma.internal.LzmaOutputStream;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;

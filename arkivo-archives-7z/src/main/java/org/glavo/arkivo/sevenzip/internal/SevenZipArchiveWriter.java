@@ -3,14 +3,14 @@
 
 package org.glavo.arkivo.sevenzip.internal;
 
-import org.glavo.arkivo.internal.BZip2OutputStream;
-import org.glavo.arkivo.internal.BcjFilters;
-import org.glavo.arkivo.internal.ByteFilterOutputStream;
-import org.glavo.arkivo.internal.ByteFilterTransform;
-import org.glavo.arkivo.internal.DeltaFilter;
-import org.glavo.arkivo.internal.Lzma2OutputStream;
-import org.glavo.arkivo.internal.LzmaOutputStream;
-import org.glavo.arkivo.internal.LzmaProperties;
+import org.glavo.arkivo.compress.bzip2.internal.BZip2OutputStream;
+import org.glavo.arkivo.compress.filter.BCJFilters;
+import org.glavo.arkivo.compress.filter.ByteFilterOutputStream;
+import org.glavo.arkivo.compress.filter.ByteFilterTransform;
+import org.glavo.arkivo.compress.filter.DeltaFilter;
+import org.glavo.arkivo.compress.lzma.internal.Lzma2OutputStream;
+import org.glavo.arkivo.compress.lzma.internal.LzmaOutputStream;
+import org.glavo.arkivo.compress.lzma.internal.LzmaProperties;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.sevenzip.SevenZipFilter;
@@ -399,27 +399,27 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                     new MethodDescriptor(DELTA_METHOD_ID, new byte[]{(byte) (filter.parameter() - 1)})
             );
             case BCJ_X86 -> new FilterDescriptor(
-                    BcjFilters.x86(true, 0),
+                    BCJFilters.x86(true, 0),
                     new MethodDescriptor(BCJ_X86_METHOD_ID, new byte[0])
             );
             case BCJ_PPC -> new FilterDescriptor(
-                    BcjFilters.powerPc(true, 0),
+                    BCJFilters.powerPc(true, 0),
                     new MethodDescriptor(BCJ_PPC_METHOD_ID, new byte[0])
             );
             case BCJ_IA64 -> new FilterDescriptor(
-                    BcjFilters.ia64(true, 0),
+                    BCJFilters.ia64(true, 0),
                     new MethodDescriptor(BCJ_IA64_METHOD_ID, new byte[0])
             );
             case BCJ_ARM -> new FilterDescriptor(
-                    BcjFilters.arm(true, 0),
+                    BCJFilters.arm(true, 0),
                     new MethodDescriptor(BCJ_ARM_METHOD_ID, new byte[0])
             );
             case BCJ_ARM_THUMB -> new FilterDescriptor(
-                    BcjFilters.armThumb(true, 0),
+                    BCJFilters.armThumb(true, 0),
                     new MethodDescriptor(BCJ_ARM_THUMB_METHOD_ID, new byte[0])
             );
             case BCJ_SPARC -> new FilterDescriptor(
-                    BcjFilters.sparc(true, 0),
+                    BCJFilters.sparc(true, 0),
                     new MethodDescriptor(BCJ_SPARC_METHOD_ID, new byte[0])
             );
         };

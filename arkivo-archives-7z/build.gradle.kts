@@ -2,6 +2,13 @@ import java.util.zip.ZipFile
 
 dependencies {
     api(project(":arkivo-base"))
+    implementation(project(":arkivo-codecs-filters"))
+    compileOnly(project(":arkivo-codecs-bzip2"))
+    compileOnly(project(":arkivo-codecs-deflate64"))
+    compileOnly(project(":arkivo-codecs-lzma"))
+    testImplementation(project(":arkivo-codecs-bzip2"))
+    testImplementation(project(":arkivo-codecs-deflate64"))
+    testImplementation(project(":arkivo-codecs-lzma"))
     testImplementation("org.tukaani:xz:1.12")
     testImplementation("org.apache.commons:commons-compress:1.28.0")
 }

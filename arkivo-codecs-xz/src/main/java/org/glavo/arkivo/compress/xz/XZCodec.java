@@ -4,8 +4,8 @@
 package org.glavo.arkivo.compress.xz;
 
 import org.glavo.arkivo.compress.CompressionCodec;
-import org.glavo.arkivo.internal.XzInputStream;
-import org.glavo.arkivo.internal.XzOutputStream;
+import org.glavo.arkivo.compress.xz.internal.XzInputStream;
+import org.glavo.arkivo.compress.xz.internal.XzOutputStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 

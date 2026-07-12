@@ -4,9 +4,9 @@
 package org.glavo.arkivo.zip.internal;
 
 import com.github.luben.zstd.ZstdOutputStream;
-import org.glavo.arkivo.internal.LzmaOutputStream;
-import org.glavo.arkivo.internal.LzmaProperties;
-import org.glavo.arkivo.internal.XzOutputStream;
+import org.glavo.arkivo.compress.lzma.internal.LzmaOutputStream;
+import org.glavo.arkivo.compress.lzma.internal.LzmaProperties;
+import org.glavo.arkivo.compress.xz.internal.XzOutputStream;
 import org.glavo.arkivo.ArkivoCommitOutput;
 import org.glavo.arkivo.ArkivoCommitTarget;
 import org.glavo.arkivo.ArkivoEditStorage;
@@ -15,7 +15,7 @@ import org.glavo.arkivo.ArkivoStoredContent;
 import org.glavo.arkivo.ArkivoVolumeOutput;
 import org.glavo.arkivo.ArkivoVolumeTarget;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
-import org.glavo.arkivo.internal.BZip2OutputStream;
+import org.glavo.arkivo.compress.bzip2.internal.BZip2OutputStream;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
