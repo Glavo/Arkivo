@@ -3,7 +3,7 @@
 
 /// Aggregates all Arkivo format modules.
 module org.glavo.arkivo.all {
-    requires transitive org.glavo.arkivo.base;
-    requires transitive org.glavo.arkivo.archives;
-    requires transitive org.glavo.arkivo.codecs;
+    requires transitive org.glavo.arkivo.archive;
+    requires transitive org.glavo.arkivo.archive.all;
+    requires transitive org.glavo.arkivo.codec.all;
 }

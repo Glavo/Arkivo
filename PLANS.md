@@ -17,33 +17,43 @@ The primary API surface should be based on Java NIO:
 The project should use a multi-module layout.
 
 ```text
-arkivo-base
-arkivo-codecs
-arkivo-codecs-gzip
-arkivo-codecs-zlib
-arkivo-codecs-xz
-arkivo-codecs-zstd
-arkivo-archives
-arkivo-archives-zip
-arkivo-archives-tar
-arkivo-archives-7z
-arkivo-archives-rar
+arkivo-archive
+arkivo-codec
+arkivo-codec-all
+arkivo-codec-bcj
+arkivo-codec-bzip2
+arkivo-codec-deflate
+arkivo-codec-deflate64
+arkivo-codec-delta
+arkivo-codec-gzip
+arkivo-codec-lzma
+arkivo-codec-zlib
+arkivo-codec-xz
+arkivo-codec-zstd
+arkivo-archive-all
+arkivo-archive-ar
+arkivo-archive-zip
+arkivo-archive-tar
+arkivo-archive-7z
+arkivo-archive-rar
 arkivo-all
 ```
 
-`arkivo-base` should contain shared format discovery, reusable `FileSystem` support, password and volume-source contracts, compression codec contracts, and low-level NIO utilities.
+`arkivo-archive` should contain shared archive-format discovery, reusable `FileSystem` support, password and volume-source contracts, and archive-oriented NIO utilities.
 
-`arkivo-codecs` should be an aggregate module for compression codec APIs and common codec utilities.
+`arkivo-codec` should contain codec APIs, service discovery, reusable byte-transform support, and codec-oriented NIO utilities without depending on archive modules.
 
-`arkivo-codecs-*` modules should implement individual compression formats.
+`arkivo-codec-*` modules should implement individual codecs and reversible byte transforms.
 
-`arkivo-archives` should be an aggregate module for archive APIs and common archive utilities.
+`arkivo-codec-all` should aggregate all official codec modules.
 
-`arkivo-archives-*` modules should implement individual archive formats, including their own `FileSystem` implementations when applicable.
+`arkivo-archive-*` modules should implement individual archive formats, including their own `FileSystem` implementations when applicable.
+
+`arkivo-archive-all` should aggregate all official archive-format modules.
 
 `arkivo-all` should be an aggregate dependency module that brings in all supported formats.
 
-The core `FileSystem` abstractions and reusable support classes belong in `arkivo-base`, while each concrete archive `FileSystem` implementation belongs in the corresponding format module.
+The core `FileSystem` abstractions and reusable support classes belong in `arkivo-archive`, while each concrete archive `FileSystem` implementation belongs in the corresponding format module.
 
 ## Naming Model
 
@@ -95,7 +105,7 @@ Low-level reader, writer, editor, and streaming APIs should be introduced when a
 
 ## Core Abstractions
 
-`arkivo-base` should define the shared contracts used by all format modules.
+`arkivo-archive` should define the shared contracts used by all format modules.
 
 Potential core types include:
 
@@ -208,19 +218,19 @@ The public API should distinguish between persistent file attributes, encryption
 For example:
 
 ```text
-arkivo-archives-zip
+arkivo-archive-zip
   ZipArkivoFormat
   ZipArkivoFileSystem
   ZipArkivoEntryAttributes
   ZipArkivoEntryAttributeView
   ZipArkivoFileSystemProvider
 
-arkivo-archives-7z
+arkivo-archive-7z
   SevenZipArkivoFormat
   SevenZipArkivoFileSystem
   SevenZipArkivoFileSystemProvider
 
-arkivo-archives-tar
+arkivo-archive-tar
   TarArkivoFileSystem
 ```
 
@@ -320,17 +330,18 @@ Each archive format should define only the attribute interfaces it needs, such a
 ## Implementation Order
 
 1. Convert the repository to a Gradle multi-module project.
-2. Implement `arkivo-base` with format discovery, `FileSystem` support contracts, password and volume-source contracts, compression codec contracts, and low-level buffer utilities.
-3. Implement gzip, zlib, and raw deflate codec modules to validate the channel-first compression API.
-4. Define archive file system environment keys, password provider contracts, and split archive source abstractions.
-5. Implement `ZipArkivoFileSystem` inside `arkivo-archives-zip`.
-6. Implement ZIP-specific entry attribute views.
-7. Implement ZIP file system mutation support with explicit writeback semantics.
-8. Add lower-level reader, writer, or streaming APIs only if FileSystem APIs are not sufficient for a concrete format.
-9. Add xz and zstd codec modules.
-10. Add tar support after deciding whether the public surface should be a filesystem, streaming API, or both.
-11. Extend 7z support from Copy, LZMA, LZMA2, substreams, and basic metadata to multi-coder filter pipelines and encrypted headers.
-12. Add rar read support and a read-only rar filesystem.
+2. Implement `arkivo-archive` with archive-format discovery, `FileSystem` support contracts, password and volume-source contracts, and archive-oriented buffer utilities.
+3. Implement `arkivo-codec` with independent codec contracts, service discovery, and byte-transform support.
+4. Implement gzip, zlib, and raw deflate codec modules to validate the channel-first compression API.
+5. Define archive file system environment keys, password provider contracts, and split archive source abstractions.
+6. Implement `ZipArkivoFileSystem` inside `arkivo-archive-zip`.
+7. Implement ZIP-specific entry attribute views.
+8. Implement ZIP file system mutation support with explicit writeback semantics.
+9. Add lower-level reader, writer, or streaming APIs only if FileSystem APIs are not sufficient for a concrete format.
+10. Add xz and zstd codec modules.
+11. Add tar support after deciding whether the public surface should be a filesystem, streaming API, or both.
+12. Extend 7z support from Copy, LZMA, LZMA2, substreams, and basic metadata to multi-coder filter pipelines and encrypted headers.
+13. Add rar read support and a read-only rar filesystem.
 
 ## Compatibility Notes
 

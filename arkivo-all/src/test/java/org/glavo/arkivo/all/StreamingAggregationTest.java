@@ -3,17 +3,17 @@
 
 package org.glavo.arkivo.all;
 
-import org.glavo.arkivo.ArkivoFormat;
-import org.glavo.arkivo.ArkivoFormats;
-import org.glavo.arkivo.ArkivoStreamingFormat;
-import org.glavo.arkivo.ArkivoStreamingReader;
-import org.glavo.arkivo.ArkivoStreamingWriter;
-import org.glavo.arkivo.ar.ArArkivoStreamingWriter;
-import org.glavo.arkivo.rar.RarArkivoStreamingReader;
-import org.glavo.arkivo.tar.TarArkivoStreamingReader;
-import org.glavo.arkivo.tar.TarArkivoStreamingWriter;
-import org.glavo.arkivo.zip.ZipArkivoFileSystem;
-import org.glavo.arkivo.zip.ZipArkivoStreamingWriter;
+import org.glavo.arkivo.archive.ArkivoFormat;
+import org.glavo.arkivo.archive.ArkivoFormats;
+import org.glavo.arkivo.archive.ArkivoStreamingFormat;
+import org.glavo.arkivo.archive.ArkivoStreamingReader;
+import org.glavo.arkivo.archive.ArkivoStreamingWriter;
+import org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter;
+import org.glavo.arkivo.archive.rar.RarArkivoStreamingReader;
+import org.glavo.arkivo.archive.tar.TarArkivoStreamingReader;
+import org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter;
+import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
+import org.glavo.arkivo.archive.zip.ZipArkivoStreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;

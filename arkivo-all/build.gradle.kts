@@ -1,5 +1,5 @@
 dependencies {
-    api(project(":arkivo-base"))
-    api(project(":arkivo-archives"))
-    api(project(":arkivo-codecs"))
+    api(project(":arkivo-archive"))
+    api(project(":arkivo-archive-all"))
+    api(project(":arkivo-codec-all"))
 }

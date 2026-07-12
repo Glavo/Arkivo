@@ -1,0 +1,15 @@
+dependencies {
+    api(project(":arkivo-archive"))
+    compileOnly(project(":arkivo-codec-bzip2"))
+    compileOnly(project(":arkivo-codec-deflate64"))
+    compileOnly(project(":arkivo-codec-lzma"))
+    compileOnly(project(":arkivo-codec-xz"))
+    compileOnly("com.github.luben:zstd-jni:1.5.7-9")
+    testImplementation(project(":arkivo-codec-bzip2"))
+    testImplementation(project(":arkivo-codec-deflate64"))
+    testImplementation(project(":arkivo-codec-lzma"))
+    testImplementation(project(":arkivo-codec-xz"))
+    testImplementation("com.github.luben:zstd-jni:1.5.7-9")
+    testImplementation("org.tukaani:xz:1.12")
+    testImplementation("org.apache.commons:commons-compress:1.28.0")
+}

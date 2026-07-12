@@ -3,11 +3,11 @@
 
 package org.glavo.arkivo.all;
 
-import org.glavo.arkivo.ArkivoFormat;
-import org.glavo.arkivo.ArkivoFormats;
-import org.glavo.arkivo.compress.CompressionCodec;
-import org.glavo.arkivo.compress.CompressionCodecs;
-import org.glavo.arkivo.tar.TarArkivoStreamingWriter;
+import org.glavo.arkivo.archive.ArkivoFormat;
+import org.glavo.arkivo.archive.ArkivoFormats;
+import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
