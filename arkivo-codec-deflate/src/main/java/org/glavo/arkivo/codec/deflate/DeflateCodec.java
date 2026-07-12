@@ -3,15 +3,22 @@
 
 package org.glavo.arkivo.codec.deflate;
 
+import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecOptions;
+import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressionFeature;
+import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
+import java.util.Set;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 import java.util.zip.Inflater;
@@ -23,6 +30,14 @@ public final class DeflateCodec implements CompressionCodec {
     /// The stable raw deflate codec name.
     public static final String NAME = "deflate";
 
+    /// The supported raw deflate operations.
+    private static final CompressionCapabilities CAPABILITIES = CompressionCapabilities.of(Set.of(
+            CompressionFeature.COMPRESSION,
+            CompressionFeature.DECOMPRESSION,
+            CompressionFeature.ONE_SHOT_COMPRESSION,
+            CompressionFeature.ONE_SHOT_DECOMPRESSION
+    ));
+
     /// Creates a raw deflate codec.
     public DeflateCodec() {
     }
@@ -33,28 +48,32 @@ public final class DeflateCodec implements CompressionCodec {
         return NAME;
     }
 
-    /// Returns whether raw deflate compression is supported.
+    /// Returns the supported raw deflate operations and options.
     @Override
-    public boolean canCompress() {
-        return true;
+    public CompressionCapabilities capabilities() {
+        return CAPABILITIES;
     }
 
-    /// Returns whether raw deflate decompression is supported.
+    /// Opens a configured raw deflate encoder over the target channel.
     @Override
-    public boolean canDecompress() {
-        return true;
+    public CompressionEncoder openEncoder(
+            WritableByteChannel target,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        options.requireSupported(CAPABILITIES.compressionOptions(), "deflate compression");
+        return StreamCodecAdapters.openEncoder(target, ownership, EndingDeflaterOutputStream::new);
     }
 
-    /// Opens a raw deflate compressor that writes compressed bytes to the target channel.
+    /// Opens a configured raw deflate decoder over the source channel.
     @Override
-    public WritableByteChannel compressTo(WritableByteChannel target) throws IOException {
-        return Channels.newChannel(new EndingDeflaterOutputStream(Channels.newOutputStream(target)));
-    }
-
-    /// Opens a raw deflate decompressor that reads compressed bytes from the source channel.
-    @Override
-    public ReadableByteChannel decompressFrom(ReadableByteChannel source) {
-        return Channels.newChannel(new EndingInflaterInputStream(Channels.newInputStream(source)));
+    public CompressionDecoder openDecoder(
+            ReadableByteChannel source,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        options.requireSupported(CAPABILITIES.decompressionOptions(), "deflate decompression");
+        return StreamCodecAdapters.openDecoder(source, ownership, EndingInflaterInputStream::new);
     }
 
     /// Finishes raw deflate output and releases the backing deflater.

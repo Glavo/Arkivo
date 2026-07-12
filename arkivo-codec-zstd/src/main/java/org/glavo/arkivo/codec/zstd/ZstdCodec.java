@@ -6,18 +6,31 @@ package org.glavo.arkivo.codec.zstd;
 import com.github.luben.zstd.ZstdInputStream;
 import com.github.luben.zstd.ZstdOutputStream;
 import com.github.luben.zstd.Zstd;
+import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ChecksumMode;
+import org.glavo.arkivo.codec.CodecOptions;
+import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressionFeature;
+import org.glavo.arkivo.codec.CompressionLevel;
+import org.glavo.arkivo.codec.CompressionLevelRange;
+import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.WorkerCount;
+import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /// Provides Zstandard compression and decompression channels.
 @NotNullByDefault
@@ -27,6 +40,31 @@ public final class ZstdCodec implements CompressionCodec {
 
     /// The sentinel compression level that asks Zstandard to use its default level.
     public static final int DEFAULT_COMPRESSION_LEVEL = -1;
+
+    /// The supported Zstandard operations and options.
+    private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(
+            Set.of(
+                    CompressionFeature.COMPRESSION,
+                    CompressionFeature.DECOMPRESSION,
+                    CompressionFeature.ONE_SHOT_COMPRESSION,
+                    CompressionFeature.ONE_SHOT_DECOMPRESSION,
+                    CompressionFeature.FLUSH,
+                    CompressionFeature.DICTIONARY,
+                    CompressionFeature.DIRECT_BYTE_BUFFER
+            ),
+            Set.of(
+                    StandardCodecOptions.COMPRESSION_LEVEL,
+                    StandardCodecOptions.DICTIONARY,
+                    StandardCodecOptions.CHECKSUM,
+                    StandardCodecOptions.WORKER_COUNT
+            ),
+            Set.of(StandardCodecOptions.DICTIONARY),
+            new CompressionLevelRange(
+                    Zstd.minCompressionLevel(),
+                    Zstd.maxCompressionLevel(),
+                    Zstd.defaultCompressionLevel()
+            )
+    );
 
     /// The requested Zstandard compression level.
     private final int compressionLevel;
@@ -41,7 +79,9 @@ public final class ZstdCodec implements CompressionCodec {
 
     /// Creates a configured Zstandard codec.
     private ZstdCodec(int compressionLevel, byte @Nullable [] dictionary) {
-        if (compressionLevel < DEFAULT_COMPRESSION_LEVEL) {
+        if (compressionLevel != DEFAULT_COMPRESSION_LEVEL
+                && (compressionLevel < Zstd.minCompressionLevel()
+                || compressionLevel > Zstd.maxCompressionLevel())) {
             throw new IllegalArgumentException("compressionLevel is out of range");
         }
         this.compressionLevel = compressionLevel;
@@ -58,6 +98,12 @@ public final class ZstdCodec implements CompressionCodec {
     @Override
     public @Unmodifiable List<String> fileExtensions() {
         return List.of("zst", "zstd");
+    }
+
+    /// Returns the supported Zstandard operations and options.
+    @Override
+    public CompressionCapabilities capabilities() {
+        return CAPABILITIES;
     }
 
     /// Returns the requested compression level.
@@ -83,30 +129,6 @@ public final class ZstdCodec implements CompressionCodec {
     /// Returns a codec configured without dictionary bytes.
     public ZstdCodec withoutDictionary() {
         return dictionary == null ? this : new ZstdCodec(compressionLevel, null);
-    }
-
-    /// Returns whether Zstandard compression is supported.
-    @Override
-    public boolean canCompress() {
-        return true;
-    }
-
-    /// Returns whether Zstandard decompression is supported.
-    @Override
-    public boolean canDecompress() {
-        return true;
-    }
-
-    /// Returns whether Zstandard ByteBuffer compression is supported.
-    @Override
-    public boolean canCompressBuffers() {
-        return true;
-    }
-
-    /// Returns whether Zstandard ByteBuffer decompression is supported.
-    @Override
-    public boolean canDecompressBuffers() {
-        return true;
     }
 
     /// Returns the number of leading bytes used to identify Zstandard streams.
@@ -135,28 +157,84 @@ public final class ZstdCodec implements CompressionCodec {
         return Zstd.compressBound(sourceSize);
     }
 
-    /// Opens a Zstandard compressor that writes compressed bytes to the target channel.
+    /// Opens a configured Zstandard encoder over the target channel.
     @Override
-    public WritableByteChannel compressTo(WritableByteChannel target) throws IOException {
-        ZstdOutputStream output = new ZstdOutputStream(Channels.newOutputStream(target));
-        if (compressionLevel != DEFAULT_COMPRESSION_LEVEL) {
+    public CompressionEncoder openEncoder(
+            WritableByteChannel target,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        options.requireSupported(CAPABILITIES.compressionOptions(), "Zstandard compression");
+        return StreamCodecAdapters.openEncoder(
+                target,
+                ownership,
+                output -> configureEncoder(new ZstdOutputStream(output), options)
+        );
+    }
+
+    /// Opens a configured Zstandard decoder over the source channel.
+    @Override
+    public CompressionDecoder openDecoder(
+            ReadableByteChannel source,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        options.requireSupported(CAPABILITIES.decompressionOptions(), "Zstandard decompression");
+        return StreamCodecAdapters.openDecoder(
+                source,
+                ownership,
+                input -> configureDecoder(new ZstdInputStream(input), options)
+        );
+    }
+
+    /// Applies configured-instance defaults and operation-specific encoder options.
+    private ZstdOutputStream configureEncoder(
+            ZstdOutputStream output,
+            CodecOptions options
+    ) throws IOException {
+        @Nullable CompressionLevel requestedLevel = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
+        if (requestedLevel != null) {
+            if (!Objects.requireNonNull(CAPABILITIES.compressionLevels()).contains(requestedLevel.value())) {
+                throw new IllegalArgumentException("Zstandard compression level is out of range");
+            }
+            output.setLevel(requestedLevel.value());
+        } else if (compressionLevel != DEFAULT_COMPRESSION_LEVEL) {
             output.setLevel(compressionLevel);
         }
 
-        if (dictionary != null) {
+        @Nullable CompressionDictionary requestedDictionary = options.get(StandardCodecOptions.DICTIONARY);
+        if (requestedDictionary != null) {
+            output.setDict(requestedDictionary.bytes());
+        } else if (dictionary != null) {
             output.setDict(dictionary);
         }
-        return Channels.newChannel(output);
+
+        @Nullable ChecksumMode checksum = options.get(StandardCodecOptions.CHECKSUM);
+        if (checksum == ChecksumMode.ENABLED) {
+            output.setChecksum(true);
+        } else if (checksum == ChecksumMode.DISABLED) {
+            output.setChecksum(false);
+        }
+
+        @Nullable WorkerCount workers = options.get(StandardCodecOptions.WORKER_COUNT);
+        if (workers != null) {
+            output.setWorkers(workers.value());
+        }
+        return output;
     }
 
-    /// Opens a Zstandard decompressor that reads compressed bytes from the source channel.
-    @Override
-    public ReadableByteChannel decompressFrom(ReadableByteChannel source) throws IOException {
-        ZstdInputStream input = new ZstdInputStream(Channels.newInputStream(source));
-        if (dictionary != null) {
+    /// Applies configured-instance defaults and operation-specific decoder options.
+    private ZstdInputStream configureDecoder(
+            ZstdInputStream input,
+            CodecOptions options
+    ) throws IOException {
+        @Nullable CompressionDictionary requestedDictionary = options.get(StandardCodecOptions.DICTIONARY);
+        if (requestedDictionary != null) {
+            input.setDict(requestedDictionary.bytes());
+        } else if (dictionary != null) {
             input.setDict(dictionary);
         }
-        return Channels.newChannel(input);
+        return input;
     }
 
     /// Compresses all remaining source bytes into the target buffer.

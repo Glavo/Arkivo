@@ -5,6 +5,13 @@ package org.glavo.arkivo.codec.zstd;
 
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.ChecksumMode;
+import org.glavo.arkivo.codec.CodecOptions;
+import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.CompressionFeature;
+import org.glavo.arkivo.codec.CompressionLevel;
+import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.WorkerCount;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -14,6 +21,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
@@ -179,6 +189,46 @@ public final class ZstdCodecTest {
         returned[1] = 9;
         assertArrayEquals(new byte[]{1, 2, 3}, codec.dictionary());
         assertNull(codec.withoutDictionary().dictionary());
+    }
+
+    /// Verifies per-operation channel options and advertised capabilities.
+    @Test
+    public void channelOperationOptions() throws IOException {
+        ZstdCodec codec = new ZstdCodec();
+        byte[] dictionaryBytes = "shared zstd dictionary".getBytes(StandardCharsets.UTF_8);
+        CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes);
+        CodecOptions compressionOptions = CodecOptions.builder()
+                .set(StandardCodecOptions.COMPRESSION_LEVEL, new CompressionLevel(-2))
+                .set(StandardCodecOptions.DICTIONARY, dictionary)
+                .set(StandardCodecOptions.CHECKSUM, ChecksumMode.ENABLED)
+                .set(StandardCodecOptions.WORKER_COUNT, new WorkerCount(0))
+                .build();
+        CodecOptions decompressionOptions = CodecOptions.builder()
+                .set(StandardCodecOptions.DICTIONARY, dictionary)
+                .build();
+        byte[] input = "shared zstd dictionary payload".getBytes(StandardCharsets.UTF_8);
+
+        ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
+        try (ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(input));
+             WritableByteChannel target = Channels.newChannel(compressedBytes)) {
+            codec.compress(source, target, compressionOptions);
+            assertEquals(true, source.isOpen());
+            assertEquals(true, target.isOpen());
+        }
+
+        ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
+        try (ReadableByteChannel source = Channels.newChannel(
+                new ByteArrayInputStream(compressedBytes.toByteArray())
+        ); WritableByteChannel target = Channels.newChannel(decodedBytes)) {
+            codec.decompress(source, target, decompressionOptions);
+        }
+
+        assertArrayEquals(input, decodedBytes.toByteArray());
+        assertEquals(true, codec.capabilities().supports(CompressionFeature.FLUSH));
+        assertEquals(true, codec.capabilities().compressionOptions().contains(
+                StandardCodecOptions.COMPRESSION_LEVEL
+        ));
+        assertEquals(true, Objects.requireNonNull(codec.capabilities().compressionLevels()).contains(-2));
     }
 
     /// Compresses and decompresses the given bytes.

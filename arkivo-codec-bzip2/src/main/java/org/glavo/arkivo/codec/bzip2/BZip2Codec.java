@@ -3,24 +3,39 @@
 
 package org.glavo.arkivo.codec.bzip2;
 
+import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecOptions;
+import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2InputStream;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2OutputStream;
+import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.List;
+import java.util.Set;
 
 /// Provides BZip2 compression and decompression channels.
 @NotNullByDefault
 public final class BZip2Codec implements CompressionCodec {
     /// The stable BZip2 codec name.
     public static final String NAME = "bzip2";
+
+    /// The supported BZip2 operations.
+    private static final CompressionCapabilities CAPABILITIES = CompressionCapabilities.of(Set.of(
+            CompressionFeature.COMPRESSION,
+            CompressionFeature.DECOMPRESSION,
+            CompressionFeature.ONE_SHOT_COMPRESSION,
+            CompressionFeature.ONE_SHOT_DECOMPRESSION
+    ));
 
     /// Creates a BZip2 codec.
     public BZip2Codec() {
@@ -44,16 +59,10 @@ public final class BZip2Codec implements CompressionCodec {
         return List.of("bz2", "bzip2");
     }
 
-    /// Returns whether BZip2 compression is supported.
+    /// Returns the supported BZip2 operations and options.
     @Override
-    public boolean canCompress() {
-        return true;
-    }
-
-    /// Returns whether BZip2 decompression is supported.
-    @Override
-    public boolean canDecompress() {
-        return true;
+    public CompressionCapabilities capabilities() {
+        return CAPABILITIES;
     }
 
     /// Returns the number of leading bytes used to identify BZip2 streams.
@@ -78,15 +87,25 @@ public final class BZip2Codec implements CompressionCodec {
                 && blockSize <= '9';
     }
 
-    /// Opens a BZip2 compressor that writes compressed bytes to the target channel.
+    /// Opens a configured BZip2 encoder over the target channel.
     @Override
-    public WritableByteChannel compressTo(WritableByteChannel target) throws IOException {
-        return Channels.newChannel(new BZip2OutputStream(Channels.newOutputStream(target)));
+    public CompressionEncoder openEncoder(
+            WritableByteChannel target,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        options.requireSupported(CAPABILITIES.compressionOptions(), "BZip2 compression");
+        return StreamCodecAdapters.openEncoder(target, ownership, BZip2OutputStream::new);
     }
 
-    /// Opens a BZip2 decompressor that reads compressed bytes from the source channel.
+    /// Opens a configured BZip2 decoder over the source channel.
     @Override
-    public ReadableByteChannel decompressFrom(ReadableByteChannel source) throws IOException {
-        return Channels.newChannel(new BZip2InputStream(Channels.newInputStream(source)));
+    public CompressionDecoder openDecoder(
+            ReadableByteChannel source,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        options.requireSupported(CAPABILITIES.decompressionOptions(), "BZip2 decompression");
+        return StreamCodecAdapters.openDecoder(source, ownership, BZip2InputStream::new);
     }
 }

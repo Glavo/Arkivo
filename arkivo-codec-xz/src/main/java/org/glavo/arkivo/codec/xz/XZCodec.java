@@ -3,7 +3,14 @@
 
 package org.glavo.arkivo.codec.xz;
 
+import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecOptions;
+import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressionFeature;
+import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
 import org.glavo.arkivo.codec.xz.internal.XzInputStream;
 import org.glavo.arkivo.codec.xz.internal.XzOutputStream;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -11,15 +18,24 @@ import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
+import java.util.Set;
 
 /// Provides XZ compression and decompression channels.
 @NotNullByDefault
 public final class XZCodec implements CompressionCodec {
     /// The stable XZ codec name.
     public static final String NAME = "xz";
+
+    /// The supported XZ operations.
+    private static final CompressionCapabilities CAPABILITIES = CompressionCapabilities.of(Set.of(
+            CompressionFeature.COMPRESSION,
+            CompressionFeature.DECOMPRESSION,
+            CompressionFeature.ONE_SHOT_COMPRESSION,
+            CompressionFeature.ONE_SHOT_DECOMPRESSION,
+            CompressionFeature.CONCATENATED_FRAMES
+    ));
 
     /// The XZ stream header magic bytes.
     private static final byte @Unmodifiable [] HEADER_MAGIC = {
@@ -36,16 +52,10 @@ public final class XZCodec implements CompressionCodec {
         return NAME;
     }
 
-    /// Returns whether XZ compression is supported.
+    /// Returns the supported XZ operations and options.
     @Override
-    public boolean canCompress() {
-        return true;
-    }
-
-    /// Returns whether XZ decompression is supported.
-    @Override
-    public boolean canDecompress() {
-        return true;
+    public CompressionCapabilities capabilities() {
+        return CAPABILITIES;
     }
 
     /// Returns the number of leading bytes used to identify XZ streams.
@@ -70,15 +80,25 @@ public final class XZCodec implements CompressionCodec {
         return true;
     }
 
-    /// Opens an XZ compressor that writes compressed bytes to the target channel.
+    /// Opens a configured XZ encoder over the target channel.
     @Override
-    public WritableByteChannel compressTo(WritableByteChannel target) throws IOException {
-        return Channels.newChannel(new XzOutputStream(Channels.newOutputStream(target)));
+    public CompressionEncoder openEncoder(
+            WritableByteChannel target,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        options.requireSupported(CAPABILITIES.compressionOptions(), "XZ compression");
+        return StreamCodecAdapters.openEncoder(target, ownership, XzOutputStream::new);
     }
 
-    /// Opens an XZ decompressor that reads compressed bytes from the source channel.
+    /// Opens a configured XZ decoder over the source channel.
     @Override
-    public ReadableByteChannel decompressFrom(ReadableByteChannel source) throws IOException {
-        return Channels.newChannel(new XzInputStream(Channels.newInputStream(source)));
+    public CompressionDecoder openDecoder(
+            ReadableByteChannel source,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        options.requireSupported(CAPABILITIES.decompressionOptions(), "XZ decompression");
+        return StreamCodecAdapters.openDecoder(source, ownership, XzInputStream::new);
     }
 }

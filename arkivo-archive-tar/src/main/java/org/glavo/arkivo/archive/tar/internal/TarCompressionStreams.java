@@ -4,6 +4,8 @@
 package org.glavo.arkivo.archive.tar.internal;
 
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -11,6 +13,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.channels.Channels;
 import java.util.Objects;
 
 /// Opens compression wrappers around TAR streams and validates codec capabilities.
@@ -31,7 +34,11 @@ public final class TarCompressionStreams {
         }
         try {
             requireDecompression(compressionCodec);
-            return compressionCodec.decompressFrom(source);
+            return Channels.newInputStream(compressionCodec.openDecoder(
+                    Channels.newChannel(source),
+                    CodecOptions.EMPTY,
+                    ChannelOwnership.CLOSE
+            ));
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterOpenFailure(source, exception);
             throw exception;
@@ -49,7 +56,11 @@ public final class TarCompressionStreams {
         }
         try {
             requireCompression(compressionCodec);
-            return compressionCodec.compressTo(target);
+            return Channels.newOutputStream(compressionCodec.openEncoder(
+                    Channels.newChannel(target),
+                    CodecOptions.EMPTY,
+                    ChannelOwnership.CLOSE
+            ));
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterOpenFailure(target, exception);
             throw exception;

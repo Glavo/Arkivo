@@ -3,14 +3,21 @@
 
 package org.glavo.arkivo.codec.zlib;
 
+import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecOptions;
+import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressionFeature;
+import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
+import java.util.Set;
 import java.util.zip.DeflaterOutputStream;
 import java.util.zip.InflaterInputStream;
 
@@ -19,6 +26,14 @@ import java.util.zip.InflaterInputStream;
 public final class ZlibCodec implements CompressionCodec {
     /// The stable zlib codec name.
     public static final String NAME = "zlib";
+
+    /// The supported zlib operations.
+    private static final CompressionCapabilities CAPABILITIES = CompressionCapabilities.of(Set.of(
+            CompressionFeature.COMPRESSION,
+            CompressionFeature.DECOMPRESSION,
+            CompressionFeature.ONE_SHOT_COMPRESSION,
+            CompressionFeature.ONE_SHOT_DECOMPRESSION
+    ));
 
     /// Creates a zlib codec.
     public ZlibCodec() {
@@ -30,16 +45,10 @@ public final class ZlibCodec implements CompressionCodec {
         return NAME;
     }
 
-    /// Returns whether zlib compression is supported.
+    /// Returns the supported zlib operations and options.
     @Override
-    public boolean canCompress() {
-        return true;
-    }
-
-    /// Returns whether zlib decompression is supported.
-    @Override
-    public boolean canDecompress() {
-        return true;
+    public CompressionCapabilities capabilities() {
+        return CAPABILITIES;
     }
 
     /// Returns the number of leading bytes used to identify zlib streams.
@@ -63,15 +72,25 @@ public final class ZlibCodec implements CompressionCodec {
                 && ((compressionMethodAndFlags << 8) + flags) % 31 == 0;
     }
 
-    /// Opens a zlib compressor that writes compressed bytes to the target channel.
+    /// Opens a configured zlib encoder over the target channel.
     @Override
-    public WritableByteChannel compressTo(WritableByteChannel target) throws IOException {
-        return Channels.newChannel(new DeflaterOutputStream(Channels.newOutputStream(target)));
+    public CompressionEncoder openEncoder(
+            WritableByteChannel target,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        options.requireSupported(CAPABILITIES.compressionOptions(), "zlib compression");
+        return StreamCodecAdapters.openEncoder(target, ownership, DeflaterOutputStream::new);
     }
 
-    /// Opens a zlib decompressor that reads compressed bytes from the source channel.
+    /// Opens a configured zlib decoder over the source channel.
     @Override
-    public ReadableByteChannel decompressFrom(ReadableByteChannel source) {
-        return Channels.newChannel(new InflaterInputStream(Channels.newInputStream(source)));
+    public CompressionDecoder openDecoder(
+            ReadableByteChannel source,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        options.requireSupported(CAPABILITIES.decompressionOptions(), "zlib decompression");
+        return StreamCodecAdapters.openDecoder(source, ownership, InflaterInputStream::new);
     }
 }

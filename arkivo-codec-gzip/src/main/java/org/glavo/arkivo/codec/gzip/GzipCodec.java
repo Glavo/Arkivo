@@ -3,16 +3,23 @@
 
 package org.glavo.arkivo.codec.gzip;
 
+import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecOptions;
+import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressionFeature;
+import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.List;
+import java.util.Set;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
@@ -21,6 +28,15 @@ import java.util.zip.GZIPOutputStream;
 public final class GzipCodec implements CompressionCodec {
     /// The stable gzip codec name.
     public static final String NAME = "gzip";
+
+    /// The supported gzip operations.
+    private static final CompressionCapabilities CAPABILITIES = CompressionCapabilities.of(Set.of(
+            CompressionFeature.COMPRESSION,
+            CompressionFeature.DECOMPRESSION,
+            CompressionFeature.ONE_SHOT_COMPRESSION,
+            CompressionFeature.ONE_SHOT_DECOMPRESSION,
+            CompressionFeature.CONCATENATED_FRAMES
+    ));
 
     /// Creates a gzip codec.
     public GzipCodec() {
@@ -38,16 +54,10 @@ public final class GzipCodec implements CompressionCodec {
         return List.of("gz", "gzip");
     }
 
-    /// Returns whether gzip compression is supported.
+    /// Returns the supported gzip operations and options.
     @Override
-    public boolean canCompress() {
-        return true;
-    }
-
-    /// Returns whether gzip decompression is supported.
-    @Override
-    public boolean canDecompress() {
-        return true;
+    public CompressionCapabilities capabilities() {
+        return CAPABILITIES;
     }
 
     /// Returns the number of leading bytes used to identify gzip streams.
@@ -65,15 +75,25 @@ public final class GzipCodec implements CompressionCodec {
                 && Byte.toUnsignedInt(prefix.get(position + 1)) == 0x8b;
     }
 
-    /// Opens a gzip compressor that writes compressed bytes to the target channel.
+    /// Opens a configured gzip encoder over the target channel.
     @Override
-    public WritableByteChannel compressTo(WritableByteChannel target) throws IOException {
-        return Channels.newChannel(new GZIPOutputStream(Channels.newOutputStream(target)));
+    public CompressionEncoder openEncoder(
+            WritableByteChannel target,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        options.requireSupported(CAPABILITIES.compressionOptions(), "gzip compression");
+        return StreamCodecAdapters.openEncoder(target, ownership, GZIPOutputStream::new);
     }
 
-    /// Opens a gzip decompressor that reads compressed bytes from the source channel.
+    /// Opens a configured gzip decoder over the source channel.
     @Override
-    public ReadableByteChannel decompressFrom(ReadableByteChannel source) throws IOException {
-        return Channels.newChannel(new GZIPInputStream(Channels.newInputStream(source)));
+    public CompressionDecoder openDecoder(
+            ReadableByteChannel source,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        options.requireSupported(CAPABILITIES.decompressionOptions(), "gzip decompression");
+        return StreamCodecAdapters.openDecoder(source, ownership, GZIPInputStream::new);
     }
 }

@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.codec;
 
+import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -12,6 +13,7 @@ import java.nio.ByteBuffer;
 import java.nio.ReadOnlyBufferException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -66,7 +68,7 @@ final class CompressionCodecBufferTest {
         ByteBuffer compressionSource = ByteBuffer.wrap(new byte[]{1, 2, 3, 4});
         ByteBuffer compressionTarget = ByteBuffer.allocate(2);
         assertThrows(BufferOverflowException.class, () -> codec.compress(compressionSource, compressionTarget));
-        assertEquals(2, compressionSource.position());
+        assertEquals(0, compressionSource.position());
         assertEquals(2, compressionTarget.position());
 
         ByteBuffer decompressionSource = ByteBuffer.wrap(new byte[]{1, 2, 3, 4});
@@ -89,6 +91,14 @@ final class CompressionCodecBufferTest {
     /// Implements an identity transformation through the channel API.
     @NotNullByDefault
     private static final class IdentityCodec implements CompressionCodec {
+        /// The supported identity operations.
+        private static final CompressionCapabilities CAPABILITIES = CompressionCapabilities.of(Set.of(
+                CompressionFeature.COMPRESSION,
+                CompressionFeature.DECOMPRESSION,
+                CompressionFeature.ONE_SHOT_COMPRESSION,
+                CompressionFeature.ONE_SHOT_DECOMPRESSION
+        ));
+
         /// Creates an identity codec.
         private IdentityCodec() {
         }
@@ -99,28 +109,32 @@ final class CompressionCodecBufferTest {
             return "identity";
         }
 
-        /// Returns whether compression is supported.
+        /// Returns the supported identity operations.
         @Override
-        public boolean canCompress() {
-            return true;
+        public CompressionCapabilities capabilities() {
+            return CAPABILITIES;
         }
 
-        /// Returns whether decompression is supported.
+        /// Opens an identity encoder.
         @Override
-        public boolean canDecompress() {
-            return true;
+        public CompressionEncoder openEncoder(
+                WritableByteChannel target,
+                CodecOptions options,
+                ChannelOwnership ownership
+        ) throws IOException {
+            options.requireSupported(CAPABILITIES.compressionOptions(), "identity compression");
+            return StreamCodecAdapters.openEncoder(target, ownership, output -> output);
         }
 
-        /// Returns the target as the identity compression channel.
+        /// Opens an identity decoder.
         @Override
-        public WritableByteChannel compressTo(WritableByteChannel target) {
-            return target;
-        }
-
-        /// Returns the source as the identity decompression channel.
-        @Override
-        public ReadableByteChannel decompressFrom(ReadableByteChannel source) {
-            return source;
+        public CompressionDecoder openDecoder(
+                ReadableByteChannel source,
+                CodecOptions options,
+                ChannelOwnership ownership
+        ) throws IOException {
+            options.requireSupported(CAPABILITIES.decompressionOptions(), "identity decompression");
+            return StreamCodecAdapters.openDecoder(source, ownership, input -> input);
         }
     }
 }

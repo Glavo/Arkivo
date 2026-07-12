@@ -3,21 +3,36 @@
 
 package org.glavo.arkivo.codec.lzma;
 
+import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecOptions;
+import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.lzma.internal.LzmaInputStream;
 import org.glavo.arkivo.codec.lzma.internal.LzmaOutputStream;
+import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
+import java.util.Set;
 
 /// Provides LZMA compression and decompression channels.
 @NotNullByDefault
 public final class LZMACodec implements CompressionCodec {
     /// The stable LZMA codec name.
     public static final String NAME = "lzma";
+
+    /// The supported LZMA operations.
+    private static final CompressionCapabilities CAPABILITIES = CompressionCapabilities.of(Set.of(
+            CompressionFeature.COMPRESSION,
+            CompressionFeature.DECOMPRESSION,
+            CompressionFeature.ONE_SHOT_COMPRESSION,
+            CompressionFeature.ONE_SHOT_DECOMPRESSION
+    ));
 
     /// The default LZMA dictionary size used by this codec.
     private static final int DEFAULT_DICTIONARY_SIZE = 1 << 20;
@@ -32,29 +47,35 @@ public final class LZMACodec implements CompressionCodec {
         return NAME;
     }
 
-    /// Returns whether LZMA compression is supported.
+    /// Returns the supported LZMA operations and options.
     @Override
-    public boolean canCompress() {
-        return true;
+    public CompressionCapabilities capabilities() {
+        return CAPABILITIES;
     }
 
-    /// Returns whether LZMA decompression is supported.
+    /// Opens a configured LZMA encoder over the target channel.
     @Override
-    public boolean canDecompress() {
-        return true;
-    }
-
-    /// Opens an LZMA compressor that writes compressed bytes to the target channel.
-    @Override
-    public WritableByteChannel compressTo(WritableByteChannel target) throws IOException {
-        return Channels.newChannel(
-                new LzmaOutputStream(Channels.newOutputStream(target), DEFAULT_DICTIONARY_SIZE)
+    public CompressionEncoder openEncoder(
+            WritableByteChannel target,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        options.requireSupported(CAPABILITIES.compressionOptions(), "LZMA compression");
+        return StreamCodecAdapters.openEncoder(
+                target,
+                ownership,
+                output -> new LzmaOutputStream(output, DEFAULT_DICTIONARY_SIZE)
         );
     }
 
-    /// Opens an LZMA decompressor that reads compressed bytes from the source channel.
+    /// Opens a configured LZMA decoder over the source channel.
     @Override
-    public ReadableByteChannel decompressFrom(ReadableByteChannel source) throws IOException {
-        return Channels.newChannel(new LzmaInputStream(Channels.newInputStream(source)));
+    public CompressionDecoder openDecoder(
+            ReadableByteChannel source,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        options.requireSupported(CAPABILITIES.decompressionOptions(), "LZMA decompression");
+        return StreamCodecAdapters.openDecoder(source, ownership, LzmaInputStream::new);
     }
 }

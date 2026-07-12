@@ -4,6 +4,10 @@
 package org.glavo.arkivo.codec.internal;
 
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -24,11 +28,22 @@ public final class ByteBufferCodecSupport {
 
     /// Compresses all remaining source bytes through the codec's channel API.
     public static void compress(CompressionCodec codec, ByteBuffer source, ByteBuffer target) throws IOException {
+        compress(codec, source, target, CodecOptions.EMPTY);
+    }
+
+    /// Compresses all remaining source bytes through a configured encoder context.
+    public static void compress(
+            CompressionCodec codec,
+            ByteBuffer source,
+            ByteBuffer target,
+            CodecOptions options
+    ) throws IOException {
         Objects.requireNonNull(codec, "codec");
+        Objects.requireNonNull(options, "options");
         validateBuffers(source, target);
 
         try (ByteBufferWritableChannel output = new ByteBufferWritableChannel(target);
-             WritableByteChannel compressor = codec.compressTo(output)) {
+             CompressionEncoder compressor = codec.openEncoder(output, options, ChannelOwnership.RETAIN)) {
             while (source.hasRemaining()) {
                 int sourcePosition = source.position();
                 int written = compressor.write(source);
@@ -41,11 +56,22 @@ public final class ByteBufferCodecSupport {
 
     /// Decompresses all remaining source bytes through the codec's channel API.
     public static void decompress(CompressionCodec codec, ByteBuffer source, ByteBuffer target) throws IOException {
+        decompress(codec, source, target, CodecOptions.EMPTY);
+    }
+
+    /// Decompresses all remaining source bytes through a configured decoder context.
+    public static void decompress(
+            CompressionCodec codec,
+            ByteBuffer source,
+            ByteBuffer target,
+            CodecOptions options
+    ) throws IOException {
         Objects.requireNonNull(codec, "codec");
+        Objects.requireNonNull(options, "options");
         validateBuffers(source, target);
 
         try (ByteBufferReadableChannel input = new ByteBufferReadableChannel(source);
-             ReadableByteChannel decompressor = codec.decompressFrom(input)) {
+             CompressionDecoder decompressor = codec.openDecoder(input, options, ChannelOwnership.RETAIN)) {
             while (target.hasRemaining()) {
                 int targetPosition = target.position();
                 int read = decompressor.read(target);
