@@ -1784,14 +1784,16 @@ public final class SevenZipArkivoFileSystemTest {
                 SevenZipCompression.lzma(64 * 1024),
                 SevenZipCompression.lzma2(64 * 1024),
                 SevenZipCompression.bzip2(1),
-                SevenZipCompression.deflate(1)
+                SevenZipCompression.deflate(1),
+                SevenZipCompression.deflate64(9)
         );
         List<SevenZMethod> expectedMethods = List.of(
                 SevenZMethod.COPY,
                 SevenZMethod.LZMA,
                 SevenZMethod.LZMA2,
                 SevenZMethod.BZIP2,
-                SevenZMethod.DEFLATE
+                SevenZMethod.DEFLATE,
+                SevenZMethod.DEFLATE64
         );
         byte[] content = new byte[64 * 1024];
         Arrays.fill(content, (byte) 'A');

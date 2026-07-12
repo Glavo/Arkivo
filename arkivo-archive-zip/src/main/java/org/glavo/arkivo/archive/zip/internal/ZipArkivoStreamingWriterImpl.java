@@ -912,7 +912,13 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Returns the ZIP version needed to extract field.
         @Override
         public int versionNeededToExtract() {
-            return method.id() == ZipMethod.LZMA_ID ? ZipConstants.LZMA_VERSION_NEEDED : ZipConstants.VERSION_NEEDED;
+            if (method.id() == ZipMethod.LZMA_ID) {
+                return ZipConstants.LZMA_VERSION_NEEDED;
+            }
+            if (method.id() == ZipMethod.DEFLATE64_ID) {
+                return ZipConstants.DEFLATE64_VERSION_NEEDED;
+            }
+            return ZipConstants.VERSION_NEEDED;
         }
 
         /// Returns the ZIP internal file attributes.

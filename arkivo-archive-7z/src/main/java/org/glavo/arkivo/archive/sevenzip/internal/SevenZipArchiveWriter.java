@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.sevenzip.internal;
 
 import org.glavo.arkivo.codec.bzip2.internal.BZip2OutputStream;
+import org.glavo.arkivo.codec.deflate64.internal.Deflate64OutputStream;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.transform.TransformingOutputStream;
 import org.glavo.arkivo.codec.transform.ByteTransform;
@@ -125,6 +126,9 @@ final class SevenZipArchiveWriter implements AutoCloseable {
 
     /// The raw Deflate coder method ID.
     private static final byte @Unmodifiable [] DEFLATE_METHOD_ID = new byte[]{0x04, 0x01, 0x08};
+
+    /// The Deflate64 coder method ID.
+    private static final byte @Unmodifiable [] DEFLATE64_METHOD_ID = new byte[]{0x04, 0x01, 0x09};
 
     /// The Delta filter method ID.
     private static final byte @Unmodifiable [] DELTA_METHOD_ID = new byte[]{0x03};
@@ -352,6 +356,10 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             case DEFLATE -> new CompressionOutput(
                     new RawDeflateOutputStream(output, compression.parameter()),
                     new MethodDescriptor(DEFLATE_METHOD_ID, new byte[0])
+            );
+            case DEFLATE64 -> new CompressionOutput(
+                    new Deflate64OutputStream(output, compression.parameter()),
+                    new MethodDescriptor(DEFLATE64_METHOD_ID, new byte[0])
             );
         };
     }

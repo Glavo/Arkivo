@@ -23,7 +23,10 @@ public enum SevenZipCompressionMethod {
     BZIP2("bzip2"),
 
     /// Compresses each non-empty entry with raw DEFLATE.
-    DEFLATE("deflate");
+    DEFLATE("deflate"),
+
+    /// Compresses each non-empty entry with raw Deflate64.
+    DEFLATE64("deflate64");
 
     /// The stable environment and display name.
     private final String optionName;

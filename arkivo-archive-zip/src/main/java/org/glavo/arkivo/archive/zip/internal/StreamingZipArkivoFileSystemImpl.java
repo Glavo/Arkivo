@@ -16,6 +16,7 @@ import org.glavo.arkivo.archive.ArkivoVolumeOutput;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2OutputStream;
+import org.glavo.arkivo.codec.deflate64.internal.Deflate64OutputStream;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
@@ -92,6 +93,8 @@ import static org.glavo.arkivo.archive.zip.internal.ZipConstants.CENTRAL_DIRECTO
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.DATA_DESCRIPTOR_FLAG;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.DATA_DESCRIPTOR_SIGNATURE;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.DEFLATED_METHOD;
+import static org.glavo.arkivo.archive.zip.internal.ZipConstants.DEFLATE64_METHOD;
+import static org.glavo.arkivo.archive.zip.internal.ZipConstants.DEFLATE64_VERSION_NEEDED;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.ENCRYPTED_FLAG;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.END_OF_CENTRAL_DIRECTORY_SIGNATURE;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.LZMA_EOS_MARKER_FLAG;
@@ -2381,6 +2384,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 Deflater entryDeflater = new Deflater(Deflater.DEFAULT_COMPRESSION, true);
                 this.deflater = entryDeflater;
                 this.entryOutput = new DeflaterOutputStream(dataOutput, entryDeflater);
+            } else if (metadata.method == DEFLATE64_METHOD) {
+                this.deflater = null;
+                this.entryOutput = new Deflate64OutputStream(dataOutput);
             } else if (metadata.method == BZIP2_METHOD) {
                 this.deflater = null;
                 this.entryOutput = new BZip2OutputStream(dataOutput);
@@ -2440,6 +2446,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 try {
                     if (entryOutput instanceof DeflaterOutputStream deflatedOutput) {
                         deflatedOutput.finish();
+                    } else if (entryOutput instanceof Deflate64OutputStream deflate64Output) {
+                        deflate64Output.finish();
                     } else if (entryOutput instanceof BZip2OutputStream bzip2Output) {
                         bzip2Output.finish();
                     } else if (entryOutput instanceof ZstdOutputStream zstandardOutput) {
@@ -4179,7 +4187,14 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
         /// Returns the ZIP version needed to extract field for this entry.
         private int versionNeeded(boolean zip64) {
-            int version = method == LZMA_METHOD ? LZMA_VERSION_NEEDED : VERSION_NEEDED;
+            int version;
+            if (method == LZMA_METHOD) {
+                version = LZMA_VERSION_NEEDED;
+            } else if (method == DEFLATE64_METHOD) {
+                version = DEFLATE64_VERSION_NEEDED;
+            } else {
+                version = VERSION_NEEDED;
+            }
             return zip64 ? Math.max(version, ZIP64_VERSION_NEEDED) : version;
         }
 
@@ -4248,6 +4263,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         private void validate() {
             if (method != STORED_METHOD
                     && method != DEFLATED_METHOD
+                    && method != DEFLATE64_METHOD
                     && method != BZIP2_METHOD
                     && method != LZMA_METHOD
                     && method != XZ_METHOD

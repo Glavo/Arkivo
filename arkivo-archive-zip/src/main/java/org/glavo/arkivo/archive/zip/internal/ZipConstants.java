@@ -29,6 +29,9 @@ final class ZipConstants {
     /// The ZIP version needed to extract entries written by the streaming writer.
     static final int VERSION_NEEDED = 20;
 
+    /// The ZIP version needed to extract Deflate64 entries.
+    static final int DEFLATE64_VERSION_NEEDED = 21;
+
     /// The ZIP version needed to extract LZMA entries.
     static final int LZMA_VERSION_NEEDED = 63;
 

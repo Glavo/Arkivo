@@ -104,6 +104,9 @@ public final class ZipArkivoFileSystemTest {
     /// The ZIP LZMA general purpose flag indicating an EOS marker.
     private static final int LZMA_EOS_MARKER_FLAG = 1 << 1;
 
+    /// The ZIP version needed to extract Deflate64 entries.
+    private static final int DEFLATE64_VERSION_NEEDED = 21;
+
     /// The ZIP version needed to extract LZMA entries.
     private static final int LZMA_VERSION_NEEDED = 63;
 
@@ -362,6 +365,91 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals(crc32(content), attributes.crc32());
                 assertEquals(true, (attributes.generalPurposeFlags() & (1 << 3)) != 0);
                 assertArrayEquals(content, Files.readAllBytes(file));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that a streaming ZIP writer emits interoperable Deflate64 entries.
+    @Test
+    public void streamingWriterDeflate64Entry() throws IOException {
+        Path archivePath = createTemporaryArchivePath("stream-write-deflate64-");
+        byte[] content = "deflate64 writer content ".repeat(4_096).getBytes(StandardCharsets.UTF_8);
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+                writer.beginFile("deflate64.txt");
+                ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(view);
+                view.setMethod(ZipMethod.deflate64());
+                try (var output = writer.openOutputStream()) {
+                    output.write(content);
+                }
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/deflate64.txt");
+                ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
+
+                assertEquals(ZipMethod.deflate64(), attributes.method());
+                assertEquals(DEFLATE64_VERSION_NEEDED, attributes.versionNeededToExtract());
+                assertEquals(content.length, attributes.size());
+                assertEquals(crc32(content), attributes.crc32());
+                assertArrayEquals(content, Files.readAllBytes(file));
+            }
+
+            try (var zipFile = org.apache.commons.compress.archivers.zip.ZipFile.builder()
+                    .setPath(archivePath)
+                    .get()) {
+                var entry = Objects.requireNonNull(zipFile.getEntry("deflate64.txt"));
+                assertEquals(ZipMethod.DEFLATE64_ID, entry.getMethod());
+                try (InputStream input = zipFile.getInputStream(entry)) {
+                    assertArrayEquals(content, input.readAllBytes());
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies Deflate64 completion before WinZip AES authentication and the following entry.
+    @Test
+    public void streamingWriterAesDeflate64Entry() throws IOException {
+        Path archivePath = createTemporaryArchivePath("stream-write-aes-deflate64-");
+        byte[] password = "secret".getBytes(StandardCharsets.UTF_8);
+        byte[] content = "AES Deflate64 writer content ".repeat(1_024).getBytes(StandardCharsets.UTF_8);
+        byte[] after = "after AES Deflate64".getBytes(StandardCharsets.UTF_8);
+
+        try {
+            Map<String, Object> environment = Map.of(
+                    ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)
+            );
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, environment)) {
+                writer.beginFile("secret.txt");
+                ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(view);
+                view.setMethod(ZipMethod.deflate64());
+                view.setEncryption(ZipEncryption.winZipAes256());
+                try (var output = writer.openOutputStream()) {
+                    output.write(content);
+                }
+
+                writer.beginFile("after.txt");
+                try (var output = writer.openOutputStream()) {
+                    output.write(after);
+                }
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, environment)) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/secret.txt")));
+                assertArrayEquals(after, Files.readAllBytes(fileSystem.getPath("/after.txt")));
+                ZipArkivoEntryAttributes attributes = Files.readAttributes(
+                        fileSystem.getPath("/secret.txt"),
+                        ZipArkivoEntryAttributes.class
+                );
+                assertEquals(ZipMethod.deflate64(), attributes.method());
+                assertEquals(ZipEncryption.winZipAes256(), attributes.encryption());
             }
         } finally {
             deleteTemporaryArchive(archivePath);

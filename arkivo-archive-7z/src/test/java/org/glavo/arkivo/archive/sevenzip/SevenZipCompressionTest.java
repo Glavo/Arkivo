@@ -47,6 +47,13 @@ public final class SevenZipCompressionTest {
                 ),
                 SevenZipCompression.deflate()
         );
+        assertEquals(
+                new SevenZipCompression(
+                        SevenZipCompressionMethod.DEFLATE64,
+                        SevenZipCompression.MAX_DEFLATE64_LEVEL
+                ),
+                SevenZipCompression.deflate64()
+        );
     }
 
     /// Verifies method-specific custom parameters and default dispatch.
@@ -56,6 +63,7 @@ public final class SevenZipCompressionTest {
         assertEquals(128 * 1024, SevenZipCompression.lzma2(128 * 1024).parameter());
         assertEquals(3, SevenZipCompression.bzip2(3).parameter());
         assertEquals(1, SevenZipCompression.deflate(1).parameter());
+        assertEquals(2, SevenZipCompression.deflate64(2).parameter());
         assertEquals(SevenZipCompression.lzma2(), SevenZipCompression.of(SevenZipCompressionMethod.LZMA2));
         assertEquals("lzma2(131072)", SevenZipCompression.lzma2(128 * 1024).toString());
     }
@@ -79,6 +87,8 @@ public final class SevenZipCompressionTest {
         assertThrows(IllegalArgumentException.class, () -> SevenZipCompression.bzip2(10));
         assertThrows(IllegalArgumentException.class, () -> SevenZipCompression.deflate(-1));
         assertThrows(IllegalArgumentException.class, () -> SevenZipCompression.deflate(10));
+        assertThrows(IllegalArgumentException.class, () -> SevenZipCompression.deflate64(-1));
+        assertThrows(IllegalArgumentException.class, () -> SevenZipCompression.deflate64(10));
     }
 
     /// Verifies stable case-insensitive compression method parsing.
@@ -89,6 +99,7 @@ public final class SevenZipCompressionTest {
         assertEquals(SevenZipCompressionMethod.LZMA2, SevenZipCompressionMethod.parse("lzma2"));
         assertEquals(SevenZipCompressionMethod.BZIP2, SevenZipCompressionMethod.parse("bzip2"));
         assertEquals(SevenZipCompressionMethod.DEFLATE, SevenZipCompressionMethod.parse("deflate"));
+        assertEquals(SevenZipCompressionMethod.DEFLATE64, SevenZipCompressionMethod.parse("DEFLATE64"));
         assertThrows(IllegalArgumentException.class, () -> SevenZipCompressionMethod.parse("zstd"));
     }
 }

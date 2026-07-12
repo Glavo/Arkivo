@@ -23,7 +23,7 @@ import java.nio.channels.WritableByteChannel;
 import java.util.List;
 import java.util.Set;
 
-/// Provides raw Deflate64 decompression channels.
+/// Provides raw Deflate64 compression and decompression channels.
 @NotNullByDefault
 public final class Deflate64Codec implements CompressionCodec {
     /// The stable Deflate64 codec name.
