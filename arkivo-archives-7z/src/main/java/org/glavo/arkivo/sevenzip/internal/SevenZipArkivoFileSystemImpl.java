@@ -3,8 +3,6 @@
 
 package org.glavo.arkivo.sevenzip.internal;
 
-import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
-import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile;
 import org.glavo.arkivo.ArkivoCommitOutput;
 import org.glavo.arkivo.ArkivoCommitTarget;
 import org.glavo.arkivo.ArkivoEditStorage;
@@ -135,7 +133,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     private final Map<String, UpdateOutputSettings> updateOutputSettings;
 
     /// The writer used by forward-only write mode, or `null` in read and update modes.
-    private final @Nullable SevenZOutputFile writer;
+    private final @Nullable SevenZipArchiveWriter writer;
 
     /// The staged split output published after the writer closes, or `null` for direct path writes and read/update modes.
     private final @Nullable SevenZipSplitArchiveOutput splitOutput;
@@ -350,7 +348,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             this.dirty = newArchive;
         } else if (config.archiveWritable()) {
             validateWriteFeatures();
-            @Nullable SevenZOutputFile openedWriter = null;
+            @Nullable SevenZipArchiveWriter openedWriter = null;
             @Nullable SevenZipSplitArchiveOutput openedSplitOutput = null;
             @Nullable SevenZipHeaderEncryption openedHeaderEncryption = null;
             try (SevenZipWritePassword password = SevenZipWritePassword.open(config.passwordProvider())) {
@@ -361,10 +359,9 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     }
                     openedHeaderEncryption = SevenZipHeaderEncryption.create(passwordBytes);
                 }
-                WriterResources writerResources = openArchiveWriter(password.characters());
+                WriterResources writerResources = openArchiveWriter(password.bytes());
                 openedWriter = writerResources.writer();
                 openedSplitOutput = writerResources.splitOutput();
-                SevenZipContentMethodsSupport.applyTo(openedWriter, config.compression(), config.filter());
             } catch (IOException | RuntimeException | Error exception) {
                 closeWriterAfterConstructionFailure(exception, openedWriter);
                 closeSplitOutputAfterConstructionFailure(exception, openedSplitOutput);
@@ -416,7 +413,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Releases a partially opened 7z writer after construction fails.
     private static void closeWriterAfterConstructionFailure(
             Throwable failure,
-            @Nullable SevenZOutputFile openedWriter
+            @Nullable SevenZipArchiveWriter openedWriter
     ) {
         if (openedWriter != null) {
             try {
@@ -1125,38 +1122,25 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         if (metadata.dataOffset() == SevenZipEntryMetadata.NO_DATA_OFFSET) {
             return new ByteArrayInputStream(new byte[0]);
         }
-        SeekableByteChannel packedChannel = new SevenZipFileSliceChannel(
-                openArchiveChannel(),
-                metadata.dataOffset(),
-                metadata.packedSize()
-        );
-        if (metadata.packedCrc32() != SevenZipEntryMetadata.UNKNOWN_CRC32) {
-            packedChannel = new SevenZipCrc32ByteChannel(
-                    packedChannel,
-                    metadata.packedSize(),
-                    metadata.packedCrc32(),
-                    "7z packed stream data does not match CRC-32"
-            );
+        List<InputStream> packedInputs = openPackedInputs(metadata);
+        if (metadata.method().isCopyOnly()) {
+            if (packedInputs.size() != 1) {
+                closeInputStreams(packedInputs);
+                throw new IOException("7z Copy folder must consume exactly one packed stream");
+            }
+            return new SevenZipBoundedInputStream(packedInputs.get(0), metadata.size(), metadata.crc32());
         }
-        InputStream input = Channels.newInputStream(packedChannel);
-        InputStream decoded = input;
+
+        InputStream decoded = SevenZipLZMADecoder.openFolder(
+                packedInputs,
+                metadata.method(),
+                checkedDecodedLimit(metadata),
+                config.passwordProvider()
+        );
         boolean completed = false;
         Throwable failure = null;
         try {
-            boolean skipDecodedOffset;
-            if (metadata.method().isCopyOnly()) {
-                decoded = input;
-                skipDecodedOffset = false;
-            } else {
-                decoded = SevenZipLZMADecoder.openFolder(
-                        input,
-                        metadata.method(),
-                        checkedDecodedLimit(metadata),
-                        config.passwordProvider()
-                );
-                skipDecodedOffset = true;
-            }
-            if (skipDecodedOffset && metadata.decodedOffset() > 0) {
+            if (metadata.decodedOffset() > 0) {
                 decoded.skipNBytes(metadata.decodedOffset());
             }
             completed = true;
@@ -1176,6 +1160,67 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     }
                 }
             }
+        }
+    }
+
+    /// Opens and validates every physical packed stream consumed by an entry folder.
+    private List<InputStream> openPackedInputs(SevenZipEntryMetadata metadata) throws IOException {
+        ArrayList<InputStream> inputs = new ArrayList<>(metadata.packedStreams().size());
+        Throwable failure = null;
+        try {
+            for (SevenZipPackedStream packedStream : metadata.packedStreams()) {
+                SeekableByteChannel channel = new SevenZipFileSliceChannel(
+                        openArchiveChannel(),
+                        packedStream.offset(),
+                        packedStream.size()
+                );
+                if (packedStream.crc32() != SevenZipEntryMetadata.UNKNOWN_CRC32) {
+                    channel = new SevenZipCrc32ByteChannel(
+                            channel,
+                            packedStream.size(),
+                            packedStream.crc32(),
+                            "7z packed stream data does not match CRC-32"
+                    );
+                }
+                inputs.add(Channels.newInputStream(channel));
+            }
+            return List.copyOf(inputs);
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            if (failure != null) {
+                try {
+                    closeInputStreams(inputs);
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure.addSuppressed(exception);
+                }
+            }
+        }
+    }
+
+    /// Closes input streams in declaration order while preserving every close failure.
+    private static void closeInputStreams(List<? extends InputStream> inputs) throws IOException {
+        Throwable failure = null;
+        for (InputStream input : inputs) {
+            try {
+                input.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                if (failure == null) {
+                    failure = exception;
+                } else {
+                    failure.addSuppressed(exception);
+                }
+            }
+        }
+        if (failure instanceof IOException exception) {
+            throw exception;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure instanceof Error exception) {
+            throw exception;
         }
     }
 
@@ -1486,7 +1531,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Opens the underlying archive writer and optional split publisher.
-    private WriterResources openArchiveWriter(char @Nullable [] password) throws IOException {
+    private WriterResources openArchiveWriter(byte @Nullable [] password) throws IOException {
         @Nullable ArkivoVolumeTarget target = outputTarget;
         long splitSize = outputSplitSize;
         if (target == null && config.splitSize() != SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
@@ -1498,16 +1543,25 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             splitSize = config.splitSize();
         }
         if (target != null) {
-            SevenZipSplitArchiveOutput splitOutput = SevenZipSplitArchiveOutput.open(target, splitSize, password);
+            SevenZipSplitArchiveOutput splitOutput = SevenZipSplitArchiveOutput.open(
+                    target,
+                    splitSize,
+                    password,
+                    config.compression(),
+                    config.filter()
+            );
             return new WriterResources(splitOutput.writer(), splitOutput);
         }
 
         Path currentArchivePath = Objects.requireNonNull(archivePath, "archivePath");
         SeekableByteChannel channel = Files.newByteChannel(currentArchivePath, config.openOptions());
         try {
-            SevenZOutputFile writer = password != null
-                    ? new SevenZOutputFile(channel, password)
-                    : new SevenZOutputFile(channel);
+            SevenZipArchiveWriter writer = new SevenZipArchiveWriter(
+                    channel,
+                    password,
+                    config.compression(),
+                    config.filter()
+            );
             return new WriterResources(writer, null);
         } catch (IOException | RuntimeException | Error exception) {
             try {
@@ -1551,9 +1605,12 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     StandardOpenOption.TRUNCATE_EXISTING,
                     StandardOpenOption.WRITE
             ));
-                 SevenZOutputFile archiveWriter = password.characters() != null
-                         ? new SevenZOutputFile(channel, password.characters())
-                         : new SevenZOutputFile(channel)) {
+                 SevenZipArchiveWriter archiveWriter = new SevenZipArchiveWriter(
+                         channel,
+                         password.bytes(),
+                         config.compression(),
+                         config.filter()
+                 )) {
                 writeUpdatedArchive(archiveWriter);
             }
             if (encryption != null) {
@@ -1607,8 +1664,14 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 }
                 encryption = SevenZipHeaderEncryption.create(passwordBytes);
             }
-            output = SevenZipSplitArchiveOutput.open(target, updateSplitSize, password.characters());
-            SevenZOutputFile archiveWriter = output.writer();
+            output = SevenZipSplitArchiveOutput.open(
+                    target,
+                    updateSplitSize,
+                    password.bytes(),
+                    config.compression(),
+                    config.filter()
+            );
+            SevenZipArchiveWriter archiveWriter = output.writer();
             @Nullable Throwable writerFailure = null;
             try {
                 writeUpdatedArchive(archiveWriter);
@@ -1644,8 +1707,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Writes every indexed entry to a newly opened 7z writer.
-    private void writeUpdatedArchive(SevenZOutputFile archiveWriter) throws IOException {
-        SevenZipContentMethodsSupport.applyTo(archiveWriter, config.compression(), config.filter());
+    private void writeUpdatedArchive(SevenZipArchiveWriter archiveWriter) throws IOException {
         byte[] transferBuffer = new byte[64 * 1024];
         for (Map.Entry<String, SevenZipEntryMetadata> indexedEntry : entries.entrySet()) {
             String pathText = indexedEntry.getKey();
@@ -1662,11 +1724,11 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     settings.filter()
             );
 
-            SevenZArchiveEntry archiveEntry = new SevenZArchiveEntry();
-            archiveEntry.setName(writableEntryName(pathText));
-            archiveEntry.setDirectory(metadata.directory());
-            writeMetadata.applyTo(archiveEntry, config.compression(), config.filter());
-            archiveWriter.putArchiveEntry(archiveEntry);
+            archiveWriter.putArchiveEntry(
+                    writableEntryName(pathText),
+                    metadata.directory(),
+                    writeMetadata
+            );
 
             @Nullable Throwable entryFailure = null;
             try {
@@ -1698,7 +1760,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Streams one decoded entry body into an open 7z archive entry.
     private static void copyToArchive(
             InputStream input,
-            SevenZOutputFile archiveWriter,
+            SevenZipArchiveWriter archiveWriter,
             byte[] transferBuffer
     ) throws IOException {
         while (true) {
@@ -1756,7 +1818,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// @param splitOutput the split publisher, or `null` for direct path output
     @NotNullByDefault
     private record WriterResources(
-            SevenZOutputFile writer,
+            SevenZipArchiveWriter writer,
             @Nullable SevenZipSplitArchiveOutput splitOutput
     ) {
         /// Creates one writer resource set.
@@ -1782,8 +1844,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Returns the writer for forward-only write mode.
-    private SevenZOutputFile requireWriter() {
-        @Nullable SevenZOutputFile currentWriter = writer;
+    private SevenZipArchiveWriter requireWriter() {
+        @Nullable SevenZipArchiveWriter currentWriter = writer;
         if (currentWriter == null) {
             throw new ReadOnlyFileSystemException();
         }
@@ -2241,10 +2303,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 writableEntryName(path),
                 metadata.directory(),
                 size,
-                metadata.dataOffset(),
                 metadata.decodedOffset(),
-                metadata.packedSize(),
-                metadata.packedCrc32(),
+                metadata.packedStreams(),
                 metadata.crc32(),
                 metadata.method(),
                 metadata.creationTime(),
@@ -2496,10 +2556,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 metadata.path(),
                 metadata.directory(),
                 metadata.size(),
-                metadata.dataOffset(),
                 metadata.decodedOffset(),
-                metadata.packedSize(),
-                metadata.packedCrc32(),
+                metadata.packedStreams(),
                 metadata.crc32(),
                 metadata.method(),
                 creationTime,
@@ -2584,11 +2642,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         if (entryOpen) {
             throw new IOException("A 7z entry is already open");
         }
-        SevenZArchiveEntry entry = new SevenZArchiveEntry();
-        entry.setName(writableEntryName(path));
-        entry.setDirectory(directory);
-        metadata.applyTo(entry, config.compression(), config.filter());
-        requireWriter().putArchiveEntry(entry);
+        requireWriter().putArchiveEntry(writableEntryName(path), directory, metadata);
         entryOpen = true;
     }
 

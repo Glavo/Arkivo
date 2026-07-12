@@ -84,6 +84,41 @@ public final class Rar4NativeDecoderTest {
         session.release();
     }
 
+    /// Decodes repeated symbols through root updates and a newly created binary RAR3 PPMd context.
+    @Test
+    public void decodesRar3PpmContextSuccessor() throws IOException {
+        byte[] packed = {
+                (byte) 0xa1,
+                0,
+                0x40, (byte) 0xfd, (byte) 0xc8, 0x3f,
+                0, 0
+        };
+        Rar4Decoder.Session session = Rar4Decoder.newSession();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Rar4Decoder.Result result = session.decode(
+                new ByteArrayInputStream(packed),
+                output,
+                29,
+                3,
+                false
+        );
+        assertArrayEquals(new byte[]{'A', 'A', 'A'}, output.toByteArray());
+        assertEquals(3L, result.size());
+
+        byte[] continuation = {(byte) 0x81, 0, 0, 0, 0, 0, 0};
+        ByteArrayOutputStream continuationOutput = new ByteArrayOutputStream();
+        Rar4Decoder.Result continuationResult = session.decode(
+                new ByteArrayInputStream(continuation),
+                continuationOutput,
+                29,
+                1,
+                true
+        );
+        assertArrayEquals(new byte[]{'A'}, continuationOutput.toByteArray());
+        assertEquals(1L, continuationResult.size());
+        session.release();
+    }
+
     /// Builds a normal RAR 2.x table containing one literal and one table marker.
     private static byte[] rar20LiteralStream(int literalCount) {
         BitWriter writer = new BitWriter();

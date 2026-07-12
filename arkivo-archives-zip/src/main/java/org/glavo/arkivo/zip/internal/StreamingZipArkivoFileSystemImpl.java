@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.zip.internal;
 
-import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
 import org.apache.commons.compress.compressors.xz.XZCompressorOutputStream;
 import org.apache.commons.compress.compressors.zstandard.ZstdCompressorOutputStream;
 import org.glavo.arkivo.ArkivoCommitOutput;
@@ -14,6 +13,7 @@ import org.glavo.arkivo.ArkivoStoredContent;
 import org.glavo.arkivo.ArkivoVolumeOutput;
 import org.glavo.arkivo.ArkivoVolumeTarget;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
+import org.glavo.arkivo.internal.BZip2OutputStream;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
@@ -2380,7 +2380,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 this.entryOutput = new DeflaterOutputStream(dataOutput, entryDeflater);
             } else if (metadata.method == BZIP2_METHOD) {
                 this.deflater = null;
-                this.entryOutput = new BZip2CompressorOutputStream(dataOutput);
+                this.entryOutput = new BZip2OutputStream(dataOutput);
             } else if (isZstandardMethod(metadata.method)) {
                 this.deflater = null;
                 this.entryOutput = new ZstdCompressorOutputStream(new NonClosingOutputStream(dataOutput));
@@ -2437,7 +2437,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 try {
                     if (entryOutput instanceof DeflaterOutputStream deflatedOutput) {
                         deflatedOutput.finish();
-                    } else if (entryOutput instanceof BZip2CompressorOutputStream bzip2Output) {
+                    } else if (entryOutput instanceof BZip2OutputStream bzip2Output) {
                         bzip2Output.finish();
                     } else if (entryOutput instanceof ZstdCompressorOutputStream zstandardOutput) {
                         zstandardOutput.close();

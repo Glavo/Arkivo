@@ -3,12 +3,12 @@
 
 package org.glavo.arkivo.zip.internal;
 
-import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
-import org.apache.commons.compress.compressors.deflate64.Deflate64CompressorInputStream;
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream;
 import org.apache.commons.compress.compressors.zstandard.ZstdCompressorInputStream;
+import org.glavo.arkivo.internal.BZip2InputStream;
 import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.ArkivoVolumeSource;
+import org.glavo.arkivo.internal.Deflate64InputStream;
 import org.glavo.arkivo.internal.ArkivoFileStoreAttributes;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributeView;
@@ -18,10 +18,10 @@ import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
 import org.glavo.arkivo.zip.ZipEncryption;
 import org.glavo.arkivo.zip.ZipEntryNameEncoding;
 import org.glavo.arkivo.zip.ZipMethod;
-import org.tukaani.xz.LZMAInputStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
+import org.tukaani.xz.LZMAInputStream;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -1239,7 +1239,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Opens a Deflate64 decoding stream and closes the compressed stream if setup fails.
     private static InputStream openDeflate64InputStream(InputStream input) throws IOException {
         try {
-            return new Deflate64CompressorInputStream(input);
+            return new Deflate64InputStream(input);
         } catch (RuntimeException | Error exception) {
             try {
                 input.close();
@@ -1253,7 +1253,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Opens a BZIP2 decoding stream and closes the compressed stream if setup fails.
     private static InputStream openBzip2InputStream(InputStream input) throws IOException {
         try {
-            return new BZip2CompressorInputStream(input);
+            return new BZip2InputStream(input);
         } catch (IOException | RuntimeException | Error exception) {
             try {
                 input.close();

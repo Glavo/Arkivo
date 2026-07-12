@@ -19,11 +19,11 @@ import java.util.Objects;
 
 /// Opens RAR archives as read-only NIO file systems.
 /// Readable entry bodies are cached through `ArkivoFileSystem.EDIT_STORAGE`, using temporary files under the system
-/// temporary directory by default. The file system owns and closes the selected edit storage. RAR4 compression methods
-/// 0 through 5 with extraction versions 15, 20, 26, 29, and 36 are readable in LZ mode, including RAR 2.x adaptive
-/// audio and RAR3 virtual-machine filters. RAR3 PPM blocks are rejected. RAR5 compression methods 0 through 5 with
-/// algorithm versions 0 and 1 and dictionaries up to 768 MiB are also readable. Both formats support solid and split compressed
-/// entries. RAR 3.x AES-128 and RAR5 AES-256 encrypted headers and supported entries, including split entries, use
+/// temporary directory by default. The file system owns and closes the selected edit storage. RAR4 compression methods 0
+/// through 5 with extraction versions 15, 20, 26, 29, and 36 are readable, including legacy LZ modes, RAR 2.x adaptive
+/// audio, RAR3 PPMd blocks, and RAR3 virtual-machine filters. RAR5 compression methods 0 through 5 with algorithm versions
+/// 0 and 1 and dictionaries up to 768 MiB are also readable. Both formats support solid and split compressed entries.
+/// RAR 3.x AES-128 and RAR5 AES-256 encrypted headers and supported entries, including split entries, use
 /// `PASSWORD_PROVIDER`. Legacy RAR 1.3, 1.5, and 2.x file-data encryption is also readable for otherwise supported entries.
 /// Cached readable bodies validate available CRC32 values and RAR5 BLAKE2sp hashes over unpacked plaintext, including
 /// password-dependent checksums on encrypted entries.

@@ -3,9 +3,9 @@
 
 package org.glavo.arkivo.sevenzip.internal;
 
-import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
-import org.apache.commons.compress.compressors.deflate64.Deflate64CompressorInputStream;
+import org.glavo.arkivo.internal.BZip2InputStream;
 import org.glavo.arkivo.ArkivoPasswordProvider;
+import org.glavo.arkivo.internal.Deflate64InputStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.tukaani.xz.ArrayCache;
@@ -23,8 +23,13 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.zip.Inflater;
 import java.util.zip.InflaterInputStream;
 
@@ -57,6 +62,9 @@ final class SevenZipLZMADecoder {
 
     /// The 7z x86 BCJ filter method ID.
     static final byte[] X86_FILTER_METHOD_ID = new byte[]{0x03, 0x03, 0x01, 0x03};
+
+    /// The 7z x86 BCJ2 four-input filter method ID.
+    static final byte[] BCJ2_FILTER_METHOD_ID = new byte[]{0x03, 0x03, 0x01, 0x1b};
 
     /// The 7z PowerPC BCJ filter method ID.
     static final byte[] POWERPC_FILTER_METHOD_ID = new byte[]{0x03, 0x03, 0x02, 0x05};
@@ -122,6 +130,11 @@ final class SevenZipLZMADecoder {
         return Arrays.equals(methodId, X86_FILTER_METHOD_ID);
     }
 
+    /// Returns whether the method ID identifies the x86 BCJ2 multi-stream filter.
+    static boolean isBcj2Filter(byte[] methodId) {
+        return Arrays.equals(methodId, BCJ2_FILTER_METHOD_ID);
+    }
+
     /// Returns whether the method ID identifies the PowerPC BCJ filter.
     static boolean isPowerPCFilter(byte[] methodId) {
         return Arrays.equals(methodId, POWERPC_FILTER_METHOD_ID);
@@ -167,6 +180,7 @@ final class SevenZipLZMADecoder {
                 || isBZip2(methodId)
                 || isAes(methodId)
                 || isDelta(methodId)
+                || isBcj2Filter(methodId)
                 || isBcjFilter(methodId);
     }
 
@@ -186,48 +200,43 @@ final class SevenZipLZMADecoder {
             long finalOutputLimit,
             @Nullable ArkivoPasswordProvider passwordProvider
     ) throws IOException {
-        Objects.requireNonNull(input, "input");
+        return openFolder(List.of(input), method, finalOutputLimit, passwordProvider);
+    }
+
+    /// Opens the decoder graph for a 7z folder with all physical packed inputs.
+    static InputStream openFolder(
+            List<? extends InputStream> packedInputs,
+            SevenZipFolderMethod method,
+            long finalOutputLimit,
+            @Nullable ArkivoPasswordProvider passwordProvider
+    ) throws IOException {
+        Objects.requireNonNull(packedInputs, "packedInputs");
         Objects.requireNonNull(method, "method");
-        InputStream current = input;
+        if (finalOutputLimit < 0) {
+            throw new IllegalArgumentException("finalOutputLimit must be non-negative");
+        }
+        if (packedInputs.size() != method.packedStreamCount()) {
+            throw new IOException("7z packed input count does not match the folder graph");
+        }
+        ArrayList<InputStream> inputs = new ArrayList<>(packedInputs.size());
+        for (InputStream input : packedInputs) {
+            inputs.add(Objects.requireNonNull(input, "packedInputs element"));
+        }
+
+        GraphBuilder builder = new GraphBuilder(inputs, method, passwordProvider);
         boolean completed = false;
         Throwable failure = null;
         try {
-            for (int index = 0; index < method.coderCount(); index++) {
-                byte[] methodId = method.methodId(index);
-                byte[] properties = method.properties(index);
-                long outputLimit = index + 1 == method.coderCount() ? finalOutputLimit : method.unpackSize(index);
-                if (isCopy(methodId)) {
-                    continue;
-                }
-                if (isLZMA(methodId)) {
-                    current = openLZMA(current, outputLimit, properties);
-                } else if (isLZMA2(methodId)) {
-                    current = openLZMA2(current, properties);
-                } else if (isDeflate(methodId)) {
-                    current = openDeflate(current, properties);
-                } else if (isDeflate64(methodId)) {
-                    current = openDeflate64(current, properties);
-                } else if (isBZip2(methodId)) {
-                    current = openBZip2(current, properties);
-                } else if (isAes(methodId)) {
-                    current = openAes(current, properties, passwordProvider);
-                } else if (isDelta(methodId)) {
-                    current = openDelta(current, properties);
-                } else if (isBcjFilter(methodId)) {
-                    current = openBcjFilter(current, methodId, properties);
-                } else {
-                    throw new UnsupportedOperationException("Unsupported 7z coder method: " + Arrays.toString(methodId));
-                }
-            }
+            InputStream result = builder.openFinalOutput(finalOutputLimit);
             completed = true;
-            return current;
+            return result;
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
             throw exception;
         } finally {
             if (!completed) {
                 try {
-                    current.close();
+                    builder.closeRoots();
                 } catch (IOException | RuntimeException | Error exception) {
                     if (failure != null) {
                         failure.addSuppressed(exception);
@@ -235,6 +244,189 @@ final class SevenZipLZMADecoder {
                         throw exception;
                     }
                 }
+            }
+        }
+    }
+
+    /// Opens one supported single-input coder.
+    private static InputStream openSingleInputCoder(
+            InputStream input,
+            byte[] methodId,
+            byte[] properties,
+            long outputLimit,
+            @Nullable ArkivoPasswordProvider passwordProvider
+    ) throws IOException {
+        if (isCopy(methodId)) {
+            return input;
+        }
+        if (isLZMA(methodId)) {
+            return openLZMA(input, outputLimit, properties);
+        }
+        if (isLZMA2(methodId)) {
+            return openLZMA2(input, properties);
+        }
+        if (isDeflate(methodId)) {
+            return openDeflate(input, properties);
+        }
+        if (isDeflate64(methodId)) {
+            return openDeflate64(input, properties);
+        }
+        if (isBZip2(methodId)) {
+            return openBZip2(input, properties);
+        }
+        if (isAes(methodId)) {
+            return openAes(input, properties, passwordProvider);
+        }
+        if (isDelta(methodId)) {
+            return openDelta(input, properties);
+        }
+        if (isBcjFilter(methodId)) {
+            return openBcjFilter(input, methodId, properties);
+        }
+        throw new UnsupportedOperationException("Unsupported 7z coder method: " + Arrays.toString(methodId));
+    }
+
+    /// Builds decoder streams by resolving coder graph dependencies from the final output.
+    @NotNullByDefault
+    private static final class GraphBuilder {
+        /// The physical packed input streams in folder order.
+        private final List<InputStream> packedInputs;
+
+        /// The folder coder graph.
+        private final SevenZipFolderMethod method;
+
+        /// The password provider used by AES coder nodes.
+        private final @Nullable ArkivoPasswordProvider passwordProvider;
+
+        /// The currently unowned stream roots that must be closed after setup failure.
+        private final Set<InputStream> roots = Collections.newSetFromMap(new IdentityHashMap<>());
+
+        /// Creates a graph builder over physical packed inputs.
+        private GraphBuilder(
+                List<InputStream> packedInputs,
+                SevenZipFolderMethod method,
+                @Nullable ArkivoPasswordProvider passwordProvider
+        ) {
+            this.packedInputs = List.copyOf(packedInputs);
+            this.method = method;
+            this.passwordProvider = passwordProvider;
+            roots.addAll(packedInputs);
+        }
+
+        /// Opens the sole unbound folder output stream.
+        private InputStream openFinalOutput(long outputLimit) throws IOException {
+            return openOutput(method.finalOutputStreamIndex(), outputLimit);
+        }
+
+        /// Opens one folder output and recursively resolves all coder inputs.
+        private InputStream openOutput(int outputStreamIndex, long outputLimit) throws IOException {
+            int coderIndex = method.coderIndexForOutput(outputStreamIndex);
+            if (method.outputStreamCount(coderIndex) != 1
+                    || method.firstOutputStreamIndex(coderIndex) != outputStreamIndex) {
+                throw new UnsupportedOperationException("Unsupported 7z multi-output coder");
+            }
+
+            int inputCount = method.inputStreamCount(coderIndex);
+            int firstInput = method.firstInputStreamIndex(coderIndex);
+            ArrayList<InputStream> coderInputs = new ArrayList<>(inputCount);
+            for (int index = 0; index < inputCount; index++) {
+                int inputStreamIndex = firstInput + index;
+                int boundOutputStreamIndex = method.boundOutputStreamIndex(inputStreamIndex);
+                if (boundOutputStreamIndex >= 0) {
+                    coderInputs.add(openOutput(
+                            boundOutputStreamIndex,
+                            method.unpackSize(boundOutputStreamIndex)
+                    ));
+                } else {
+                    int packedStreamOrdinal = method.packedStreamOrdinal(inputStreamIndex);
+                    if (packedStreamOrdinal < 0) {
+                        throw new IOException("7z folder input stream has no source");
+                    }
+                    coderInputs.add(packedInputs.get(packedStreamOrdinal));
+                }
+            }
+
+            byte[] methodId = method.methodId(coderIndex);
+            byte[] properties = method.properties(coderIndex);
+            InputStream output;
+            if (isBcj2Filter(methodId)) {
+                if (inputCount != 4) {
+                    throw new IOException("7z BCJ2 coder must consume four input streams");
+                }
+                if (properties.length != 0) {
+                    throw new IOException("7z BCJ2 coder properties must be empty");
+                }
+                output = new SevenZipBcj2InputStream(
+                        coderInputs.get(0),
+                        coderInputs.get(1),
+                        coderInputs.get(2),
+                        coderInputs.get(3),
+                        outputLimit
+                );
+            } else {
+                if (inputCount != 1) {
+                    throw new UnsupportedOperationException("Unsupported 7z multi-input coder");
+                }
+                output = openSingleInputCoder(
+                        coderInputs.get(0),
+                        methodId,
+                        properties,
+                        outputLimit,
+                        passwordProvider
+                );
+            }
+            for (InputStream coderInput : coderInputs) {
+                roots.remove(coderInput);
+            }
+            roots.add(output);
+            return output;
+        }
+
+        /// Closes every stream root retained after a failed graph setup.
+        private void closeRoots() throws IOException {
+            IOException failure = null;
+            RuntimeException runtimeFailure = null;
+            Error errorFailure = null;
+            for (InputStream root : roots) {
+                try {
+                    root.close();
+                } catch (IOException exception) {
+                    if (failure == null) {
+                        failure = exception;
+                    } else {
+                        failure.addSuppressed(exception);
+                    }
+                } catch (RuntimeException exception) {
+                    if (runtimeFailure == null) {
+                        runtimeFailure = exception;
+                    } else {
+                        runtimeFailure.addSuppressed(exception);
+                    }
+                } catch (Error exception) {
+                    if (errorFailure == null) {
+                        errorFailure = exception;
+                    } else {
+                        errorFailure.addSuppressed(exception);
+                    }
+                }
+            }
+            if (failure != null) {
+                if (runtimeFailure != null) {
+                    failure.addSuppressed(runtimeFailure);
+                }
+                if (errorFailure != null) {
+                    failure.addSuppressed(errorFailure);
+                }
+                throw failure;
+            }
+            if (runtimeFailure != null) {
+                if (errorFailure != null) {
+                    runtimeFailure.addSuppressed(errorFailure);
+                }
+                throw runtimeFailure;
+            }
+            if (errorFailure != null) {
+                throw errorFailure;
             }
         }
     }
@@ -291,7 +483,7 @@ final class SevenZipLZMADecoder {
         if (properties.length != 0) {
             throw new IOException("7z Deflate64 coder properties must be empty");
         }
-        return new Deflate64CompressorInputStream(input);
+        return new Deflate64InputStream(input);
     }
 
     /// Opens a BZip2 decoder for 7z coder properties.
@@ -301,7 +493,7 @@ final class SevenZipLZMADecoder {
         if (properties.length != 0) {
             throw new IOException("7z BZip2 coder properties must be empty");
         }
-        return new BZip2CompressorInputStream(input);
+        return new BZip2InputStream(input);
     }
 
     /// Opens a raw Delta filter decoder for 7z coder properties.

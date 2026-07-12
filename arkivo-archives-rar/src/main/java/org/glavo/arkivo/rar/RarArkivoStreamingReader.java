@@ -15,9 +15,9 @@ import java.util.Objects;
 
 /// Reads RAR entries from a forward-only stream.
 ///
-/// RAR4 LZ compression methods 0 through 5 with extraction versions 15, 20, 26, 29, and 36 are readable, including the
-/// RAR 2.x adaptive audio mode and RAR3 virtual-machine filters. RAR3 PPM blocks are rejected. RAR5 compression methods
-/// 0 through 5 with algorithm versions 0 and 1 and dictionaries up to 768 MiB are also readable.
+/// RAR4 compression methods 0 through 5 with extraction versions 15, 20, 26, 29, and 36 are readable, including legacy LZ
+/// modes, RAR 2.x adaptive audio, RAR3 PPMd blocks, and RAR3 virtual-machine filters. RAR5 compression methods 0 through
+/// 5 with algorithm versions 0 and 1 and dictionaries up to 768 MiB are also readable.
 /// Both formats preserve solid decompression state and can span split entry data across physical volumes. Legacy RAR 1.3,
 /// 1.5, and 2.x file-data encryption, RAR 3.x AES-128 encryption, and RAR5 AES-256 encryption are readable for otherwise
 /// supported entries. Encrypted headers are supported for RAR 3.x and RAR5. Encryption uses the archive-level password
@@ -30,9 +30,6 @@ import java.util.Objects;
 /// password.
 /// RAR5 hard-link and file-copy records expose only their own physical data area, which is normally empty; use
 /// `RarArkivoFileSystem` when their target content must be resolved.
-///
-/// Legacy decryption code derived from the official UnRAR implementation is provided under the UnRAR license and must
-/// not be used to develop a RAR-compatible archiver.
 @NotNullByDefault
 public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingReader
         permits RarArkivoStreamingReaderImpl {

@@ -204,31 +204,22 @@ public final class SevenZipHeaderParser {
             throw new IOException("7z encoded header is too large to index");
         }
 
-        long packedSize = streamsInfo.packedSize(index);
-        InputStream rawPacked = packedStreamOpener.open(streamsInfo.dataOffset(index), packedSize);
-        long packedCrc32 = streamsInfo.packedCrc32(index);
-        InputStream packed = packedCrc32 != SevenZipEntryMetadata.UNKNOWN_CRC32
-                ? new SevenZipBoundedInputStream(
-                        rawPacked,
-                        packedSize,
-                        packedCrc32,
-                        "7z packed stream data does not match CRC-32"
-                )
-                : rawPacked;
-        InputStream decoded = packed;
+        List<InputStream> packedInputs = openPackedInputs(streamsInfo, index, packedStreamOpener);
+        SevenZipFolderMethod method = streamsInfo.method(index);
+        InputStream decoded;
+        if (method.isCopyOnly()) {
+            if (packedInputs.size() != 1) {
+                closeInputStreams(packedInputs);
+                throw new IOException("7z Copy folder must consume exactly one packed stream");
+            }
+            decoded = packedInputs.get(0);
+        } else {
+            long decodedLimit = checkedAdd(decodedOffset, unpackSize, "7z encoded header size is too large");
+            decoded = SevenZipLZMADecoder.openFolder(packedInputs, method, decodedLimit, passwordProvider);
+        }
         Throwable failure = null;
         try {
-            boolean skipDecodedOffset;
-            SevenZipFolderMethod method = streamsInfo.method(index);
-            if (method.isCopyOnly()) {
-                skipDecodedOffset = false;
-            } else {
-                long decodedLimit = checkedAdd(decodedOffset, unpackSize, "7z encoded header size is too large");
-                decoded = SevenZipLZMADecoder.openFolder(packed, method, decodedLimit, passwordProvider);
-                skipDecodedOffset = true;
-            }
-
-            if (skipDecodedOffset && decodedOffset > 0) {
+            if (!method.isCopyOnly() && decodedOffset > 0) {
                 decoded.skipNBytes(decodedOffset);
             }
             byte[] bytes = decoded.readNBytes((int) unpackSize);
@@ -250,6 +241,68 @@ public final class SevenZipHeaderParser {
                     throw exception;
                 }
             }
+        }
+    }
+
+    /// Opens and validates every physical packed stream consumed by an encoded-header folder.
+    private static List<InputStream> openPackedInputs(
+            StreamsInfo streamsInfo,
+            int streamIndex,
+            PackedStreamOpener packedStreamOpener
+    ) throws IOException {
+        List<SevenZipPackedStream> descriptors = streamsInfo.packedStreams(streamIndex);
+        ArrayList<InputStream> inputs = new ArrayList<>(descriptors.size());
+        Throwable failure = null;
+        try {
+            for (SevenZipPackedStream descriptor : descriptors) {
+                InputStream raw = packedStreamOpener.open(descriptor.offset(), descriptor.size());
+                InputStream input = descriptor.crc32() != SevenZipEntryMetadata.UNKNOWN_CRC32
+                        ? new SevenZipBoundedInputStream(
+                                raw,
+                                descriptor.size(),
+                                descriptor.crc32(),
+                                "7z packed stream data does not match CRC-32"
+                        )
+                        : raw;
+                inputs.add(input);
+            }
+            return List.copyOf(inputs);
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+            throw exception;
+        } finally {
+            if (failure != null) {
+                try {
+                    closeInputStreams(inputs);
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure.addSuppressed(exception);
+                }
+            }
+        }
+    }
+
+    /// Closes input streams while retaining every failure after the first as suppressed.
+    private static void closeInputStreams(List<? extends InputStream> inputs) throws IOException {
+        Throwable failure = null;
+        for (InputStream input : inputs) {
+            try {
+                input.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                if (failure == null) {
+                    failure = exception;
+                } else {
+                    failure.addSuppressed(exception);
+                }
+            }
+        }
+        if (failure instanceof IOException exception) {
+            throw exception;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure instanceof Error exception) {
+            throw exception;
         }
     }
 
@@ -298,8 +351,16 @@ public final class SevenZipHeaderParser {
             FolderInfo[] folders,
             @Nullable SubStreamsInfo subStreamsInfo
     ) throws IOException {
-        if (packInfo.packSizes.length != folders.length) {
-            throw new IOException("7z pack stream count does not match folder count");
+        int expectedPackStreamCount = 0;
+        for (FolderInfo folder : folders) {
+            try {
+                expectedPackStreamCount = Math.addExact(expectedPackStreamCount, folder.packedStreamCount());
+            } catch (ArithmeticException exception) {
+                throw new IOException("7z pack stream count is too large", exception);
+            }
+        }
+        if (packInfo.packSizes.length != expectedPackStreamCount) {
+            throw new IOException("7z pack stream count does not match folder inputs");
         }
         return new StreamsInfo(packInfo.packPosition, packInfo.packSizes, packInfo.packCrc32s, folders, subStreamsInfo);
     }
@@ -308,8 +369,8 @@ public final class SevenZipHeaderParser {
     private static SubStreamsInfo readSubStreamsInfo(HeaderInput input, FolderInfo[] folders) throws IOException {
         int[] counts = new int[folders.length];
         Arrays.fill(counts, 1);
-        long[][] sizes = null;
-        long[][] crc32s = null;
+        long @Nullable [][] sizes = null;
+        long @Nullable [][] crc32s = null;
         boolean countsLocked = false;
         while (true) {
             int property = input.readId();
@@ -423,8 +484,8 @@ public final class SevenZipHeaderParser {
     private static SubStreamsInfo buildSubStreamsInfo(
             FolderInfo[] folders,
             int[] counts,
-            long[][] sizes,
-            @Nullable long[][] crc32s
+            long @Nullable [][] sizes,
+            long @Nullable [][] crc32s
     ) throws IOException {
         long[][] resolvedSizes = sizes;
         if (resolvedSizes == null) {
@@ -558,7 +619,7 @@ public final class SevenZipHeaderParser {
         }
     }
 
-    /// Reads folders and requires each folder to use supported linear coder bindings.
+    /// Reads folders and validates their coder stream bindings.
     private static FolderInfo[] readFolders(HeaderInput input, ExternalData externalData) throws IOException {
         int folderCount = input.readIntNumber("folder count");
         int external = input.readUnsignedByte();
@@ -589,7 +650,7 @@ public final class SevenZipHeaderParser {
         return folders;
     }
 
-    /// Reads one folder and requires it to use a supported linear coder pipeline.
+    /// Reads one folder and preserves its complete coder graph.
     private static FolderInfo readFolder(HeaderInput input) throws IOException {
         int coderCount = input.readIntNumber("coder count");
         if (coderCount <= 0) {
@@ -609,105 +670,93 @@ public final class SevenZipHeaderParser {
             boolean complex = (flags & 0x10) != 0;
             boolean attributes = (flags & 0x20) != 0;
             byte[] methodId = input.readBytes(methodIdSize);
-            long inputStreamCount = 1;
-            long outputStreamCount = 1;
+            int inputStreamCount = 1;
+            int outputStreamCount = 1;
             if (complex) {
-                inputStreamCount = input.readNumber();
-                outputStreamCount = input.readNumber();
+                inputStreamCount = input.readIntNumber("coder input stream count");
+                outputStreamCount = input.readIntNumber("coder output stream count");
             }
             byte[] properties = new byte[0];
             if (attributes) {
                 properties = input.readBytes(input.readIntNumber("coder properties size"));
             }
 
-            if (inputStreamCount != 1 || outputStreamCount != 1) {
-                throw new UnsupportedOperationException("Unsupported 7z multi-stream coder");
+            if (inputStreamCount <= 0 || outputStreamCount <= 0) {
+                throw new IOException("7z coder stream counts must be positive");
             }
             if (!SevenZipLZMADecoder.isSupported(methodId)) {
                 throw new UnsupportedOperationException("Unsupported 7z coder method: " + Arrays.toString(methodId));
             }
-            coders[coderIndex] = new CoderInfo(methodId, properties, totalInputStreams, totalOutputStreams);
-            totalInputStreams++;
-            totalOutputStreams++;
+            coders[coderIndex] = new CoderInfo(
+                    methodId,
+                    properties,
+                    inputStreamCount,
+                    outputStreamCount
+            );
+            try {
+                totalInputStreams = Math.addExact(totalInputStreams, inputStreamCount);
+                totalOutputStreams = Math.addExact(totalOutputStreams, outputStreamCount);
+            } catch (ArithmeticException exception) {
+                throw new IOException("7z folder stream count is too large", exception);
+            }
         }
 
         int bindPairCount = totalOutputStreams - 1;
-        int[] nextCoderByOutput = new int[coderCount];
-        boolean[] inputIsBound = new boolean[coderCount];
-        Arrays.fill(nextCoderByOutput, -1);
+        int[] bindPairInputs = new int[bindPairCount];
+        int[] bindPairOutputs = new int[bindPairCount];
+        boolean[] inputIsBound = new boolean[totalInputStreams];
+        boolean[] outputIsBound = new boolean[totalOutputStreams];
         for (int index = 0; index < bindPairCount; index++) {
             int inputStreamIndex = input.readIntNumber("bind pair input stream index");
             int outputStreamIndex = input.readIntNumber("bind pair output stream index");
-            int inputCoder = coderByInputStream(coders, inputStreamIndex);
-            int outputCoder = coderByOutputStream(coders, outputStreamIndex);
-            if (inputIsBound[inputCoder]) {
+            if (inputStreamIndex >= totalInputStreams) {
+                throw new IOException("7z folder bind pair references a missing input stream");
+            }
+            if (outputStreamIndex >= totalOutputStreams) {
+                throw new IOException("7z folder bind pair references a missing output stream");
+            }
+            if (inputIsBound[inputStreamIndex]) {
                 throw new IOException("7z folder has duplicate bound input stream");
             }
-            if (nextCoderByOutput[outputCoder] >= 0) {
+            if (outputIsBound[outputStreamIndex]) {
                 throw new IOException("7z folder has duplicate bound output stream");
             }
-            inputIsBound[inputCoder] = true;
-            nextCoderByOutput[outputCoder] = inputCoder;
+            inputIsBound[inputStreamIndex] = true;
+            outputIsBound[outputStreamIndex] = true;
+            bindPairInputs[index] = inputStreamIndex;
+            bindPairOutputs[index] = outputStreamIndex;
         }
 
         int packedStreamCount = totalInputStreams - bindPairCount;
-        if (packedStreamCount != 1) {
-            throw new UnsupportedOperationException("Unsupported 7z folder with multiple packed streams");
+        if (packedStreamCount <= 0) {
+            throw new IOException("7z folder has no packed input stream");
         }
-        return new FolderInfo(coders, coderPipelineOrder(nextCoderByOutput, inputIsBound));
-    }
-
-    /// Returns the coder that owns the given input stream index.
-    private static int coderByInputStream(CoderInfo[] coders, int streamIndex) throws IOException {
-        for (int index = 0; index < coders.length; index++) {
-            if (coders[index].inputStreamIndex() == streamIndex) {
-                return index;
-            }
-        }
-        throw new IOException("7z folder bind pair references a missing input stream");
-    }
-
-    /// Returns the coder that owns the given output stream index.
-    private static int coderByOutputStream(CoderInfo[] coders, int streamIndex) throws IOException {
-        for (int index = 0; index < coders.length; index++) {
-            if (coders[index].outputStreamIndex() == streamIndex) {
-                return index;
-            }
-        }
-        throw new IOException("7z folder bind pair references a missing output stream");
-    }
-
-    /// Returns coder indexes ordered from packed input to final output.
-    private static int[] coderPipelineOrder(int[] nextCoderByOutput, boolean[] inputIsBound) throws IOException {
-        int sourceCoder = -1;
-        for (int index = 0; index < inputIsBound.length; index++) {
-            if (!inputIsBound[index]) {
-                if (sourceCoder >= 0) {
-                    throw new IOException("7z folder has multiple packed input coders");
+        int[] packedInputStreamIndexes = new int[packedStreamCount];
+        if (packedStreamCount == 1) {
+            for (int inputStreamIndex = 0; inputStreamIndex < totalInputStreams; inputStreamIndex++) {
+                if (!inputIsBound[inputStreamIndex]) {
+                    packedInputStreamIndexes[0] = inputStreamIndex;
+                    break;
                 }
-                sourceCoder = index;
+            }
+        } else {
+            boolean[] packedInputs = new boolean[totalInputStreams];
+            for (int index = 0; index < packedStreamCount; index++) {
+                int inputStreamIndex = input.readIntNumber("packed input stream index");
+                if (inputStreamIndex >= totalInputStreams) {
+                    throw new IOException("7z folder references a missing packed input stream");
+                }
+                if (inputIsBound[inputStreamIndex]) {
+                    throw new IOException("7z folder packed input stream is already bound");
+                }
+                if (packedInputs[inputStreamIndex]) {
+                    throw new IOException("7z folder has a duplicate packed input stream");
+                }
+                packedInputs[inputStreamIndex] = true;
+                packedInputStreamIndexes[index] = inputStreamIndex;
             }
         }
-        if (sourceCoder < 0) {
-            throw new IOException("7z folder has no packed input coder");
-        }
-
-        int[] order = new int[nextCoderByOutput.length];
-        boolean[] visited = new boolean[nextCoderByOutput.length];
-        int count = 0;
-        int current = sourceCoder;
-        while (current >= 0) {
-            if (visited[current]) {
-                throw new IOException("7z folder coder bindings contain a cycle");
-            }
-            visited[current] = true;
-            order[count++] = current;
-            current = nextCoderByOutput[current];
-        }
-        if (count != order.length) {
-            throw new IOException("7z folder coder bindings are not linear");
-        }
-        return order;
+        return new FolderInfo(coders, bindPairInputs, bindPairOutputs, packedInputStreamIndexes);
     }
 
     /// Reads a `FilesInfo` block.
@@ -803,10 +852,8 @@ public final class SevenZipHeaderParser {
                         name,
                         false,
                         streamsInfo.unpackSize(streamIndex),
-                        streamsInfo.dataOffset(streamIndex),
                         streamsInfo.decodedOffset(streamIndex),
-                        streamsInfo.packedSize(streamIndex),
-                        streamsInfo.packedCrc32(streamIndex),
+                        streamsInfo.packedStreams(streamIndex),
                         streamsInfo.crc32(streamIndex),
                         streamsInfo.method(streamIndex),
                         creationTimes[index],
@@ -999,22 +1046,6 @@ public final class SevenZipHeaderParser {
         return count;
     }
 
-    /// Returns the sum of the given non-negative values.
-    private static int sum(int[] values) throws IOException {
-        int result = 0;
-        for (int value : values) {
-            if (value < 0) {
-                throw new IOException("7z substream count is negative");
-            }
-            try {
-                result = Math.addExact(result, value);
-            } catch (ArithmeticException exception) {
-                throw new IOException("7z substream count is too large", exception);
-            }
-        }
-        return result;
-    }
-
     /// Returns the checked sum of two non-negative `long` values.
     private static long checkedAdd(long left, long right, String message) throws IOException {
         try {
@@ -1034,11 +1065,6 @@ public final class SevenZipHeaderParser {
         if (crc32.getValue() != expectedCrc32) {
             throw new IOException(description + " does not match CRC-32");
         }
-    }
-
-    /// Skips CRC digest definitions.
-    private static void skipDigests(HeaderInput input, int count) throws IOException {
-        readDigests(input, count);
     }
 
     /// Creates an array of unknown CRC-32 values.
@@ -1121,11 +1147,15 @@ public final class SevenZipHeaderParser {
                 FolderInfo[] folders,
                 @Nullable SubStreamsInfo subStreamsInfo
         ) {
-            if (packSizes.length != folders.length) {
-                throw new IllegalArgumentException("packSizes and folders must have the same length");
+            int expectedPackStreamCount = 0;
+            for (FolderInfo folder : folders) {
+                expectedPackStreamCount = Math.addExact(expectedPackStreamCount, folder.packedStreamCount());
             }
-            if (packCrc32s.length != folders.length) {
-                throw new IllegalArgumentException("packCrc32s and folders must have the same length");
+            if (packSizes.length != expectedPackStreamCount) {
+                throw new IllegalArgumentException("packSizes must contain one value per packed folder input");
+            }
+            if (packCrc32s.length != expectedPackStreamCount) {
+                throw new IllegalArgumentException("packCrc32s must contain one value per packed folder input");
             }
             this.packPosition = packPosition;
             this.packSizes = packSizes.clone();
@@ -1151,24 +1181,6 @@ public final class SevenZipHeaderParser {
             return subStreamsInfo.stream(index).decodedOffset();
         }
 
-        /// Returns the packed size for a stream.
-        private long packedSize(int index) throws IOException {
-            requireStreamIndex(index);
-            SubStreamInfo stream = subStreamsInfo.stream(index);
-            FolderInfo folder = folders[stream.folderIndex()];
-            return folder.isCopyOnly() ? stream.size() : packSizes[stream.folderIndex()];
-        }
-
-        /// Returns the expected packed CRC-32 for a fully addressable packed stream.
-        private long packedCrc32(int index) throws IOException {
-            requireStreamIndex(index);
-            SubStreamInfo stream = subStreamsInfo.stream(index);
-            if (!streamCoversFolder(stream)) {
-                return SevenZipEntryMetadata.UNKNOWN_CRC32;
-            }
-            return packCrc32s[stream.folderIndex()];
-        }
-
         /// Returns the folder method for a stream.
         private SevenZipFolderMethod method(int index) throws IOException {
             requireStreamIndex(index);
@@ -1181,20 +1193,58 @@ public final class SevenZipHeaderParser {
             return subStreamsInfo.stream(index).crc32();
         }
 
-        /// Returns the absolute archive data offset for a stream.
-        private long dataOffset(int index) throws IOException {
+        /// Returns all physical packed streams consumed by the folder containing a file stream.
+        private @Unmodifiable List<SevenZipPackedStream> packedStreams(int index) throws IOException {
             requireStreamIndex(index);
             SubStreamInfo stream = subStreamsInfo.stream(index);
+            int folderIndex = stream.folderIndex();
+            FolderInfo folder = folders[folderIndex];
+            int firstPackStreamIndex = firstPackStreamIndex(folderIndex);
+            long firstOffset = absolutePackStreamOffset(firstPackStreamIndex);
+            if (folder.isCopyOnly()) {
+                if (folder.packedStreamCount() != 1) {
+                    throw new IOException("7z Copy folder must consume exactly one packed stream");
+                }
+                long offset = checkedAdd(firstOffset, stream.decodedOffset(), "7z packed stream offset is too large");
+                long crc32 = streamCoversFolder(stream)
+                        ? packCrc32s[firstPackStreamIndex]
+                        : SevenZipEntryMetadata.UNKNOWN_CRC32;
+                return List.of(new SevenZipPackedStream(offset, stream.size(), crc32));
+            }
+
+            ArrayList<SevenZipPackedStream> result = new ArrayList<>(folder.packedStreamCount());
+            long offset = firstOffset;
+            for (int ordinal = 0; ordinal < folder.packedStreamCount(); ordinal++) {
+                int packStreamIndex = firstPackStreamIndex + ordinal;
+                long size = packSizes[packStreamIndex];
+                result.add(new SevenZipPackedStream(offset, size, packCrc32s[packStreamIndex]));
+                offset = checkedAdd(offset, size, "7z packed stream offset is too large");
+            }
+            return List.copyOf(result);
+        }
+
+        /// Returns the global first packed stream index for one folder.
+        private int firstPackStreamIndex(int folderIndex) throws IOException {
+            int result = 0;
+            for (int index = 0; index < folderIndex; index++) {
+                try {
+                    result = Math.addExact(result, folders[index].packedStreamCount());
+                } catch (ArithmeticException exception) {
+                    throw new IOException("7z pack stream index is too large", exception);
+                }
+            }
+            return result;
+        }
+
+        /// Returns the absolute archive offset of one global packed stream.
+        private long absolutePackStreamOffset(int packStreamIndex) throws IOException {
             long offset = checkedAdd(
                     SevenZipSignatureHeader.SIZE,
                     packPosition,
                     "7z packed stream offset is too large"
             );
-            for (int i = 0; i < stream.folderIndex(); i++) {
-                offset = checkedAdd(offset, packSizes[i], "7z packed stream offset is too large");
-            }
-            if (folders[stream.folderIndex()].isCopyOnly()) {
-                offset = checkedAdd(offset, stream.decodedOffset(), "7z packed stream offset is too large");
+            for (int index = 0; index < packStreamIndex; index++) {
+                offset = checkedAdd(offset, packSizes[index], "7z packed stream offset is too large");
             }
             return offset;
         }
@@ -1350,24 +1400,29 @@ public final class SevenZipHeaderParser {
         /// The coder properties.
         private final byte @Unmodifiable [] properties;
 
-        /// The folder input stream index owned by this coder.
-        private final int inputStreamIndex;
+        /// The number of folder input streams consumed by this coder.
+        private final int inputStreamCount;
 
-        /// The folder output stream index owned by this coder.
-        private final int outputStreamIndex;
+        /// The number of folder output streams produced by this coder.
+        private final int outputStreamCount;
 
         /// Creates coder information.
-        private CoderInfo(byte[] methodId, byte[] properties, int inputStreamIndex, int outputStreamIndex) {
-            if (inputStreamIndex < 0) {
-                throw new IllegalArgumentException("inputStreamIndex must be non-negative");
+        private CoderInfo(
+                byte[] methodId,
+                byte[] properties,
+                int inputStreamCount,
+                int outputStreamCount
+        ) {
+            if (inputStreamCount <= 0) {
+                throw new IllegalArgumentException("inputStreamCount must be positive");
             }
-            if (outputStreamIndex < 0) {
-                throw new IllegalArgumentException("outputStreamIndex must be non-negative");
+            if (outputStreamCount <= 0) {
+                throw new IllegalArgumentException("outputStreamCount must be positive");
             }
             this.methodId = Objects.requireNonNull(methodId, "methodId").clone();
             this.properties = Objects.requireNonNull(properties, "properties").clone();
-            this.inputStreamIndex = inputStreamIndex;
-            this.outputStreamIndex = outputStreamIndex;
+            this.inputStreamCount = inputStreamCount;
+            this.outputStreamCount = outputStreamCount;
         }
 
         /// Returns a copy of the method ID.
@@ -1380,58 +1435,68 @@ public final class SevenZipHeaderParser {
             return properties.clone();
         }
 
-        /// Returns the folder input stream index owned by this coder.
-        private int inputStreamIndex() {
-            return inputStreamIndex;
+        /// Returns the number of folder input streams consumed by this coder.
+        private int inputStreamCount() {
+            return inputStreamCount;
         }
 
-        /// Returns the folder output stream index owned by this coder.
-        private int outputStreamIndex() {
-            return outputStreamIndex;
+        /// Returns the number of folder output streams produced by this coder.
+        private int outputStreamCount() {
+            return outputStreamCount;
         }
     }
 
-    /// Stores parsed linear folder information.
+    /// Stores parsed folder coder graph information.
     @NotNullByDefault
     private static final class FolderInfo {
         /// The coders in folder declaration order.
         private final CoderInfo[] coders;
 
-        /// The coder indexes ordered from packed input to final output.
-        private final int @Unmodifiable [] coderOrder;
+        /// The folder input stream index from every bind pair.
+        private final int @Unmodifiable [] bindPairInputs;
 
-        /// The unpack size produced by each coder, indexed by coder declaration order.
+        /// The folder output stream index from every bind pair.
+        private final int @Unmodifiable [] bindPairOutputs;
+
+        /// The packed folder input stream indexes in physical order.
+        private final int @Unmodifiable [] packedInputStreamIndexes;
+
+        /// The unpack size produced by every folder output stream.
         private long[] unpackSizes = new long[0];
 
         /// The expected final folder CRC-32, or `UNKNOWN_CRC32` when not present.
         private long crc32 = SevenZipEntryMetadata.UNKNOWN_CRC32;
 
         /// Creates folder information.
-        private FolderInfo(CoderInfo[] coders, int[] coderOrder) {
+        private FolderInfo(
+                CoderInfo[] coders,
+                int[] bindPairInputs,
+                int[] bindPairOutputs,
+                int[] packedInputStreamIndexes
+        ) {
             if (coders.length == 0) {
                 throw new IllegalArgumentException("coders must not be empty");
             }
-            if (coders.length != coderOrder.length) {
-                throw new IllegalArgumentException("coders and coderOrder must have the same length");
+            if (bindPairInputs.length != bindPairOutputs.length) {
+                throw new IllegalArgumentException("bind pair arrays must have the same length");
             }
             this.coders = coders.clone();
-            this.coderOrder = coderOrder.clone();
-
-            boolean[] seen = new boolean[coders.length];
-            for (int coderIndex : coderOrder) {
-                if (coderIndex < 0 || coderIndex >= coders.length) {
-                    throw new IllegalArgumentException("coderOrder contains an invalid coder index");
-                }
-                if (seen[coderIndex]) {
-                    throw new IllegalArgumentException("coderOrder contains a duplicate coder index");
-                }
-                seen[coderIndex] = true;
-            }
+            this.bindPairInputs = bindPairInputs.clone();
+            this.bindPairOutputs = bindPairOutputs.clone();
+            this.packedInputStreamIndexes = packedInputStreamIndexes.clone();
         }
 
-        /// Reads and stores all coder unpack sizes for this folder.
+        /// Reads and stores all output unpack sizes for this folder.
         private void setUnpackSizes(HeaderInput input) throws IOException {
-            long[] sizes = new long[coders.length];
+            int outputStreamCount = 0;
+            for (CoderInfo coder : coders) {
+                try {
+                    outputStreamCount = Math.addExact(outputStreamCount, coder.outputStreamCount());
+                } catch (ArithmeticException exception) {
+                    throw new IOException("7z folder output stream count is too large", exception);
+                }
+            }
+            long[] sizes = new long[outputStreamCount];
             for (int index = 0; index < sizes.length; index++) {
                 long size = input.readNumber();
                 if (size < 0) {
@@ -1460,20 +1525,39 @@ public final class SevenZipHeaderParser {
             return crc32;
         }
 
-        /// Returns the folder method in decoder pipeline order.
+        /// Returns the complete folder coder graph.
         private SevenZipFolderMethod method() throws IOException {
             requireUnpackSizes();
-            byte[][] methodIds = new byte[coderOrder.length][];
-            byte[][] properties = new byte[coderOrder.length][];
-            long[] orderedUnpackSizes = new long[coderOrder.length];
-            for (int orderIndex = 0; orderIndex < coderOrder.length; orderIndex++) {
-                int coderIndex = coderOrder[orderIndex];
+            byte[][] methodIds = new byte[coders.length][];
+            byte[][] properties = new byte[coders.length][];
+            int[] inputStreamCounts = new int[coders.length];
+            int[] outputStreamCounts = new int[coders.length];
+            for (int coderIndex = 0; coderIndex < coders.length; coderIndex++) {
                 CoderInfo coder = coders[coderIndex];
-                methodIds[orderIndex] = coder.methodId();
-                properties[orderIndex] = coder.properties();
-                orderedUnpackSizes[orderIndex] = unpackSizes[coderIndex];
+                methodIds[coderIndex] = coder.methodId();
+                properties[coderIndex] = coder.properties();
+                inputStreamCounts[coderIndex] = coder.inputStreamCount();
+                outputStreamCounts[coderIndex] = coder.outputStreamCount();
             }
-            return new SevenZipFolderMethod(methodIds, properties, orderedUnpackSizes);
+            try {
+                return SevenZipFolderMethod.graph(
+                        methodIds,
+                        properties,
+                        inputStreamCounts,
+                        outputStreamCounts,
+                        bindPairInputs,
+                        bindPairOutputs,
+                        packedInputStreamIndexes,
+                        unpackSizes
+                );
+            } catch (IllegalArgumentException exception) {
+                throw new IOException("Invalid 7z folder coder graph", exception);
+            }
+        }
+
+        /// Returns the number of physical packed streams consumed by this folder.
+        private int packedStreamCount() {
+            return packedInputStreamIndexes.length;
         }
 
         /// Returns whether every coder in this folder uses the 7z Copy method.
@@ -1488,7 +1572,11 @@ public final class SevenZipHeaderParser {
 
         /// Requires coder unpack sizes to have been read.
         private void requireUnpackSizes() throws IOException {
-            if (unpackSizes.length != coders.length) {
+            int outputStreamCount = 0;
+            for (CoderInfo coder : coders) {
+                outputStreamCount += coder.outputStreamCount();
+            }
+            if (unpackSizes.length != outputStreamCount) {
                 throw new IOException("7z folder unpack size is missing");
             }
         }

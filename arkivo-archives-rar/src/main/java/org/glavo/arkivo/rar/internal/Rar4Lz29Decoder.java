@@ -102,6 +102,9 @@ final class Rar4Lz29Decoder {
     /// Filter definitions and state retained across solid entries.
     private final Rar3FilterManager filterManager = new Rar3FilterManager();
 
+    /// The PPMd context model retained across reset-free RAR3 blocks.
+    private final Rar3PpmModel ppmModel = new Rar3PpmModel();
+
     /// Code lengths retained for delta table descriptions in solid streams.
     private final byte[] previousTable = new byte[TABLE_LENGTH_COUNT];
 
@@ -132,6 +135,12 @@ final class Rar4Lz29Decoder {
     /// Whether the current Huffman tables are available for reuse.
     private boolean tablesAvailable;
 
+    /// Whether the active compressed block uses PPMd instead of Huffman LZ symbols.
+    private boolean ppmMode;
+
+    /// The PPMd escape byte selected by the latest PPM block header.
+    private int ppmEscape = 2;
+
     /// Creates a decoder with an empty solid dictionary.
     Rar4Lz29Decoder() {
     }
@@ -154,6 +163,10 @@ final class Rar4Lz29Decoder {
         Rar3OutputPipeline entryOutput = new Rar3OutputPipeline(output, unpackedSize);
 
         while (!entryOutput.isComplete()) {
+            if (ppmMode) {
+                if (!decodePpmOperation(bits, entryOutput)) break;
+                continue;
+            }
             int symbol = mainDecoder.decode(bits);
             if (symbol < 256) {
                 emit(symbol, entryOutput);
@@ -215,14 +228,19 @@ final class Rar4Lz29Decoder {
         lowDistanceDecoder.reset();
         repeatLengthDecoder.reset();
         filterManager.reset();
+        ppmModel.reset();
+        ppmMode = false;
+        ppmEscape = 2;
     }
 
     /// Reads a complete set of delta-coded RAR3 Huffman tables.
     private void readTables(Rar4BitInput bits) throws IOException {
         bits.alignToByte();
         if (bits.readBits(1) != 0) {
-            throw new IOException("RAR3 PPM compression is not implemented by the native decoder");
+            readPpmHeader(bits);
+            return;
         }
+        ppmMode = false;
         boolean keepPreviousTable = bits.readBits(1) != 0;
         if (!keepPreviousTable) {
             Arrays.fill(previousTable, (byte) 0);
@@ -285,6 +303,62 @@ final class Rar4Lz29Decoder {
         repeatLengthDecoder.build(table, repeatLengthOffset, REPEAT_LENGTH_ALPHABET_SIZE);
         System.arraycopy(table, 0, previousTable, 0, table.length);
         tablesAvailable = true;
+    }
+
+    /// Reads a PPMd block header and initializes or continues its context model.
+    private void readPpmHeader(Rar4BitInput bits) throws IOException {
+        int orderFlags = bits.readBits(7);
+        boolean resetModel = (orderFlags & 0x20) != 0;
+        int maximumMebibytes = resetModel ? bits.readBits(8) + 1 : 0;
+        if ((orderFlags & 0x40) != 0) ppmEscape = bits.readBits(8);
+        int maximumOrder = (orderFlags & 0x1f) + 1;
+        if (maximumOrder > 16) maximumOrder = 16 + (maximumOrder - 16) * 3;
+        ppmModel.initialize(bits, resetModel, maximumOrder, maximumMebibytes);
+        ppmMode = true;
+        tablesAvailable = false;
+    }
+
+    /// Decodes one PPMd symbol or escape control and returns whether the current file continues.
+    private boolean decodePpmOperation(Rar4BitInput bits, Rar3OutputPipeline output) throws IOException {
+        int symbol = ppmModel.readByte();
+        if (symbol != ppmEscape) {
+            emit(symbol, output);
+            return true;
+        }
+
+        int control = ppmModel.readByte();
+        switch (control) {
+            case 0 -> readTables(bits);
+            case 2 -> {
+                tablesAvailable = false;
+                return false;
+            }
+            case 3 -> output.schedule(filterManager.parse(readPpmFilterDescriptor()));
+            case 4 -> {
+                int distance = 0;
+                for (int index = 0; index < 3; index++) distance = distance << 8 | ppmModel.readByte();
+                int length = ppmModel.readByte() + 32;
+                copyMatch(distance + 2, length, output);
+            }
+            case 5 -> copyMatch(1, ppmModel.readByte() + 4, output);
+            default -> emit(ppmEscape, output);
+        }
+        return true;
+    }
+
+    /// Reads one complete PPM-mode filter descriptor including its flags byte.
+    private byte[] readPpmFilterDescriptor() throws IOException {
+        int flags = ppmModel.readByte();
+        int payloadSize = (flags & 7) + 1;
+        if (payloadSize == 7) {
+            payloadSize += ppmModel.readByte();
+        } else if (payloadSize == 8) {
+            payloadSize = ppmModel.readByte() << 8 | ppmModel.readByte();
+        }
+        byte[] descriptor = new byte[payloadSize + 1];
+        descriptor[0] = (byte) flags;
+        for (int index = 0; index < payloadSize; index++) descriptor[index + 1] = (byte) ppmModel.readByte();
+        return descriptor;
     }
 
     /// Processes an end-of-block control and optionally reads replacement tables.

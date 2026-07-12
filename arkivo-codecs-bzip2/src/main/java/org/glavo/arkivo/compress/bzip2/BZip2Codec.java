@@ -3,9 +3,9 @@
 
 package org.glavo.arkivo.compress.bzip2;
 
-import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
-import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
 import org.glavo.arkivo.compress.CompressionCodec;
+import org.glavo.arkivo.internal.BZip2InputStream;
+import org.glavo.arkivo.internal.BZip2OutputStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -81,12 +81,12 @@ public final class BZip2Codec implements CompressionCodec {
     /// Opens a BZip2 compressor that writes compressed bytes to the target channel.
     @Override
     public WritableByteChannel compressTo(WritableByteChannel target) throws IOException {
-        return Channels.newChannel(new BZip2CompressorOutputStream(Channels.newOutputStream(target)));
+        return Channels.newChannel(new BZip2OutputStream(Channels.newOutputStream(target)));
     }
 
     /// Opens a BZip2 decompressor that reads compressed bytes from the source channel.
     @Override
     public ReadableByteChannel decompressFrom(ReadableByteChannel source) throws IOException {
-        return Channels.newChannel(new BZip2CompressorInputStream(Channels.newInputStream(source)));
+        return Channels.newChannel(new BZip2InputStream(Channels.newInputStream(source)));
     }
 }

@@ -63,7 +63,7 @@ final class SevenZipHeaderEncryption implements AutoCloseable {
     /// The encoded-header property ID.
     private static final int NID_ENCODED_HEADER = 0x17;
 
-    /// The AES key-derivation cycle power used by Commons Compress output.
+    /// The AES key-derivation cycle power used by Arkivo 7z output.
     private static final int AES_CYCLE_POWER = 19;
 
     /// The AES block and initialization-vector size.

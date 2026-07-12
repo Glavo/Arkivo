@@ -979,6 +979,40 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that metadata mutations and moves preserve a multi-packed BCJ2 graph through update rewriting.
+    @Test
+    public void updatePreservesBcj2GraphEntry() throws IOException {
+        byte[] content = {(byte) 0xe8, 0x01, 0x00, 0x00, 0x00};
+        FileTime modifiedTime = FileTime.from(Instant.parse("2034-07-08T09:10:11.123Z"));
+        Path archivePath = createTemporaryArchivePath("update-bcj2-graph-7z-");
+        Files.write(archivePath, archiveWithBcj2Lzma2GraphFile());
+
+        try {
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+            );
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+                Path source = fileSystem.getPath("/bcj2-lzma2.bin");
+                Path moved = fileSystem.getPath("/moved-bcj2.bin");
+                Files.setLastModifiedTime(source, modifiedTime);
+                Files.move(source, moved);
+
+                assertArrayEquals(content, Files.readAllBytes(moved));
+                assertEquals(modifiedTime, Files.getLastModifiedTime(moved));
+            }
+
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path moved = fileSystem.getPath("/moved-bcj2.bin");
+                assertEquals(false, Files.exists(fileSystem.getPath("/bcj2-lzma2.bin")));
+                assertArrayEquals(content, Files.readAllBytes(moved));
+                assertEquals(modifiedTime, Files.getLastModifiedTime(moved));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that encrypted data and headers can be decoded and re-encrypted during an update.
     @Test
     public void updatesEncryptedArchiveWithEncryptedHeaders() throws IOException {
@@ -2804,7 +2838,7 @@ public final class SevenZipArkivoFileSystemTest {
         assertEquals(1, closeActionCount[0]);
     }
 
-    /// Verifies that packed stream and folder counts must match.
+    /// Verifies that packed stream counts must match folder input counts.
     @Test
     public void rejectsPackStreamFolderCountMismatch() throws IOException {
         Path archivePath = createTemporaryArchivePath("bad-pack-folder-count-");
@@ -2812,7 +2846,7 @@ public final class SevenZipArkivoFileSystemTest {
 
         try {
             IOException exception = assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
-            assertEquals(true, exception.getMessage().contains("pack stream count does not match folder count"));
+            assertEquals(true, exception.getMessage().contains("pack stream count does not match folder inputs"));
         } finally {
             deleteTemporaryArchive(archivePath);
         }
@@ -3224,6 +3258,68 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies a four-packed-stream coder graph that feeds Copy outputs into the BCJ2 filter.
+    @Test
+    public void bcj2CopyGraphFileEntry() throws IOException {
+        byte[] content = {(byte) 0xe8, 0x01, 0x00, 0x00, 0x00};
+        Path archivePath = createTemporaryArchivePath("bcj2-copy-graph-");
+        Files.write(archivePath, archiveWithBcj2CopyGraphFile());
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/bcj2.bin");
+                BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+
+                assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+                try (SeekableByteChannel channel = Files.newByteChannel(file)) {
+                    ByteBuffer buffer = ByteBuffer.allocate(content.length);
+                    assertEquals(content.length, channel.read(buffer));
+                    assertArrayEquals(content, buffer.array());
+                }
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that each physical side stream in a multi-packed folder enforces its own CRC-32.
+    @Test
+    public void rejectsMismatchedBcj2SideStreamCrc() throws IOException {
+        Path archivePath = createTemporaryArchivePath("bcj2-side-stream-crc-");
+        Files.write(archivePath, archiveWithBcj2CopyGraphFile(true));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                IOException exception = assertThrows(
+                        IOException.class,
+                        () -> Files.readAllBytes(fileSystem.getPath("/bcj2.bin"))
+                );
+                assertEquals(true, exception.getMessage().contains("packed stream data does not match CRC-32"));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies a BCJ2 folder whose four graph branches are independently LZMA2-compressed.
+    @Test
+    public void bcj2Lzma2GraphFileEntry() throws IOException {
+        byte[] content = {(byte) 0xe8, 0x01, 0x00, 0x00, 0x00};
+        Path archivePath = createTemporaryArchivePath("bcj2-lzma2-graph-");
+        Files.write(archivePath, archiveWithBcj2Lzma2GraphFile());
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/bcj2-lzma2.bin");
+                assertEquals(content.length, Files.size(file));
+                assertArrayEquals(content, Files.readAllBytes(file));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that a non-empty file stored with the 7z LZMA2 method can be read.
     @Test
     public void lzma2FileEntry() throws IOException {
@@ -3524,6 +3620,24 @@ public final class SevenZipArkivoFileSystemTest {
                 BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
 
                 assertEquals(content.length, attributes.size());
+                assertArrayEquals(content, Files.readAllBytes(file));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that an encoded header can be decoded through a four-packed-stream BCJ2 coder graph.
+    @Test
+    public void bcj2CopyGraphEncodedHeader() throws IOException {
+        byte[] content = "BCJ2 encoded header body".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("bcj2-encoded-header-");
+        Files.write(archivePath, archiveWithBcj2CopyGraphEncodedHeader(content));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path file = fileSystem.getPath("/hello.txt");
+                assertEquals(content.length, Files.size(file));
                 assertArrayEquals(content, Files.readAllBytes(file));
             }
         } finally {
@@ -4147,6 +4261,62 @@ public final class SevenZipArkivoFileSystemTest {
         return archive(payload.content(), header, crc32(header));
     }
 
+    /// Returns a 7z archive whose file folder merges four Copy coder outputs through BCJ2.
+    private static byte[] archiveWithBcj2CopyGraphFile() throws IOException {
+        return archiveWithBcj2CopyGraphFile(false);
+    }
+
+    /// Returns a BCJ2 Copy graph archive with an optionally corrupted CALL-stream digest.
+    private static byte[] archiveWithBcj2CopyGraphFile(boolean corruptCallCrc) throws IOException {
+        byte[] main = {(byte) 0xe8};
+        byte[] call = {0x00, 0x00, 0x00, 0x06};
+        byte[] jump = new byte[0];
+        byte[] range = {0x00, (byte) 0x80, 0x00, 0x00, 0x00};
+        int[] packedSizes = {range.length, main.length, jump.length, call.length};
+        long[] packedCrc32s = {crc32(range), crc32(main), crc32(jump), crc32(call)};
+        if (corruptCallCrc) {
+            packedCrc32s[3] ^= 1L;
+        }
+        byte[] header = bcj2CopyGraphFileHeader(packedSizes, packedCrc32s, 5, "bcj2.bin");
+        return archive(concatenateAll(range, main, jump, call), header, crc32(header));
+    }
+
+    /// Returns a 7z archive whose four LZMA2 branches feed the BCJ2 inputs.
+    private static byte[] archiveWithBcj2Lzma2GraphFile() throws IOException {
+        byte[] main = {(byte) 0xe8};
+        byte[] call = {0x00, 0x00, 0x00, 0x06};
+        byte[] jump = new byte[0];
+        byte[] range = {0x00, (byte) 0x80, 0x00, 0x00, 0x00};
+        CoderPayload mainPayload = lzma2Payload(main);
+        CoderPayload callPayload = lzma2Payload(call);
+        CoderPayload jumpPayload = lzma2Payload(jump);
+        CoderPayload rangePayload = lzma2Payload(range);
+        int[] packedSizes = {
+                rangePayload.content().length,
+                mainPayload.content().length,
+                jumpPayload.content().length,
+                callPayload.content().length
+        };
+        int[] logicalSizes = {main.length, call.length, jump.length, range.length};
+        byte[] header = bcj2Lzma2GraphFileHeader(
+                packedSizes,
+                logicalSizes,
+                mainPayload.properties(),
+                5,
+                "bcj2-lzma2.bin"
+        );
+        return archive(
+                concatenateAll(
+                        rangePayload.content(),
+                        mainPayload.content(),
+                        jumpPayload.content(),
+                        callPayload.content()
+                ),
+                header,
+                crc32(header)
+        );
+    }
+
     /// Returns a 7z archive with one Copy-method file and an LZMA2-compressed header.
     private static byte[] archiveWithEncodedHeader(byte[] content) throws IOException {
         byte[] plainHeader = fileHeader(content.length, content.length, new byte[]{0x00}, new byte[0]);
@@ -4159,6 +4329,21 @@ public final class SevenZipArkivoFileSystemTest {
                 encodedHeaderPayload.properties()
         );
         return archive(concatenate(content, encodedHeaderPayload.content()), nextHeader, crc32(nextHeader));
+    }
+
+    /// Returns a Copy-method archive whose plain header is reconstructed by a BCJ2 Copy coder graph.
+    private static byte[] archiveWithBcj2CopyGraphEncodedHeader(byte[] content) throws IOException {
+        byte[] plainHeader = fileHeader(content.length, content.length, new byte[]{0x00}, new byte[0]);
+        byte[] call = new byte[0];
+        byte[] jump = new byte[0];
+        byte[] range = {0x00, 0x00, 0x00, 0x00, 0x00};
+        int[] packedSizes = {range.length, plainHeader.length, jump.length, call.length};
+        byte[] nextHeader = bcj2CopyGraphEncodedHeader(content.length, packedSizes, plainHeader.length);
+        return archive(
+                concatenateAll(content, range, plainHeader, jump, call),
+                nextHeader,
+                crc32(nextHeader)
+        );
     }
 
     /// Returns a 7z archive with one Copy-method file and an AES-encrypted LZMA2-compressed header.
@@ -4549,6 +4734,61 @@ public final class SevenZipArkivoFileSystemTest {
         }
         output.write(0x00);
 
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header with one file decoded by a BCJ2 Copy coder graph.
+    private static byte[] bcj2CopyGraphFileHeader(
+            int[] packedSizes,
+            long[] packedCrc32s,
+            int uncompressedSize,
+            String name
+    ) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+        output.write(0x04);
+        writeBcj2CopyGraphStreamsInfo(output, 0, packedSizes, packedCrc32s, uncompressedSize);
+
+        output.write(0x05);
+        writeNumber(output, 1);
+        byte[] names = namesProperty(name);
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
+        output.write(0x00);
+        output.write(0x00);
+        return output.toByteArray();
+    }
+
+    /// Returns a plain 7z header with one file decoded by an LZMA2-to-BCJ2 coder graph.
+    private static byte[] bcj2Lzma2GraphFileHeader(
+            int[] packedSizes,
+            int[] logicalInputSizes,
+            byte[] lzma2Properties,
+            int uncompressedSize,
+            String name
+    ) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x01);
+        output.write(0x04);
+        writeBcj2GraphStreamsInfo(
+                output,
+                0,
+                packedSizes,
+                null,
+                logicalInputSizes,
+                lzma2Properties,
+                uncompressedSize
+        );
+
+        output.write(0x05);
+        writeNumber(output, 1);
+        byte[] names = namesProperty(name);
+        output.write(0x11);
+        writeNumber(output, names.length);
+        output.write(names);
+        output.write(0x00);
         output.write(0x00);
         return output.toByteArray();
     }
@@ -5246,6 +5486,18 @@ public final class SevenZipArkivoFileSystemTest {
         return output.toByteArray();
     }
 
+    /// Returns an encoded-header descriptor decoded by a BCJ2 Copy coder graph.
+    private static byte[] bcj2CopyGraphEncodedHeader(
+            int packPosition,
+            int[] packedSizes,
+            int uncompressedSize
+    ) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(0x17);
+        writeBcj2CopyGraphStreamsInfo(output, packPosition, packedSizes, null, uncompressedSize);
+        return output.toByteArray();
+    }
+
     /// Returns an encoded-header descriptor that decodes one AES-to-LZMA2 pipeline.
     private static byte[] aesLzma2EncodedHeader(
             int packPosition,
@@ -5379,6 +5631,99 @@ public final class SevenZipArkivoFileSystemTest {
             output.write(properties);
         }
         output.write(0x0c);
+        writeNumber(output, uncompressedSize);
+        output.write(0x00);
+        output.write(0x00);
+    }
+
+    /// Writes one folder whose four packed Copy streams feed the four BCJ2 inputs.
+    private static void writeBcj2CopyGraphStreamsInfo(
+            ByteArrayOutputStream output,
+            int packPosition,
+            int[] packedSizes,
+            long @Nullable [] packedCrc32s,
+            int uncompressedSize
+    ) throws IOException {
+        int[] logicalInputSizes = {packedSizes[1], packedSizes[3], packedSizes[2], packedSizes[0]};
+        writeBcj2GraphStreamsInfo(
+                output,
+                packPosition,
+                packedSizes,
+                packedCrc32s,
+                logicalInputSizes,
+                null,
+                uncompressedSize
+        );
+    }
+
+    /// Writes one folder whose four packed branches feed the four BCJ2 inputs.
+    private static void writeBcj2GraphStreamsInfo(
+            ByteArrayOutputStream output,
+            int packPosition,
+            int[] packedSizes,
+            long @Nullable [] packedCrc32s,
+            int[] logicalInputSizes,
+            byte @Nullable [] inputCoderProperties,
+            int uncompressedSize
+    ) throws IOException {
+        if (packedSizes.length != 4) {
+            throw new IllegalArgumentException("packedSizes must contain four BCJ2 input sizes");
+        }
+        if (logicalInputSizes.length != 4) {
+            throw new IllegalArgumentException("logicalInputSizes must contain four BCJ2 input sizes");
+        }
+        if (packedCrc32s != null && packedCrc32s.length != packedSizes.length) {
+            throw new IllegalArgumentException("packedCrc32s must match packedSizes");
+        }
+
+        output.write(0x06);
+        writeNumber(output, packPosition);
+        writeNumber(output, packedSizes.length);
+        output.write(0x09);
+        for (int packedSize : packedSizes) {
+            writeNumber(output, packedSize);
+        }
+        if (packedCrc32s != null) {
+            output.write(0x0a);
+            output.write(1);
+            for (long packedCrc32 : packedCrc32s) {
+                writeIntLE(output, (int) packedCrc32);
+            }
+        }
+        output.write(0x00);
+
+        output.write(0x07);
+        output.write(0x0b);
+        writeNumber(output, 1);
+        output.write(0);
+        writeNumber(output, 5);
+        for (int index = 0; index < 4; index++) {
+            if (inputCoderProperties == null) {
+                output.write(0x01);
+                output.write(0x00);
+            } else {
+                output.write(0x21);
+                output.write(0x21);
+                writeNumber(output, inputCoderProperties.length);
+                output.write(inputCoderProperties);
+            }
+        }
+        output.write(0x14);
+        output.write(new byte[]{0x03, 0x03, 0x01, 0x1b});
+        writeNumber(output, 4);
+        writeNumber(output, 1);
+        for (int index = 0; index < 4; index++) {
+            writeNumber(output, 4 + index);
+            writeNumber(output, index);
+        }
+        writeNumber(output, 3);
+        writeNumber(output, 0);
+        writeNumber(output, 2);
+        writeNumber(output, 1);
+        output.write(0x0c);
+        for (int logicalInputSize : logicalInputSizes) {
+            writeNumber(output, logicalInputSize);
+        }
         writeNumber(output, uncompressedSize);
         output.write(0x00);
         output.write(0x00);

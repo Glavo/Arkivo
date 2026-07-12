@@ -29,7 +29,7 @@ final class Rar5Crypto {
     /// The checksum appended to a password verification value.
     static final int PASSWORD_CHECK_CHECKSUM_SIZE = 4;
 
-    /// The largest PBKDF2 iteration exponent accepted by UnRAR.
+    /// The largest PBKDF2 iteration exponent accepted for bounded RAR5 key derivation.
     static final int MAX_KDF_LOG = 24;
 
     /// The SHA-256 digest size.

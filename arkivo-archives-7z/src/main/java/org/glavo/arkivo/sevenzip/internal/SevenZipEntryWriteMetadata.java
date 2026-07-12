@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.sevenzip.internal;
 
-import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.sevenzip.SevenZipFilter;
@@ -37,31 +36,14 @@ record SevenZipEntryWriteMetadata(
         return new SevenZipEntryWriteMetadata(null, null, null, windowsAttributes, null, false, null);
     }
 
-    /// Applies every present metadata property to an archive entry.
-    void applyTo(
-            SevenZArchiveEntry entry,
-            SevenZipCompression defaultCompression,
-            @Nullable SevenZipFilter defaultFilter
-    ) {
-        Objects.requireNonNull(entry, "entry");
+    /// Returns the entry-specific compression or the writer default.
+    SevenZipCompression resolvedCompression(SevenZipCompression defaultCompression) {
         Objects.requireNonNull(defaultCompression, "defaultCompression");
-        if (lastModifiedTime != null) {
-            entry.setLastModifiedTime(lastModifiedTime);
-        }
-        if (lastAccessTime != null) {
-            entry.setAccessTime(lastAccessTime);
-        }
-        if (creationTime != null) {
-            entry.setCreationTime(creationTime);
-        }
-        if (windowsAttributes != SevenZipArkivoEntryAttributes.UNKNOWN_WINDOWS_ATTRIBUTES) {
-            entry.setHasWindowsAttributes(true);
-            entry.setWindowsAttributes(windowsAttributes);
-        }
-        if (compression != null || filterConfigured) {
-            SevenZipCompression resolvedCompression = compression != null ? compression : defaultCompression;
-            @Nullable SevenZipFilter resolvedFilter = filterConfigured ? filter : defaultFilter;
-            SevenZipContentMethodsSupport.applyTo(entry, resolvedCompression, resolvedFilter);
-        }
+        return compression != null ? compression : defaultCompression;
+    }
+
+    /// Returns the entry-specific filter decision or the writer default.
+    @Nullable SevenZipFilter resolvedFilter(@Nullable SevenZipFilter defaultFilter) {
+        return filterConfigured ? filter : defaultFilter;
     }
 }

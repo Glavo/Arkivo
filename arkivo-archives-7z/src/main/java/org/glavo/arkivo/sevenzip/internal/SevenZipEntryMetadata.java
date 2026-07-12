@@ -5,8 +5,10 @@ package org.glavo.arkivo.sevenzip.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.attribute.FileTime;
+import java.util.List;
 import java.util.Objects;
 
 /// Stores parsed metadata for one 7z entry.
@@ -38,6 +40,9 @@ public final class SevenZipEntryMetadata {
 
     /// The expected packed stream CRC-32, or `UNKNOWN_CRC32` when not present or not entry-addressable.
     private final long packedCrc32;
+
+    /// The physical packed streams consumed to decode this entry's folder.
+    private final @Unmodifiable List<SevenZipPackedStream> packedStreams;
 
     /// The expected uncompressed entry CRC-32, or `UNKNOWN_CRC32` when not present.
     private final long crc32;
@@ -168,20 +173,40 @@ public final class SevenZipEntryMetadata {
             @Nullable FileTime lastModifiedTime,
             int windowsAttributes
     ) {
+        this(
+                path,
+                directory,
+                size,
+                decodedOffset,
+                packedStreams(dataOffset, packedSize, packedCrc32),
+                crc32,
+                method,
+                creationTime,
+                lastAccessTime,
+                lastModifiedTime,
+                windowsAttributes
+        );
+    }
+
+    /// Creates parsed 7z entry metadata backed by all physical folder inputs.
+    SevenZipEntryMetadata(
+            String path,
+            boolean directory,
+            long size,
+            long decodedOffset,
+            List<SevenZipPackedStream> packedStreams,
+            long crc32,
+            SevenZipFolderMethod method,
+            @Nullable FileTime creationTime,
+            @Nullable FileTime lastAccessTime,
+            @Nullable FileTime lastModifiedTime,
+            int windowsAttributes
+    ) {
         if (size < 0) {
             throw new IllegalArgumentException("size must be non-negative");
         }
-        if (dataOffset < NO_DATA_OFFSET) {
-            throw new IllegalArgumentException("dataOffset must be non-negative or NO_DATA_OFFSET");
-        }
         if (decodedOffset < 0) {
             throw new IllegalArgumentException("decodedOffset must be non-negative");
-        }
-        if (packedSize < 0) {
-            throw new IllegalArgumentException("packedSize must be non-negative");
-        }
-        if (packedCrc32 < UNKNOWN_CRC32 || packedCrc32 > 0xffff_ffffL) {
-            throw new IllegalArgumentException("packedCrc32 must be an unsigned 32-bit value or UNKNOWN_CRC32");
         }
         if (crc32 < UNKNOWN_CRC32 || crc32 > 0xffff_ffffL) {
             throw new IllegalArgumentException("crc32 must be an unsigned 32-bit value or UNKNOWN_CRC32");
@@ -189,10 +214,27 @@ public final class SevenZipEntryMetadata {
         this.path = Objects.requireNonNull(path, "path");
         this.directory = directory;
         this.size = size;
-        this.dataOffset = dataOffset;
         this.decodedOffset = decodedOffset;
-        this.packedSize = packedSize;
-        this.packedCrc32 = packedCrc32;
+        this.packedStreams = List.copyOf(packedStreams);
+        if (this.packedStreams.isEmpty()) {
+            this.dataOffset = NO_DATA_OFFSET;
+            this.packedSize = 0L;
+            this.packedCrc32 = UNKNOWN_CRC32;
+        } else {
+            this.dataOffset = this.packedStreams.get(0).offset();
+            long totalPackedSize = 0L;
+            for (SevenZipPackedStream packedStream : this.packedStreams) {
+                try {
+                    totalPackedSize = Math.addExact(totalPackedSize, packedStream.size());
+                } catch (ArithmeticException exception) {
+                    throw new IllegalArgumentException("packed stream sizes are too large", exception);
+                }
+            }
+            this.packedSize = totalPackedSize;
+            this.packedCrc32 = this.packedStreams.size() == 1
+                    ? this.packedStreams.get(0).crc32()
+                    : UNKNOWN_CRC32;
+        }
         this.crc32 = crc32;
         this.method = Objects.requireNonNull(method, "method");
         this.creationTime = creationTime;
@@ -261,6 +303,12 @@ public final class SevenZipEntryMetadata {
         return method;
     }
 
+    /// Returns the physical packed streams consumed by this entry's folder.
+    @Unmodifiable
+    List<SevenZipPackedStream> packedStreams() {
+        return packedStreams;
+    }
+
     /// Returns the creation time, or `null` when not present.
     public @Nullable FileTime creationTime() {
         return creationTime;
@@ -279,5 +327,26 @@ public final class SevenZipEntryMetadata {
     /// Returns the Windows file attributes, or `-1` when not present.
     public int windowsAttributes() {
         return windowsAttributes;
+    }
+
+    /// Creates a single physical packed stream list for legacy metadata constructors.
+    private static @Unmodifiable List<SevenZipPackedStream> packedStreams(
+            long dataOffset,
+            long packedSize,
+            long packedCrc32
+    ) {
+        if (dataOffset < NO_DATA_OFFSET) {
+            throw new IllegalArgumentException("dataOffset must be non-negative or NO_DATA_OFFSET");
+        }
+        if (packedSize < 0) {
+            throw new IllegalArgumentException("packedSize must be non-negative");
+        }
+        if (dataOffset == NO_DATA_OFFSET) {
+            if (packedSize != 0) {
+                throw new IllegalArgumentException("entries without data must have zero packed size");
+            }
+            return List.of();
+        }
+        return List.of(new SevenZipPackedStream(dataOffset, packedSize, packedCrc32));
     }
 }

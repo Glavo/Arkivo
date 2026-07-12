@@ -3,9 +3,10 @@
 
 package org.glavo.arkivo.sevenzip.internal;
 
-import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile;
 import org.glavo.arkivo.ArkivoVolumeOutput;
 import org.glavo.arkivo.ArkivoVolumeTarget;
+import org.glavo.arkivo.sevenzip.SevenZipCompression;
+import org.glavo.arkivo.sevenzip.SevenZipFilter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -35,7 +36,7 @@ final class SevenZipSplitArchiveOutput {
     private static final int MAX_ZERO_PROGRESS_ATTEMPTS = 1024;
 
     /// The writer that assembles the complete archive.
-    private final SevenZOutputFile writer;
+    private final SevenZipArchiveWriter writer;
 
     /// The temporary complete archive path.
     private final Path temporaryArchivePath;
@@ -62,9 +63,12 @@ final class SevenZipSplitArchiveOutput {
     static SevenZipSplitArchiveOutput open(
             ArkivoVolumeTarget target,
             long splitSize,
-            char @Nullable [] password
+            byte @Nullable [] password,
+            SevenZipCompression compression,
+            @Nullable SevenZipFilter filter
     ) throws IOException {
         Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(compression, "compression");
         if (splitSize <= 0) {
             throw new IllegalArgumentException("splitSize must be positive");
         }
@@ -76,9 +80,7 @@ final class SevenZipSplitArchiveOutput {
                     temporaryArchivePath,
                     Set.of(StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)
             );
-            SevenZOutputFile writer = password != null
-                    ? new SevenZOutputFile(channel, password)
-                    : new SevenZOutputFile(channel);
+            SevenZipArchiveWriter writer = new SevenZipArchiveWriter(channel, password, compression, filter);
             channel = null;
             return new SevenZipSplitArchiveOutput(writer, temporaryArchivePath, target, splitSize);
         } catch (IOException | RuntimeException | Error exception) {
@@ -100,7 +102,7 @@ final class SevenZipSplitArchiveOutput {
 
     /// Creates a split archive output over an already opened temporary writer.
     private SevenZipSplitArchiveOutput(
-            SevenZOutputFile writer,
+            SevenZipArchiveWriter writer,
             Path temporaryArchivePath,
             ArkivoVolumeTarget target,
             long splitSize
@@ -112,7 +114,7 @@ final class SevenZipSplitArchiveOutput {
     }
 
     /// Returns the seekable writer used to assemble the complete archive.
-    SevenZOutputFile writer() {
+    SevenZipArchiveWriter writer() {
         return writer;
     }
 

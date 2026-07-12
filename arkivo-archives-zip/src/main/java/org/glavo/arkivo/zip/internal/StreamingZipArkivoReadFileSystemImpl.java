@@ -4,20 +4,19 @@
 package org.glavo.arkivo.zip.internal;
 
 import com.github.luben.zstd.ZstdDecompressCtx;
-import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
-import org.apache.commons.compress.compressors.deflate64.Deflate64CompressorInputStream;
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream;
 import org.apache.commons.compress.compressors.zstandard.ZstdCompressorInputStream;
-import org.apache.commons.compress.utils.InputStreamStatistics;
 import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.internal.ArkivoPathMatchers;
+import org.glavo.arkivo.internal.BZip2InputStream;
+import org.glavo.arkivo.internal.Deflate64InputStream;
 import org.glavo.arkivo.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
-import org.tukaani.xz.LZMAInputStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
+import org.tukaani.xz.LZMAInputStream;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -40,6 +39,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.LongSupplier;
 import java.util.zip.CRC32;
 import java.util.zip.DataFormatException;
 import java.util.zip.Inflater;
@@ -1175,7 +1175,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
     /// Opens a Deflate64 decoding stream and closes the compressed stream if setup fails.
     private static InputStream openDeflate64InputStream(InputStream input) throws IOException {
         try {
-            return new Deflate64CompressorInputStream(input);
+            return new Deflate64InputStream(input);
         } catch (RuntimeException | Error exception) {
             try {
                 input.close();
@@ -1189,7 +1189,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
     /// Opens a BZIP2 decoding stream and closes the compressed stream if setup fails.
     private static InputStream openBzip2InputStream(InputStream input) throws IOException {
         try {
-            return new BZip2CompressorInputStream(input);
+            return new BZip2InputStream(input);
         } catch (IOException | RuntimeException | Error exception) {
             try {
                 input.close();
@@ -1273,13 +1273,13 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             boolean zip64DataDescriptor
     )
             throws IOException {
-        BZip2CompressorInputStream decoder = new BZip2CompressorInputStream(
+        BZip2InputStream decoder = new BZip2InputStream(
                 Objects.requireNonNull(compressedInput, "compressedInput")
         );
         return new CountingCompressorDataDescriptorInputStream(
                 input,
                 decoder,
-                decoder,
+                decoder::compressedByteCount,
                 compressedSizeOffset,
                 aesDecryptor,
                 authenticationCodeSize,
@@ -1307,7 +1307,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         return new CountingCompressorDataDescriptorInputStream(
                 input,
                 decoder,
-                countedInput,
+                countedInput::compressedByteCount,
                 compressedSizeOffset,
                 aesDecryptor,
                 authenticationCodeSize,
@@ -1333,7 +1333,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         return new CountingCompressorDataDescriptorInputStream(
                 input,
                 decoder,
-                decoder,
+                decoder::getCompressedCount,
                 compressedSizeOffset,
                 aesDecryptor,
                 authenticationCodeSize,
@@ -1930,8 +1930,8 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         /// The decoder that yields uncompressed entry bytes.
         private final InputStream decoderInput;
 
-        /// The decoder statistics used to report consumed compressed bytes.
-        private final InputStreamStatistics decoderStatistics;
+        /// Supplies the number of compressed bytes consumed by the decoder.
+        private final LongSupplier compressedByteCounter;
 
         /// The number of bytes already consumed before compressed entry content.
         private final long compressedSizeOffset;
@@ -1964,7 +1964,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         private CountingCompressorDataDescriptorInputStream(
                 PushbackInputStream input,
                 InputStream decoderInput,
-                InputStreamStatistics decoderStatistics,
+                LongSupplier compressedByteCounter,
                 long compressedSizeOffset,
                 @Nullable ZipAesCrypto.Decryptor aesDecryptor,
                 int authenticationCodeSize,
@@ -1973,7 +1973,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         ) {
             this.input = Objects.requireNonNull(input, "input");
             this.decoderInput = Objects.requireNonNull(decoderInput, "decoderInput");
-            this.decoderStatistics = Objects.requireNonNull(decoderStatistics, "decoderStatistics");
+            this.compressedByteCounter = Objects.requireNonNull(compressedByteCounter, "compressedByteCounter");
             this.compressedSizeOffset = compressedSizeOffset;
             this.aesDecryptor = aesDecryptor;
             this.authenticationCodeSize = authenticationCodeSize;
@@ -2066,7 +2066,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
                         input,
                         zip64DataDescriptor,
                         crc32.getValue(),
-                        compressedSizeOffset + decoderStatistics.getCompressedCount(),
+                        compressedSizeOffset + compressedByteCounter.getAsLong(),
                         uncompressedSize
                 )) {
                     failure = mergeFailure(failure, new IOException(descriptorMismatchMessage));
@@ -3388,7 +3388,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
 
     /// Counts bytes read from a compressed input stream.
     @NotNullByDefault
-    private static final class CountingInputStream extends InputStream implements InputStreamStatistics {
+    private static final class CountingInputStream extends InputStream {
         /// The wrapped input stream.
         private final InputStream input;
 
@@ -3428,15 +3428,8 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         }
 
         /// Returns the number of compressed bytes read.
-        @Override
-        public long getCompressedCount() {
+        private long compressedByteCount() {
             return count;
-        }
-
-        /// Returns zero because this wrapper observes only compressed bytes.
-        @Override
-        public long getUncompressedCount() {
-            return 0;
         }
     }
 

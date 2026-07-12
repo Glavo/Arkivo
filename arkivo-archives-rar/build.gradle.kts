@@ -48,9 +48,27 @@ val verifyPublishedRarModule by tasks.registering {
                 "The RAR archive does not contain the Arkivo RAR3 standard filters"
             }
             check(archive.getEntry(
+                "org/glavo/arkivo/rar/internal/Rar3PpmAllocator.class"
+            ) != null && archive.getEntry(
+                "org/glavo/arkivo/rar/internal/Rar3PpmRangeDecoder.class"
+            ) != null && archive.getEntry(
+                "org/glavo/arkivo/rar/internal/Rar3PpmModel.class"
+            ) != null) {
+                "The RAR archive does not contain the Arkivo RAR3 PPMd decoder"
+            }
+            check(archive.getEntry(
                 "org/glavo/arkivo/rar/internal/Rar5LzDecoder.class"
             ) != null) {
                 "The RAR archive does not contain the Arkivo RAR5 decoder"
+            }
+            check(archive.getEntry(
+                "org/glavo/arkivo/rar/internal/Rar13Cipher.class"
+            ) != null && archive.getEntry(
+                "org/glavo/arkivo/rar/internal/Rar15Cipher.class"
+            ) != null && archive.getEntry(
+                "org/glavo/arkivo/rar/internal/Rar20Cipher.class"
+            ) != null) {
+                "The RAR archive does not contain the Arkivo legacy cipher implementations"
             }
             val forbiddenPrefixes = listOf("com/github/junrar/", "be/stef/", "org/slf4j/")
             check(archive.entries().asSequence().none { entry ->
@@ -58,8 +76,8 @@ val verifyPublishedRarModule by tasks.registering {
             }) {
                 "The RAR archive contains a removed third-party decoder package"
             }
-            check(archive.getEntry("META-INF/licenses/unrar-LICENSE.txt") != null) {
-                "The RAR archive does not contain the license required by legacy crypto code"
+            check(archive.getEntry("META-INF/licenses/unrar-LICENSE.txt") == null) {
+                "The RAR archive contains the obsolete UnRAR license"
             }
         }
     }

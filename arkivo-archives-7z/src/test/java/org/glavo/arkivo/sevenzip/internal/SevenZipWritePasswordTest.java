@@ -16,35 +16,30 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-/// Tests temporary 7z write-password decoding and cleanup.
+/// Tests temporary 7z write-password validation and cleanup.
 @NotNullByDefault
 public final class SevenZipWritePasswordTest {
-    /// Verifies that an absent provider disables encryption without allocating characters.
+    /// Verifies that an absent provider disables encryption.
     @Test
     public void absentProviderDisablesEncryption() throws IOException {
         SevenZipWritePassword password = SevenZipWritePassword.open(null);
 
         assertNull(password.bytes());
-        assertNull(password.characters());
         password.close();
         assertThrows(IllegalStateException.class, password::bytes);
-        assertThrows(IllegalStateException.class, password::characters);
     }
 
-    /// Verifies strict UTF-16LE decoding and deterministic character cleanup.
+    /// Verifies strict UTF-16LE validation and deterministic byte cleanup.
     @Test
     public void decodesAndClearsPassword() throws IOException {
         String text = "p\u00e4ss-\u5bc6\u7801";
         byte[] suppliedBytes = text.getBytes(StandardCharsets.UTF_16LE);
         SevenZipWritePassword password = SevenZipWritePassword.open(() -> suppliedBytes);
         byte[] bytes = Objects.requireNonNull(password.bytes());
-        char[] characters = Objects.requireNonNull(password.characters());
 
         assertArrayEquals(suppliedBytes, bytes);
-        assertArrayEquals(text.toCharArray(), characters);
         password.close();
         assertArrayEquals(new byte[bytes.length], bytes);
-        assertArrayEquals(new char[characters.length], characters);
         password.close();
     }
 
@@ -53,10 +48,8 @@ public final class SevenZipWritePasswordTest {
     public void acceptsEmptyPassword() throws IOException {
         SevenZipWritePassword password = SevenZipWritePassword.open(ArkivoPasswordProvider.fixed(new byte[0]));
         byte[] bytes = Objects.requireNonNull(password.bytes());
-        char[] characters = Objects.requireNonNull(password.characters());
 
         assertArrayEquals(new byte[0], bytes);
-        assertArrayEquals(new char[0], characters);
         password.close();
     }
 
