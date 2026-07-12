@@ -12,7 +12,6 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
@@ -27,16 +26,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies the public Deflate64 codec contract.
 @NotNullByDefault
 final class Deflate64CodecTest {
-    /// Verifies that Deflate64 exposes its implemented direction and rejects compression.
+    /// Verifies that Deflate64 exposes bidirectional channel capabilities and compression levels.
     @Test
-    void exposesDecompressionOnly() throws IOException {
+    void exposesBidirectionalCapabilities() {
         Deflate64Codec codec = new Deflate64Codec();
 
-        assertFalse(codec.canCompress());
+        assertTrue(codec.canCompress());
         assertTrue(codec.canDecompress());
-        try (var target = Channels.newChannel(OutputStream.nullOutputStream())) {
-            assertThrows(IOException.class, () -> codec.compressTo(target));
-        }
+        assertEquals(0L, codec.minimumCompressionLevel());
+        assertEquals(9L, codec.maximumCompressionLevel());
+        assertEquals(6L, codec.defaultCompressionLevel());
     }
 
     /// Verifies direct buffers, decoder counters, source ownership, and strict stored-block validation.
