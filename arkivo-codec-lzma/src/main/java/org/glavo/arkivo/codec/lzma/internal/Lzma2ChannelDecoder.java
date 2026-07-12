@@ -65,9 +65,19 @@ public final class Lzma2ChannelDecoder implements CompressionDecoder {
             ChannelOwnership ownership,
             int dictionarySize
     ) {
+        this(source, ownership, dictionarySize, 8192);
+    }
+
+    /// Creates a raw LZMA2 decoder with an explicit compressed-input buffer size.
+    public Lzma2ChannelDecoder(
+            ReadableByteChannel source,
+            ChannelOwnership ownership,
+            int dictionarySize,
+            int inputBufferSize
+    ) {
         this.source = Objects.requireNonNull(source, "source");
         this.ownership = Objects.requireNonNull(ownership, "ownership");
-        input = new LzmaChannelInput(source, 8192);
+        input = new LzmaChannelInput(source, inputBufferSize);
         decoder = new LzmaDecoderEngine(dictionarySize);
     }
 

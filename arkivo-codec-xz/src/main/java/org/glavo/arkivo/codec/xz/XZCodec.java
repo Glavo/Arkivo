@@ -4,16 +4,19 @@
 package org.glavo.arkivo.codec.xz;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ChecksumMode;
+import org.glavo.arkivo.codec.CodecOption;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
-import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
-import org.glavo.arkivo.codec.xz.internal.XzInputStream;
-import org.glavo.arkivo.codec.xz.internal.XzOutputStream;
+import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.xz.internal.XzChannelDecoder;
+import org.glavo.arkivo.codec.xz.internal.XzChannelEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
@@ -28,14 +31,23 @@ public final class XZCodec implements CompressionCodec {
     /// The stable XZ codec name.
     public static final String NAME = "xz";
 
+    /// Selects the XZ LZMA2 dictionary size in bytes.
+    public static final CodecOption<Long> DICTIONARY_SIZE =
+            CodecOption.of("xz.dictionarySize", Long.class);
+
+    /// Selects the exact XZ block integrity-check algorithm.
+    public static final CodecOption<XZCheckType> CHECK_TYPE =
+            CodecOption.of("xz.checkType", XZCheckType.class);
+
     /// The supported XZ operations.
-    private static final CompressionCapabilities CAPABILITIES = CompressionCapabilities.of(Set.of(
+    private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(Set.of(
             CompressionFeature.COMPRESSION,
             CompressionFeature.DECOMPRESSION,
             CompressionFeature.ONE_SHOT_COMPRESSION,
             CompressionFeature.ONE_SHOT_DECOMPRESSION,
+            CompressionFeature.DIRECT_BYTE_BUFFER,
             CompressionFeature.CONCATENATED_FRAMES
-    ));
+    ), Set.of(DICTIONARY_SIZE, StandardCodecOptions.CHECKSUM, CHECK_TYPE), Set.of());
 
     /// The XZ stream header magic bytes.
     private static final byte @Unmodifiable [] HEADER_MAGIC = {
@@ -88,7 +100,23 @@ public final class XZCodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.compressionOptions(), "XZ compression");
-        return StreamCodecAdapters.openEncoder(target, ownership, XzOutputStream::new);
+        @Nullable Long requestedDictionary = options.get(DICTIONARY_SIZE);
+        long dictionarySize = requestedDictionary != null
+                ? requestedDictionary
+                : XzChannelEncoder.DEFAULT_DICTIONARY_SIZE;
+        if (dictionarySize < 0L || dictionarySize > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("Unsupported XZ LZMA2 dictionary size: " + dictionarySize);
+        }
+
+        @Nullable ChecksumMode checksum = options.get(StandardCodecOptions.CHECKSUM);
+        @Nullable XZCheckType requestedCheck = options.get(CHECK_TYPE);
+        if (checksum != null && checksum != ChecksumMode.DEFAULT && requestedCheck != null) {
+            throw new IllegalArgumentException("XZ CHECKSUM and CHECK_TYPE options cannot both select a check");
+        }
+        XZCheckType checkType = requestedCheck != null
+                ? requestedCheck
+                : checksum == ChecksumMode.DISABLED ? XZCheckType.NONE : XZCheckType.CRC64;
+        return new XzChannelEncoder(target, ownership, (int) dictionarySize, checkType.flag());
     }
 
     /// Opens a configured XZ decoder over the source channel.
@@ -99,6 +127,6 @@ public final class XZCodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "XZ decompression");
-        return StreamCodecAdapters.openDecoder(source, ownership, XzInputStream::new);
+        return new XzChannelDecoder(source, ownership);
     }
 }

@@ -3,8 +3,14 @@
 
 package org.glavo.arkivo.codec.xz;
 
+import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ChecksumMode;
+import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.xz.internal.XzInputStream;
 import org.glavo.arkivo.codec.xz.internal.XzOutputStream;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -28,6 +34,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
@@ -36,7 +45,9 @@ import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Tests XZ codec behavior.
 @NotNullByDefault
@@ -106,9 +117,12 @@ public final class XZCodecTest {
                 output.write(second);
             }
 
-            try (XzInputStream input = new XzInputStream(new ByteArrayInputStream(compressed.toByteArray()))) {
-                assertArrayEquals(concatenate(first, second), input.readAllBytes());
+            byte[] encoded = compressed.toByteArray();
+            byte[] expected = concatenate(first, second);
+            try (XzInputStream input = new XzInputStream(new ByteArrayInputStream(encoded))) {
+                assertArrayEquals(expected, input.readAllBytes());
             }
+            assertArrayEquals(expected, readCodec(encoded));
         }
     }
 
@@ -138,9 +152,11 @@ public final class XZCodecTest {
                 output.write(content);
             }
 
-            try (XzInputStream input = new XzInputStream(new ByteArrayInputStream(compressed.toByteArray()))) {
+            byte[] encoded = compressed.toByteArray();
+            try (XzInputStream input = new XzInputStream(new ByteArrayInputStream(encoded))) {
                 assertArrayEquals(content, input.readAllBytes(), filter.getClass().getSimpleName());
             }
+            assertArrayEquals(content, readCodec(encoded), filter.getClass().getSimpleName());
         }
     }
 
@@ -156,9 +172,11 @@ public final class XZCodecTest {
         concatenated.write(new byte[4]);
         concatenated.write(secondStream);
 
-        try (XzInputStream input = new XzInputStream(new ByteArrayInputStream(concatenated.toByteArray()))) {
+        byte[] encoded = concatenated.toByteArray();
+        try (XzInputStream input = new XzInputStream(new ByteArrayInputStream(encoded))) {
             assertArrayEquals(concatenate(first, second), input.readAllBytes());
         }
+        assertArrayEquals(concatenate(first, second), readCodec(encoded));
     }
 
     /// Verifies that an empty native stream has a valid zero-record Index.
@@ -173,9 +191,11 @@ public final class XZCodecTest {
         )) {
             assertArrayEquals(new byte[0], input.readAllBytes());
         }
-        try (XzInputStream input = new XzInputStream(new ByteArrayInputStream(compressed.toByteArray()))) {
+        byte[] encoded = compressed.toByteArray();
+        try (XzInputStream input = new XzInputStream(new ByteArrayInputStream(encoded))) {
             assertArrayEquals(new byte[0], input.readAllBytes());
         }
+        assertArrayEquals(new byte[0], readCodec(encoded));
     }
 
     /// Verifies that single-stream mode leaves following container bytes unread.
@@ -200,6 +220,7 @@ public final class XZCodecTest {
         byte[] headerCorrupt = valid.clone();
         headerCorrupt[8] ^= 1;
         assertThrows(IOException.class, () -> readNative(headerCorrupt));
+        assertThrows(IOException.class, () -> readCodec(headerCorrupt));
 
         int footerOffset = valid.length - 12;
         long backward = littleEndian(valid, footerOffset + 4, 4);
@@ -209,10 +230,86 @@ public final class XZCodecTest {
         byte[] checkCorrupt = valid.clone();
         checkCorrupt[indexOffset - 1] ^= 1;
         assertThrows(IOException.class, () -> readNative(checkCorrupt));
+        assertThrows(IOException.class, () -> readCodec(checkCorrupt));
 
         byte[] indexCorrupt = valid.clone();
         indexCorrupt[footerOffset - 1] ^= 1;
         assertThrows(IOException.class, () -> readNative(indexCorrupt));
+        assertThrows(IOException.class, () -> readCodec(indexCorrupt));
+    }
+
+    /// Verifies direct channel options, counters, and endpoint ownership.
+    @Test
+    public void directChannelsExposeOptionsCountersAndOwnership() throws IOException {
+        byte[] content = patternedContent(240_321);
+        ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
+        WritableByteChannel compressedTarget = Channels.newChannel(compressedBytes);
+        CodecOptions options = CodecOptions.builder()
+                .set(XZCodec.DICTIONARY_SIZE, 1L << 16)
+                .set(XZCodec.CHECK_TYPE, XZCheckType.SHA256)
+                .build();
+        CompressionEncoder encoder = new XZCodec().openEncoder(
+                compressedTarget,
+                options,
+                ChannelOwnership.RETAIN
+        );
+        ByteBuffer source = ByteBuffer.allocateDirect(content.length).put(content).flip();
+        assertEquals(content.length, encoder.write(source));
+        encoder.finish();
+        assertEquals(content.length, encoder.inputBytes());
+        assertEquals(compressedBytes.size(), encoder.outputBytes());
+        assertFalse(encoder.isOpen());
+        assertTrue(compressedTarget.isOpen());
+        byte[] encoded = compressedBytes.toByteArray();
+        assertEquals(XZ.CHECK_SHA256, Byte.toUnsignedInt(encoded[7]));
+        try (org.tukaani.xz.XZInputStream independent = new org.tukaani.xz.XZInputStream(
+                new ByteArrayInputStream(encoded)
+        )) {
+            assertArrayEquals(content, independent.readAllBytes());
+        }
+
+        ReadableByteChannel compressedSource = Channels.newChannel(new ByteArrayInputStream(encoded));
+        CompressionDecoder decoder = new XZCodec().openDecoder(
+                compressedSource,
+                CodecOptions.EMPTY,
+                ChannelOwnership.CLOSE
+        );
+        ByteBuffer decoded = ByteBuffer.allocateDirect(content.length);
+        while (decoded.hasRemaining()) {
+            assertTrue(decoder.read(decoded) > 0);
+        }
+        assertEquals(-1, decoder.read(ByteBuffer.allocateDirect(1)));
+        assertEquals(encoded.length, decoder.inputBytes());
+        assertEquals(content.length, decoder.outputBytes());
+        decoder.close();
+        assertFalse(compressedSource.isOpen());
+        decoded.flip();
+        byte[] actual = new byte[decoded.remaining()];
+        decoded.get(actual);
+        assertArrayEquals(content, actual);
+
+        CodecOptions disabled = CodecOptions.builder()
+                .set(StandardCodecOptions.CHECKSUM, ChecksumMode.DISABLED)
+                .build();
+        ByteArrayOutputStream uncheckedBytes = new ByteArrayOutputStream();
+        try (CompressionEncoder unchecked = new XZCodec().openEncoder(
+                Channels.newChannel(uncheckedBytes),
+                disabled,
+                ChannelOwnership.RETAIN
+        )) {
+            unchecked.finish();
+        }
+        assertEquals(XZ.CHECK_NONE, Byte.toUnsignedInt(uncheckedBytes.toByteArray()[7]));
+
+        CodecOptions conflicting = CodecOptions.builder()
+                .set(StandardCodecOptions.CHECKSUM, ChecksumMode.DISABLED)
+                .set(XZCodec.CHECK_TYPE, XZCheckType.CRC32)
+                .build();
+        assertThrows(IllegalArgumentException.class, () -> new XZCodec().openEncoder(
+                Channels.newChannel(new ByteArrayOutputStream()),
+                conflicting,
+                ChannelOwnership.RETAIN
+        ));
     }
 
     /// Compresses and decompresses the given bytes.
@@ -245,6 +342,16 @@ public final class XZCodecTest {
         try (XzInputStream input = new XzInputStream(new ByteArrayInputStream(compressed))) {
             return input.readAllBytes();
         }
+    }
+
+    /// Reads one byte array through the public channel-first codec.
+    private static byte[] readCodec(byte[] compressed) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        new XZCodec().decompress(
+                Channels.newChannel(new ByteArrayInputStream(compressed)),
+                Channels.newChannel(output)
+        );
+        return output.toByteArray();
     }
 
     /// Returns an unsigned little-endian test value.
