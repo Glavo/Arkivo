@@ -157,6 +157,23 @@ final class Rar5Crypto {
         }
     }
 
+
+    /// Converts a plain BLAKE2sp digest into the password-dependent RAR5 checksum representation.
+    static byte[] keyedBlake2sp(byte[] digest, byte[] hashKey) throws IOException {
+        if (digest.length != RarBlake2sp.DIGEST_SIZE) {
+            throw new IOException("RAR5 BLAKE2sp digest has invalid size");
+        }
+        if (hashKey.length != SHA256_SIZE) {
+            throw new IOException("RAR5 keyed-checksum key has invalid size");
+        }
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(hashKey, "HmacSHA256"));
+            return mac.doFinal(digest);
+        } catch (GeneralSecurityException exception) {
+            throw new IOException("HMAC-SHA256 is unavailable for RAR5 checksums", exception);
+        }
+    }
     /// Creates a stateful RAR5 AES-CBC block decryptor.
     static CbcDecryptor decryptor(byte[] key, byte[] initializationVector) throws IOException {
         return new CbcDecryptor(key, initializationVector);

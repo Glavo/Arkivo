@@ -63,7 +63,9 @@ public interface RarArkivoEntryAttributes extends BasicFileAttributes {
     /// Returns the unsigned data CRC32 value, or `UNKNOWN_NUMERIC_VALUE` when absent.
     long dataCrc32();
 
-    /// Returns the BLAKE2sp hash stored in the file hash extra record, or `null` when absent.
+    /// Returns the 32-byte BLAKE2sp checksum representation stored in the file hash extra record, or `null` when absent.
+    /// For an encrypted file using tweaked checksums, these bytes are the HMAC-SHA256 representation of the raw BLAKE2sp
+    /// digest rather than the raw digest itself.
     byte @Nullable @Unmodifiable [] blake2spHash();
 
     /// Returns whether this entry data is encrypted.

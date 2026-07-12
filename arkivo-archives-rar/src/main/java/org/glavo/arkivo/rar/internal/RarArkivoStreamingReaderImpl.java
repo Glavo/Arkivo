@@ -13,12 +13,16 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.PipedInputStream;
+import java.io.PipedOutputStream;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.PosixFileAttributes;
+import java.security.MessageDigest;
 import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -80,6 +84,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// RAR4 end header flag indicating that another archive volume follows.
     private static final long RAR4_END_FLAG_NEXT_VOLUME = 0x0001L;
 
+    /// RAR5 main archive flag indicating that compressed files can share a solid dictionary.
+    private static final long RAR5_MAIN_FLAG_SOLID = 0x0004L;
+
     /// Header flag indicating that an extra area is present.
     private static final long HEADER_FLAG_EXTRA_AREA = 0x0001L;
 
@@ -98,6 +105,15 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// RAR4 main header flag indicating that archive headers are encrypted.
     private static final long RAR4_MAIN_FLAG_PASSWORD = 0x0080L;
 
+    /// RAR4 main header flag indicating that compressed files can share a solid dictionary.
+    private static final long RAR4_MAIN_FLAG_SOLID = 0x0008L;
+
+    /// RAR4 main header flag indicating that an old-style archive comment is embedded in the header.
+    private static final long RAR4_MAIN_FLAG_COMMENT = 0x0002L;
+
+    /// RAR4 main header flag indicating that an encryption-version byte is present.
+    private static final long RAR4_MAIN_FLAG_ENCRYPTION_VERSION = 0x0200L;
+
     /// RAR4 file header flag indicating that data continues from the previous volume.
     private static final long RAR4_FILE_FLAG_CONTINUE_PREVIOUS = 0x0001L;
 
@@ -107,6 +123,18 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// RAR4 file header flag indicating that entry data is encrypted.
     private static final long RAR4_FILE_FLAG_PASSWORD = 0x0004L;
 
+    /// RAR4 file header flag indicating that an old-style file comment is embedded in the header.
+    private static final long RAR4_FILE_FLAG_COMMENT = 0x0008L;
+
+    /// RAR4 file header flag indicating that this entry continues a solid compression stream.
+    private static final long RAR4_FILE_FLAG_SOLID = 0x0010L;
+
+    /// RAR4 file header mask containing dictionary size or the directory marker.
+    private static final long RAR4_FILE_DICTIONARY_MASK = 0x00e0L;
+
+    /// RAR4 file header dictionary value marking a directory entry.
+    private static final long RAR4_FILE_IS_DIRECTORY = 0x00e0L;
+
     /// RAR4 file header flag indicating that high size fields are present.
     private static final long RAR4_FILE_FLAG_LARGE = 0x0100L;
 
@@ -115,6 +143,15 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// RAR4 file header flag indicating that an eight-byte encryption salt is present.
     private static final long RAR4_FILE_FLAG_SALT = 0x0400L;
+
+    /// RAR4 file header flag indicating that extended timestamp fields are present.
+    private static final long RAR4_FILE_FLAG_EXTENDED_TIME = 0x1000L;
+
+    /// The RAR4 main header size excluding its two-byte CRC and embedded old-style comments.
+    private static final int RAR4_MAIN_HEADER_DATA_SIZE = 11;
+
+    /// The RAR4 file header size excluding its two-byte CRC, variable fields, and embedded comments.
+    private static final int RAR4_FILE_HEADER_DATA_SIZE = 30;
 
     /// The raw RAR4 host operating system value for MS-DOS entries.
     private static final int RAR4_HOST_OS_MSDOS = 0;
@@ -137,12 +174,6 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// The RAR4 compression method byte for the best compressed entries.
     private static final int RAR4_METHOD_BEST = 0x35;
 
-    /// The RAR4 dictionary bits mask in the method byte.
-    private static final int RAR4_DICTIONARY_MASK = 0xe0;
-
-    /// The RAR4 method-byte marker for directory entries.
-    private static final int RAR4_FILE_IS_DIRECTORY = 0xe0;
-
     /// File flag indicating that the entry is a directory.
     private static final long FILE_FLAG_DIRECTORY = 0x0001L;
 
@@ -160,6 +191,30 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// The number of low bits before the compression method field.
     private static final int COMPRESSION_METHOD_SHIFT = 7;
+
+    /// The mask for the RAR5 compression algorithm version.
+    private static final long COMPRESSION_ALGORITHM_MASK = 0x003fL;
+
+    /// The RAR5 compression flag indicating that this entry continues a solid stream.
+    private static final long COMPRESSION_FLAG_SOLID = 0x0040L;
+
+    /// The number of low bits before the RAR5 dictionary power field.
+    private static final int COMPRESSION_DICTIONARY_POWER_SHIFT = 10;
+
+    /// The RAR5 dictionary power mask used by compression algorithm version zero.
+    private static final long COMPRESSION_DICTIONARY_POWER_V5_MASK = 0x0fL;
+
+    /// The RAR5 dictionary power mask used by compression algorithm version one.
+    private static final long COMPRESSION_DICTIONARY_POWER_V7_MASK = 0x1fL;
+
+    /// The mask for the RAR7 fractional dictionary size field.
+    private static final long COMPRESSION_DICTIONARY_FRACTION_MASK = 0x1fL;
+
+    /// The number of low bits before the RAR7 fractional dictionary size field.
+    private static final int COMPRESSION_DICTIONARY_FRACTION_SHIFT = 15;
+
+    /// The RAR7 flag selecting RAR5-compatible Huffman coding.
+    private static final long COMPRESSION_FLAG_RAR5_COMPATIBLE = 0x0010_0000L;
 
     /// The file encryption extra record type.
     private static final int EXTRA_TYPE_FILE_ENCRYPTION = 0x01;
@@ -228,6 +283,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// The RAR5 hash type for BLAKE2sp.
     private static final long HASH_TYPE_BLAKE2SP = 0L;
 
+    /// The bounded pipe capacity used between the RAR4 decoder and stream consumer.
+    private static final int RAR_DECODE_PIPE_SIZE = 64 * 1024;
+
     /// The fallback timestamp used when a RAR entry omits all time metadata.
     private static final FileTime MISSING_TIME = FileTime.fromMillis(0L);
 
@@ -243,6 +301,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// The CRC32 calculator reused for stored file data validation.
     private final CRC32 dataCrc32 = new CRC32();
 
+    /// The BLAKE2sp calculator reused for stored RAR5 file data validation.
+    private final RarBlake2sp dataBlake2sp = new RarBlake2sp();
+
     /// The current entry attributes, or `null` when no entry is active.
     private @Nullable RarEntryAttributes currentAttributes;
 
@@ -252,11 +313,17 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// The encryption metadata for the current physical file part, or `null` when it is not encrypted.
     private @Nullable RarEncryptionInfo currentPartEncryption;
 
+    /// The format-specific decompression metadata for the current physical file part.
+    private @Nullable RarCompressionInfo currentPartCompression;
+
     /// The remaining packed bytes in the current entry data area.
     private long currentPackedRemaining;
 
     /// Whether the current entry body has already been opened.
     private boolean currentBodyOpened;
+
+    /// Whether the current entry body has already been consumed or skipped completely.
+    private boolean currentBodyConsumed;
 
     /// Whether the current stored body is being checked against a CRC32 value.
     private boolean currentCrcActive;
@@ -267,17 +334,47 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// The expected unsigned CRC32 value for the current stored body.
     private long currentExpectedCrc32 = RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE;
 
-    /// The password-derived key for a tweaked current CRC32, or `null` for a plain checksum.
+    /// Whether the current stored RAR5 body is being checked against a BLAKE2sp hash.
+    private boolean currentBlake2spActive;
+
+    /// Whether the current stored RAR5 body BLAKE2sp hash has already been verified.
+    private boolean currentBlake2spVerified;
+
+    /// The expected BLAKE2sp hash for the current stored RAR5 body, or `null` when absent.
+    private byte @Nullable @Unmodifiable [] currentExpectedBlake2sp;
+
+    /// The password-derived key for a tweaked current checksum, or `null` for a plain checksum.
     private byte @Nullable [] currentHashKey;
 
     /// The active encrypted entry stream, or `null` before an encrypted body is opened.
     private @Nullable EncryptedEntryInputStream currentEncryptedInput;
+
+    /// The active decompression stream, or `null` before a compressed body is opened.
+    private @Nullable DecodedInputStream currentDecodedInput;
+
+    /// The lazily initialized RAR4 decoder session retaining solid dictionary state.
+    private Rar4Decoder.@Nullable Session rar4DecoderSession;
+
+    /// Whether packed RAR4 data was skipped and invalidated a future solid continuation.
+    private boolean rar4DecoderHistoryInvalid;
+
+    /// The lazily initialized RAR5 decoder session retaining solid dictionary state.
+    private Rar5Decoder.@Nullable Session rar5DecoderSession;
+
+    /// Whether packed RAR5 data was skipped and invalidated a future solid continuation.
+    private boolean rar5DecoderHistoryInvalid;
 
     /// The active RAR5 AES key for encrypted archive headers, or `null` before an encryption header.
     private byte @Nullable [] archiveHeaderKey;
 
     /// Whether subsequent RAR4 headers are independently salt-prefixed and AES encrypted.
     private boolean rar3HeadersEncrypted;
+
+    /// Whether the current RAR4 archive declares a solid compression sequence.
+    private boolean rar4ArchiveSolid;
+
+    /// Whether the current RAR5 archive declares a solid compression sequence.
+    private boolean rar5ArchiveSolid;
 
     /// Whether the RAR signature has been consumed.
     private boolean signatureRead;
@@ -320,6 +417,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         currentAttributes = null;
         currentPartAttributes = null;
         currentPartEncryption = null;
+        currentPartCompression = null;
 
         while (true) {
             @Nullable BlockHeader block = readBlockHeader();
@@ -330,6 +428,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
             switch (block.type()) {
                 case HEADER_TYPE_MAIN -> {
+                    readMainHeaderMetadata(block);
                     skipBlockData(block);
                 }
                 case HEADER_TYPE_FILE -> {
@@ -337,9 +436,11 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                     currentAttributes = parsedFile.attributes();
                     currentPartAttributes = parsedFile.attributes();
                     currentPartEncryption = parsedFile.encryptionInfo();
+                    currentPartCompression = parsedFile.compressionInfo();
                     currentPackedRemaining = block.dataSize();
                     currentBodyOpened = false;
-                    prepareCurrentCrc();
+                    currentBodyConsumed = false;
+                    prepareCurrentIntegrity();
                     return true;
                 }
                 case HEADER_TYPE_SERVICE -> skipBlockData(block);
@@ -353,6 +454,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                         finished = true;
                         return false;
                     }
+                    advanceAfterEndHeader();
                 }
                 default -> skipBlockData(block);
             }
@@ -374,7 +476,53 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         throw new UnsupportedOperationException("Unsupported RAR streaming attributes type: " + type.getName());
     }
 
-    /// Opens a readable channel for the current stored file entry.
+    /// Returns whether Arkivo can decode the current regular-file body with the configured format support.
+    boolean isCurrentBodyReadable() {
+        RarEntryAttributes attributes = currentAttributes;
+        if (attributes == null
+                || !attributes.isRegularFile()
+                || attributes.continuesFromPreviousVolume()) {
+            return false;
+        }
+        if (attributes.compressionMethod() == 0) {
+            if (!attributes.isEncrypted()) {
+                return true;
+            }
+            RarEncryptionInfo encryptionInfo = currentPartEncryption;
+            return encryptionInfo instanceof Rar5EncryptionInfo
+                    || encryptionInfo instanceof Rar3EncryptionInfo rar3Info
+                    && isSupportedRar4EncryptionVersion(rar3Info.extractionVersion());
+        }
+
+        RarCompressionInfo compressionInfo = currentPartCompression;
+        if (compressionInfo == null
+                || !isSupportedCompressionMethod(attributes.compressionMethod())
+                || attributes.unpackedSize() == RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE) {
+            return false;
+        }
+        if (compressionInfo instanceof Rar4CompressionInfo rar4Info) {
+            if (!Rar4Decoder.supports(rar4Info.extractionVersion())
+                    || rar4Info.solid() && rar4DecoderHistoryInvalid) {
+                return false;
+            }
+            return !attributes.isEncrypted()
+                    || currentPartEncryption instanceof Rar3EncryptionInfo rar3Info
+                    && isSupportedRar4EncryptionVersion(rar3Info.extractionVersion());
+        }
+
+        Rar5CompressionInfo rar5Info = (Rar5CompressionInfo) compressionInfo;
+        if (rar5Info.algorithmVersion() > 1
+                || !Rar5Decoder.supportsDictionary(
+                rar5Info.dictionaryPower(),
+                rar5Info.dictionaryFraction()
+        )
+                || rar5Info.solid() && rar5DecoderHistoryInvalid) {
+            return false;
+        }
+        return !attributes.isEncrypted() || currentPartEncryption instanceof Rar5EncryptionInfo;
+    }
+
+    /// Opens a readable channel for the current supported file entry.
     @Override
     public ReadableByteChannel openChannel() throws IOException {
         ensureOpen();
@@ -382,7 +530,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (attributes == null) {
             throw new IOException("RAR streaming reader has not advanced to an entry");
         }
-        if (currentBodyOpened) {
+        if (currentBodyOpened || currentBodyConsumed) {
             throw new IOException("RAR entry body has already been opened");
         }
         if (attributes.isDirectory() || attributes.isSymbolicLink() || attributes.isOther()) {
@@ -393,19 +541,201 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             throw new IOException("RAR entry starts in a previous volume");
         }
         if (attributes.compressionMethod() != 0) {
-            throw new IOException("Unsupported RAR compression method: " + attributes.compressionMethod());
+            return Channels.newChannel(openCompressedInput(attributes));
         }
         if (attributes.isEncrypted()) {
-            if (attributes.continuesInNextVolume()) {
-                throw new IOException("Encrypted multi-volume RAR entries are not supported");
-            }
             return openEncryptedChannel(attributes);
         }
         currentBodyOpened = true;
         return Channels.newChannel(new EntryInputStream());
     }
 
-    /// Opens and authenticates one AES-encrypted stored entry body.
+    /// Opens one supported compressed body through its format-specific stateful decoder.
+    private DecodedInputStream openCompressedInput(RarEntryAttributes attributes) throws IOException {
+        RarCompressionInfo compressionInfo = currentPartCompression;
+        if (compressionInfo instanceof Rar4CompressionInfo) {
+            return openRar4CompressedInput(attributes);
+        }
+        if (compressionInfo instanceof Rar5CompressionInfo) {
+            return openRar5CompressedInput(attributes);
+        }
+        throw new IOException("RAR entry compression metadata is unavailable");
+    }
+
+    /// Opens one supported RAR4 compressed input through the stateful decoder session.
+    private DecodedInputStream openRar4CompressedInput(RarEntryAttributes attributes) throws IOException {
+        RarCompressionInfo rawCompressionInfo = currentPartCompression;
+        if (!(rawCompressionInfo instanceof Rar4CompressionInfo compressionInfo)
+                || !isSupportedCompressionMethod(attributes.compressionMethod())
+                || !Rar4Decoder.supports(compressionInfo.extractionVersion())) {
+            throw new IOException("Unsupported RAR compression method: " + attributes.compressionMethod());
+        }
+        if (attributes.unpackedSize() == RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE) {
+            throw new IOException("Compressed RAR4 entry has an unknown unpacked size");
+        }
+
+        InputStream packedInput = openRar4PackedInput(attributes);
+        try {
+            Rar4Decoder.Session session = rar4DecoderSession();
+            if (!compressionInfo.solid()) {
+                rar4DecoderHistoryInvalid = false;
+            }
+            return startDecodedInput(
+                    packedInput,
+                    new Rar4CompressionDecoder(session, compressionInfo),
+                    attributes
+            );
+        } catch (IOException | RuntimeException | Error exception) {
+            closeFailedPackedInput(packedInput, exception);
+            throw exception;
+        }
+    }
+
+    /// Opens one supported RAR5 compressed input through the stateful decoder session.
+    private DecodedInputStream openRar5CompressedInput(RarEntryAttributes attributes) throws IOException {
+        RarCompressionInfo rawCompressionInfo = currentPartCompression;
+        if (!(rawCompressionInfo instanceof Rar5CompressionInfo compressionInfo)
+                || !isSupportedCompressionMethod(attributes.compressionMethod())
+                || compressionInfo.algorithmVersion() > 1
+                || !Rar5Decoder.supportsDictionary(
+                compressionInfo.dictionaryPower(),
+                compressionInfo.dictionaryFraction()
+        )) {
+            throw new IOException("Unsupported RAR compression method: " + attributes.compressionMethod());
+        }
+        if (compressionInfo.solid() && rar5DecoderHistoryInvalid) {
+            throw new IOException("RAR5 solid entry is missing its preceding decompression history");
+        }
+        if (attributes.unpackedSize() == RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE) {
+            throw new IOException("Compressed RAR5 entry has an unknown unpacked size");
+        }
+
+        InputStream packedInput;
+        if (attributes.isEncrypted()) {
+            RarEncryptionInfo encryptionInfo = currentPartEncryption;
+            if (!(encryptionInfo instanceof Rar5EncryptionInfo rar5EncryptionInfo)) {
+                throw new IOException("Unsupported encrypted RAR5 compression metadata");
+            }
+            packedInput = openRar5PackedInput(attributes, rar5EncryptionInfo);
+        } else {
+            packedInput = new PackedEntryInputStream();
+        }
+
+        try {
+            Rar5Decoder.Session session = rar5DecoderSession();
+            if (!compressionInfo.solid()) {
+                rar5DecoderHistoryInvalid = false;
+            }
+            return startDecodedInput(
+                    packedInput,
+                    new Rar5CompressionDecoder(session, compressionInfo),
+                    attributes
+            );
+        } catch (IOException | RuntimeException | Error exception) {
+            closeFailedPackedInput(packedInput, exception);
+            Rar5Crypto.clear(currentHashKey);
+            currentHashKey = null;
+            throw exception;
+        }
+    }
+
+    /// Starts one bounded decompression worker and installs its current-entry state.
+    private DecodedInputStream startDecodedInput(
+            InputStream packedInput,
+            CompressionDecoder decoder,
+            RarEntryAttributes attributes
+    ) throws IOException {
+        DecodedInputStream decodedInput = new DecodedInputStream(packedInput, decoder, attributes);
+        currentDecodedInput = decodedInput;
+        currentBodyOpened = true;
+        currentCrcActive = false;
+        currentCrcVerified = false;
+        currentExpectedCrc32 = attributes.dataCrc32();
+        currentBlake2spActive = false;
+        currentBlake2spVerified = false;
+        currentExpectedBlake2sp = null;
+        return decodedInput;
+    }
+
+    /// Closes a packed stream after decoder startup fails and suppresses any close failure.
+    private static void closeFailedPackedInput(InputStream packedInput, Throwable problem) {
+        try {
+            packedInput.close();
+        } catch (IOException closeException) {
+            problem.addSuppressed(closeException);
+        }
+    }
+
+    /// Opens the bounded plaintext packed stream consumed by the RAR4 decompressor.
+    private InputStream openRar4PackedInput(RarEntryAttributes attributes) throws IOException {
+        if (!attributes.isEncrypted()) {
+            return new PackedEntryInputStream();
+        }
+
+        RarEncryptionInfo encryptionInfo = currentPartEncryption;
+        if (!(encryptionInfo instanceof Rar3EncryptionInfo rar3Info)
+                || !isSupportedRar4EncryptionVersion(rar3Info.extractionVersion())) {
+            throw new IOException("Unsupported encrypted RAR4 compression version");
+        }
+        ArkivoPasswordProvider provider = passwordProvider;
+        if (provider == null) {
+            throw new IOException("RAR password provider is required for encrypted entry: " + attributes.path());
+        }
+        byte @Nullable [] password = provider.passwordForArchive();
+        if (password == null) {
+            throw new IOException("RAR password provider did not supply an archive password");
+        }
+        try {
+            if (RarLegacyCrypto.supports(rar3Info.extractionVersion())) {
+                if (rar3Info.salt() != null) {
+                    throw new IOException("Legacy RAR encryption must not contain an AES salt");
+                }
+                return new LegacyEncryptedPackedInputStream(
+                        RarLegacyCrypto.decryptor(rar3Info.extractionVersion(), password)
+                );
+            }
+
+            try (Rar3Crypto.DerivedKeys keys = Rar3Crypto.deriveKeys(password, rar3Info.salt())) {
+                byte[] key = keys.key();
+                byte[] initializationVector = keys.initializationVector();
+                try {
+                    return new EncryptedPackedInputStream(Rar3Crypto.decryptor(key, initializationVector));
+                } finally {
+                    Rar3Crypto.clear(key);
+                    Rar3Crypto.clear(initializationVector);
+                }
+            }
+        } finally {
+            Rar3Crypto.clear(password);
+        }
+    }
+
+    /// Returns the lazily initialized RAR4 decoder session for this archive stream.
+    private Rar4Decoder.Session rar4DecoderSession() throws IOException {
+        Rar4Decoder.Session session = rar4DecoderSession;
+        if (session == null) {
+            session = Rar4Decoder.newSession();
+            if (rar4DecoderHistoryInvalid) {
+                session.invalidateHistory();
+            }
+            rar4DecoderSession = session;
+        }
+        return session;
+    }
+
+    /// Returns the lazily initialized RAR5 decoder session for this archive stream.
+    private Rar5Decoder.Session rar5DecoderSession() {
+        Rar5Decoder.Session session = rar5DecoderSession;
+        if (session == null) {
+            session = Rar5Decoder.newSession();
+            if (rar5DecoderHistoryInvalid) {
+                session.invalidateHistory();
+            }
+            rar5DecoderSession = session;
+        }
+        return session;
+    }
+    /// Opens and validates one supported encrypted stored entry body.
     private ReadableByteChannel openEncryptedChannel(RarEntryAttributes attributes) throws IOException {
         RarEncryptionInfo encryptionInfo = currentPartEncryption;
         if (encryptionInfo == null) {
@@ -420,35 +750,52 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         return openRar5EncryptedChannel(attributes, (Rar5EncryptionInfo) encryptionInfo);
     }
 
-    /// Opens one RAR 3.x AES-128 encrypted stored entry body.
+    /// Opens one supported encrypted RAR4 stored entry body.
     private ReadableByteChannel openRar3EncryptedChannel(
             RarEntryAttributes attributes,
             Rar3EncryptionInfo encryptionInfo
     ) throws IOException {
-        if (!isRar3AesVersion(encryptionInfo.extractionVersion())) {
-            throw new IOException("Unsupported legacy RAR encryption version: " + encryptionInfo.extractionVersion());
+        int extractionVersion = encryptionInfo.extractionVersion();
+        if (!isSupportedRar4EncryptionVersion(extractionVersion)) {
+            throw new IOException("Unsupported legacy RAR encryption version: " + extractionVersion);
         }
         ArkivoPasswordProvider provider = passwordProvider;
         if (provider == null) {
-            throw new IOException("RAR3 password provider is required for encrypted entry: " + attributes.path());
+            throw new IOException("RAR password provider is required for encrypted entry: " + attributes.path());
         }
 
         byte @Nullable [] password = provider.passwordForArchive();
         if (password == null) {
-            throw new IOException("RAR3 password provider did not supply an archive password");
+            throw new IOException("RAR password provider did not supply an archive password");
         }
-        try (Rar3Crypto.DerivedKeys keys = Rar3Crypto.deriveKeys(password, encryptionInfo.salt())) {
-            byte[] key = keys.key();
-            byte[] initializationVector = keys.initializationVector();
-            try {
+        try {
+            if (RarLegacyCrypto.supports(extractionVersion)) {
+                if (encryptionInfo.salt() != null) {
+                    throw new IOException("Legacy RAR encryption must not contain an AES salt");
+                }
+                RarLegacyCrypto.Decryptor decryptor = RarLegacyCrypto.decryptor(extractionVersion, password);
                 return startEncryptedChannel(
                         attributes,
-                        Rar3Crypto.decryptor(key, initializationVector),
+                        new LegacyEncryptedPackedInputStream(decryptor),
+                        decryptor.blockSize(),
                         null
                 );
-            } finally {
-                Rar3Crypto.clear(key);
-                Rar3Crypto.clear(initializationVector);
+            }
+
+            try (Rar3Crypto.DerivedKeys keys = Rar3Crypto.deriveKeys(password, encryptionInfo.salt())) {
+                byte[] key = keys.key();
+                byte[] initializationVector = keys.initializationVector();
+                try {
+                    return startEncryptedChannel(
+                            attributes,
+                            new EncryptedPackedInputStream(Rar3Crypto.decryptor(key, initializationVector)),
+                            Rar3Crypto.BLOCK_SIZE,
+                            null
+                    );
+                } finally {
+                    Rar3Crypto.clear(key);
+                    Rar3Crypto.clear(initializationVector);
+                }
             }
         } finally {
             Rar3Crypto.clear(password);
@@ -457,6 +804,20 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Opens one RAR5 AES-256 encrypted stored entry body.
     private ReadableByteChannel openRar5EncryptedChannel(
+            RarEntryAttributes attributes,
+            Rar5EncryptionInfo encryptionInfo
+    ) throws IOException {
+        InputStream decryptedInput = openRar5PackedInput(attributes, encryptionInfo);
+        return startEncryptedChannel(
+                attributes,
+                decryptedInput,
+                Rar5Crypto.BLOCK_SIZE,
+                currentHashKey
+        );
+    }
+
+    /// Opens one AES-decrypted RAR5 packed stream and retains its optional checksum key.
+    private InputStream openRar5PackedInput(
             RarEntryAttributes attributes,
             Rar5EncryptionInfo encryptionInfo
     ) throws IOException {
@@ -469,6 +830,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (password == null) {
             throw new IOException("RAR5 password provider did not supply an archive password");
         }
+        byte @Nullable [] hashKey = null;
         try (Rar5Crypto.DerivedKeys keys = Rar5Crypto.deriveKeys(
                 password,
                 encryptionInfo.salt(),
@@ -481,28 +843,34 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
             byte[] aesKey = keys.aesKey();
             try {
-                return startEncryptedChannel(
-                        attributes,
-                        Rar5Crypto.decryptor(aesKey, encryptionInfo.initializationVector()),
-                        encryptionInfo.tweakedChecksums() ? keys.hashKey() : null
+                if (encryptionInfo.tweakedChecksums()) {
+                    hashKey = keys.hashKey();
+                }
+                EncryptedPackedInputStream packedInput = new EncryptedPackedInputStream(
+                        Rar5Crypto.decryptor(aesKey, encryptionInfo.initializationVector())
                 );
+                currentHashKey = hashKey;
+                hashKey = null;
+                return packedInput;
             } finally {
                 Rar5Crypto.clear(aesKey);
             }
         } finally {
+            Rar5Crypto.clear(hashKey);
             Rar5Crypto.clear(password);
         }
     }
-
     /// Installs one initialized decryptor as the active encrypted entry body.
     private ReadableByteChannel startEncryptedChannel(
             RarEntryAttributes attributes,
-            RarCbcDecryptor decryptor,
+            InputStream decryptedInput,
+            int blockSize,
             byte @Nullable [] hashKey
     ) {
         EncryptedEntryInputStream encryptedInput = new EncryptedEntryInputStream(
-                decryptor,
-                attributes.unpackedSize()
+                decryptedInput,
+                attributes.unpackedSize(),
+                blockSize
         );
         currentEncryptedInput = encryptedInput;
         currentHashKey = hashKey;
@@ -513,6 +881,13 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (currentCrcActive) {
             dataCrc32.reset();
         }
+        currentExpectedBlake2sp = attributes.blake2spHash();
+        currentBlake2spActive = currentPartCompression instanceof Rar5CompressionInfo
+                && (currentExpectedBlake2sp != null || attributes.continuesInNextVolume());
+        currentBlake2spVerified = false;
+        if (currentBlake2spActive) {
+            dataBlake2sp.reset();
+        }
         return Channels.newChannel(encryptedInput);
     }
 
@@ -522,17 +897,53 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (!open && sourceClosed) {
             return;
         }
+        DecodedInputStream decodedInput = currentDecodedInput;
+        Rar4Decoder.Session rar4Session = rar4DecoderSession;
+        Rar5Decoder.Session rar5Session = rar5DecoderSession;
         open = false;
         currentAttributes = null;
         currentPartAttributes = null;
         currentPartEncryption = null;
-        currentPackedRemaining = 0L;
-        clearCurrentEncryptionState();
+        currentPartCompression = null;
+        clearCurrentBodyState();
         Rar5Crypto.clear(archiveHeaderKey);
         archiveHeaderKey = null;
         rar3HeadersEncrypted = false;
-        source.close();
-        sourceClosed = true;
+        rar4ArchiveSolid = false;
+        rar5ArchiveSolid = false;
+        rar4DecoderHistoryInvalid = false;
+        rar5DecoderHistoryInvalid = false;
+        rar4DecoderSession = null;
+        rar5DecoderSession = null;
+
+        @Nullable IOException failure = null;
+        try {
+            source.close();
+            sourceClosed = true;
+        } catch (IOException exception) {
+            failure = exception;
+        }
+        if (decodedInput != null) {
+            try {
+                decodedInput.awaitWorker();
+            } catch (IOException exception) {
+                if (failure == null) {
+                    failure = exception;
+                } else {
+                    failure.addSuppressed(exception);
+                }
+            }
+        }
+        if (rar4Session != null) {
+            rar4Session.release();
+        }
+        if (rar5Session != null) {
+            rar5Session.release();
+        }
+        currentPackedRemaining = 0L;
+        if (failure != null) {
+            throw failure;
+        }
     }
 
     /// Reads and validates the RAR signature.
@@ -581,14 +992,31 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// Reads the next RAR block header, or `null` at archive EOF.
     private @Nullable BlockHeader readBlockHeader() throws IOException {
         if (source instanceof RarVolumeInputStream volumeInput && volumeInput.advanceAtHeaderBoundary()) {
-            Rar5Crypto.clear(archiveHeaderKey);
-            archiveHeaderKey = null;
-            rar3HeadersEncrypted = false;
+            resetContinuationVolumeState();
         }
         if (rarVersion == RAR_VERSION_4) {
             return readRar4BlockHeader();
         }
         return readRar5BlockHeader();
+    }
+
+    /// Advances past end-of-volume padding after a next-volume end header.
+    private void advanceAfterEndHeader() throws IOException {
+        if (source instanceof RarVolumeInputStream volumeInput) {
+            if (!volumeInput.advanceAfterEndHeader()) {
+                throw new EOFException("Unexpected end of RAR multi-volume archive");
+            }
+            resetContinuationVolumeState();
+        }
+    }
+
+    /// Clears format state that is independently declared by each physical volume.
+    private void resetContinuationVolumeState() {
+        Rar5Crypto.clear(archiveHeaderKey);
+        archiveHeaderKey = null;
+        rar3HeadersEncrypted = false;
+        rar4ArchiveSolid = false;
+        rar5ArchiveSolid = false;
     }
 
     /// Reads the next RAR5 block header, or `null` at archive EOF.
@@ -944,16 +1372,20 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         byte[] headerData = Arrays.copyOfRange(header, Short.BYTES, header.length);
 
         headerCrc32.reset();
-        headerCrc32.update(headerData, 0, headerData.length);
+        int rawType = Byte.toUnsignedInt(headerData[0]);
+        long flags = littleEndianUInt16(headerData, 1);
+        int crcDataLength = rar4HeaderCrcDataLength(headerData, rawType, flags);
+        headerCrc32.update(headerData, 0, crcDataLength);
         if ((headerCrc32.getValue() & 0xffffL) != littleEndianUInt16(header, 0)) {
             throw new IOException("Invalid RAR4 header CRC16");
         }
 
-        int rawType = Byte.toUnsignedInt(headerData[0]);
-        long flags = littleEndianUInt16(headerData, 1);
         int type = rar4HeaderType(rawType);
         if (type == HEADER_TYPE_MAIN && (flags & RAR4_MAIN_FLAG_PASSWORD) != 0) {
             rar3HeadersEncrypted = true;
+        }
+        if (type == HEADER_TYPE_MAIN && (flags & RAR4_MAIN_FLAG_SOLID) != 0) {
+            rar4ArchiveSolid = true;
         }
 
         long dataSize = 0L;
@@ -965,7 +1397,77 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             }
             dataSize = littleEndianUInt32(headerData, 5);
         }
-        return new BlockHeader(RAR_VERSION_4, type, flags, dataSize, headerData, 5, headerData.length);
+        return new BlockHeader(RAR_VERSION_4, type, flags, dataSize, headerData, 5, crcDataLength);
+    }
+
+    /// Returns the RAR4 header-data prefix covered by the stored CRC16.
+    private static int rar4HeaderCrcDataLength(byte[] headerData, int rawType, long flags) throws IOException {
+        if (rawType == RAR4_HEADER_TYPE_MAIN && (flags & RAR4_MAIN_FLAG_COMMENT) != 0L) {
+            int length = RAR4_MAIN_HEADER_DATA_SIZE;
+            if ((flags & RAR4_MAIN_FLAG_ENCRYPTION_VERSION) != 0L) {
+                length++;
+            }
+            if (length > headerData.length) {
+                throw new IOException("RAR4 main header fields exceed the header size");
+            }
+            return length;
+        }
+        if (rawType == RAR4_HEADER_TYPE_FILE && (flags & RAR4_FILE_FLAG_COMMENT) != 0L) {
+            return rar4FileMetadataEnd(headerData, flags);
+        }
+        return headerData.length;
+    }
+
+    /// Returns the end offset of RAR4 file metadata before an embedded old-style comment.
+    private static int rar4FileMetadataEnd(byte[] headerData, long flags) throws IOException {
+        if (headerData.length < RAR4_FILE_HEADER_DATA_SIZE) {
+            throw new IOException("RAR4 file header is too small");
+        }
+        int position = RAR4_FILE_HEADER_DATA_SIZE;
+        if ((flags & RAR4_FILE_FLAG_LARGE) != 0L) {
+            position = checkedRar4HeaderEnd(position, Long.BYTES, headerData.length, "large file size fields");
+        }
+        int nameLength = littleEndianUInt16(headerData, 24);
+        position = checkedRar4HeaderEnd(position, nameLength, headerData.length, "entry name");
+        if ((flags & RAR4_FILE_FLAG_SALT) != 0L) {
+            position = checkedRar4HeaderEnd(position, Rar3Crypto.SALT_SIZE, headerData.length, "encryption salt");
+        }
+        if ((flags & RAR4_FILE_FLAG_EXTENDED_TIME) != 0L) {
+            int flagsEnd = checkedRar4HeaderEnd(position, Short.BYTES, headerData.length, "extended time flags");
+            int timeFlags = littleEndianUInt16(headerData, position);
+            position = flagsEnd;
+            for (int index = 0; index < 4; index++) {
+                int mode = (timeFlags >>> ((3 - index) * 4)) & 0x0f;
+                if ((mode & 0x08) == 0) {
+                    continue;
+                }
+                if (index != 0) {
+                    position = checkedRar4HeaderEnd(
+                            position,
+                            Integer.BYTES,
+                            headerData.length,
+                            "extended DOS time"
+                    );
+                }
+                position = checkedRar4HeaderEnd(
+                        position,
+                        mode & 0x03,
+                        headerData.length,
+                        "extended time precision"
+                );
+            }
+        }
+        return position;
+    }
+
+    /// Adds one variable RAR4 field length and validates that it remains inside the header.
+    private static int checkedRar4HeaderEnd(int position, int length, int limit, String description)
+            throws IOException {
+        int end = checkedAdd(position, length, "RAR4 " + description + " size");
+        if (end > limit) {
+            throw new IOException("RAR4 " + description + " exceeds the header size");
+        }
+        return end;
     }
 
     /// Maps a raw RAR4 header type to the reader's normalized block type.
@@ -993,6 +1495,16 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         return combineUInt64(littleEndianUInt32(headerData, 30), lowPackedSize, "RAR4 packed size");
     }
 
+
+    /// Records archive-level compression state from one main header.
+    private void readMainHeaderMetadata(BlockHeader block) throws IOException {
+        if (block.version() != RAR_VERSION_5) {
+            return;
+        }
+        HeaderReader reader = new HeaderReader(block.headerData(), block.fieldsOffset(), block.extraOffset());
+        long archiveFlags = reader.readVint("RAR5 main archive flags");
+        rar5ArchiveSolid = (archiveFlags & RAR5_MAIN_FLAG_SOLID) != 0L;
+    }
     /// Parses a RAR file header block.
     private static ParsedFileHeader parseFileHeader(BlockHeader block) throws IOException {
         if (block.version() == RAR_VERSION_4) {
@@ -1017,6 +1529,26 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         }
         long compressionInformation = reader.readVint("RAR compression information");
         int compressionMethod = (int) ((compressionInformation & COMPRESSION_METHOD_MASK) >>> COMPRESSION_METHOD_SHIFT);
+        int algorithmVersion = (int) (compressionInformation & COMPRESSION_ALGORITHM_MASK);
+        boolean solid = (compressionInformation & COMPRESSION_FLAG_SOLID) != 0L;
+        long dictionaryPowerMask = algorithmVersion == 0
+                ? COMPRESSION_DICTIONARY_POWER_V5_MASK
+                : COMPRESSION_DICTIONARY_POWER_V7_MASK;
+        int dictionaryPower = (int) (compressionInformation >>> COMPRESSION_DICTIONARY_POWER_SHIFT
+                & dictionaryPowerMask);
+        int dictionaryFraction = algorithmVersion == 0
+                ? 0
+                : (int) (compressionInformation >>> COMPRESSION_DICTIONARY_FRACTION_SHIFT
+                & COMPRESSION_DICTIONARY_FRACTION_MASK);
+        boolean version7 = algorithmVersion == 1
+                && (compressionInformation & COMPRESSION_FLAG_RAR5_COMPATIBLE) == 0L;
+        Rar5CompressionInfo compressionInfo = new Rar5CompressionInfo(
+                algorithmVersion,
+                dictionaryPower,
+                dictionaryFraction,
+                version7,
+                solid
+        );
         int hostOs = readIntVint(reader, "RAR host OS");
         int nameLength = readIntVint(reader, "RAR name length");
         String path = validatePath(reader.readString(nameLength, "RAR entry name"));
@@ -1041,7 +1573,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         @Nullable Rar5EncryptionInfo encryptionInfo = extraMetadata.encryptionInfo;
         boolean splitFilePart = (block.flags() & (HEADER_FLAG_CONTINUE_PREVIOUS | HEADER_FLAG_CONTINUE_NEXT)) != 0;
         if (!directory
-                && !symbolicLink
+                && extraMetadata.redirectionType == RarArkivoEntryAttributes.NO_REDIRECTION_TYPE
                 && compressionMethod == 0
                 && !splitFilePart
                 && unpackedSize != RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE) {
@@ -1081,11 +1613,12 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                         creationTime,
                         lastAccessTime
                 ),
-                encryptionInfo
+                encryptionInfo,
+                compressionInfo
         );
     }
 
-    /// Returns the AES-block-aligned physical size for an encrypted stored file.
+    /// Returns the 16-byte-block-aligned physical size for an encrypted stored file.
     private static long alignedEncryptedSize(long unpackedSize) throws IOException {
         long remainder = unpackedSize % RarCbcDecryptor.BLOCK_SIZE;
         if (remainder == 0L) {
@@ -1132,7 +1665,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 : null;
         int hostOs = rar4HostOs(rawHostOs);
         int compressionMethod = rar4CompressionMethod(rawMethod);
-        boolean directory = (rawMethod & RAR4_DICTIONARY_MASK) == RAR4_FILE_IS_DIRECTORY
+        boolean directory = (block.flags() & RAR4_FILE_DICTIONARY_MASK) == RAR4_FILE_IS_DIRECTORY
                 || rar4FileAttributesMarkDirectory(rawHostOs, fileAttributes);
         boolean encrypted = (block.flags() & RAR4_FILE_FLAG_PASSWORD) != 0;
         @Nullable Rar3EncryptionInfo encryptionInfo = encrypted
@@ -1140,8 +1673,12 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 : null;
         boolean splitFilePart =
                 (block.flags() & (RAR4_FILE_FLAG_CONTINUE_PREVIOUS | RAR4_FILE_FLAG_CONTINUE_NEXT)) != 0;
+        if (encrypted && usesBlockRarEncryption(extractionVersion) && !splitFilePart
+                && packedSize % RarCbcDecryptor.BLOCK_SIZE != 0L) {
+            throw new IOException("RAR4 encrypted file data is not 16-byte block aligned");
+        }
         if (!directory && compressionMethod == 0 && !splitFilePart) {
-            long expectedPackedSize = encrypted && isRar3AesVersion(extractionVersion)
+            long expectedPackedSize = encrypted && usesBlockRarEncryption(extractionVersion)
                     ? alignedEncryptedSize(unpackedSize)
                     : unpackedSize;
             if (packedSize != expectedPackedSize) {
@@ -1177,7 +1714,11 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                         lastModifiedTime,
                         lastModifiedTime
                 ),
-                encryptionInfo
+                encryptionInfo,
+                new Rar4CompressionInfo(
+                        extractionVersion,
+                        (block.flags() & RAR4_FILE_FLAG_SOLID) != 0L
+                )
         );
     }
 
@@ -1187,6 +1728,16 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 && extractionVersion != 15
                 && extractionVersion != 20
                 && extractionVersion != 26;
+    }
+
+    /// Returns whether a RAR4 extraction version selects any implemented file-data cipher.
+    private static boolean isSupportedRar4EncryptionVersion(int extractionVersion) {
+        return RarLegacyCrypto.supports(extractionVersion) || isRar3AesVersion(extractionVersion);
+    }
+
+    /// Returns whether an encrypted RAR4 body is padded to a complete 16-byte block.
+    private static boolean usesBlockRarEncryption(int extractionVersion) {
+        return RarLegacyCrypto.usesBlockCipher(extractionVersion) || isRar3AesVersion(extractionVersion);
     }
 
     /// Combines two little-endian unsigned 32-bit halves into a positive signed `long`.
@@ -1297,13 +1848,19 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Returns the normalized compression method value for a raw RAR4 method byte.
     private static int rar4CompressionMethod(int rawMethod) {
-        if (rawMethod == RAR4_METHOD_STORE || (rawMethod & RAR4_DICTIONARY_MASK) == RAR4_FILE_IS_DIRECTORY) {
+        if (rawMethod == RAR4_METHOD_STORE) {
             return 0;
         }
         if (rawMethod >= RAR4_METHOD_FASTEST && rawMethod <= RAR4_METHOD_BEST) {
             return rawMethod - RAR4_METHOD_STORE;
         }
         return rawMethod;
+    }
+
+    /// Returns whether a normalized RAR method selects a supported decompression engine.
+    private static boolean isSupportedCompressionMethod(int compressionMethod) {
+        return compressionMethod >= RAR4_METHOD_FASTEST - RAR4_METHOD_STORE
+                && compressionMethod <= RAR4_METHOD_BEST - RAR4_METHOD_STORE;
     }
 
     /// Returns whether RAR4 host-specific attributes mark a directory entry.
@@ -1417,41 +1974,73 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         long flags = reader.readVint("RAR file time flags");
         boolean unixTime = (flags & FILE_TIME_UNIX) != 0;
         boolean unixNanos = unixTime && (flags & FILE_TIME_UNIX_NANOS) != 0;
-        if ((flags & FILE_TIME_MODIFIED) != 0) {
-            metadata.lastModifiedTime = readFileTimeValue(reader, recordEnd, unixTime, unixNanos, "modification time");
+
+        @Nullable FileTime modifiedTime = (flags & FILE_TIME_MODIFIED) != 0
+                ? readFileTimeValue(reader, recordEnd, unixTime, "modification time")
+                : null;
+        @Nullable FileTime creationTime = (flags & FILE_TIME_CREATED) != 0
+                ? readFileTimeValue(reader, recordEnd, unixTime, "creation time")
+                : null;
+        @Nullable FileTime accessTime = (flags & FILE_TIME_ACCESSED) != 0
+                ? readFileTimeValue(reader, recordEnd, unixTime, "last access time")
+                : null;
+
+        if (unixNanos) {
+            if (modifiedTime != null) {
+                modifiedTime = readFileTimeNanoseconds(reader, recordEnd, modifiedTime, "modification time");
+            }
+            if (creationTime != null) {
+                creationTime = readFileTimeNanoseconds(reader, recordEnd, creationTime, "creation time");
+            }
+            if (accessTime != null) {
+                accessTime = readFileTimeNanoseconds(reader, recordEnd, accessTime, "last access time");
+            }
         }
-        if ((flags & FILE_TIME_CREATED) != 0) {
-            metadata.creationTime = readFileTimeValue(reader, recordEnd, unixTime, unixNanos, "creation time");
+        if (modifiedTime != null) {
+            metadata.lastModifiedTime = modifiedTime;
         }
-        if ((flags & FILE_TIME_ACCESSED) != 0) {
-            metadata.lastAccessTime = readFileTimeValue(reader, recordEnd, unixTime, unixNanos, "last access time");
+        if (creationTime != null) {
+            metadata.creationTime = creationTime;
+        }
+        if (accessTime != null) {
+            metadata.lastAccessTime = accessTime;
         }
     }
 
-    /// Reads one RAR file time value.
+    /// Reads one RAR file time base value without optional Unix nanoseconds.
     private static FileTime readFileTimeValue(
             HeaderReader reader,
             int recordEnd,
             boolean unixTime,
-            boolean unixNanos,
             String description
     ) throws IOException {
+        int encodedSize = unixTime ? Integer.BYTES : Long.BYTES;
+        if (encodedSize > recordEnd - reader.position()) {
+            throw new EOFException("Unexpected end of RAR " + description);
+        }
         if (unixTime) {
             long seconds = reader.readUInt32("RAR " + description);
-            long nanos = 0L;
-            if (unixNanos) {
-                if (Integer.BYTES > recordEnd - reader.position()) {
-                    throw new EOFException("Unexpected end of RAR " + description + " nanoseconds");
-                }
-                nanos = reader.readUInt32("RAR " + description + " nanoseconds");
-                if (nanos > 999_999_999L) {
-                    throw new IOException("RAR " + description + " nanoseconds are out of range");
-                }
-            }
-            return fileTimeFromEpochSecond(seconds, nanos, description);
+            return fileTimeFromEpochSecond(seconds, 0L, description);
         }
         long windowsFileTime = reader.readUInt64("RAR " + description);
         return fileTimeFromWindowsFileTime(windowsFileTime, description);
+    }
+
+    /// Reads and applies the separately stored RAR Unix nanosecond value.
+    private static FileTime readFileTimeNanoseconds(
+            HeaderReader reader,
+            int recordEnd,
+            FileTime baseTime,
+            String description
+    ) throws IOException {
+        if (Integer.BYTES > recordEnd - reader.position()) {
+            throw new EOFException("Unexpected end of RAR " + description + " nanoseconds");
+        }
+        long nanoseconds = reader.readUInt32("RAR " + description + " nanoseconds") & 0x3fff_ffffL;
+        if (nanoseconds >= 1_000_000_000L) {
+            return baseTime;
+        }
+        return fileTimeFromEpochSecond(baseTime.toInstant().getEpochSecond(), nanoseconds, description);
     }
 
     /// Parses a RAR file system redirection extra record.
@@ -1581,8 +2170,8 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         }
     }
 
-    /// Prepares CRC32 validation state for the current entry.
-    private void prepareCurrentCrc() {
+    /// Prepares stored-body integrity validation state for the current entry.
+    private void prepareCurrentIntegrity() {
         RarEntryAttributes attributes = Objects.requireNonNull(currentAttributes, "currentAttributes");
         currentCrcActive = attributes.compressionMethod() == 0
                 && !attributes.isEncrypted()
@@ -1594,24 +2183,46 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (currentCrcActive) {
             dataCrc32.reset();
         }
+
+        currentExpectedBlake2sp = attributes.blake2spHash();
+        currentBlake2spActive = attributes.compressionMethod() == 0
+                && !attributes.isEncrypted()
+                && attributes.isRegularFile()
+                && currentPartCompression instanceof Rar5CompressionInfo
+                && (currentExpectedBlake2sp != null || attributes.continuesInNextVolume());
+        currentBlake2spVerified = false;
+        if (currentBlake2spActive) {
+            dataBlake2sp.reset();
+        }
     }
 
     /// Skips any unread bytes from the current entry body.
     private void skipCurrentEntryBody() throws IOException {
+        if (currentBodyConsumed) {
+            return;
+        }
         boolean requireReadableContinuation = currentBodyOpened
                 && currentAttributes != null
                 && !currentAttributes.isEncrypted()
                 && currentAttributes.compressionMethod() == 0
                 && !currentAttributes.continuesFromPreviousVolume();
         try {
+            DecodedInputStream decodedInput = currentDecodedInput;
+            if (decodedInput == null && shouldDecodeSkippedCompressedEntry()) {
+                RarEntryAttributes attributes = Objects.requireNonNull(currentAttributes, "currentAttributes");
+                decodedInput = openCompressedInput(attributes);
+            }
+
             EncryptedEntryInputStream encryptedInput = currentEncryptedInput;
-            if (encryptedInput != null) {
+            if (decodedInput != null) {
+                decodedInput.drain();
+            } else if (encryptedInput != null) {
                 encryptedInput.drain();
             } else {
                 while (true) {
                     if (currentPackedRemaining > 0) {
-                        if (currentCrcActive) {
-                            skipStoredDataWithCrc(currentPackedRemaining);
+                        if (currentCrcActive || currentBlake2spActive) {
+                            consumeStoredDataWithIntegrity(currentPackedRemaining);
                         } else {
                             skipFully(currentPackedRemaining);
                             currentPackedRemaining = 0L;
@@ -1621,19 +2232,61 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                         break;
                     }
                 }
+                invalidateSkippedCompressionHistory();
             }
-            verifyCurrentCrcIfComplete();
+            verifyCurrentIntegrityIfComplete();
         } finally {
-            clearCurrentEncryptionState();
+            clearCurrentBodyState();
             currentBodyOpened = false;
+            currentBodyConsumed = true;
             currentCrcActive = false;
             currentCrcVerified = false;
             currentExpectedCrc32 = RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE;
+            currentBlake2spActive = false;
+            currentBlake2spVerified = false;
+            currentExpectedBlake2sp = null;
         }
     }
 
-    /// Clears password-derived state retained while an encrypted entry body is active.
-    private void clearCurrentEncryptionState() {
+    /// Returns whether a skipped entry must be decompressed to preserve a solid dictionary.
+    private boolean shouldDecodeSkippedCompressedEntry() {
+        RarEntryAttributes attributes = currentAttributes;
+        RarCompressionInfo compressionInfo = currentPartCompression;
+        if (attributes == null
+                || compressionInfo == null
+                || attributes.compressionMethod() == 0
+                || attributes.isEncrypted() && passwordProvider == null
+                || !isCurrentBodyReadable()) {
+            return false;
+        }
+        return compressionInfo.solid()
+                || compressionInfo instanceof Rar4CompressionInfo && rar4ArchiveSolid
+                || compressionInfo instanceof Rar5CompressionInfo && rar5ArchiveSolid;
+    }
+
+    /// Invalidates the active format's solid history when compressed packed bytes were skipped directly.
+    private void invalidateSkippedCompressionHistory() {
+        RarEntryAttributes attributes = currentAttributes;
+        RarCompressionInfo compressionInfo = currentPartCompression;
+        if (attributes == null || attributes.compressionMethod() == 0 || compressionInfo == null) {
+            return;
+        }
+        if (compressionInfo instanceof Rar4CompressionInfo) {
+            rar4DecoderHistoryInvalid = true;
+            Rar4Decoder.Session session = rar4DecoderSession;
+            if (session != null) {
+                session.invalidateHistory();
+            }
+            return;
+        }
+        rar5DecoderHistoryInvalid = true;
+        Rar5Decoder.Session session = rar5DecoderSession;
+        if (session != null) {
+            session.invalidateHistory();
+        }
+    }
+    /// Clears sensitive or asynchronous state retained while an entry body is active.
+    private void clearCurrentBodyState() {
         Rar5Crypto.clear(currentHashKey);
         currentHashKey = null;
         EncryptedEntryInputStream encryptedInput = currentEncryptedInput;
@@ -1641,6 +2294,11 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             encryptedInput.release();
         }
         currentEncryptedInput = null;
+        DecodedInputStream decodedInput = currentDecodedInput;
+        if (decodedInput != null) {
+            decodedInput.release();
+        }
+        currentDecodedInput = null;
     }
 
     /// Advances to the next continuation part when the current physical part is exhausted.
@@ -1656,8 +2314,21 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             if (block == null) {
                 throw new EOFException("Unexpected end of RAR multi-volume entry");
             }
-            if (block.type() == HEADER_TYPE_MAIN || block.type() == HEADER_TYPE_SERVICE || block.type() == HEADER_TYPE_END) {
+            if (block.type() == HEADER_TYPE_MAIN) {
+                readMainHeaderMetadata(block);
                 skipBlockData(block);
+                continue;
+            }
+            if (block.type() == HEADER_TYPE_SERVICE) {
+                skipBlockData(block);
+                continue;
+            }
+            if (block.type() == HEADER_TYPE_END) {
+                skipBlockData(block);
+                if (!endHeaderHasNextVolume(block)) {
+                    throw new IOException("RAR multi-volume entry ended before its continuation");
+                }
+                advanceAfterEndHeader();
                 continue;
             }
             if (block.type() == HEADER_TYPE_ARCHIVE_ENCRYPTION) {
@@ -1672,10 +2343,23 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         }
         ParsedFileHeader parsedFile = parseFileHeader(block);
         RarEntryAttributes nextPartAttributes = parsedFile.attributes();
-        validateContinuationPart(previousPartAttributes, nextPartAttributes, requireReadableData);
+        validateContinuationPart(
+                previousPartAttributes,
+                nextPartAttributes,
+                parsedFile.compressionInfo(),
+                parsedFile.encryptionInfo(),
+                requireReadableData
+        );
         currentPartAttributes = nextPartAttributes;
         currentPartEncryption = parsedFile.encryptionInfo();
+        currentPartCompression = parsedFile.compressionInfo();
         currentPackedRemaining = block.dataSize();
+        if (currentCrcActive) {
+            currentExpectedCrc32 = nextPartAttributes.dataCrc32();
+        }
+        if (currentBlake2spActive) {
+            currentExpectedBlake2sp = nextPartAttributes.blake2spHash();
+        }
         return true;
     }
 
@@ -1683,6 +2367,8 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     private void validateContinuationPart(
             RarEntryAttributes previousPartAttributes,
             RarEntryAttributes nextPartAttributes,
+            RarCompressionInfo nextCompressionInfo,
+            @Nullable RarEncryptionInfo nextEncryptionInfo,
             boolean requireReadableData
     ) throws IOException {
         RarEntryAttributes entryAttributes = Objects.requireNonNull(currentAttributes, "currentAttributes");
@@ -1703,24 +2389,53 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 && entryAttributes.unpackedSize() != nextPartAttributes.unpackedSize()) {
             throw new IOException("RAR multi-volume entry continuation size differs");
         }
-        if (requireReadableData) {
-            if (nextPartAttributes.isEncrypted()) {
-                throw new IOException("Encrypted RAR entries are not supported");
-            }
-            if (!nextPartAttributes.isRegularFile()) {
-                throw new IOException("RAR multi-volume entry continuation is not a regular file");
-            }
-            if (nextPartAttributes.compressionMethod() != 0) {
-                throw new IOException("Unsupported RAR compression method: " + nextPartAttributes.compressionMethod());
-            }
+        if (entryAttributes.compressionMethod() != nextPartAttributes.compressionMethod()) {
+            throw new IOException("RAR multi-volume entry continuation compression method differs");
+        }
+        if (entryAttributes.isEncrypted() != nextPartAttributes.isEncrypted()) {
+            throw new IOException("RAR multi-volume entry continuation encryption state differs");
+        }
+        RarCompressionInfo previousCompressionInfo =
+                Objects.requireNonNull(currentPartCompression, "currentPartCompression");
+        if (!previousCompressionInfo.equals(nextCompressionInfo)) {
+            throw new IOException("RAR multi-volume entry continuation compression properties differ");
+        }
+        if (!encryptionMetadataMatches(currentPartEncryption, nextEncryptionInfo)) {
+            throw new IOException("RAR multi-volume entry continuation encryption properties differ");
+        }
+        if (requireReadableData && !nextPartAttributes.isRegularFile()) {
+            throw new IOException("RAR multi-volume entry continuation is not a regular file");
         }
     }
 
+    /// Returns whether two physical parts use equivalent encryption parameters.
+    private static boolean encryptionMetadataMatches(
+            @Nullable RarEncryptionInfo first,
+            @Nullable RarEncryptionInfo second
+    ) {
+        if (first == second) {
+            return true;
+        }
+        if (first instanceof Rar3EncryptionInfo firstRar3
+                && second instanceof Rar3EncryptionInfo secondRar3) {
+            return firstRar3.extractionVersion() == secondRar3.extractionVersion()
+                    && Arrays.equals(firstRar3.salt(), secondRar3.salt());
+        }
+        if (first instanceof Rar5EncryptionInfo firstRar5
+                && second instanceof Rar5EncryptionInfo secondRar5) {
+            return firstRar5.kdfLog() == secondRar5.kdfLog()
+                    && firstRar5.tweakedChecksums() == secondRar5.tweakedChecksums()
+                    && Arrays.equals(firstRar5.salt(), secondRar5.salt())
+                    && Arrays.equals(firstRar5.initializationVector(), secondRar5.initializationVector())
+                    && Arrays.equals(firstRar5.passwordCheck(), secondRar5.passwordCheck());
+        }
+        return false;
+    }
     /// Ensures that the current logical entry has physical data available to read.
     private boolean ensureCurrentEntryDataAvailable() throws IOException {
         while (currentPackedRemaining == 0L) {
             if (!moveToNextContinuationPartIfPresent(true)) {
-                verifyCurrentCrcIfComplete();
+                verifyCurrentIntegrityIfComplete();
                 return false;
             }
         }
@@ -1732,8 +2447,8 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         skipFully(block.dataSize());
     }
 
-    /// Skips stored file bytes while updating the current CRC32.
-    private void skipStoredDataWithCrc(long count) throws IOException {
+    /// Consumes stored file bytes while updating all active integrity checks.
+    private void consumeStoredDataWithIntegrity(long count) throws IOException {
         byte[] discard = new byte[8192];
         long remaining = count;
         while (remaining > 0) {
@@ -1741,7 +2456,12 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             if (read < 0) {
                 throw new EOFException("Unexpected end of RAR entry data");
             }
-            dataCrc32.update(discard, 0, read);
+            if (currentCrcActive) {
+                dataCrc32.update(discard, 0, read);
+            }
+            if (currentBlake2spActive) {
+                dataBlake2sp.update(discard, 0, read);
+            }
             remaining -= read;
             currentPackedRemaining -= read;
         }
@@ -1762,15 +2482,16 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         }
     }
 
-    /// Verifies the current stored body CRC32 when all packed bytes have been consumed.
-    private void verifyCurrentCrcIfComplete() throws IOException {
+    /// Verifies all active stored-body checksums after the final physical part is consumed.
+    private void verifyCurrentIntegrityIfComplete() throws IOException {
         RarEntryAttributes partAttributes = currentPartAttributes;
-        if (currentCrcActive
-                && !currentCrcVerified
-                && currentPackedRemaining == 0L
-                && (partAttributes == null || !partAttributes.continuesInNextVolume())) {
+        if (currentPackedRemaining != 0L
+                || partAttributes != null && partAttributes.continuesInNextVolume()) {
+            return;
+        }
+        if (currentCrcActive && !currentCrcVerified) {
             long actual = dataCrc32.getValue();
-            byte[] hashKey = currentHashKey;
+            byte @Nullable [] hashKey = currentHashKey;
             if (hashKey != null) {
                 actual = Rar5Crypto.keyedCrc32(actual, hashKey);
             }
@@ -1778,6 +2499,37 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 throw new IOException("Invalid RAR entry CRC32");
             }
             currentCrcVerified = true;
+        }
+
+        byte @Nullable @Unmodifiable [] expectedBlake2sp = currentExpectedBlake2sp;
+        if (currentBlake2spActive && !currentBlake2spVerified) {
+            if (expectedBlake2sp != null) {
+                verifyBlake2sp(dataBlake2sp, expectedBlake2sp, currentHashKey);
+            }
+            currentBlake2spVerified = true;
+        }
+    }
+
+    /// Verifies a plain or password-dependent RAR5 BLAKE2sp body hash.
+    private static void verifyBlake2sp(
+            RarBlake2sp blake2sp,
+            byte @Unmodifiable [] expected,
+            byte @Nullable [] hashKey
+    ) throws IOException {
+        byte[] rawDigest = blake2sp.digest();
+        byte[] actualDigest = rawDigest;
+        try {
+            if (hashKey != null) {
+                actualDigest = Rar5Crypto.keyedBlake2sp(rawDigest, hashKey);
+            }
+            if (!MessageDigest.isEqual(actualDigest, expected)) {
+                throw new IOException("Invalid RAR entry BLAKE2sp hash");
+            }
+        } finally {
+            if (actualDigest != rawDigest) {
+                Rar5Crypto.clear(actualDigest);
+            }
+            Rar5Crypto.clear(rawDigest);
         }
     }
 
@@ -1886,18 +2638,70 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         }
     }
 
-    /// Stores one parsed file header together with internal encryption metadata.
+    /// Stores one parsed file header together with internal body metadata.
     ///
     /// @param attributes the public entry attributes
     /// @param encryptionInfo the format-specific encryption metadata, or `null` for an unencrypted entry
+    /// @param compressionInfo the format-specific decompression metadata
     @NotNullByDefault
     private record ParsedFileHeader(
             RarEntryAttributes attributes,
-            @Nullable RarEncryptionInfo encryptionInfo
+            @Nullable RarEncryptionInfo encryptionInfo,
+            RarCompressionInfo compressionInfo
     ) {
         /// Creates one parsed file header result.
         private ParsedFileHeader {
             Objects.requireNonNull(attributes, "attributes");
+            Objects.requireNonNull(compressionInfo, "compressionInfo");
+        }
+    }
+
+    /// Marks validated decompression metadata for one physical RAR file body.
+    @NotNullByDefault
+    private sealed interface RarCompressionInfo permits Rar4CompressionInfo, Rar5CompressionInfo {
+        /// Returns whether this entry continues the preceding decompression dictionary.
+        boolean solid();
+    }
+
+    /// Stores the RAR4 decompression state selectors for one physical file body.
+    ///
+    /// @param extractionVersion the RAR decompression algorithm version
+    /// @param solid whether this entry continues the preceding decompression dictionary
+    @NotNullByDefault
+    private record Rar4CompressionInfo(int extractionVersion, boolean solid) implements RarCompressionInfo {
+        /// Validates RAR4 decompression metadata.
+        private Rar4CompressionInfo {
+            if (extractionVersion < 0 || extractionVersion > 0xff) {
+                throw new IllegalArgumentException("Invalid RAR4 extraction version");
+            }
+        }
+    }
+
+    /// Stores the RAR5 decompression state selectors for one physical file body.
+    ///
+    /// @param algorithmVersion the raw RAR5 or RAR7 compression algorithm version
+    /// @param dictionaryPower the power component of the dictionary size
+    /// @param dictionaryFraction the RAR7 fractional dictionary size component
+    /// @param version7 whether the decoder must use RAR7 Huffman behavior
+    /// @param solid whether this entry continues the preceding decompression dictionary
+    @NotNullByDefault
+    private record Rar5CompressionInfo(
+            int algorithmVersion,
+            int dictionaryPower,
+            int dictionaryFraction,
+            boolean version7,
+            boolean solid
+    ) implements RarCompressionInfo {
+        /// Validates RAR5 decompression metadata.
+        private Rar5CompressionInfo {
+            if (algorithmVersion < 0 || algorithmVersion > COMPRESSION_ALGORITHM_MASK
+                    || dictionaryPower < 0 || dictionaryPower > COMPRESSION_DICTIONARY_POWER_V7_MASK
+                    || dictionaryFraction < 0
+                    || dictionaryFraction > COMPRESSION_DICTIONARY_FRACTION_MASK
+                    || algorithmVersion == 0 && dictionaryFraction != 0
+                    || version7 && algorithmVersion != 1) {
+                throw new IllegalArgumentException("Invalid RAR5 compression metadata");
+            }
         }
     }
 
@@ -2149,19 +2953,715 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         }
     }
 
-    /// Exposes one AES-decrypted stored body while withholding its final alignment padding.
+    /// Exposes the raw packed bytes of one logical RAR entry across physical volumes.
     @NotNullByDefault
-    private final class EncryptedEntryInputStream extends InputStream {
+    private final class PackedEntryInputStream extends InputStream {
+        /// A reusable buffer for single-byte reads.
+        private final byte[] singleByte = new byte[1];
+
+        /// Whether this packed stream can still be read.
+        private boolean entryOpen = true;
+
+        /// Reads one packed byte.
+        @Override
+        public int read() throws IOException {
+            int count = read(singleByte, 0, 1);
+            return count < 0 ? -1 : Byte.toUnsignedInt(singleByte[0]);
+        }
+
+        /// Reads packed bytes without crossing the active physical data area.
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            ensureEntryOpen();
+            Objects.checkFromIndexSize(offset, length, buffer.length);
+            if (length == 0) {
+                return 0;
+            }
+            while (currentPackedRemaining == 0L) {
+                RarEntryAttributes partAttributes = currentPartAttributes;
+                if (partAttributes == null || !partAttributes.continuesInNextVolume()) {
+                    return -1;
+                }
+                if (!moveToNextContinuationPartIfPresent(true)) {
+                    return -1;
+                }
+            }
+
+            int requested = (int) Math.min(length, currentPackedRemaining);
+            int count = source.read(buffer, offset, requested);
+            if (count < 0) {
+                throw new EOFException("Unexpected end of RAR entry packed data");
+            }
+            currentPackedRemaining -= count;
+            return count;
+        }
+
+        /// Returns the packed bytes remaining in the current physical data area.
+        @Override
+        public int available() throws IOException {
+            ensureEntryOpen();
+            return (int) Math.min(currentPackedRemaining, Integer.MAX_VALUE);
+        }
+
+        /// Releases this view without closing the shared archive source.
+        @Override
+        public void close() {
+            entryOpen = false;
+            Arrays.fill(singleByte, (byte) 0);
+        }
+
+        /// Requires this packed stream and its owner to remain open.
+        private void ensureEntryOpen() throws IOException {
+            ensureOpen();
+            if (!entryOpen) {
+                throw new IOException("RAR packed entry stream is closed");
+            }
+        }
+    }
+
+    /// Exposes every AES-decrypted packed block, including final compression padding.
+    @NotNullByDefault
+    private final class EncryptedPackedInputStream extends InputStream {
+        /// The raw ciphertext stream spanning every physical continuation part.
+        private final PackedEntryInputStream packedInput = new PackedEntryInputStream();
+
         /// The stateful AES-CBC decryptor.
         private final RarCbcDecryptor decryptor;
 
         /// One ciphertext block read from the archive.
         private final byte[] ciphertext = new byte[RarCbcDecryptor.BLOCK_SIZE];
 
-        /// One decrypted plaintext block.
+        /// One decrypted packed block.
         private final byte[] plaintext = new byte[RarCbcDecryptor.BLOCK_SIZE];
 
-        /// A reusable buffer used while draining skipped logical data.
+        /// A reusable buffer for single-byte reads.
+        private final byte[] singleByte = new byte[1];
+
+        /// The current position in the decrypted packed block.
+        private int blockPosition;
+
+        /// The exclusive limit in the decrypted packed block.
+        private int blockLimit;
+
+        /// Whether this packed stream retains usable decryption state.
+        private boolean entryOpen = true;
+
+        /// Creates one encrypted packed stream.
+        private EncryptedPackedInputStream(RarCbcDecryptor decryptor) {
+            this.decryptor = Objects.requireNonNull(decryptor, "decryptor");
+        }
+
+        /// Reads one decrypted packed byte.
+        @Override
+        public int read() throws IOException {
+            int count = read(singleByte, 0, 1);
+            return count < 0 ? -1 : Byte.toUnsignedInt(singleByte[0]);
+        }
+
+        /// Reads decrypted packed bytes without exposing the archive source directly.
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            ensureEntryOpen();
+            Objects.checkFromIndexSize(offset, length, buffer.length);
+            if (length == 0) {
+                return 0;
+            }
+            int total = 0;
+            while (total < length) {
+                if (blockPosition == blockLimit && !fillPlaintextBlock()) {
+                    break;
+                }
+                int count = Math.min(length - total, blockLimit - blockPosition);
+                System.arraycopy(plaintext, blockPosition, buffer, offset + total, count);
+                blockPosition += count;
+                total += count;
+            }
+            return total == 0 ? -1 : total;
+        }
+
+        /// Returns decrypted packed bytes already available in memory.
+        @Override
+        public int available() throws IOException {
+            ensureEntryOpen();
+            return blockLimit - blockPosition;
+        }
+
+        /// Clears retained plaintext and CBC state without closing the archive source.
+        @Override
+        public void close() {
+            if (!entryOpen) {
+                return;
+            }
+            entryOpen = false;
+            packedInput.close();
+            decryptor.clear();
+            Arrays.fill(ciphertext, (byte) 0);
+            Arrays.fill(plaintext, (byte) 0);
+            Arrays.fill(singleByte, (byte) 0);
+        }
+
+        /// Decrypts the next complete packed block and returns whether one was available.
+        private boolean fillPlaintextBlock() throws IOException {
+            int offset = 0;
+            while (offset < ciphertext.length) {
+                int count = packedInput.read(ciphertext, offset, ciphertext.length - offset);
+                if (count < 0) {
+                    if (offset == 0) {
+                        return false;
+                    }
+                    throw new EOFException("Unexpected end of encrypted RAR packed data");
+                }
+                offset += count;
+            }
+            decryptor.decryptBlock(ciphertext, plaintext);
+            blockPosition = 0;
+            blockLimit = plaintext.length;
+            return true;
+        }
+
+        /// Requires this packed stream and its owner to remain open.
+        private void ensureEntryOpen() throws IOException {
+            ensureOpen();
+            if (!entryOpen) {
+                throw new IOException("Encrypted RAR packed entry stream is closed");
+            }
+        }
+    }
+
+    /// Exposes packed bytes decrypted by a legacy RAR stream or block cipher.
+    @NotNullByDefault
+    private final class LegacyEncryptedPackedInputStream extends InputStream {
+        /// The raw ciphertext stream spanning every physical continuation part.
+        private final PackedEntryInputStream packedInput = new PackedEntryInputStream();
+
+        /// The stateful legacy cipher.
+        private final RarLegacyCrypto.Decryptor decryptor;
+
+        /// The cipher input alignment.
+        private final int blockSize;
+
+        /// One mutable RAR 2.x ciphertext and plaintext block.
+        private final byte[] block;
+
+        /// A reusable buffer for single-byte reads.
+        private final byte[] singleByte = new byte[1];
+
+        /// The current position in a decrypted RAR 2.x block.
+        private int blockPosition;
+
+        /// The exclusive limit in a decrypted RAR 2.x block.
+        private int blockLimit;
+
+        /// Whether this packed stream retains usable decryption state.
+        private boolean entryOpen = true;
+
+        /// Creates one legacy encrypted packed stream.
+        private LegacyEncryptedPackedInputStream(RarLegacyCrypto.Decryptor decryptor) {
+            this.decryptor = Objects.requireNonNull(decryptor, "decryptor");
+            blockSize = decryptor.blockSize();
+            block = new byte[blockSize];
+        }
+
+        /// Reads one decrypted packed byte.
+        @Override
+        public int read() throws IOException {
+            int count = read(singleByte, 0, 1);
+            return count < 0 ? -1 : Byte.toUnsignedInt(singleByte[0]);
+        }
+
+        /// Reads and decrypts packed bytes while retaining cipher state across volume boundaries.
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            ensureEntryOpen();
+            Objects.checkFromIndexSize(offset, length, buffer.length);
+            if (length == 0) {
+                return 0;
+            }
+            if (blockSize == 1) {
+                int count = packedInput.read(buffer, offset, length);
+                if (count > 0) {
+                    decryptor.decrypt(buffer, offset, count);
+                }
+                return count;
+            }
+
+            int total = 0;
+            while (total < length) {
+                if (blockPosition == blockLimit && !fillBlock()) {
+                    break;
+                }
+                int count = Math.min(length - total, blockLimit - blockPosition);
+                System.arraycopy(block, blockPosition, buffer, offset + total, count);
+                blockPosition += count;
+                total += count;
+            }
+            return total == 0 ? -1 : total;
+        }
+
+        /// Returns decrypted bytes already buffered or immediately readable without crossing a block boundary.
+        @Override
+        public int available() throws IOException {
+            ensureEntryOpen();
+            return blockSize == 1 ? packedInput.available() : blockLimit - blockPosition;
+        }
+
+        /// Clears all legacy cipher state without closing the shared archive source.
+        @Override
+        public void close() {
+            if (!entryOpen) {
+                return;
+            }
+            entryOpen = false;
+            packedInput.close();
+            decryptor.close();
+            Arrays.fill(block, (byte) 0);
+            Arrays.fill(singleByte, (byte) 0);
+        }
+
+        /// Decrypts the next complete RAR 2.x block and returns whether one was available.
+        private boolean fillBlock() throws IOException {
+            int offset = 0;
+            while (offset < block.length) {
+                int count = packedInput.read(block, offset, block.length - offset);
+                if (count < 0) {
+                    if (offset == 0) {
+                        return false;
+                    }
+                    throw new EOFException("Unexpected end of legacy RAR encrypted packed data");
+                }
+                offset += count;
+            }
+            decryptor.decrypt(block, 0, block.length);
+            blockPosition = 0;
+            blockLimit = block.length;
+            return true;
+        }
+
+        /// Requires this stream and its owning archive reader to remain open.
+        private void ensureEntryOpen() throws IOException {
+            ensureOpen();
+            if (!entryOpen) {
+                throw new IOException("Legacy encrypted RAR packed entry stream is closed");
+            }
+        }
+    }
+    /// Defines one format-specific compressed-entry operation used by the shared streaming worker.
+    @NotNullByDefault
+    private interface CompressionDecoder {
+        /// Decompresses one packed entry and returns its unsigned output CRC32.
+        long decode(InputStream input, OutputStream output, long unpackedSize) throws IOException;
+
+        /// Invalidates solid history after decompression or packed-input failure.
+        void invalidateHistory();
+
+        /// Returns whether decompressed output can carry a RAR5 BLAKE2sp hash.
+        boolean usesBlake2sp();
+
+        /// Returns the format name used in diagnostic messages.
+        String formatName();
+    }
+
+    /// Adapts one RAR4 decoder session to the shared streaming worker.
+    @NotNullByDefault
+    private final class Rar4CompressionDecoder implements CompressionDecoder {
+        /// The stateful RAR4 decoder session.
+        private final Rar4Decoder.Session session;
+
+        /// The decompression selectors for this entry.
+        private final Rar4CompressionInfo compressionInfo;
+
+        /// Creates one RAR4 compressed-entry operation.
+        private Rar4CompressionDecoder(
+                Rar4Decoder.Session session,
+                Rar4CompressionInfo compressionInfo
+        ) {
+            this.session = Objects.requireNonNull(session, "session");
+            this.compressionInfo = Objects.requireNonNull(compressionInfo, "compressionInfo");
+        }
+
+        /// Decompresses one RAR4 entry and returns its output CRC32.
+        @Override
+        public long decode(InputStream input, OutputStream output, long unpackedSize) throws IOException {
+            return session.decode(
+                    input,
+                    output,
+                    compressionInfo.extractionVersion(),
+                    unpackedSize,
+                    compressionInfo.solid()
+            ).crc32();
+        }
+
+        /// Invalidates the RAR4 dictionary after a failed operation.
+        @Override
+        public void invalidateHistory() {
+            rar4DecoderHistoryInvalid = true;
+            session.invalidateHistory();
+        }
+
+        /// Returns that RAR4 does not define BLAKE2sp file hashes.
+        @Override
+        public boolean usesBlake2sp() {
+            return false;
+        }
+
+        /// Returns the RAR4 format name.
+        @Override
+        public String formatName() {
+            return "RAR4";
+        }
+    }
+
+    /// Adapts one RAR5 decoder session to the shared streaming worker.
+    @NotNullByDefault
+    private final class Rar5CompressionDecoder implements CompressionDecoder {
+        /// The stateful RAR5 decoder session.
+        private final Rar5Decoder.Session session;
+
+        /// The decompression selectors for this entry.
+        private final Rar5CompressionInfo compressionInfo;
+
+        /// Creates one RAR5 compressed-entry operation.
+        private Rar5CompressionDecoder(
+                Rar5Decoder.Session session,
+                Rar5CompressionInfo compressionInfo
+        ) {
+            this.session = Objects.requireNonNull(session, "session");
+            this.compressionInfo = Objects.requireNonNull(compressionInfo, "compressionInfo");
+        }
+
+        /// Decompresses one RAR5 entry and returns its output CRC32.
+        @Override
+        public long decode(InputStream input, OutputStream output, long unpackedSize) throws IOException {
+            return session.decode(
+                    input,
+                    output,
+                    compressionInfo.dictionaryPower(),
+                    compressionInfo.dictionaryFraction(),
+                    compressionInfo.version7(),
+                    compressionInfo.solid(),
+                    unpackedSize
+            ).crc32();
+        }
+
+        /// Invalidates the RAR5 dictionary after a failed operation.
+        @Override
+        public void invalidateHistory() {
+            rar5DecoderHistoryInvalid = true;
+            session.invalidateHistory();
+        }
+
+        /// Returns that RAR5 can define BLAKE2sp file hashes.
+        @Override
+        public boolean usesBlake2sp() {
+            return true;
+        }
+
+        /// Returns the RAR5 format name.
+        @Override
+        public String formatName() {
+            return "RAR5";
+        }
+    }
+
+    /// Updates a BLAKE2sp state with bytes successfully written to another output stream.
+    @NotNullByDefault
+    private static final class Blake2spOutputStream extends OutputStream {
+        /// The decompressed-output destination.
+        private final OutputStream output;
+
+        /// The hash state receiving the same decompressed bytes.
+        private final RarBlake2sp blake2sp;
+
+        /// Creates one BLAKE2sp output wrapper.
+        private Blake2spOutputStream(OutputStream output, RarBlake2sp blake2sp) {
+            this.output = Objects.requireNonNull(output, "output");
+            this.blake2sp = Objects.requireNonNull(blake2sp, "blake2sp");
+        }
+
+        /// Writes and hashes one decompressed byte.
+        @Override
+        public void write(int value) throws IOException {
+            output.write(value);
+            blake2sp.update(value);
+        }
+
+        /// Writes and hashes one decompressed byte range.
+        @Override
+        public void write(byte[] buffer, int offset, int length) throws IOException {
+            output.write(buffer, offset, length);
+            blake2sp.update(buffer, offset, length);
+        }
+
+        /// Flushes the decompressed-output destination.
+        @Override
+        public void flush() throws IOException {
+            output.flush();
+        }
+    }
+
+    /// Streams one format-specific decompression worker through a bounded pipe.
+    @NotNullByDefault
+    private final class DecodedInputStream extends InputStream {
+        /// The packed input consumed by the decoder worker.
+        private final InputStream packedInput;
+
+        /// The format-specific decompression operation.
+        private final CompressionDecoder decoder;
+
+        /// The public attributes used for size and checksum validation.
+        private final RarEntryAttributes attributes;
+
+        /// A private copy of the password-derived checksum key used by the worker.
+        private final byte @Nullable [] checksumKey;
+
+        /// Whether this RAR5 output can have a BLAKE2sp hash on its current or final physical part.
+        private final boolean blake2spActive;
+
+        /// The bounded consumer side of the decompressed-byte pipe.
+        private final PipedInputStream decodedInput;
+
+        /// The producer side owned by the decoder worker.
+        private final PipedOutputStream decodedOutput;
+
+        /// The daemon worker performing synchronous decompression.
+        private final Thread worker;
+
+        /// A reusable buffer used while draining skipped output.
+        private final byte[] discard = new byte[8192];
+
+        /// A reusable buffer for single-byte reads.
+        private final byte[] singleByte = new byte[1];
+
+        /// The decoder failure published before the producer pipe is closed.
+        private volatile @Nullable IOException failure;
+
+        /// Whether consumers may continue reading this entry stream.
+        private boolean entryOpen = true;
+
+        /// Creates and starts one bounded decompression worker.
+        private DecodedInputStream(
+                InputStream packedInput,
+                CompressionDecoder decoder,
+                RarEntryAttributes attributes
+        ) throws IOException {
+            this.packedInput = Objects.requireNonNull(packedInput, "packedInput");
+            this.decoder = Objects.requireNonNull(decoder, "decoder");
+            this.attributes = Objects.requireNonNull(attributes, "attributes");
+            byte @Nullable @Unmodifiable [] initialBlake2sp = attributes.blake2spHash();
+            blake2spActive = decoder.usesBlake2sp()
+                    && (initialBlake2sp != null || attributes.continuesInNextVolume());
+            decodedInput = new PipedInputStream(RAR_DECODE_PIPE_SIZE);
+            decodedOutput = new PipedOutputStream(decodedInput);
+            byte @Nullable [] activeHashKey = currentHashKey;
+            checksumKey = activeHashKey != null ? activeHashKey.clone() : null;
+            worker = new Thread(this::decode, "arkivo-rar-decoder");
+            worker.setDaemon(true);
+            worker.start();
+        }
+
+        /// Reads one decompressed byte.
+        @Override
+        public int read() throws IOException {
+            int count = read(singleByte, 0, 1);
+            return count < 0 ? -1 : Byte.toUnsignedInt(singleByte[0]);
+        }
+
+        /// Reads decompressed bytes and reports worker failures at logical EOF.
+        @Override
+        public int read(byte[] buffer, int offset, int length) throws IOException {
+            ensureEntryOpen();
+            Objects.checkFromIndexSize(offset, length, buffer.length);
+            if (length == 0) {
+                return 0;
+            }
+
+            int count;
+            try {
+                count = decodedInput.read(buffer, offset, length);
+            } catch (IOException exception) {
+                IOException workerFailure = failure;
+                if (workerFailure != null) {
+                    if (workerFailure != exception) {
+                        workerFailure.addSuppressed(exception);
+                    }
+                    throw reportedFailure(workerFailure);
+                }
+                throw exception;
+            }
+            if (count < 0) {
+                awaitWorker();
+                IOException workerFailure = failure;
+                if (workerFailure != null) {
+                    throw reportedFailure(workerFailure);
+                }
+            }
+            return count;
+        }
+
+        /// Returns decompressed bytes currently buffered by the bounded pipe.
+        @Override
+        public int available() throws IOException {
+            ensureEntryOpen();
+            return decodedInput.available();
+        }
+
+        /// Drains and validates the remaining decompressed output before closing.
+        @Override
+        public void close() throws IOException {
+            if (!entryOpen) {
+                return;
+            }
+            skipCurrentEntryBody();
+        }
+
+        /// Drains every remaining decompressed byte and observes worker completion.
+        private void drain() throws IOException {
+            int count;
+            do {
+                count = read(discard, 0, discard.length);
+            } while (count >= 0);
+        }
+
+        /// Performs decompression and publishes validation failures to the consumer.
+        private void decode() {
+            @Nullable IOException problem = null;
+            try {
+                @Nullable RarBlake2sp blake2sp = blake2spActive ? new RarBlake2sp() : null;
+                OutputStream output = blake2sp != null
+                        ? new Blake2spOutputStream(decodedOutput, blake2sp)
+                        : decodedOutput;
+                long actualCrc32 = decoder.decode(packedInput, output, attributes.unpackedSize());
+                drainPackedInput();
+                byte @Nullable [] hashKey = checksumKey;
+                if (hashKey != null) {
+                    actualCrc32 = Rar5Crypto.keyedCrc32(actualCrc32, hashKey);
+                }
+                long expectedCrc32 = completedEntryCrc32();
+                if (expectedCrc32 != RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE
+                        && actualCrc32 != expectedCrc32) {
+                    throw new IOException("Invalid RAR entry CRC32");
+                }
+                if (blake2sp != null) {
+                    byte @Nullable @Unmodifiable [] expectedBlake2sp = completedEntryBlake2spHash();
+                    if (expectedBlake2sp != null) {
+                        verifyBlake2sp(blake2sp, expectedBlake2sp, hashKey);
+                    }
+                }
+            } catch (Throwable exception) {
+                decoder.invalidateHistory();
+                problem = decoderFailure(exception);
+            } finally {
+                Rar5Crypto.clear(checksumKey);
+                try {
+                    packedInput.close();
+                } catch (IOException exception) {
+                    if (problem == null) {
+                        problem = exception;
+                    } else {
+                        problem.addSuppressed(exception);
+                    }
+                }
+                failure = problem;
+                try {
+                    decodedOutput.close();
+                } catch (IOException exception) {
+                    IOException published = failure;
+                    if (published == null) {
+                        failure = exception;
+                    } else {
+                        published.addSuppressed(exception);
+                    }
+                }
+            }
+        }
+
+        /// Consumes packed read-ahead and encryption padding after the decoder reaches the declared output size.
+        private void drainPackedInput() throws IOException {
+            while (packedInput.read(discard, 0, discard.length) >= 0) {
+                // Keep the archive source aligned at the next block header.
+            }
+        }
+
+        /// Returns the CRC32 from the final physical part after all packed continuations have been consumed.
+        private long completedEntryCrc32() {
+            RarEntryAttributes completedPart = currentPartAttributes;
+            return completedPart != null ? completedPart.dataCrc32() : attributes.dataCrc32();
+        }
+
+        /// Returns the BLAKE2sp hash from the final physical part after all continuations are consumed.
+        private byte @Nullable @Unmodifiable [] completedEntryBlake2spHash() {
+            RarEntryAttributes completedPart = currentPartAttributes;
+            return completedPart != null ? completedPart.blake2spHash() : attributes.blake2spHash();
+        }
+
+        /// Converts an arbitrary worker failure to the streaming API's checked error type.
+        private IOException decoderFailure(Throwable exception) {
+            if (exception instanceof IOException ioException) {
+                return ioException;
+            }
+            return new IOException(
+                    "Could not decompress " + decoder.formatName() + " entry: " + attributes.path(),
+                    exception
+            );
+        }
+
+        /// Returns a fresh checked exception so repeated EOF observations can be suppressed safely.
+        private IOException reportedFailure(IOException workerFailure) {
+            return new IOException(workerFailure.getMessage(), workerFailure);
+        }
+
+        /// Waits for worker termination while preserving interrupt status.
+        private void awaitWorker() throws IOException {
+            boolean interrupted = false;
+            while (worker.isAlive()) {
+                try {
+                    worker.join();
+                } catch (InterruptedException exception) {
+                    interrupted = true;
+                }
+            }
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while waiting for RAR decompression");
+            }
+        }
+
+        /// Cancels the worker and clears buffered decompressed bytes.
+        private void release() {
+            if (!entryOpen) {
+                return;
+            }
+            entryOpen = false;
+            try {
+                decodedInput.close();
+            } catch (IOException ignored) {
+                // PipedInputStream has no external resource to recover after a close failure.
+            }
+            try {
+                packedInput.close();
+            } catch (IOException ignored) {
+                // The shared archive source is closed separately by its owner.
+            }
+            worker.interrupt();
+            Arrays.fill(discard, (byte) 0);
+            Arrays.fill(singleByte, (byte) 0);
+        }
+
+        /// Requires both this stream and its owning archive reader to remain open.
+        private void ensureEntryOpen() throws IOException {
+            ensureOpen();
+            if (!entryOpen) {
+                throw new IOException("RAR decompressed entry stream is closed");
+            }
+        }
+    }
+    /// Exposes one decrypted stored body while withholding format-specific alignment padding.
+    @NotNullByDefault
+    private final class EncryptedEntryInputStream extends InputStream {
+        /// The decrypted packed stream containing logical data followed by optional alignment padding.
+        private final InputStream decryptedInput;
+
+        /// A reusable buffer used while draining skipped data and alignment padding.
         private final byte[] discard = new byte[8192];
 
         /// A reusable buffer for single-byte reads.
@@ -2170,22 +3670,24 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         /// The number of logical plaintext bytes not yet returned.
         private long logicalRemaining;
 
-        /// The current plaintext block read position.
-        private int blockPosition;
-
-        /// The exclusive current plaintext block limit.
-        private int blockLimit;
+        /// The number of decrypted alignment-padding bytes not yet consumed.
+        private long paddingRemaining;
 
         /// Whether this entry stream still owns usable decryption state.
         private boolean entryOpen = true;
 
-        /// Creates an encrypted stored-entry stream.
-        private EncryptedEntryInputStream(RarCbcDecryptor decryptor, long logicalSize) {
-            this.decryptor = Objects.requireNonNull(decryptor, "decryptor");
+        /// Creates an encrypted stored-entry stream over an initialized packed decryptor.
+        private EncryptedEntryInputStream(InputStream decryptedInput, long logicalSize, int blockSize) {
+            this.decryptedInput = Objects.requireNonNull(decryptedInput, "decryptedInput");
             if (logicalSize < 0L) {
                 throw new IllegalArgumentException("logicalSize must not be negative");
             }
+            if (blockSize <= 0) {
+                throw new IllegalArgumentException("blockSize must be positive");
+            }
             this.logicalRemaining = logicalSize;
+            long remainder = logicalSize % blockSize;
+            paddingRemaining = remainder == 0L ? 0L : blockSize - remainder;
         }
 
         /// Reads one decrypted logical byte.
@@ -2195,7 +3697,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             return count < 0 ? -1 : Byte.toUnsignedInt(singleByte[0]);
         }
 
-        /// Reads decrypted logical bytes without exposing AES alignment padding.
+        /// Reads decrypted logical bytes without exposing alignment padding.
         @Override
         public int read(byte[] buffer, int offset, int length) throws IOException {
             ensureEntryOpen();
@@ -2208,30 +3710,25 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 return -1;
             }
 
-            int total = 0;
-            while (total < length && logicalRemaining > 0L) {
-                if (blockPosition == blockLimit) {
-                    fillPlaintextBlock();
-                }
-                int count = (int) Math.min(
-                        Math.min(length - total, blockLimit - blockPosition),
-                        logicalRemaining
-                );
-                System.arraycopy(plaintext, blockPosition, buffer, offset + total, count);
-                blockPosition += count;
-                logicalRemaining -= count;
-                total += count;
-                if (currentCrcActive) {
-                    dataCrc32.update(buffer, offset + total - count, count);
-                }
+            int requested = (int) Math.min(length, logicalRemaining);
+            int count = decryptedInput.read(buffer, offset, requested);
+            if (count < 0) {
+                throw new EOFException("Unexpected end of encrypted RAR entry data");
+            }
+            logicalRemaining -= count;
+            if (currentCrcActive) {
+                dataCrc32.update(buffer, offset, count);
+            }
+            if (currentBlake2spActive) {
+                dataBlake2sp.update(buffer, offset, count);
             }
             if (logicalRemaining == 0L) {
                 verifyEncryptedBodyComplete();
             }
-            return total;
+            return count;
         }
 
-        /// Skips decrypted logical bytes while preserving CRC validation.
+        /// Skips decrypted logical bytes while preserving integrity validation.
         @Override
         public long skip(long count) throws IOException {
             ensureEntryOpen();
@@ -2250,11 +3747,11 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             return skipped;
         }
 
-        /// Returns logical bytes already available in the current decrypted block.
+        /// Returns logical bytes already available from the decrypted packed stream.
         @Override
         public int available() throws IOException {
             ensureEntryOpen();
-            return (int) Math.min(logicalRemaining, blockLimit - blockPosition);
+            return (int) Math.min(logicalRemaining, decryptedInput.available());
         }
 
         /// Closes this entry stream after draining and authenticating its remaining body.
@@ -2274,40 +3771,36 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             } while (read >= 0);
         }
 
-        /// Reads and decrypts one complete AES block from the physical entry body.
-        private void fillPlaintextBlock() throws IOException {
-            if (currentPackedRemaining < RarCbcDecryptor.BLOCK_SIZE) {
-                throw new EOFException("Unexpected end of encrypted RAR entry data");
-            }
-            readFully(
-                    ciphertext,
-                    0,
-                    ciphertext.length,
-                    "Unexpected end of encrypted RAR entry data"
-            );
-            currentPackedRemaining -= ciphertext.length;
-            decryptor.decryptBlock(ciphertext, plaintext);
-            blockPosition = 0;
-            blockLimit = (int) Math.min(RarCbcDecryptor.BLOCK_SIZE, logicalRemaining);
-        }
-
-        /// Requires all ciphertext bytes to be consumed and verifies the logical CRC32.
+        /// Consumes alignment padding, requires packed EOF, and verifies the logical body.
         private void verifyEncryptedBodyComplete() throws IOException {
-            if (currentPackedRemaining != 0L) {
+            while (paddingRemaining > 0L) {
+                int count = decryptedInput.read(
+                        discard,
+                        0,
+                        (int) Math.min(discard.length, paddingRemaining)
+                );
+                if (count < 0) {
+                    throw new EOFException("Unexpected end of encrypted RAR entry padding");
+                }
+                paddingRemaining -= count;
+            }
+            if (decryptedInput.read() >= 0) {
                 throw new IOException("RAR encrypted stored entry has unexpected trailing ciphertext");
             }
-            verifyCurrentCrcIfComplete();
+            verifyCurrentIntegrityIfComplete();
         }
 
-        /// Clears decrypted bytes and mutable CBC state retained by this entry stream.
+        /// Closes the packed decryptor and clears retained temporary data.
         private void release() {
             if (!entryOpen) {
                 return;
             }
             entryOpen = false;
-            decryptor.clear();
-            Arrays.fill(ciphertext, (byte) 0);
-            Arrays.fill(plaintext, (byte) 0);
+            try {
+                decryptedInput.close();
+            } catch (IOException ignored) {
+                // The shared archive source is closed separately by its owner.
+            }
             Arrays.fill(discard, (byte) 0);
             Arrays.fill(singleByte, (byte) 0);
         }
@@ -2339,8 +3832,11 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             if (currentCrcActive) {
                 dataCrc32.update(value);
             }
+            if (currentBlake2spActive) {
+                dataBlake2sp.update(value);
+            }
             if (currentPackedRemaining == 0L) {
-                verifyCurrentCrcIfComplete();
+                verifyCurrentIntegrityIfComplete();
             }
             return value;
         }
@@ -2364,8 +3860,11 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             if (currentCrcActive) {
                 dataCrc32.update(buffer, offset, read);
             }
+            if (currentBlake2spActive) {
+                dataBlake2sp.update(buffer, offset, read);
+            }
             if (currentPackedRemaining == 0L) {
-                verifyCurrentCrcIfComplete();
+                verifyCurrentIntegrityIfComplete();
             }
             return read;
         }
@@ -2378,10 +3877,10 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 return 0L;
             }
             long toSkip = Math.min(count, currentPackedRemaining);
-            if (currentCrcActive) {
-                skipStoredDataWithCrc(toSkip);
+            if (currentCrcActive || currentBlake2spActive) {
+                consumeStoredDataWithIntegrity(toSkip);
                 if (currentPackedRemaining == 0L) {
-                    verifyCurrentCrcIfComplete();
+                    verifyCurrentIntegrityIfComplete();
                 }
                 return toSkip;
             }

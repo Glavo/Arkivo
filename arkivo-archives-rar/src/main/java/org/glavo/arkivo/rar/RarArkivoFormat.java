@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/// Describes RAR archive streaming support provided by Arkivo.
+/// Describes RAR4 and RAR5 archive support provided by Arkivo.
 @NotNullByDefault
 public final class RarArkivoFormat implements ArkivoStreamingFormat {
     /// The stable RAR format name.
@@ -120,7 +120,7 @@ public final class RarArkivoFormat implements ArkivoStreamingFormat {
             Map<String, ?> environment
     ) {
         Objects.requireNonNull(environment, "environment");
-        return RarArkivoStreamingReader.open(source);
+        return RarArkivoStreamingReader.open(source, environment);
     }
 
     /// Opens a streaming RAR reader from a readable channel.
@@ -136,6 +136,6 @@ public final class RarArkivoFormat implements ArkivoStreamingFormat {
             Map<String, ?> environment
     ) {
         Objects.requireNonNull(environment, "environment");
-        return RarArkivoStreamingReader.open(source);
+        return RarArkivoStreamingReader.open(source, environment);
     }
 }

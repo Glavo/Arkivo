@@ -868,6 +868,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         boolean encryptedContentAvailable = RarArkivoFileSystem.PASSWORD_PROVIDER.read(environment) != null;
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(input, environment)) {
+            RarArkivoStreamingReaderImpl readerImpl = (RarArkivoStreamingReaderImpl) reader;
             while (reader.next()) {
                 RarEntryAttributes attributes = (RarEntryAttributes) reader.readAttributes(RarArkivoEntryAttributes.class);
                 String path = normalizeEntryPath(attributes.path());
@@ -883,9 +884,8 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                         content = targetContent;
                         nodeAttributes = attributesWithResolvedSize(attributes, content.size());
                     }
-                } else if (attributes.isRegularFile() && attributes.compressionMethod() == 0
+                } else if (attributes.isRegularFile() && readerImpl.isCurrentBodyReadable()
                         && (!attributes.isEncrypted() || encryptedContentAvailable)
-                        && (!attributes.isEncrypted() || !attributes.continuesInNextVolume())
                         && !attributes.continuesFromPreviousVolume()) {
                     try (InputStream entryInput = reader.openInputStream()) {
                         content = storeInput(

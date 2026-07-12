@@ -21,6 +21,7 @@ import javax.crypto.spec.SecretKeySpec;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
@@ -54,6 +55,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -75,6 +77,43 @@ public final class RarArkivoStreamingReaderTest {
     /// The RAR4 archive signature.
     private static final byte @Unmodifiable [] RAR4_SIGNATURE =
             new byte[]{'R', 'a', 'r', '!', 0x1a, 0x07, 0x00};
+
+    /// The packed body of a real RAR4 method-3 entry whose plaintext is `file1\n`.
+    private static final byte @Unmodifiable [] RAR4_COMPRESSED_BODY = Base64.getDecoder().decode(
+            "DQwM/hAMt2G79EFqVSh/2gEYP7Diz78doSA="
+    );
+
+    /// The packed body of a real RAR5 method-3 entry whose plaintext contains numbers 000 through 511.
+    private static final byte @Unmodifiable [] RAR5_COMPRESSED_BODY = Base64.getDecoder().decode(
+            "xKo0RDQk+jLrR/rETX295gWAggqMwQMqlcoim1Aak91A/ABAAgDUYAQ27RX5t1SDKmROzXwf4A=="
+    );
+
+    /// The 2,048-byte plaintext represented by `RAR5_COMPRESSED_BODY`.
+    private static final byte @Unmodifiable [] RAR5_COMPRESSED_CONTENT = numberedRar5Content();
+
+    /// The raw BLAKE2sp hash of `RAR5_COMPRESSED_CONTENT`.
+    private static final byte @Unmodifiable [] RAR5_COMPRESSED_BLAKE2SP = Base64.getDecoder().decode(
+            "fNXBrDHwz1iESlf7kHLER2jb6hRW43wh5JH0hTmC7eA="
+    );
+
+    /// The raw BLAKE2sp hash of the stored text `hello`.
+    private static final byte @Unmodifiable [] HELLO_BLAKE2SP = Base64.getDecoder().decode(
+            "Ij3+QlZd35chCzSjhIYLYDcX1cY8GHLJ/JnxsV3mYxs="
+    );
+
+    /// The raw BLAKE2sp hash of the stored text `hash`.
+    private static final byte @Unmodifiable [] HASH_CONTENT_BLAKE2SP = Base64.getDecoder().decode(
+            "fnH2NMRgUAlngPPefASxIh0Qh+2hkakijdXj5iM2nFc="
+    );
+
+    /// The raw BLAKE2sp hash of the stored multi-volume fixture content.
+    private static final byte @Unmodifiable [] SPLIT_STORED_BLAKE2SP = Base64.getDecoder().decode(
+            "v8V/QwGHsrun9a3YDUHLqK0vtdNnqwrPUSa7duptEj4="
+    );
+
+    /// The raw BLAKE2sp hash of the encrypted stored multi-volume fixture content.
+    private static final byte @Unmodifiable [] ENCRYPTED_SPLIT_STORED_BLAKE2SP =
+            Base64.getDecoder().decode("ZOxvj1vcgZpkO6zX45qK4uCr1oxdeq7FDyDloZamWEw=");
 
     /// RAR4 file header flag indicating that the name field includes Unicode metadata.
     private static final long RAR4_FILE_FLAG_UNICODE = 0x0200L;
@@ -271,7 +310,17 @@ public final class RarArkivoStreamingReaderTest {
         long contentCrc32 = crc32(content);
         byte[] archive = archive(
                 splitStoredFilePart("split.txt", 1_700_000_000L, 0100644, content.length, contentCrc32, firstPart, false, true),
-                splitStoredFilePart("split.txt", 1_700_000_000L, 0100644, content.length, contentCrc32, secondPart, true, false),
+                splitStoredFilePart(
+                        "split.txt",
+                        1_700_000_000L,
+                        0100644,
+                        content.length,
+                        contentCrc32,
+                        secondPart,
+                        blake2spHash(SPLIT_STORED_BLAKE2SP),
+                        true,
+                        false
+                ),
                 storedFile("after.txt", 1_700_000_001L, 0100644, "after".getBytes(StandardCharsets.UTF_8), null)
         );
 
@@ -426,10 +475,7 @@ public final class RarArkivoStreamingReaderTest {
         byte[] splitSecondPart = "content".getBytes(StandardCharsets.UTF_8);
         byte[] splitContent = concatenate(splitFirstPart, splitSecondPart);
         long splitCrc32 = crc32(splitContent);
-        byte[] hash = new byte[32];
-        for (int index = 0; index < hash.length; index++) {
-            hash[index] = (byte) index;
-        }
+        byte[] hash = HELLO_BLAKE2SP.clone();
         Path archivePath = createTemporaryArchivePath("rar-fs-");
         Path copiedDirectory = archivePath.getParent().resolve("copied-dir");
         Path existingFile = archivePath.getParent().resolve("existing-file");
@@ -486,7 +532,7 @@ public final class RarArkivoStreamingReaderTest {
                         false
                 ),
                 symbolicLink("link", 1_700_000_020L, 0120777, "dir/hello.txt"),
-                compressedFile("dir/compressed.bin", 1_700_000_020L, 0100644, new byte[]{1, 2, 3}, 1)
+                compressedFile("dir/compressed.bin", 1_700_000_020L, 0100644, new byte[]{1, 2, 3}, 6)
         ));
 
         RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archivePath);
@@ -728,16 +774,23 @@ public final class RarArkivoStreamingReaderTest {
         long contentCrc32 = crc32(content);
         Path firstVolume = createTemporaryArchivePath("rar-volumes-");
         Path secondVolume = firstVolume.getParent().resolve("sample.part2.rar");
-        Files.write(firstVolume, archiveVolume(false, splitStoredFilePart(
-                "split.txt",
-                1_700_000_000L,
-                0100644,
-                content.length,
-                contentCrc32,
-                firstPart,
-                false,
-                true
-        )));
+        Files.write(firstVolume, concatenate(
+                archiveVolume(
+                        true,
+                        true,
+                        splitStoredFilePart(
+                                "split.txt",
+                                1_700_000_000L,
+                                0100644,
+                                content.length,
+                                contentCrc32,
+                                firstPart,
+                                false,
+                                true
+                        )
+                ),
+                new byte[15]
+        ));
         Files.write(secondVolume, archiveVolume(
                 true,
                 splitStoredFilePart(
@@ -834,6 +887,550 @@ public final class RarArkivoStreamingReaderTest {
         }
     }
 
+    /// Verifies normal RAR5 compressed-body decoding from a forward-only source.
+    @Test
+    public void readsCompressedRar5Entry() throws IOException {
+        byte[] archive = archive(splitCompressedFilePart(
+                "numbers.txt",
+                1_700_000_000L,
+                0100644,
+                RAR5_COMPRESSED_CONTENT.length,
+                crc32(RAR5_COMPRESSED_CONTENT),
+                RAR5_COMPRESSED_BODY,
+                blake2spHash(RAR5_COMPRESSED_BLAKE2SP),
+                false,
+                false
+        ));
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive)
+        )) {
+            assertEquals(true, reader.next());
+            assertEquals(
+                    3,
+                    reader.readAttributes(RarArkivoEntryAttributes.class).compressionMethod()
+            );
+            try (InputStream input = reader.openInputStream()) {
+                assertArrayEquals(RAR5_COMPRESSED_CONTENT, input.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Rejects decompressed RAR5 content whose BLAKE2sp hash does not match.
+    @Test
+    public void rejectsCompressedRar5Blake2spMismatch() throws IOException {
+        byte[] wrongHash = RAR5_COMPRESSED_BLAKE2SP.clone();
+        wrongHash[0] ^= 1;
+        byte[] archive = archive(splitCompressedFilePart(
+                "numbers.txt",
+                1_700_000_000L,
+                0100644,
+                RAR5_COMPRESSED_CONTENT.length,
+                crc32(RAR5_COMPRESSED_CONTENT),
+                RAR5_COMPRESSED_BODY,
+                blake2spHash(wrongHash),
+                false,
+                false
+        ));
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive)
+        )) {
+            assertEquals(true, reader.next());
+            IOException exception = assertThrows(IOException.class, () -> {
+                try (InputStream input = reader.openInputStream()) {
+                    input.readAllBytes();
+                }
+            });
+            assertEquals(true, exception.getMessage().contains("BLAKE2sp"));
+        }
+    }
+
+    /// Verifies RAR5 decompression when packed data crosses a physical volume boundary.
+    @Test
+    public void opensCompressedRar5SplitEntryFromVolumeSource() throws IOException {
+        int splitOffset = 17;
+        byte[] firstPart = Arrays.copyOfRange(RAR5_COMPRESSED_BODY, 0, splitOffset);
+        byte[] secondPart = Arrays.copyOfRange(
+                RAR5_COMPRESSED_BODY,
+                splitOffset,
+                RAR5_COMPRESSED_BODY.length
+        );
+        Path firstVolume = createTemporaryArchivePath("rar5-compressed-volumes-");
+        Path secondVolume = firstVolume.resolveSibling("sample.part2.rar");
+        Files.write(firstVolume, archiveVolume(false, splitCompressedFilePart(
+                "numbers.txt",
+                1_700_000_000L,
+                0100644,
+                RAR5_COMPRESSED_CONTENT.length,
+                0L,
+                firstPart,
+                false,
+                true
+        )));
+        Files.write(secondVolume, archiveVolume(
+                true,
+                splitCompressedFilePart(
+                        "numbers.txt",
+                        1_700_000_000L,
+                        0100644,
+                        RAR5_COMPRESSED_CONTENT.length,
+                        crc32(RAR5_COMPRESSED_CONTENT),
+                        secondPart,
+                        blake2spHash(RAR5_COMPRESSED_BLAKE2SP),
+                        true,
+                        false
+                ),
+                storedFile(
+                        "after.txt",
+                        1_700_000_001L,
+                        0100644,
+                        "after".getBytes(StandardCharsets.UTF_8),
+                        null
+                )
+        ));
+
+        try {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                    ArkivoVolumeSource.of(List.of(firstVolume, secondVolume))
+            )) {
+                assertArrayEquals(
+                        RAR5_COMPRESSED_CONTENT,
+                        Files.readAllBytes(fileSystem.getPath("/numbers.txt"))
+                );
+                assertArrayEquals(
+                        "after".getBytes(StandardCharsets.UTF_8),
+                        Files.readAllBytes(fileSystem.getPath("/after.txt"))
+                );
+            }
+        } finally {
+            Files.deleteIfExists(secondVolume);
+            deleteTemporaryArchive(firstVolume);
+        }
+    }
+
+
+    /// Verifies that compressed RAR4 entries use the final continuation CRC after packed data crosses volumes.
+    @Test
+    public void opensCompressedRar4SplitEntryFromVolumeSource() throws IOException {
+        byte[] content = "file1\n".getBytes(StandardCharsets.UTF_8);
+        byte[] firstPart = Arrays.copyOfRange(RAR4_COMPRESSED_BODY, 0, 10);
+        byte[] secondPart = Arrays.copyOfRange(RAR4_COMPRESSED_BODY, 10, RAR4_COMPRESSED_BODY.length);
+        Path firstVolume = createTemporaryArchivePath("rar4-compressed-volumes-");
+        Path secondVolume = firstVolume.getParent().resolve("sample.part2.rar");
+        Files.write(firstVolume, rar4ArchiveVolume(false, splitCompressedFilePart(
+                "file1.txt",
+                1_700_000_000L,
+                0100644,
+                content.length,
+                0L,
+                firstPart,
+                false,
+                true
+        )));
+        Files.write(secondVolume, rar4ArchiveVolume(
+                true,
+                splitCompressedFilePart(
+                        "file1.txt",
+                        1_700_000_000L,
+                        0100644,
+                        content.length,
+                        crc32(content),
+                        secondPart,
+                        true,
+                        false
+                ),
+                storedFile("after.txt", 1_700_000_001L, 0100644, "after".getBytes(StandardCharsets.UTF_8), null)
+        ));
+
+        try {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(ArkivoVolumeSource.of(List.of(
+                    firstVolume,
+                    secondVolume
+            )))) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/file1.txt")));
+                assertArrayEquals(
+                        "after".getBytes(StandardCharsets.UTF_8),
+                        Files.readAllBytes(fileSystem.getPath("/after.txt"))
+                );
+            }
+        } finally {
+            Files.deleteIfExists(secondVolume);
+            deleteTemporaryArchive(firstVolume);
+        }
+    }
+
+    /// Verifies that one RAR5 AES stream can span an unaligned physical volume boundary.
+    @Test
+    public void opensRar5EncryptedStoredSplitEntryFromVolumeSource() throws IOException {
+        byte[] content = "RAR5 encrypted content spanning two volumes".getBytes(StandardCharsets.UTF_8);
+        TestRar5Keys keys = deriveRar5Keys(RAR5_PASSWORD, RAR5_FILE_SALT, RAR5_KDF_LOG);
+        byte[] ciphertext = encryptRar5Aes(content, keys.aesKey(), RAR5_FILE_IV);
+        int splitOffset = 7;
+        byte[] firstPart = Arrays.copyOfRange(ciphertext, 0, splitOffset);
+        byte[] secondPart = Arrays.copyOfRange(ciphertext, splitOffset, ciphertext.length);
+        byte[] encryptionRecord = fileEncryptionRecord(keys, true);
+        long finalCrc32 = keyedRar5Crc32(crc32(content), keys.hashKey());
+        byte[] finalHash = keyedRar5Blake2sp(ENCRYPTED_SPLIT_STORED_BLAKE2SP, keys.hashKey());
+        byte[] finalExtraArea = concatenate(encryptionRecord, blake2spHash(finalHash));
+        Path firstVolume = createTemporaryArchivePath("rar5-encrypted-volumes-");
+        Path secondVolume = firstVolume.resolveSibling("sample.part2.rar");
+        Files.write(firstVolume, archiveVolume(false, encryptedSplitFilePart(
+                "secret.txt",
+                0,
+                crc32(firstPart),
+                content.length,
+                firstPart,
+                encryptionRecord,
+                false,
+                true
+        )));
+        Files.write(secondVolume, archiveVolume(
+                true,
+                encryptedSplitFilePart(
+                        "secret.txt",
+                        0,
+                        finalCrc32,
+                        content.length,
+                        secondPart,
+                        finalExtraArea,
+                        true,
+                        false
+                ),
+                storedFile("after.txt", 1_700_000_001L, 0100644, "after".getBytes(StandardCharsets.UTF_8), null)
+        ));
+
+        try {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                    ArkivoVolumeSource.of(List.of(firstVolume, secondVolume)),
+                    rar5PasswordEnvironment(RAR5_PASSWORD)
+            )) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/secret.txt")));
+                assertArrayEquals(
+                        "after".getBytes(StandardCharsets.UTF_8),
+                        Files.readAllBytes(fileSystem.getPath("/after.txt"))
+                );
+            }
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                    ArkivoVolumeSource.of(List.of(firstVolume, secondVolume))
+            )) {
+                Path encryptedPath = fileSystem.getPath("/secret.txt");
+                assertEquals(
+                        true,
+                        Files.readAttributes(encryptedPath, RarArkivoEntryAttributes.class).isEncrypted()
+                );
+                IOException unavailable = assertThrows(IOException.class, () -> Files.readAllBytes(encryptedPath));
+                assertEquals(true, unavailable.getMessage().contains("content is not available"));
+                assertArrayEquals(
+                        "after".getBytes(StandardCharsets.UTF_8),
+                        Files.readAllBytes(fileSystem.getPath("/after.txt"))
+                );
+            }
+        } finally {
+            Files.deleteIfExists(secondVolume);
+            deleteTemporaryArchive(firstVolume);
+        }
+    }
+
+    /// Verifies RAR5 decompression over an AES stream split inside one cipher block.
+    @Test
+    public void opensRar5EncryptedCompressedSplitEntryFromVolumeSource() throws IOException {
+        TestRar5Keys keys = deriveRar5Keys(RAR5_PASSWORD, RAR5_FILE_SALT, RAR5_KDF_LOG);
+        byte[] ciphertext = encryptRar5Aes(RAR5_COMPRESSED_BODY, keys.aesKey(), RAR5_FILE_IV);
+        int splitOffset = 7;
+        byte[] firstPart = Arrays.copyOfRange(ciphertext, 0, splitOffset);
+        byte[] secondPart = Arrays.copyOfRange(ciphertext, splitOffset, ciphertext.length);
+        byte[] encryptionRecord = fileEncryptionRecord(keys, true);
+        long finalCrc32 = keyedRar5Crc32(crc32(RAR5_COMPRESSED_CONTENT), keys.hashKey());
+        byte[] finalHash = keyedRar5Blake2sp(RAR5_COMPRESSED_BLAKE2SP, keys.hashKey());
+        byte[] finalExtraArea = concatenate(encryptionRecord, blake2spHash(finalHash));
+        Path firstVolume = createTemporaryArchivePath("rar5-encrypted-compressed-volumes-");
+        Path secondVolume = firstVolume.resolveSibling("sample.part2.rar");
+        Files.write(firstVolume, archiveVolume(false, encryptedSplitFilePart(
+                "numbers.txt",
+                3,
+                0L,
+                RAR5_COMPRESSED_CONTENT.length,
+                firstPart,
+                encryptionRecord,
+                false,
+                true
+        )));
+        Files.write(secondVolume, archiveVolume(
+                true,
+                encryptedSplitFilePart(
+                        "numbers.txt",
+                        3,
+                        finalCrc32,
+                        RAR5_COMPRESSED_CONTENT.length,
+                        secondPart,
+                        finalExtraArea,
+                        true,
+                        false
+                ),
+                storedFile(
+                        "after.txt",
+                        1_700_000_001L,
+                        0100644,
+                        "after".getBytes(StandardCharsets.UTF_8),
+                        null
+                )
+        ));
+
+        try {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                    ArkivoVolumeSource.of(List.of(firstVolume, secondVolume)),
+                    rar5PasswordEnvironment(RAR5_PASSWORD)
+            )) {
+                assertArrayEquals(
+                        RAR5_COMPRESSED_CONTENT,
+                        Files.readAllBytes(fileSystem.getPath("/numbers.txt"))
+                );
+                assertArrayEquals(
+                        "after".getBytes(StandardCharsets.UTF_8),
+                        Files.readAllBytes(fileSystem.getPath("/after.txt"))
+                );
+            }
+        } finally {
+            Files.deleteIfExists(secondVolume);
+            deleteTemporaryArchive(firstVolume);
+        }
+    }
+
+
+    /// Verifies that one RAR 3.x AES stream can span an unaligned physical volume boundary.
+    @Test
+    public void opensRar4EncryptedStoredSplitEntryFromVolumeSource() throws IOException {
+        byte[] content = "RAR4 encrypted content spanning two volumes".getBytes(StandardCharsets.UTF_8);
+        TestRar3Keys keys = deriveRar3Keys(RAR3_PASSWORD, RAR3_FILE_SALT);
+        byte[] ciphertext = encryptRar3Aes(content, keys.key(), keys.initializationVector());
+        int splitOffset = 9;
+        byte[] firstPart = Arrays.copyOfRange(ciphertext, 0, splitOffset);
+        byte[] secondPart = Arrays.copyOfRange(ciphertext, splitOffset, ciphertext.length);
+        Path firstVolume = createTemporaryArchivePath("rar4-encrypted-volumes-");
+        Path secondVolume = firstVolume.resolveSibling("sample.r00");
+        Files.write(firstVolume, rar4EncryptedArchiveVolume(
+                false,
+                new Rar4EncryptedFixture(
+                        encryptedSplitFilePart(
+                                "secret.txt",
+                                0,
+                                crc32(firstPart),
+                                content.length,
+                                firstPart,
+                                null,
+                                false,
+                                true
+                        ),
+                        RAR3_FILE_SALT
+                )
+        ));
+        Files.write(secondVolume, rar4EncryptedArchiveVolume(
+                true,
+                new Rar4EncryptedFixture(
+                        encryptedSplitFilePart(
+                                "secret.txt",
+                                0,
+                                crc32(content),
+                                content.length,
+                                secondPart,
+                                null,
+                                true,
+                                false
+                        ),
+                        RAR3_FILE_SALT
+                ),
+                storedFile("after.txt", 1_700_000_001L, 0100644, "after".getBytes(StandardCharsets.UTF_8), null)
+        ));
+
+        try {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                    ArkivoVolumeSource.of(List.of(firstVolume, secondVolume)),
+                    rar3PasswordEnvironment(RAR3_PASSWORD)
+            )) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/secret.txt")));
+                assertArrayEquals(
+                        "after".getBytes(StandardCharsets.UTF_8),
+                        Files.readAllBytes(fileSystem.getPath("/after.txt"))
+                );
+            }
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                    ArkivoVolumeSource.of(List.of(firstVolume, secondVolume))
+            )) {
+                Path encryptedPath = fileSystem.getPath("/secret.txt");
+                assertEquals(
+                        true,
+                        Files.readAttributes(encryptedPath, RarArkivoEntryAttributes.class).isEncrypted()
+                );
+                IOException unavailable = assertThrows(IOException.class, () -> Files.readAllBytes(encryptedPath));
+                assertEquals(true, unavailable.getMessage().contains("content is not available"));
+                assertArrayEquals(
+                        "after".getBytes(StandardCharsets.UTF_8),
+                        Files.readAllBytes(fileSystem.getPath("/after.txt"))
+                );
+            }
+        } finally {
+            Files.deleteIfExists(secondVolume);
+            deleteTemporaryArchive(firstVolume);
+        }
+    }
+
+    /// Verifies RAR4 decompression over an encrypted stream split inside an AES block.
+    @Test
+    public void opensRar4EncryptedCompressedSplitEntryFromVolumeSource() throws IOException {
+        byte[] content = "file1\n".getBytes(StandardCharsets.UTF_8);
+        TestRar3Keys keys = deriveRar3Keys(RAR3_PASSWORD, RAR3_FILE_SALT);
+        byte[] ciphertext = encryptRar3Aes(
+                RAR4_COMPRESSED_BODY,
+                keys.key(),
+                keys.initializationVector()
+        );
+        int splitOffset = 11;
+        byte[] firstPart = Arrays.copyOfRange(ciphertext, 0, splitOffset);
+        byte[] secondPart = Arrays.copyOfRange(ciphertext, splitOffset, ciphertext.length);
+        Path firstVolume = createTemporaryArchivePath("rar4-encrypted-compressed-volumes-");
+        Path secondVolume = firstVolume.resolveSibling("sample.r00");
+        Files.write(firstVolume, rar4EncryptedArchiveVolume(
+                false,
+                new Rar4EncryptedFixture(
+                        encryptedSplitFilePart(
+                                "file1.txt",
+                                3,
+                                crc32(firstPart),
+                                content.length,
+                                firstPart,
+                                null,
+                                false,
+                                true
+                        ),
+                        RAR3_FILE_SALT
+                )
+        ));
+        Files.write(secondVolume, rar4EncryptedArchiveVolume(
+                true,
+                new Rar4EncryptedFixture(
+                        encryptedSplitFilePart(
+                                "file1.txt",
+                                3,
+                                crc32(content),
+                                content.length,
+                                secondPart,
+                                null,
+                                true,
+                                false
+                        ),
+                        RAR3_FILE_SALT
+                ),
+                storedFile("after.txt", 1_700_000_001L, 0100644, "after".getBytes(StandardCharsets.UTF_8), null)
+        ));
+
+        try {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                    ArkivoVolumeSource.of(List.of(firstVolume, secondVolume)),
+                    rar3PasswordEnvironment(RAR3_PASSWORD)
+            )) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/file1.txt")));
+                assertArrayEquals(
+                        "after".getBytes(StandardCharsets.UTF_8),
+                        Files.readAllBytes(fileSystem.getPath("/after.txt"))
+                );
+            }
+        } finally {
+            Files.deleteIfExists(secondVolume);
+            deleteTemporaryArchive(firstVolume);
+        }
+    }
+
+    /// Verifies that an encrypted continuation cannot silently switch to plaintext data.
+    @Test
+    public void rejectsPlainContinuationOfEncryptedSplitEntry() throws IOException {
+        byte[] content = "encrypted continuation state".getBytes(StandardCharsets.UTF_8);
+        TestRar5Keys keys = deriveRar5Keys(RAR5_PASSWORD, RAR5_FILE_SALT, RAR5_KDF_LOG);
+        byte[] ciphertext = encryptRar5Aes(content, keys.aesKey(), RAR5_FILE_IV);
+        int splitOffset = 5;
+        byte[] firstPart = Arrays.copyOfRange(ciphertext, 0, splitOffset);
+        byte[] secondPart = Arrays.copyOfRange(ciphertext, splitOffset, ciphertext.length);
+        byte[] archive = archive(
+                encryptedSplitFilePart(
+                        "secret.txt",
+                        0,
+                        crc32(firstPart),
+                        content.length,
+                        firstPart,
+                        fileEncryptionRecord(keys, false),
+                        false,
+                        true
+                ),
+                encryptedSplitFilePart(
+                        "secret.txt",
+                        0,
+                        crc32(content),
+                        content.length,
+                        secondPart,
+                        null,
+                        true,
+                        false
+                )
+        );
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                rar5PasswordEnvironment(RAR5_PASSWORD)
+        )) {
+            assertEquals(true, reader.next());
+            var input = reader.openInputStream();
+            IOException exception = assertThrows(IOException.class, input::readAllBytes);
+            assertEquals(true, exception.getMessage().contains("continuation encryption state differs"));
+            assertThrows(IOException.class, input::close);
+        }
+    }
+
+    /// Verifies that the combined encrypted stream must end on an AES block boundary.
+    @Test
+    public void rejectsTruncatedEncryptedSplitEntry() throws IOException {
+        byte[] content = "encrypted stream needs two blocks".getBytes(StandardCharsets.UTF_8);
+        TestRar5Keys keys = deriveRar5Keys(RAR5_PASSWORD, RAR5_FILE_SALT, RAR5_KDF_LOG);
+        byte[] ciphertext = encryptRar5Aes(content, keys.aesKey(), RAR5_FILE_IV);
+        int splitOffset = 7;
+        byte[] firstPart = Arrays.copyOfRange(ciphertext, 0, splitOffset);
+        byte[] secondPart = Arrays.copyOfRange(ciphertext, splitOffset, ciphertext.length - 1);
+        byte[] encryptionRecord = fileEncryptionRecord(keys, false);
+        byte[] archive = archive(
+                encryptedSplitFilePart(
+                        "secret.txt",
+                        0,
+                        crc32(firstPart),
+                        content.length,
+                        firstPart,
+                        encryptionRecord,
+                        false,
+                        true
+                ),
+                encryptedSplitFilePart(
+                        "secret.txt",
+                        0,
+                        crc32(content),
+                        content.length,
+                        secondPart,
+                        encryptionRecord,
+                        true,
+                        false
+                )
+        );
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                rar5PasswordEnvironment(RAR5_PASSWORD)
+        )) {
+            assertEquals(true, reader.next());
+            var input = reader.openInputStream();
+            IOException exception = assertThrows(IOException.class, input::readAllBytes);
+            assertEquals(true, exception.getMessage().contains("Unexpected end of encrypted RAR"));
+            assertThrows(IOException.class, input::close);
+        }
+    }
+
     /// Verifies that RAR4 and RAR5 end markers can direct top-level iteration to a following volume.
     @Test
     public void readsEntriesAfterNextVolumeEndMarker() throws IOException {
@@ -853,7 +1450,7 @@ public final class RarArkivoStreamingReaderTest {
         );
 
         assertEndMarkedVolumes(
-                archiveVolume(true, true, first),
+                concatenate(archiveVolume(true, true, first), new byte[15]),
                 archiveVolume(true, false, second)
         );
         assertEndMarkedVolumes(
@@ -1019,13 +1616,13 @@ public final class RarArkivoStreamingReaderTest {
     /// Verifies that compressed RAR entries are visible but not exposed as stored data.
     @Test
     public void rejectsUnsupportedCompressionMethodOnOpen() throws IOException {
-        byte[] archive = archive(compressedFile("compressed.bin", 1_700_000_000L, 0100644, new byte[]{1, 2, 3}, 1));
+        byte[] archive = archive(compressedFile("compressed.bin", 1_700_000_000L, 0100644, new byte[]{1, 2, 3}, 6));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
             assertEquals(true, reader.next());
             RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals("compressed.bin", attributes.path());
-            assertEquals(1, attributes.compressionMethod());
+            assertEquals(6, attributes.compressionMethod());
 
             IOException exception = assertThrows(IOException.class, reader::openInputStream);
             assertEquals(true, exception.getMessage().contains("Unsupported RAR compression method"));
@@ -1137,21 +1734,6 @@ public final class RarArkivoStreamingReaderTest {
         }
     }
 
-    /// Verifies that pre-AES RAR encryption versions remain explicitly unsupported.
-    @Test
-    public void rejectsLegacyRarEncryption() throws IOException {
-        byte[] content = "legacy encrypted data".getBytes(StandardCharsets.UTF_8);
-        byte[] archive = rar4LegacyEncryptedArchive(
-                storedFile("legacy.txt", 1_700_000_000L, 0100644, content, null)
-        );
-
-        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            assertEquals(true, reader.readAttributes(RarArkivoEntryAttributes.class).isEncrypted());
-            IOException exception = assertThrows(IOException.class, reader::openInputStream);
-            assertEquals(true, exception.getMessage().contains("Unsupported legacy RAR encryption version: 20"));
-        }
-    }
 
     /// Verifies independently salted RAR 3.x encrypted headers and file data through the indexed file system.
     @Test
@@ -1597,10 +2179,7 @@ public final class RarArkivoStreamingReaderTest {
     /// Verifies that RAR5 BLAKE2sp file hash extra records are exposed as entry metadata.
     @Test
     public void readsBlake2spHashExtraRecord() throws IOException {
-        byte[] hash = new byte[32];
-        for (int index = 0; index < hash.length; index++) {
-            hash[index] = (byte) index;
-        }
+        byte[] hash = HASH_CONTENT_BLAKE2SP.clone();
         byte[] archive = archive(storedFile(
                 "hash.txt",
                 1L,
@@ -1618,6 +2197,57 @@ public final class RarArkivoStreamingReaderTest {
             Objects.requireNonNull(firstHash, "firstHash")[0] = 99;
             assertArrayEquals(hash, attributes.blake2spHash());
             assertEquals(false, reader.next());
+        }
+    }
+
+    /// Rejects a stored body whose BLAKE2sp hash does not match while reading.
+    @Test
+    public void rejectsStoredBlake2spMismatchWhileReading() throws IOException {
+        byte[] wrongHash = HASH_CONTENT_BLAKE2SP.clone();
+        wrongHash[0] ^= 1;
+        byte[] archive = archive(storedFile(
+                "hash.txt",
+                1L,
+                0100644,
+                "hash".getBytes(StandardCharsets.UTF_8),
+                blake2spHash(wrongHash)
+        ));
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive)
+        )) {
+            assertEquals(true, reader.next());
+            IOException exception = assertThrows(IOException.class, () -> {
+                try (InputStream input = reader.openInputStream()) {
+                    input.readAllBytes();
+                }
+            });
+            assertEquals(true, exception.getMessage().contains("BLAKE2sp"));
+        }
+    }
+
+    /// Rejects a mismatched BLAKE2sp hash when an unread stored body is skipped.
+    @Test
+    public void rejectsStoredBlake2spMismatchWhileSkipping() throws IOException {
+        byte[] wrongHash = HASH_CONTENT_BLAKE2SP.clone();
+        wrongHash[0] ^= 1;
+        byte[] archive = archive(
+                storedFile(
+                        "hash.txt",
+                        1L,
+                        0100644,
+                        "hash".getBytes(StandardCharsets.UTF_8),
+                        blake2spHash(wrongHash)
+                ),
+                storedFile("after.txt", 2L, 0100644, new byte[0], null)
+        );
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive)
+        )) {
+            assertEquals(true, reader.next());
+            IOException exception = assertThrows(IOException.class, reader::next);
+            assertEquals(true, exception.getMessage().contains("BLAKE2sp"));
         }
     }
 
@@ -1745,6 +2375,19 @@ public final class RarArkivoStreamingReaderTest {
         assertEquals(2, source.closeCount());
     }
 
+
+    /// Creates the deterministic plaintext stored in the real RAR5 compressed-body fixture.
+    private static byte[] numberedRar5Content() {
+        byte[] content = new byte[512 * 4];
+        for (int value = 0; value < 512; value++) {
+            int offset = value * 4;
+            content[offset] = (byte) ('0' + value / 100);
+            content[offset + 1] = (byte) ('0' + value / 10 % 10);
+            content[offset + 2] = (byte) ('0' + value % 10);
+            content[offset + 3] = '\n';
+        }
+        return content;
+    }
     /// Creates one RAR5 archive.
     private static byte[] archive(Member... members) throws IOException {
         return archiveVolume(true, members);
@@ -1771,16 +2414,25 @@ public final class RarArkivoStreamingReaderTest {
         return output.toByteArray();
     }
 
-    /// Creates one RAR4 archive whose stored member advertises a pre-AES encryption version.
-    private static byte[] rar4LegacyEncryptedArchive(Member member) throws IOException {
+    /// Creates one RAR4 volume containing one AES-encrypted member and optional plain members.
+    private static byte[] rar4EncryptedArchiveVolume(
+            boolean includeEndHeader,
+            Rar4EncryptedFixture encrypted,
+            Member... plainMembers
+    ) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         output.write(RAR4_SIGNATURE);
         writeRar4Block(output, 0x73, 0, new byte[6], new byte[0]);
-        output.write(rar4MemberHeader(member, true, null, 20));
-        output.write(member.body());
-        writeRar4Block(output, 0x7b, 0, new byte[0], new byte[0]);
+        writeRar4Member(output, encrypted.member(), true, encrypted.salt());
+        for (Member member : plainMembers) {
+            writeRar4Member(output, member);
+        }
+        if (includeEndHeader) {
+            writeRar4Block(output, 0x7b, 0, new byte[0], new byte[0]);
+        }
         return output.toByteArray();
     }
+
 
     /// Creates one RAR4 archive with independently salted AES-encrypted headers and file data.
     private static byte[] rar4EncryptedHeaderArchive(Rar4EncryptedFixture encrypted) throws IOException {
@@ -2277,6 +2929,34 @@ public final class RarArkivoStreamingReaderTest {
         );
     }
 
+    /// Creates one encrypted physical file part with explicit compression and continuation metadata.
+    private static Member encryptedSplitFilePart(
+            String path,
+            int compressionMethod,
+            long crc32,
+            long unpackedSize,
+            byte[] body,
+            byte @Nullable [] extraArea,
+            boolean continuesFromPreviousVolume,
+            boolean continuesInNextVolume
+    ) {
+        return new Member(
+                path,
+                1_700_000_000L,
+                0100644,
+                false,
+                false,
+                compressionMethod,
+                crc32,
+                unpackedSize,
+                body,
+                extraArea,
+                false,
+                continuesFromPreviousVolume,
+                continuesInNextVolume
+        );
+    }
+
     /// Encodes one RAR5 file encryption extra record.
     private static byte[] fileEncryptionRecord(TestRar5Keys keys, boolean tweakedChecksum) throws IOException {
         return extraRecord(0x01, fields(writer -> {
@@ -2301,6 +2981,31 @@ public final class RarArkivoStreamingReaderTest {
             boolean continuesFromPreviousVolume,
             boolean continuesInNextVolume
     ) {
+        return splitStoredFilePart(
+                path,
+                modificationTime,
+                attributes,
+                unpackedSize,
+                crc32,
+                body,
+                null,
+                continuesFromPreviousVolume,
+                continuesInNextVolume
+        );
+    }
+
+    /// Creates a stored physical file part with an optional extra area.
+    private static Member splitStoredFilePart(
+            String path,
+            long modificationTime,
+            long attributes,
+            long unpackedSize,
+            long crc32,
+            byte[] body,
+            byte @Nullable [] extraArea,
+            boolean continuesFromPreviousVolume,
+            boolean continuesInNextVolume
+    ) {
         return new Member(
                 path,
                 modificationTime,
@@ -2311,7 +3016,60 @@ public final class RarArkivoStreamingReaderTest {
                 crc32,
                 unpackedSize,
                 body,
+                extraArea,
+                false,
+                continuesFromPreviousVolume,
+                continuesInNextVolume
+        );
+    }
+
+    /// Creates one physical part of a method-3 compressed file.
+    private static Member splitCompressedFilePart(
+            String path,
+            long modificationTime,
+            long attributes,
+            long unpackedSize,
+            long crc32,
+            byte[] body,
+            boolean continuesFromPreviousVolume,
+            boolean continuesInNextVolume
+    ) {
+        return splitCompressedFilePart(
+                path,
+                modificationTime,
+                attributes,
+                unpackedSize,
+                crc32,
+                body,
                 null,
+                continuesFromPreviousVolume,
+                continuesInNextVolume
+        );
+    }
+
+    /// Creates one method-3 physical file part with an optional extra area.
+    private static Member splitCompressedFilePart(
+            String path,
+            long modificationTime,
+            long attributes,
+            long unpackedSize,
+            long crc32,
+            byte[] body,
+            byte @Nullable [] extraArea,
+            boolean continuesFromPreviousVolume,
+            boolean continuesInNextVolume
+    ) {
+        return new Member(
+                path,
+                modificationTime,
+                attributes,
+                false,
+                false,
+                3,
+                crc32,
+                unpackedSize,
+                body,
+                extraArea,
                 false,
                 continuesFromPreviousVolume,
                 continuesInNextVolume
@@ -2512,10 +3270,10 @@ public final class RarArkivoStreamingReaderTest {
         return extraRecord(0x03, fields(writer -> {
             writer.writeVint(0x001f);
             writer.writeUInt32(modifiedSeconds);
-            writer.writeUInt32(modifiedNanos);
             writer.writeUInt32(createdSeconds);
-            writer.writeUInt32(createdNanos);
             writer.writeUInt32(accessedSeconds);
+            writer.writeUInt32(modifiedNanos);
+            writer.writeUInt32(createdNanos);
             writer.writeUInt32(accessedNanos);
         }));
     }
@@ -2759,6 +3517,17 @@ public final class RarArkivoStreamingReaderTest {
                 result ^= (long) Byte.toUnsignedInt(digest[index]) << ((index & 3) * Byte.SIZE);
             }
             return result & 0xffff_ffffL;
+        } catch (GeneralSecurityException exception) {
+            throw new IOException("RAR5 test HMAC-SHA256 is unavailable", exception);
+        }
+    }
+
+    /// Converts a raw BLAKE2sp digest into the RAR5 password-dependent hash representation.
+    private static byte[] keyedRar5Blake2sp(byte[] digest, byte[] hashKey) throws IOException {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(hashKey, "HmacSHA256"));
+            return mac.doFinal(digest);
         } catch (GeneralSecurityException exception) {
             throw new IOException("RAR5 test HMAC-SHA256 is unavailable", exception);
         }

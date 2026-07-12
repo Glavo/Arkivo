@@ -109,6 +109,18 @@ final class RarVolumeInputStream extends InputStream {
         return openNextVolume() && volumeIndex > 0L;
     }
 
+    /// Discards end-of-volume padding and opens the next continuation volume.
+    ///
+    /// @return whether a continuation volume was opened and its signature was consumed
+    boolean advanceAfterEndHeader() throws IOException {
+        ensureOpen();
+        if (currentChannel == null) {
+            return false;
+        }
+        closeCurrentVolume();
+        return openNextVolume();
+    }
+
     /// Opens the next available volume.
     private boolean openNextVolume() throws IOException {
         if (endOfVolumes) {
