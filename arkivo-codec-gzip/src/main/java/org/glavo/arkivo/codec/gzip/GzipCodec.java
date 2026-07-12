@@ -10,8 +10,11 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
-import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
+import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.gzip.internal.GzipChannelDecoder;
+import org.glavo.arkivo.codec.gzip.internal.GzipChannelEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
@@ -20,8 +23,7 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.List;
 import java.util.Set;
-import java.util.zip.GZIPInputStream;
-import java.util.zip.GZIPOutputStream;
+import java.util.zip.Deflater;
 
 /// Provides gzip compression and decompression channels.
 @NotNullByDefault
@@ -30,13 +32,19 @@ public final class GzipCodec implements CompressionCodec {
     public static final String NAME = "gzip";
 
     /// The supported gzip operations.
-    private static final CompressionCapabilities CAPABILITIES = CompressionCapabilities.of(Set.of(
-            CompressionFeature.COMPRESSION,
-            CompressionFeature.DECOMPRESSION,
-            CompressionFeature.ONE_SHOT_COMPRESSION,
-            CompressionFeature.ONE_SHOT_DECOMPRESSION,
-            CompressionFeature.CONCATENATED_FRAMES
-    ));
+    private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(
+            Set.of(
+                    CompressionFeature.COMPRESSION,
+                    CompressionFeature.DECOMPRESSION,
+                    CompressionFeature.ONE_SHOT_COMPRESSION,
+                    CompressionFeature.ONE_SHOT_DECOMPRESSION,
+                    CompressionFeature.FLUSH,
+                    CompressionFeature.DIRECT_BYTE_BUFFER,
+                    CompressionFeature.CONCATENATED_FRAMES
+            ),
+            Set.of(StandardCodecOptions.COMPRESSION_LEVEL),
+            Set.of()
+    );
 
     /// Creates a gzip codec.
     public GzipCodec() {
@@ -58,6 +66,24 @@ public final class GzipCodec implements CompressionCodec {
     @Override
     public CompressionCapabilities capabilities() {
         return CAPABILITIES;
+    }
+
+    /// Returns the minimum JDK gzip compression level.
+    @Override
+    public long minimumCompressionLevel() {
+        return Deflater.NO_COMPRESSION;
+    }
+
+    /// Returns the maximum JDK gzip compression level.
+    @Override
+    public long maximumCompressionLevel() {
+        return Deflater.BEST_COMPRESSION;
+    }
+
+    /// Returns the default JDK gzip compression level.
+    @Override
+    public long defaultCompressionLevel() {
+        return Deflater.DEFAULT_COMPRESSION;
     }
 
     /// Returns the number of leading bytes used to identify gzip streams.
@@ -83,7 +109,7 @@ public final class GzipCodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.compressionOptions(), "gzip compression");
-        return StreamCodecAdapters.openEncoder(target, ownership, GZIPOutputStream::new);
+        return new GzipChannelEncoder(target, ownership, compressionLevel(options));
     }
 
     /// Opens a configured gzip decoder over the source channel.
@@ -94,6 +120,17 @@ public final class GzipCodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "gzip decompression");
-        return StreamCodecAdapters.openDecoder(source, ownership, GZIPInputStream::new);
+        return new GzipChannelDecoder(source, ownership);
+    }
+
+    /// Resolves and validates the compression level for one encoder context.
+    private int compressionLevel(CodecOptions options) {
+        @Nullable Long requested = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
+        long level = requested != null ? requested : defaultCompressionLevel();
+        if (level != defaultCompressionLevel()
+                && (level < minimumCompressionLevel() || level > maximumCompressionLevel())) {
+            throw new IllegalArgumentException("Gzip compression level is out of range");
+        }
+        return Math.toIntExact(level);
     }
 }
