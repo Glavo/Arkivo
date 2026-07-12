@@ -10,19 +10,17 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
-import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
+import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.deflate.internal.DeflateChannelDecoder;
+import org.glavo.arkivo.codec.deflate.internal.DeflateChannelEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.Set;
 import java.util.zip.Deflater;
-import java.util.zip.DeflaterOutputStream;
-import java.util.zip.Inflater;
-import java.util.zip.InflaterInputStream;
 
 /// Provides raw deflate compression and decompression channels.
 @NotNullByDefault
@@ -31,12 +29,18 @@ public final class DeflateCodec implements CompressionCodec {
     public static final String NAME = "deflate";
 
     /// The supported raw deflate operations.
-    private static final CompressionCapabilities CAPABILITIES = CompressionCapabilities.of(Set.of(
-            CompressionFeature.COMPRESSION,
-            CompressionFeature.DECOMPRESSION,
-            CompressionFeature.ONE_SHOT_COMPRESSION,
-            CompressionFeature.ONE_SHOT_DECOMPRESSION
-    ));
+    private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(
+            Set.of(
+                    CompressionFeature.COMPRESSION,
+                    CompressionFeature.DECOMPRESSION,
+                    CompressionFeature.ONE_SHOT_COMPRESSION,
+                    CompressionFeature.ONE_SHOT_DECOMPRESSION,
+                    CompressionFeature.FLUSH,
+                    CompressionFeature.DIRECT_BYTE_BUFFER
+            ),
+            Set.of(StandardCodecOptions.COMPRESSION_LEVEL),
+            Set.of()
+    );
 
     /// Creates a raw deflate codec.
     public DeflateCodec() {
@@ -54,15 +58,33 @@ public final class DeflateCodec implements CompressionCodec {
         return CAPABILITIES;
     }
 
+    /// Returns the minimum JDK deflate compression level.
+    @Override
+    public long minimumCompressionLevel() {
+        return Deflater.NO_COMPRESSION;
+    }
+
+    /// Returns the maximum JDK deflate compression level.
+    @Override
+    public long maximumCompressionLevel() {
+        return Deflater.BEST_COMPRESSION;
+    }
+
+    /// Returns the default JDK deflate compression level.
+    @Override
+    public long defaultCompressionLevel() {
+        return Deflater.DEFAULT_COMPRESSION;
+    }
+
     /// Opens a configured raw deflate encoder over the target channel.
     @Override
     public CompressionEncoder openEncoder(
             WritableByteChannel target,
-            CodecOptions options,
-            ChannelOwnership ownership
+        CodecOptions options,
+        ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.compressionOptions(), "deflate compression");
-        return StreamCodecAdapters.openEncoder(target, ownership, EndingDeflaterOutputStream::new);
+        return new DeflateChannelEncoder(target, ownership, compressionLevel(options));
     }
 
     /// Opens a configured raw deflate decoder over the source channel.
@@ -70,77 +92,20 @@ public final class DeflateCodec implements CompressionCodec {
     public CompressionDecoder openDecoder(
             ReadableByteChannel source,
             CodecOptions options,
-            ChannelOwnership ownership
+        ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "deflate decompression");
-        return StreamCodecAdapters.openDecoder(source, ownership, EndingInflaterInputStream::new);
+        return new DeflateChannelDecoder(source, ownership);
     }
 
-    /// Finishes raw deflate output and releases the backing deflater.
-    @NotNullByDefault
-    private static final class EndingDeflaterOutputStream extends DeflaterOutputStream {
-        /// The deflater owned by this stream.
-        private final Deflater deflater;
-
-        /// Whether the deflater has been released.
-        private boolean released;
-
-        /// Creates a raw deflate output stream.
-        private EndingDeflaterOutputStream(OutputStream output) {
-            this(output, new Deflater(Deflater.DEFAULT_COMPRESSION, true));
+    /// Resolves and validates the compression level for one encoder context.
+    private int compressionLevel(CodecOptions options) {
+        @Nullable Long requested = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
+        long level = requested != null ? requested : defaultCompressionLevel();
+        if (level != defaultCompressionLevel()
+                && (level < minimumCompressionLevel() || level > maximumCompressionLevel())) {
+            throw new IllegalArgumentException("Raw deflate compression level is out of range");
         }
-
-        /// Creates a raw deflate output stream with the given deflater.
-        private EndingDeflaterOutputStream(OutputStream output, Deflater deflater) {
-            super(output, deflater);
-            this.deflater = deflater;
-        }
-
-        /// Closes the stream and releases the deflater.
-        @Override
-        public void close() throws IOException {
-            try {
-                super.close();
-            } finally {
-                if (!released) {
-                    released = true;
-                    deflater.end();
-                }
-            }
-        }
-    }
-
-    /// Inflates raw deflate input and releases the backing inflater.
-    @NotNullByDefault
-    private static final class EndingInflaterInputStream extends InflaterInputStream {
-        /// The inflater owned by this stream.
-        private final Inflater inflater;
-
-        /// Whether the inflater has been released.
-        private boolean released;
-
-        /// Creates a raw deflate input stream.
-        private EndingInflaterInputStream(InputStream input) {
-            this(input, new Inflater(true));
-        }
-
-        /// Creates a raw deflate input stream with the given inflater.
-        private EndingInflaterInputStream(InputStream input, Inflater inflater) {
-            super(input, inflater);
-            this.inflater = inflater;
-        }
-
-        /// Closes the stream and releases the inflater.
-        @Override
-        public void close() throws IOException {
-            try {
-                super.close();
-            } finally {
-                if (!released) {
-                    released = true;
-                    inflater.end();
-                }
-            }
-        }
+        return Math.toIntExact(level);
     }
 }

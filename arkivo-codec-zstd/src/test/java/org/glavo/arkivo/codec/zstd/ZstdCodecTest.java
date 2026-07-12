@@ -199,16 +199,17 @@ public final class ZstdCodecTest {
         ZstdCodec codec = new ZstdCodec();
         byte[] dictionaryBytes = "shared zstd dictionary".getBytes(StandardCharsets.UTF_8);
         CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes);
+        byte[] input = "shared zstd dictionary payload".getBytes(StandardCharsets.UTF_8);
         CodecOptions compressionOptions = CodecOptions.builder()
                 .set(StandardCodecOptions.COMPRESSION_LEVEL, -2L)
                 .set(StandardCodecOptions.DICTIONARY, dictionary)
                 .set(StandardCodecOptions.CHECKSUM, ChecksumMode.ENABLED)
                 .set(StandardCodecOptions.WORKER_COUNT, new WorkerCount(0))
+                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) input.length)
                 .build();
         CodecOptions decompressionOptions = CodecOptions.builder()
                 .set(StandardCodecOptions.DICTIONARY, dictionary)
                 .build();
-        byte[] input = "shared zstd dictionary payload".getBytes(StandardCharsets.UTF_8);
 
         ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
         try (ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(input));

@@ -10,16 +10,18 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
-import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
+import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.zlib.internal.ZlibChannelDecoder;
+import org.glavo.arkivo.codec.zlib.internal.ZlibChannelEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.Set;
-import java.util.zip.DeflaterOutputStream;
-import java.util.zip.InflaterInputStream;
+import java.util.zip.Deflater;
 
 /// Provides zlib compression and decompression channels.
 @NotNullByDefault
@@ -28,12 +30,18 @@ public final class ZlibCodec implements CompressionCodec {
     public static final String NAME = "zlib";
 
     /// The supported zlib operations.
-    private static final CompressionCapabilities CAPABILITIES = CompressionCapabilities.of(Set.of(
-            CompressionFeature.COMPRESSION,
-            CompressionFeature.DECOMPRESSION,
-            CompressionFeature.ONE_SHOT_COMPRESSION,
-            CompressionFeature.ONE_SHOT_DECOMPRESSION
-    ));
+    private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(
+            Set.of(
+                    CompressionFeature.COMPRESSION,
+                    CompressionFeature.DECOMPRESSION,
+                    CompressionFeature.ONE_SHOT_COMPRESSION,
+                    CompressionFeature.ONE_SHOT_DECOMPRESSION,
+                    CompressionFeature.FLUSH,
+                    CompressionFeature.DIRECT_BYTE_BUFFER
+            ),
+            Set.of(StandardCodecOptions.COMPRESSION_LEVEL),
+            Set.of()
+    );
 
     /// Creates a zlib codec.
     public ZlibCodec() {
@@ -49,6 +57,24 @@ public final class ZlibCodec implements CompressionCodec {
     @Override
     public CompressionCapabilities capabilities() {
         return CAPABILITIES;
+    }
+
+    /// Returns the minimum JDK zlib compression level.
+    @Override
+    public long minimumCompressionLevel() {
+        return Deflater.NO_COMPRESSION;
+    }
+
+    /// Returns the maximum JDK zlib compression level.
+    @Override
+    public long maximumCompressionLevel() {
+        return Deflater.BEST_COMPRESSION;
+    }
+
+    /// Returns the default JDK zlib compression level.
+    @Override
+    public long defaultCompressionLevel() {
+        return Deflater.DEFAULT_COMPRESSION;
     }
 
     /// Returns the number of leading bytes used to identify zlib streams.
@@ -77,10 +103,10 @@ public final class ZlibCodec implements CompressionCodec {
     public CompressionEncoder openEncoder(
             WritableByteChannel target,
             CodecOptions options,
-            ChannelOwnership ownership
+        ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.compressionOptions(), "zlib compression");
-        return StreamCodecAdapters.openEncoder(target, ownership, DeflaterOutputStream::new);
+        return new ZlibChannelEncoder(target, ownership, compressionLevel(options));
     }
 
     /// Opens a configured zlib decoder over the source channel.
@@ -88,9 +114,20 @@ public final class ZlibCodec implements CompressionCodec {
     public CompressionDecoder openDecoder(
             ReadableByteChannel source,
             CodecOptions options,
-            ChannelOwnership ownership
+        ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "zlib decompression");
-        return StreamCodecAdapters.openDecoder(source, ownership, InflaterInputStream::new);
+        return new ZlibChannelDecoder(source, ownership);
+    }
+
+    /// Resolves and validates the compression level for one encoder context.
+    private int compressionLevel(CodecOptions options) {
+        @Nullable Long requested = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
+        long level = requested != null ? requested : defaultCompressionLevel();
+        if (level != defaultCompressionLevel()
+                && (level < minimumCompressionLevel() || level > maximumCompressionLevel())) {
+            throw new IllegalArgumentException("Zlib compression level is out of range");
+        }
+        return Math.toIntExact(level);
     }
 }

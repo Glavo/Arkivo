@@ -3,9 +3,9 @@
 
 package org.glavo.arkivo.codec.zstd;
 
-import com.github.luben.zstd.ZstdInputStream;
-import com.github.luben.zstd.ZstdOutputStream;
 import com.github.luben.zstd.Zstd;
+import com.github.luben.zstd.ZstdCompressCtx;
+import com.github.luben.zstd.ZstdDecompressCtx;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.ChecksumMode;
 import org.glavo.arkivo.codec.CodecOptions;
@@ -17,7 +17,8 @@ import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.WorkerCount;
-import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
+import org.glavo.arkivo.codec.zstd.internal.ZstdChannelDecoder;
+import org.glavo.arkivo.codec.zstd.internal.ZstdChannelEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -54,7 +55,8 @@ public final class ZstdCodec implements CompressionCodec {
                     StandardCodecOptions.COMPRESSION_LEVEL,
                     StandardCodecOptions.DICTIONARY,
                     StandardCodecOptions.CHECKSUM,
-                    StandardCodecOptions.WORKER_COUNT
+                    StandardCodecOptions.WORKER_COUNT,
+                    StandardCodecOptions.PLEDGED_SOURCE_SIZE
             ),
             Set.of(StandardCodecOptions.DICTIONARY)
     );
@@ -176,11 +178,9 @@ public final class ZstdCodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.compressionOptions(), "Zstandard compression");
-        return StreamCodecAdapters.openEncoder(
-                target,
-                ownership,
-                output -> configureEncoder(new ZstdOutputStream(output), options)
-        );
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(ownership, "ownership");
+        return new ZstdChannelEncoder(target, ownership, createEncoderContext(options));
     }
 
     /// Opens a configured Zstandard decoder over the source channel.
@@ -191,61 +191,73 @@ public final class ZstdCodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "Zstandard decompression");
-        return StreamCodecAdapters.openDecoder(
-                source,
-                ownership,
-                input -> configureDecoder(new ZstdInputStream(input), options)
-        );
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(ownership, "ownership");
+        return new ZstdChannelDecoder(source, ownership, createDecoderContext(options));
     }
 
-    /// Applies configured-instance defaults and operation-specific encoder options.
-    private ZstdOutputStream configureEncoder(
-            ZstdOutputStream output,
-            CodecOptions options
-    ) throws IOException {
-        @Nullable Long requestedLevel = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
-        if (requestedLevel != null) {
-            if (requestedLevel < minimumCompressionLevel() || requestedLevel > maximumCompressionLevel()) {
-                throw new IllegalArgumentException("Zstandard compression level is out of range");
+    /// Creates and configures one native compression context.
+    private ZstdCompressCtx createEncoderContext(CodecOptions options) {
+        ZstdCompressCtx context = new ZstdCompressCtx();
+        try {
+            @Nullable Long requestedLevel = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
+            if (requestedLevel != null) {
+                if (requestedLevel < minimumCompressionLevel() || requestedLevel > maximumCompressionLevel()) {
+                    throw new IllegalArgumentException("Zstandard compression level is out of range");
+                }
+                context.setLevel(Math.toIntExact(requestedLevel));
+            } else if (compressionLevel != DEFAULT_COMPRESSION_LEVEL) {
+                context.setLevel(Math.toIntExact(compressionLevel));
             }
-            output.setLevel(Math.toIntExact(requestedLevel));
-        } else if (compressionLevel != DEFAULT_COMPRESSION_LEVEL) {
-            output.setLevel(Math.toIntExact(compressionLevel));
-        }
 
-        @Nullable CompressionDictionary requestedDictionary = options.get(StandardCodecOptions.DICTIONARY);
-        if (requestedDictionary != null) {
-            output.setDict(requestedDictionary.bytes());
-        } else if (dictionary != null) {
-            output.setDict(dictionary);
-        }
+            @Nullable CompressionDictionary requestedDictionary = options.get(StandardCodecOptions.DICTIONARY);
+            if (requestedDictionary != null) {
+                context.loadDict(requestedDictionary.bytes());
+            } else if (dictionary != null) {
+                context.loadDict(dictionary);
+            }
 
-        @Nullable ChecksumMode checksum = options.get(StandardCodecOptions.CHECKSUM);
-        if (checksum == ChecksumMode.ENABLED) {
-            output.setChecksum(true);
-        } else if (checksum == ChecksumMode.DISABLED) {
-            output.setChecksum(false);
-        }
+            @Nullable ChecksumMode checksum = options.get(StandardCodecOptions.CHECKSUM);
+            if (checksum == ChecksumMode.ENABLED) {
+                context.setChecksum(true);
+            } else if (checksum == ChecksumMode.DISABLED) {
+                context.setChecksum(false);
+            }
 
-        @Nullable WorkerCount workers = options.get(StandardCodecOptions.WORKER_COUNT);
-        if (workers != null) {
-            output.setWorkers(workers.value());
+            @Nullable WorkerCount workers = options.get(StandardCodecOptions.WORKER_COUNT);
+            if (workers != null) {
+                context.setWorkers(workers.value());
+            }
+
+            @Nullable Long pledgedSourceSize = options.get(StandardCodecOptions.PLEDGED_SOURCE_SIZE);
+            if (pledgedSourceSize != null) {
+                if (pledgedSourceSize < 0) {
+                    throw new IllegalArgumentException("Zstandard pledged source size must not be negative");
+                }
+                context.setPledgedSrcSize(pledgedSourceSize);
+            }
+            return context;
+        } catch (RuntimeException | Error exception) {
+            context.close();
+            throw exception;
         }
-        return output;
     }
 
-    /// Applies configured-instance defaults and operation-specific decoder options.
-    private ZstdInputStream configureDecoder(
-            ZstdInputStream input,
-            CodecOptions options
-    ) throws IOException {
-        @Nullable CompressionDictionary requestedDictionary = options.get(StandardCodecOptions.DICTIONARY);
-        if (requestedDictionary != null) {
-            input.setDict(requestedDictionary.bytes());
-        } else if (dictionary != null) {
-            input.setDict(dictionary);
+    /// Creates and configures one native decompression context.
+    private ZstdDecompressCtx createDecoderContext(CodecOptions options) {
+        ZstdDecompressCtx context = new ZstdDecompressCtx();
+        try {
+            @Nullable CompressionDictionary requestedDictionary = options.get(StandardCodecOptions.DICTIONARY);
+            if (requestedDictionary != null) {
+                context.loadDict(requestedDictionary.bytes());
+            } else if (dictionary != null) {
+                context.loadDict(dictionary);
+            }
+            return context;
+        } catch (RuntimeException | Error exception) {
+            context.close();
+            throw exception;
         }
-        return input;
     }
 
     /// Compresses all remaining source bytes into the target buffer.
