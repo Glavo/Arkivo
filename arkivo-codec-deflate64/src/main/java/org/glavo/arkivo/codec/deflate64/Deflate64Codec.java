@@ -11,7 +11,6 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.deflate64.internal.Deflate64InputStream;
-import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -30,7 +29,8 @@ public final class Deflate64Codec implements CompressionCodec {
     /// The supported Deflate64 operations.
     private static final CompressionCapabilities CAPABILITIES = CompressionCapabilities.of(Set.of(
             CompressionFeature.DECOMPRESSION,
-            CompressionFeature.ONE_SHOT_DECOMPRESSION
+            CompressionFeature.ONE_SHOT_DECOMPRESSION,
+            CompressionFeature.DIRECT_BYTE_BUFFER
     ));
 
     /// Creates a Deflate64 codec.
@@ -80,6 +80,6 @@ public final class Deflate64Codec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "Deflate64 decompression");
-        return StreamCodecAdapters.openDecoder(source, ownership, Deflate64InputStream::new);
+        return new Deflate64InputStream(source, ownership);
     }
 }
