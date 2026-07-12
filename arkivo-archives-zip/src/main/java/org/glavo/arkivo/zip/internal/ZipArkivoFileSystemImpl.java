@@ -3,8 +3,9 @@
 
 package org.glavo.arkivo.zip.internal;
 
-import org.apache.commons.compress.compressors.xz.XZCompressorInputStream;
-import org.apache.commons.compress.compressors.zstandard.ZstdCompressorInputStream;
+import com.github.luben.zstd.ZstdInputStream;
+import org.glavo.arkivo.internal.LzmaInputStream;
+import org.glavo.arkivo.internal.XzInputStream;
 import org.glavo.arkivo.internal.BZip2InputStream;
 import org.glavo.arkivo.ArkivoPasswordProvider;
 import org.glavo.arkivo.ArkivoVolumeSource;
@@ -21,7 +22,6 @@ import org.glavo.arkivo.zip.ZipMethod;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
-import org.tukaani.xz.LZMAInputStream;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -1267,7 +1267,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Opens a Zstandard decoding stream and closes the compressed stream if setup fails.
     private static InputStream openZstandardInputStream(InputStream input) throws IOException {
         try {
-            return new ZstdCompressorInputStream(input);
+            return new ZstdInputStream(input);
         } catch (IOException | RuntimeException | Error exception) {
             try {
                 input.close();
@@ -1290,7 +1290,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             if (propertySize != LZMA_PROPERTY_SIZE) {
                 throw new IOException("Unsupported ZIP LZMA property size: " + propertySize);
             }
-            byte properties = (byte) readRequiredByte(input);
+            int properties = readRequiredByte(input);
             int dictionarySize = readInt(input);
             if (dictionarySize < 0) {
                 throw new IOException("Unsupported ZIP LZMA dictionary size: "
@@ -1301,7 +1301,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 throw new IOException("ZIP LZMA entry without EOS marker requires an uncompressed size");
             }
             long expectedUncompressedSize = usesEndMarker ? -1L : uncompressedSize;
-            return new LZMAInputStream(input, expectedUncompressedSize, properties, dictionarySize);
+            return new LzmaInputStream(input, expectedUncompressedSize, properties, dictionarySize);
         } catch (IOException | RuntimeException | Error exception) {
             try {
                 input.close();
@@ -1315,7 +1315,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Opens an XZ decoding stream and closes the compressed stream if setup fails.
     private static InputStream openXzInputStream(InputStream input) throws IOException {
         try {
-            return new XZCompressorInputStream(input);
+            return new XzInputStream(input, false);
         } catch (IOException | RuntimeException | Error exception) {
             try {
                 input.close();

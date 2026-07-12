@@ -2,7 +2,7 @@ import java.util.zip.ZipFile
 
 dependencies {
     api(project(":arkivo-base"))
-    implementation("org.tukaani:xz:1.12")
+    testImplementation("org.tukaani:xz:1.12")
     testImplementation("org.apache.commons:commons-compress:1.28.0")
 }
 

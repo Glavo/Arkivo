@@ -3,21 +3,17 @@
 
 package org.glavo.arkivo.sevenzip.internal;
 
-import org.glavo.arkivo.internal.BZip2InputStream;
 import org.glavo.arkivo.ArkivoPasswordProvider;
+import org.glavo.arkivo.internal.BZip2InputStream;
+import org.glavo.arkivo.internal.BcjFilters;
+import org.glavo.arkivo.internal.ByteFilterInputStream;
+import org.glavo.arkivo.internal.DeltaFilter;
 import org.glavo.arkivo.internal.Deflate64InputStream;
+import org.glavo.arkivo.internal.Lzma2InputStream;
+import org.glavo.arkivo.internal.LzmaInputStream;
+import org.glavo.arkivo.internal.LzmaProperties;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
-import org.tukaani.xz.ArrayCache;
-import org.tukaani.xz.ARMOptions;
-import org.tukaani.xz.ARMThumbOptions;
-import org.tukaani.xz.DeltaOptions;
-import org.tukaani.xz.IA64Options;
-import org.tukaani.xz.LZMAInputStream;
-import org.tukaani.xz.LZMA2InputStream;
-import org.tukaani.xz.PowerPCOptions;
-import org.tukaani.xz.SPARCOptions;
-import org.tukaani.xz.X86Options;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -448,7 +444,7 @@ final class SevenZipLZMADecoder {
             throw new IOException("7z LZMA coder properties must contain five bytes");
         }
         int dictionarySize = ByteBuffer.wrap(properties, 1, 4).order(ByteOrder.LITTLE_ENDIAN).getInt();
-        return new LZMAInputStream(input, uncompressedSize, properties[0], dictionarySize);
+        return new LzmaInputStream(input, uncompressedSize, Byte.toUnsignedInt(properties[0]), dictionarySize);
     }
 
     /// Opens a raw LZMA2 decoder for 7z coder properties.
@@ -463,7 +459,10 @@ final class SevenZipLZMADecoder {
             throw new IOException("Unsupported 7z LZMA2 dictionary property");
         }
         int dictionarySize = (2 | (property & 1)) << ((property >>> 1) + 11);
-        return new LZMA2InputStream(input, dictionarySize);
+        if (dictionarySize > LzmaProperties.MAXIMUM_DICTIONARY_SIZE) {
+            throw new IOException("Unsupported 7z LZMA2 dictionary size: " + dictionarySize);
+        }
+        return new Lzma2InputStream(input, dictionarySize);
     }
 
     /// Opens a raw Deflate decoder for 7z coder properties.
@@ -504,7 +503,7 @@ final class SevenZipLZMADecoder {
             throw new IOException("7z Delta coder properties must contain one byte");
         }
         int distance = Byte.toUnsignedInt(properties[0]) + 1;
-        return new DeltaOptions(distance).getInputStream(input, ArrayCache.getDummyCache());
+        return new ByteFilterInputStream(input, new DeltaFilter(false, distance));
     }
 
     /// Opens a raw BCJ filter decoder for 7z coder properties.
@@ -535,49 +534,43 @@ final class SevenZipLZMADecoder {
     /// Opens a raw x86 BCJ filter decoder for 7z coder properties.
     static InputStream openX86Filter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        X86Options options = new X86Options();
-        options.setStartOffset(bcjStartOffset(properties, "7z x86 BCJ coder"));
-        return options.getInputStream(input, ArrayCache.getDummyCache());
+        int startOffset = bcjStartOffset(properties, "7z x86 BCJ coder");
+        return new ByteFilterInputStream(input, BcjFilters.x86(false, startOffset));
     }
 
     /// Opens a raw PowerPC BCJ filter decoder for 7z coder properties.
     static InputStream openPowerPCFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        PowerPCOptions options = new PowerPCOptions();
-        options.setStartOffset(bcjStartOffset(properties, "7z PowerPC BCJ coder"));
-        return options.getInputStream(input, ArrayCache.getDummyCache());
+        int startOffset = bcjStartOffset(properties, "7z PowerPC BCJ coder");
+        return new ByteFilterInputStream(input, BcjFilters.powerPc(false, startOffset));
     }
 
     /// Opens a raw IA-64 BCJ filter decoder for 7z coder properties.
     static InputStream openIA64Filter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        IA64Options options = new IA64Options();
-        options.setStartOffset(bcjStartOffset(properties, "7z IA-64 BCJ coder"));
-        return options.getInputStream(input, ArrayCache.getDummyCache());
+        int startOffset = bcjStartOffset(properties, "7z IA-64 BCJ coder");
+        return new ByteFilterInputStream(input, BcjFilters.ia64(false, startOffset));
     }
 
     /// Opens a raw ARM BCJ filter decoder for 7z coder properties.
     static InputStream openARMFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        ARMOptions options = new ARMOptions();
-        options.setStartOffset(bcjStartOffset(properties, "7z ARM BCJ coder"));
-        return options.getInputStream(input, ArrayCache.getDummyCache());
+        int startOffset = bcjStartOffset(properties, "7z ARM BCJ coder");
+        return new ByteFilterInputStream(input, BcjFilters.arm(false, startOffset));
     }
 
     /// Opens a raw ARM-Thumb BCJ filter decoder for 7z coder properties.
     static InputStream openARMThumbFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        ARMThumbOptions options = new ARMThumbOptions();
-        options.setStartOffset(bcjStartOffset(properties, "7z ARM-Thumb BCJ coder"));
-        return options.getInputStream(input, ArrayCache.getDummyCache());
+        int startOffset = bcjStartOffset(properties, "7z ARM-Thumb BCJ coder");
+        return new ByteFilterInputStream(input, BcjFilters.armThumb(false, startOffset));
     }
 
     /// Opens a raw SPARC BCJ filter decoder for 7z coder properties.
     static InputStream openSPARCFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        SPARCOptions options = new SPARCOptions();
-        options.setStartOffset(bcjStartOffset(properties, "7z SPARC BCJ coder"));
-        return options.getInputStream(input, ArrayCache.getDummyCache());
+        int startOffset = bcjStartOffset(properties, "7z SPARC BCJ coder");
+        return new ByteFilterInputStream(input, BcjFilters.sparc(false, startOffset));
     }
 
     /// Reads BCJ filter properties as an optional little-endian start offset.

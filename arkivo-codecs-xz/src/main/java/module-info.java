@@ -4,7 +4,6 @@
 /// Provides XZ compression support for Arkivo.
 module org.glavo.arkivo.codecs.xz {
     requires org.glavo.arkivo.base;
-    requires org.tukaani.xz;
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.compress.xz;

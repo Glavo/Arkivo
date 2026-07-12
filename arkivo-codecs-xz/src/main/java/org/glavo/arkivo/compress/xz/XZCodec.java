@@ -4,11 +4,10 @@
 package org.glavo.arkivo.compress.xz;
 
 import org.glavo.arkivo.compress.CompressionCodec;
+import org.glavo.arkivo.internal.XzInputStream;
+import org.glavo.arkivo.internal.XzOutputStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
-import org.tukaani.xz.LZMA2Options;
-import org.tukaani.xz.XZInputStream;
-import org.tukaani.xz.XZOutputStream;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -74,12 +73,12 @@ public final class XZCodec implements CompressionCodec {
     /// Opens an XZ compressor that writes compressed bytes to the target channel.
     @Override
     public WritableByteChannel compressTo(WritableByteChannel target) throws IOException {
-        return Channels.newChannel(new XZOutputStream(Channels.newOutputStream(target), new LZMA2Options()));
+        return Channels.newChannel(new XzOutputStream(Channels.newOutputStream(target)));
     }
 
     /// Opens an XZ decompressor that reads compressed bytes from the source channel.
     @Override
     public ReadableByteChannel decompressFrom(ReadableByteChannel source) throws IOException {
-        return Channels.newChannel(new XZInputStream(Channels.newInputStream(source)));
+        return Channels.newChannel(new XzInputStream(Channels.newInputStream(source)));
     }
 }

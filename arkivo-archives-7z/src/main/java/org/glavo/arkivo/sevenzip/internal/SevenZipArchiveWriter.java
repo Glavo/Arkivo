@@ -4,25 +4,19 @@
 package org.glavo.arkivo.sevenzip.internal;
 
 import org.glavo.arkivo.internal.BZip2OutputStream;
+import org.glavo.arkivo.internal.BcjFilters;
+import org.glavo.arkivo.internal.ByteFilterOutputStream;
+import org.glavo.arkivo.internal.ByteFilterTransform;
+import org.glavo.arkivo.internal.DeltaFilter;
+import org.glavo.arkivo.internal.Lzma2OutputStream;
+import org.glavo.arkivo.internal.LzmaOutputStream;
+import org.glavo.arkivo.internal.LzmaProperties;
 import org.glavo.arkivo.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.sevenzip.SevenZipFilter;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
-import org.tukaani.xz.ARMOptions;
-import org.tukaani.xz.ARMThumbOptions;
-import org.tukaani.xz.ArrayCache;
-import org.tukaani.xz.DeltaOptions;
-import org.tukaani.xz.FilterOptions;
-import org.tukaani.xz.FinishableOutputStream;
-import org.tukaani.xz.FinishableWrapperOutputStream;
-import org.tukaani.xz.IA64Options;
-import org.tukaani.xz.LZMA2Options;
-import org.tukaani.xz.LZMAOutputStream;
-import org.tukaani.xz.PowerPCOptions;
-import org.tukaani.xz.SPARCOptions;
-import org.tukaani.xz.X86Options;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
@@ -327,10 +321,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         @Nullable FilterDescriptor filter = null;
         if (entry.filter() != null) {
             filter = filterDescriptor(entry.filter());
-            output = filter.options().getOutputStream(
-                    new FinishableWrapperOutputStream(output),
-                    ArrayCache.getDummyCache()
-            );
+            output = new ByteFilterOutputStream(output, filter.transform());
         }
         return new EntryEncoder(
                 output,
@@ -367,40 +358,24 @@ final class SevenZipArchiveWriter implements AutoCloseable {
 
     /// Opens a raw LZMA encoder with explicit 7z coder properties.
     private static CompressionOutput openLzma(int dictionarySize, OutputStream output) throws IOException {
-        LZMA2Options options = lzmaOptions(dictionarySize);
+        LzmaProperties lzmaProperties = LzmaProperties.defaults(dictionarySize);
         byte[] properties = new byte[5];
-        properties[0] = (byte) ((options.getPb() * 5 + options.getLp()) * 9 + options.getLc());
+        properties[0] = (byte) lzmaProperties.propertyByte();
         ByteBuffer.wrap(properties, 1, Integer.BYTES)
                 .order(ByteOrder.LITTLE_ENDIAN)
-                .putInt(options.getDictSize());
+                .putInt(dictionarySize);
         return new CompressionOutput(
-                new LZMAOutputStream(output, options, false),
+                new LzmaOutputStream(output, lzmaProperties, false),
                 new MethodDescriptor(LZMA_METHOD_ID, properties)
         );
     }
 
     /// Opens a raw LZMA2 encoder with its compact dictionary property.
     private static CompressionOutput openLzma2(int dictionarySize, OutputStream output) throws IOException {
-        LZMA2Options options = lzmaOptions(dictionarySize);
-        FinishableOutputStream encoder = options.getOutputStream(
-                new FinishableWrapperOutputStream(output),
-                ArrayCache.getDummyCache()
-        );
         return new CompressionOutput(
-                encoder,
-                new MethodDescriptor(LZMA2_METHOD_ID, new byte[]{lzma2Property(options.getDictSize())})
+                new Lzma2OutputStream(output, dictionarySize),
+                new MethodDescriptor(LZMA2_METHOD_ID, new byte[]{lzma2Property(dictionarySize)})
         );
-    }
-
-    /// Creates LZMA options with the requested dictionary size.
-    private static LZMA2Options lzmaOptions(int dictionarySize) throws IOException {
-        LZMA2Options options = new LZMA2Options();
-        try {
-            options.setDictSize(dictionarySize);
-            return options;
-        } catch (org.tukaani.xz.UnsupportedOptionsException exception) {
-            throw new IOException("Unsupported 7z LZMA dictionary size: " + dictionarySize, exception);
-        }
     }
 
     /// Returns the smallest LZMA2 dictionary property that covers the configured size.
@@ -416,42 +391,38 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         throw new IOException("Unsupported 7z LZMA2 dictionary size: " + dictionarySize);
     }
 
-    /// Returns the encoder options and method metadata for one preprocessing filter.
-    private static FilterDescriptor filterDescriptor(SevenZipFilter filter) throws IOException {
-        try {
-            return switch (filter.method()) {
-                case DELTA -> new FilterDescriptor(
-                        new DeltaOptions(filter.parameter()),
-                        new MethodDescriptor(DELTA_METHOD_ID, new byte[]{(byte) (filter.parameter() - 1)})
-                );
-                case BCJ_X86 -> new FilterDescriptor(
-                        new X86Options(),
-                        new MethodDescriptor(BCJ_X86_METHOD_ID, new byte[0])
-                );
-                case BCJ_PPC -> new FilterDescriptor(
-                        new PowerPCOptions(),
-                        new MethodDescriptor(BCJ_PPC_METHOD_ID, new byte[0])
-                );
-                case BCJ_IA64 -> new FilterDescriptor(
-                        new IA64Options(),
-                        new MethodDescriptor(BCJ_IA64_METHOD_ID, new byte[0])
-                );
-                case BCJ_ARM -> new FilterDescriptor(
-                        new ARMOptions(),
-                        new MethodDescriptor(BCJ_ARM_METHOD_ID, new byte[0])
-                );
-                case BCJ_ARM_THUMB -> new FilterDescriptor(
-                        new ARMThumbOptions(),
-                        new MethodDescriptor(BCJ_ARM_THUMB_METHOD_ID, new byte[0])
-                );
-                case BCJ_SPARC -> new FilterDescriptor(
-                        new SPARCOptions(),
-                        new MethodDescriptor(BCJ_SPARC_METHOD_ID, new byte[0])
-                );
-            };
-        } catch (org.tukaani.xz.UnsupportedOptionsException exception) {
-            throw new IOException("Unsupported 7z filter configuration: " + filter, exception);
-        }
+    /// Returns the native encoder transform and method metadata for one preprocessing filter.
+    private static FilterDescriptor filterDescriptor(SevenZipFilter filter) {
+        return switch (filter.method()) {
+            case DELTA -> new FilterDescriptor(
+                    new DeltaFilter(true, filter.parameter()),
+                    new MethodDescriptor(DELTA_METHOD_ID, new byte[]{(byte) (filter.parameter() - 1)})
+            );
+            case BCJ_X86 -> new FilterDescriptor(
+                    BcjFilters.x86(true, 0),
+                    new MethodDescriptor(BCJ_X86_METHOD_ID, new byte[0])
+            );
+            case BCJ_PPC -> new FilterDescriptor(
+                    BcjFilters.powerPc(true, 0),
+                    new MethodDescriptor(BCJ_PPC_METHOD_ID, new byte[0])
+            );
+            case BCJ_IA64 -> new FilterDescriptor(
+                    BcjFilters.ia64(true, 0),
+                    new MethodDescriptor(BCJ_IA64_METHOD_ID, new byte[0])
+            );
+            case BCJ_ARM -> new FilterDescriptor(
+                    BcjFilters.arm(true, 0),
+                    new MethodDescriptor(BCJ_ARM_METHOD_ID, new byte[0])
+            );
+            case BCJ_ARM_THUMB -> new FilterDescriptor(
+                    BcjFilters.armThumb(true, 0),
+                    new MethodDescriptor(BCJ_ARM_THUMB_METHOD_ID, new byte[0])
+            );
+            case BCJ_SPARC -> new FilterDescriptor(
+                    BcjFilters.sparc(true, 0),
+                    new MethodDescriptor(BCJ_SPARC_METHOD_ID, new byte[0])
+            );
+        };
     }
 
     /// Writes the next header and then replaces the reserved signature header.
@@ -963,15 +934,15 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         }
     }
 
-    /// Stores one XZ filter encoder and its 7z method descriptor.
+    /// Stores one native filter transform and its 7z method descriptor.
     ///
-    /// @param options    the XZ filter options
+    /// @param transform  the stateful native filter transform
     /// @param descriptor the 7z filter method descriptor
     @NotNullByDefault
-    private record FilterDescriptor(FilterOptions options, MethodDescriptor descriptor) {
+    private record FilterDescriptor(ByteFilterTransform transform, MethodDescriptor descriptor) {
         /// Validates one filter descriptor.
         private FilterDescriptor {
-            Objects.requireNonNull(options, "options");
+            Objects.requireNonNull(transform, "transform");
             Objects.requireNonNull(descriptor, "descriptor");
         }
     }

@@ -3,8 +3,10 @@
 
 package org.glavo.arkivo.zip.internal;
 
-import org.apache.commons.compress.compressors.xz.XZCompressorOutputStream;
-import org.apache.commons.compress.compressors.zstandard.ZstdCompressorOutputStream;
+import com.github.luben.zstd.ZstdOutputStream;
+import org.glavo.arkivo.internal.LzmaOutputStream;
+import org.glavo.arkivo.internal.LzmaProperties;
+import org.glavo.arkivo.internal.XzOutputStream;
 import org.glavo.arkivo.ArkivoCommitOutput;
 import org.glavo.arkivo.ArkivoCommitTarget;
 import org.glavo.arkivo.ArkivoEditStorage;
@@ -20,8 +22,6 @@ import org.glavo.arkivo.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.zip.ZipArkivoFileSystemProvider;
 import org.glavo.arkivo.zip.ZipEncryption;
 import org.glavo.arkivo.zip.ZipMethod;
-import org.tukaani.xz.LZMA2Options;
-import org.tukaani.xz.LZMAOutputStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -128,6 +128,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// The LZMA SDK minor version stored in ZIP LZMA property headers.
     private static final int LZMA_SDK_MINOR_VERSION = 20;
+
+    /// The dictionary size written for ZIP LZMA entries.
+    private static final int LZMA_DICTIONARY_SIZE = 8 * 1024 * 1024;
 
     /// The fixed payload size of the ZIP64 end of central directory record.
     private static final long ZIP64_END_OF_CENTRAL_DIRECTORY_PAYLOAD_SIZE = 44L;
@@ -2383,13 +2386,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 this.entryOutput = new BZip2OutputStream(dataOutput);
             } else if (isZstandardMethod(metadata.method)) {
                 this.deflater = null;
-                this.entryOutput = new ZstdCompressorOutputStream(new NonClosingOutputStream(dataOutput));
+                this.entryOutput = new ZstdOutputStream(new NonClosingOutputStream(dataOutput));
             } else if (metadata.method == LZMA_METHOD) {
                 this.deflater = null;
                 this.entryOutput = new ZipLzmaOutputStream(dataOutput);
             } else if (metadata.method == XZ_METHOD) {
                 this.deflater = null;
-                this.entryOutput = new XZCompressorOutputStream(new NonClosingOutputStream(dataOutput));
+                this.entryOutput = new XzOutputStream(new NonClosingOutputStream(dataOutput));
             } else {
                 this.deflater = null;
                 this.entryOutput = dataOutput;
@@ -2439,11 +2442,11 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                         deflatedOutput.finish();
                     } else if (entryOutput instanceof BZip2OutputStream bzip2Output) {
                         bzip2Output.finish();
-                    } else if (entryOutput instanceof ZstdCompressorOutputStream zstandardOutput) {
+                    } else if (entryOutput instanceof ZstdOutputStream zstandardOutput) {
                         zstandardOutput.close();
                     } else if (entryOutput instanceof ZipLzmaOutputStream lzmaOutput) {
                         lzmaOutput.finish();
-                    } else if (entryOutput instanceof XZCompressorOutputStream xzOutput) {
+                    } else if (entryOutput instanceof XzOutputStream xzOutput) {
                         xzOutput.finish();
                     }
                     ZipAesCrypto.EncryptingOutputStream entryAesOutput = aesOutput;
@@ -3227,17 +3230,17 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// Writes a ZIP LZMA segment backed by a raw LZMA encoder.
     private static final class ZipLzmaOutputStream extends OutputStream {
         /// The raw LZMA output stream.
-        private final LZMAOutputStream output;
+        private final LzmaOutputStream output;
 
         /// Creates a ZIP LZMA output stream and writes the ZIP LZMA property header.
         private ZipLzmaOutputStream(OutputStream output) throws IOException {
-            LZMA2Options options = new LZMA2Options();
-            LZMAOutputStream lzmaOutput = new LZMAOutputStream(
+            LzmaProperties properties = LzmaProperties.defaults(LZMA_DICTIONARY_SIZE);
+            LzmaOutputStream lzmaOutput = new LzmaOutputStream(
                     new NonClosingOutputStream(output),
-                    options,
+                    properties,
                     true
             );
-            writeLzmaPropertyHeader(output, lzmaOutput.getProps(), options.getDictSize());
+            writeLzmaPropertyHeader(output, properties.propertyByte(), properties.dictionarySize());
             this.output = lzmaOutput;
         }
 
@@ -3261,7 +3264,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
         /// Finishes the raw LZMA stream.
         private void finish() throws IOException {
-            output.finish();
+            output.close();
         }
 
         /// Writes the ZIP LZMA property header.

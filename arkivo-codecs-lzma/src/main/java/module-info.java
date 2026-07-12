@@ -4,7 +4,6 @@
 /// Provides LZMA compression support for Arkivo.
 module org.glavo.arkivo.codecs.lzma {
     requires org.glavo.arkivo.base;
-    requires org.tukaani.xz;
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.compress.lzma;

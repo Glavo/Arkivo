@@ -665,6 +665,59 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that XZ descriptor CRC failures do not consume the following entry.
+    @Test
+    public void streamingReaderCloseAfterXzDataDescriptorCrcMismatchConsumesDescriptor()
+            throws IOException {
+        Path archivePath = createTemporaryArchivePath("xz-descriptor-crc-");
+        byte[] xzContent = "xz descriptor crc mismatch".getBytes(StandardCharsets.UTF_8);
+        byte[] afterContent = "after xz descriptor mismatch".getBytes(StandardCharsets.UTF_8);
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+                writer.beginFile("xz-descriptor-crc.txt");
+                ZipArkivoEntryAttributeView xzView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(xzView);
+                xzView.setMethod(ZipMethod.xz());
+                try (var output = writer.openOutputStream()) {
+                    output.write(xzContent);
+                }
+
+                writer.beginFile("after.txt");
+                ZipArkivoEntryAttributeView afterView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(afterView);
+                afterView.setMethod(ZipMethod.stored());
+                try (var output = writer.openOutputStream()) {
+                    output.write(afterContent);
+                }
+            }
+
+            byte[] archive = tamperFirstDataDescriptorCrc(Files.readAllBytes(archivePath));
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals("xz-descriptor-crc.txt", firstAttributes.path());
+                assertEquals(ZipMethod.xz(), firstAttributes.method());
+                var firstInput = reader.openInputStream();
+
+                IOException exception = assertThrows(IOException.class, firstInput::readAllBytes);
+                assertEquals(true, exception.getMessage().contains("data descriptor does not match"));
+                firstInput.close();
+
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals("after.txt", secondAttributes.path());
+                assertEquals(ZipMethod.stored(), secondAttributes.method());
+                try (var secondInput = reader.openInputStream()) {
+                    assertArrayEquals(afterContent, secondInput.readAllBytes());
+                }
+                assertEquals(false, reader.next());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that the streaming ZIP reader can read writer-produced LZMA entries with data descriptors.
     @Test
     public void streamingReaderLzmaDataDescriptorFromWriter() throws IOException {
