@@ -471,14 +471,16 @@ time bounds. The suite covers archive detection, random-access file systems, for
 all installed bidirectional codec decoders. Corrupt input must produce checked I/O failures rather than leaking parser
 indexing, argument-validation, or native-library runtime exceptions.
 
-Opt-in real-world tests resolve immutable upstream source releases through a project-local content-addressed cache
-outside `build`, verify source size and SHA-256 before use, and extract only reviewed paths into disposable build
-outputs. The ordinary test and clean lifecycles do not access the network or delete the persistent cache. Zstandard
+Opt-in real-world tests resolve immutable upstream source releases and individual fixtures through a project-local
+content-addressed cache outside `build`, verify size and SHA-256 before use, and stage only reviewed data in disposable
+build outputs. The ordinary test and clean lifecycles do not access the network or delete the persistent cache. Zstandard
 pins the official 1.5.7 golden compression, decompression, malformed-frame, dictionary, and dictionary-input vectors;
 XZ pins the XZ Utils 5.8.3 valid, malformed, and unsupported XZ and LZMA_Alone decoder vectors; and BZip2 pins the
 official 1.0.8 reference samples for exact decoding, block-size boundary encoding, and concatenated streams. Valid
 decompression outputs are checked against upstream reference bytes or sizes and SHA-256 values produced by the
-matching official CLI.
+matching official CLI. Raw Deflate, zlib, gzip, and Deflate64 additionally use individually pinned Apache Commons
+Compress 1.28.0 fixtures, including gzip 1.13 concatenated members and COMPRESS-380 Deflate64 regressions, without
+storing the binary fixtures in the repository.
 
 Some formats may not support efficient random write operations. These formats should expose streaming or copy-on-write APIs instead of pretending to support in-place mutation.
 

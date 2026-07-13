@@ -141,10 +141,10 @@ example `-PbenchmarkArgs=CodecThroughputBenchmark`.
 Set `ARKIVO_7Z_EXECUTABLE` to an official 7-Zip CLI path to enable the optional generated-BCJ2 interoperability test.
 No external executable or binary archive fixture is stored in the repository.
 
-Real-world corpus tests download pinned upstream source releases into the project-local
-`.arkivo-cache/test-data/downloads/sha256` content-addressed cache, verify declared sizes and SHA-256 values, and extract
-only reviewed test directories into `build/test-data`. The normal `test`, `check`, and `clean` lifecycles neither
-download nor delete the persistent cache. Run the opt-in suite and inspect or explicitly remove its cache with:
+Real-world corpus tests download pinned upstream source releases and individual fixtures into the project-local
+`.arkivo-cache/test-data/downloads/sha256` content-addressed cache, verify declared sizes and SHA-256 values, and stage
+only reviewed test data under `build/test-data`. The normal `test`, `check`, and `clean` lifecycles neither download nor
+delete the persistent cache. Run the opt-in suite and inspect or explicitly remove its cache with:
 
 ~~~shell
 ./gradlew -g .gradle-user-home realWorldTest
@@ -159,7 +159,9 @@ frame, and dictionary vectors. The XZ suite pins XZ Utils 5.8.3 and exercises ev
 unsupported `.xz` vector plus every valid and malformed LZMA_Alone vector; successful outputs are checked against
 sizes and SHA-256 values produced by the matching official CLI. The BZip2 suite pins the official 1.0.8 reference
 samples and verifies exact decoding, minimum and maximum block-size encoding, and concatenated streams. No downloaded
-test data is committed.
+test data is committed. The Deflate-family suite pins individual Apache Commons Compress 1.28.0 fixtures and verifies
+raw Deflate, zlib, gzip 1.13 concatenated members, and Deflate64 ZIP regression streams against exact upstream bytes or
+an independent decoder.
 
 The publication verifier builds every binary, sources, and Javadoc JAR, publishes all modules to build/maven-staging, and validates their POM metadata and dependency scopes:
 
