@@ -3,6 +3,10 @@
 
 package org.glavo.arkivo.archive.rar.internal;
 
+import org.glavo.arkivo.archive.internal.NamedGroupPrincipal;
+import org.glavo.arkivo.archive.internal.NamedUserPrincipal;
+import org.glavo.arkivo.archive.internal.PosixModes;
+import org.glavo.arkivo.archive.internal.PreservingUserPrincipalLookupService;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -12,9 +16,6 @@ import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
-import java.nio.file.attribute.UserPrincipalNotFoundException;
-import java.util.EnumSet;
-import java.util.Objects;
 import java.util.Set;
 
 /// Provides POSIX metadata helpers for RAR file systems.
@@ -26,17 +27,13 @@ final class RarPosixSupport {
     /// The synthesized default group principal.
     static final GroupPrincipal DEFAULT_GROUP = new NamedGroupPrincipal("");
 
-    /// The user principal lookup service for RAR principal names.
-    private static final UserPrincipalLookupService USER_PRINCIPAL_LOOKUP_SERVICE =
-            new RarUserPrincipalLookupService();
-
     /// Prevents instantiation.
     private RarPosixSupport() {
     }
 
     /// Returns the lookup service for RAR owner and group principals.
     static UserPrincipalLookupService userPrincipalLookupService() {
-        return USER_PRINCIPAL_LOOKUP_SERVICE;
+        return PreservingUserPrincipalLookupService.instance();
     }
 
     /// Returns the owner principal represented by RAR Unix owner metadata.
@@ -66,82 +63,6 @@ final class RarPosixSupport {
         if (hostOs != RarArkivoEntryAttributes.HOST_OS_UNIX) {
             return Set.of();
         }
-
-        EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
-        if ((fileAttributes & 0400L) != 0) {
-            permissions.add(PosixFilePermission.OWNER_READ);
-        }
-        if ((fileAttributes & 0200L) != 0) {
-            permissions.add(PosixFilePermission.OWNER_WRITE);
-        }
-        if ((fileAttributes & 0100L) != 0) {
-            permissions.add(PosixFilePermission.OWNER_EXECUTE);
-        }
-        if ((fileAttributes & 0040L) != 0) {
-            permissions.add(PosixFilePermission.GROUP_READ);
-        }
-        if ((fileAttributes & 0020L) != 0) {
-            permissions.add(PosixFilePermission.GROUP_WRITE);
-        }
-        if ((fileAttributes & 0010L) != 0) {
-            permissions.add(PosixFilePermission.GROUP_EXECUTE);
-        }
-        if ((fileAttributes & 0004L) != 0) {
-            permissions.add(PosixFilePermission.OTHERS_READ);
-        }
-        if ((fileAttributes & 0002L) != 0) {
-            permissions.add(PosixFilePermission.OTHERS_WRITE);
-        }
-        if ((fileAttributes & 0001L) != 0) {
-            permissions.add(PosixFilePermission.OTHERS_EXECUTE);
-        }
-        return Set.copyOf(permissions);
-    }
-
-    /// Implements RAR principal lookup by preserving requested names.
-    private static final class RarUserPrincipalLookupService extends UserPrincipalLookupService {
-        /// Looks up a user principal by name.
-        @Override
-        public UserPrincipal lookupPrincipalByName(String name) throws UserPrincipalNotFoundException {
-            return new NamedUserPrincipal(Objects.requireNonNull(name, "name"));
-        }
-
-        /// Looks up a group principal by name.
-        @Override
-        public GroupPrincipal lookupPrincipalByGroupName(String group) throws UserPrincipalNotFoundException {
-            return new NamedGroupPrincipal(Objects.requireNonNull(group, "group"));
-        }
-    }
-
-    /// Stores a named user principal.
-    ///
-    /// @param name the principal name
-    private record NamedUserPrincipal(String name) implements UserPrincipal {
-        /// Creates a named user principal.
-        private NamedUserPrincipal {
-            Objects.requireNonNull(name, "name");
-        }
-
-        /// Returns the principal name.
-        @Override
-        public String getName() {
-            return name;
-        }
-    }
-
-    /// Stores a named group principal.
-    ///
-    /// @param name the principal name
-    private record NamedGroupPrincipal(String name) implements GroupPrincipal {
-        /// Creates a named group principal.
-        private NamedGroupPrincipal {
-            Objects.requireNonNull(name, "name");
-        }
-
-        /// Returns the principal name.
-        @Override
-        public String getName() {
-            return name;
-        }
+        return PosixModes.permissions(fileAttributes);
     }
 }

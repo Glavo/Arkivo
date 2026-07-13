@@ -3,6 +3,9 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.internal.FixedUserPrincipalLookupService;
+import org.glavo.arkivo.archive.internal.NamedGroupPrincipal;
+import org.glavo.arkivo.archive.internal.NamedUserPrincipal;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.nio.file.attribute.GroupPrincipal;
@@ -20,8 +23,8 @@ final class SevenZipPrincipalSupport {
     static final GroupPrincipal DEFAULT_GROUP = new NamedGroupPrincipal("group");
 
     /// The user principal lookup service for synthesized 7z principals.
-    private static final UserPrincipalLookupService USER_PRINCIPAL_LOOKUP_SERVICE =
-            new SyntheticUserPrincipalLookupService();
+    private static final FixedUserPrincipalLookupService USER_PRINCIPAL_LOOKUP_SERVICE =
+            new FixedUserPrincipalLookupService(DEFAULT_OWNER, DEFAULT_GROUP);
 
     /// Prevents instantiation.
     private SevenZipPrincipalSupport() {
@@ -34,59 +37,11 @@ final class SevenZipPrincipalSupport {
 
     /// Requires a principal name to match the synthesized owner.
     static void requireDefaultOwner(UserPrincipal owner) throws UserPrincipalNotFoundException {
-        if (!DEFAULT_OWNER.getName().equals(owner.getName())) {
-            throw new UserPrincipalNotFoundException(owner.getName());
-        }
+        USER_PRINCIPAL_LOOKUP_SERVICE.requireUser(owner);
     }
 
     /// Requires a principal name to match the synthesized group.
     static void requireDefaultGroup(GroupPrincipal group) throws UserPrincipalNotFoundException {
-        if (!DEFAULT_GROUP.getName().equals(group.getName())) {
-            throw new UserPrincipalNotFoundException(group.getName());
-        }
-    }
-
-    /// Stores a synthetic named user principal.
-    ///
-    /// @param name the stable principal name
-    private record NamedUserPrincipal(String name) implements UserPrincipal {
-        /// Returns the stable principal name.
-        @Override
-        public String getName() {
-            return name;
-        }
-    }
-
-    /// Stores a synthetic named group principal.
-    ///
-    /// @param name the stable principal name
-    private record NamedGroupPrincipal(String name) implements GroupPrincipal {
-        /// Returns the stable principal name.
-        @Override
-        public String getName() {
-            return name;
-        }
-    }
-
-    /// Resolves the stable synthesized 7z owner and group principals.
-    @NotNullByDefault
-    private static final class SyntheticUserPrincipalLookupService extends UserPrincipalLookupService {
-        /// Looks up the synthesized 7z owner principal.
-        @Override
-        public UserPrincipal lookupPrincipalByName(String name) throws UserPrincipalNotFoundException {
-            if (DEFAULT_OWNER.getName().equals(name)) {
-                return DEFAULT_OWNER;
-            }
-            throw new UserPrincipalNotFoundException(name);
-        }
-
-        /// Looks up the synthesized 7z group principal.
-        @Override
-        public GroupPrincipal lookupPrincipalByGroupName(String group) throws UserPrincipalNotFoundException {
-            if (DEFAULT_GROUP.getName().equals(group)) {
-                return DEFAULT_GROUP;
-            }
-            throw new UserPrincipalNotFoundException(group);
-        }
+        USER_PRINCIPAL_LOOKUP_SERVICE.requireGroup(group);
     }
 }

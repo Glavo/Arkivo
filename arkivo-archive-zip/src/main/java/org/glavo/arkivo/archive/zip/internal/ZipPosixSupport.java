@@ -3,6 +3,10 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
+import org.glavo.arkivo.archive.internal.FixedUserPrincipalLookupService;
+import org.glavo.arkivo.archive.internal.NamedGroupPrincipal;
+import org.glavo.arkivo.archive.internal.NamedUserPrincipal;
+import org.glavo.arkivo.archive.internal.PosixModes;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -12,7 +16,6 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.nio.file.attribute.UserPrincipalNotFoundException;
-import java.util.EnumSet;
 import java.util.Set;
 
 import static java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE;
@@ -34,8 +37,8 @@ final class ZipPosixSupport {
     static final GroupPrincipal DEFAULT_GROUP = new NamedGroupPrincipal("group");
 
     /// The user principal lookup service for synthesized ZIP principals.
-    private static final UserPrincipalLookupService USER_PRINCIPAL_LOOKUP_SERVICE =
-            new SyntheticUserPrincipalLookupService();
+    private static final FixedUserPrincipalLookupService USER_PRINCIPAL_LOOKUP_SERVICE =
+            new FixedUserPrincipalLookupService(DEFAULT_OWNER, DEFAULT_GROUP);
 
     /// The ZIP version made by value used for Unix external attributes.
     static final int UNIX_VERSION_MADE_BY = (3 << 8) | VERSION_NEEDED;
@@ -64,16 +67,12 @@ final class ZipPosixSupport {
 
     /// Requires the given owner principal to match the synthesized ZIP owner.
     static void requireDefaultOwner(UserPrincipal owner) throws UserPrincipalNotFoundException {
-        if (!DEFAULT_OWNER.getName().equals(owner.getName())) {
-            throw new UserPrincipalNotFoundException(owner.getName());
-        }
+        USER_PRINCIPAL_LOOKUP_SERVICE.requireUser(owner);
     }
 
     /// Requires the given group principal to match the synthesized ZIP group.
     static void requireDefaultGroup(GroupPrincipal group) throws UserPrincipalNotFoundException {
-        if (!DEFAULT_GROUP.getName().equals(group.getName())) {
-            throw new UserPrincipalNotFoundException(group.getName());
-        }
+        USER_PRINCIPAL_LOOKUP_SERVICE.requireGroup(group);
     }
 
     /// Returns decoded POSIX permissions from ZIP metadata, or synthesized permissions when none are present.
@@ -90,7 +89,7 @@ final class ZipPosixSupport {
     static boolean isSymbolicLink(int versionMadeBy, long externalAttributes) {
         int hostSystem = (versionMadeBy >>> 8) & 0xff;
         int mode = (int) ((externalAttributes >>> 16) & 0xffff);
-        return hostSystem == 3 && (mode & 0170000) == 0120000;
+        return hostSystem == 3 && PosixModes.isSymbolicLink(mode);
     }
 
     /// Decodes POSIX permissions from ZIP external file attributes.
@@ -103,41 +102,12 @@ final class ZipPosixSupport {
         if (hostSystem != 3 || (mode & 0777) == 0) {
             return null;
         }
-
-        EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
-        if ((mode & 0400) != 0) {
-            permissions.add(PosixFilePermission.OWNER_READ);
-        }
-        if ((mode & 0200) != 0) {
-            permissions.add(PosixFilePermission.OWNER_WRITE);
-        }
-        if ((mode & 0100) != 0) {
-            permissions.add(PosixFilePermission.OWNER_EXECUTE);
-        }
-        if ((mode & 0040) != 0) {
-            permissions.add(PosixFilePermission.GROUP_READ);
-        }
-        if ((mode & 0020) != 0) {
-            permissions.add(PosixFilePermission.GROUP_WRITE);
-        }
-        if ((mode & 0010) != 0) {
-            permissions.add(PosixFilePermission.GROUP_EXECUTE);
-        }
-        if ((mode & 0004) != 0) {
-            permissions.add(PosixFilePermission.OTHERS_READ);
-        }
-        if ((mode & 0002) != 0) {
-            permissions.add(PosixFilePermission.OTHERS_WRITE);
-        }
-        if ((mode & 0001) != 0) {
-            permissions.add(PosixFilePermission.OTHERS_EXECUTE);
-        }
-        return Set.copyOf(permissions);
+        return PosixModes.permissions(mode);
     }
 
     /// Encodes POSIX permissions as ZIP external file attributes.
     static long externalAttributes(Set<PosixFilePermission> permissions, boolean directory) {
-        int mode = directory ? 040000 : 0100000;
+        int mode = directory ? PosixModes.DIRECTORY_FILE_TYPE : PosixModes.REGULAR_FILE_TYPE;
         return externalAttributes(mode, permissions, directory ? 0x10L : 0L);
     }
 
@@ -154,84 +124,13 @@ final class ZipPosixSupport {
                         PosixFilePermission.OTHERS_READ,
                         PosixFilePermission.OTHERS_EXECUTE
                 );
-        return externalAttributes(0120000, linkPermissions, 0L);
+        return externalAttributes(PosixModes.SYMBOLIC_LINK_FILE_TYPE, linkPermissions, 0L);
     }
 
     /// Encodes POSIX permissions and file type bits as ZIP external file attributes.
     private static long externalAttributes(int fileTypeMode, Set<PosixFilePermission> permissions, long lowAttributes) {
-        int mode = fileTypeMode;
-        if (permissions.contains(PosixFilePermission.OWNER_READ)) {
-            mode |= 0400;
-        }
-        if (permissions.contains(PosixFilePermission.OWNER_WRITE)) {
-            mode |= 0200;
-        }
-        if (permissions.contains(PosixFilePermission.OWNER_EXECUTE)) {
-            mode |= 0100;
-        }
-        if (permissions.contains(PosixFilePermission.GROUP_READ)) {
-            mode |= 0040;
-        }
-        if (permissions.contains(PosixFilePermission.GROUP_WRITE)) {
-            mode |= 0020;
-        }
-        if (permissions.contains(PosixFilePermission.GROUP_EXECUTE)) {
-            mode |= 0010;
-        }
-        if (permissions.contains(PosixFilePermission.OTHERS_READ)) {
-            mode |= 0004;
-        }
-        if (permissions.contains(PosixFilePermission.OTHERS_WRITE)) {
-            mode |= 0002;
-        }
-        if (permissions.contains(PosixFilePermission.OTHERS_EXECUTE)) {
-            mode |= 0001;
-        }
+        int mode = fileTypeMode | PosixModes.permissionBits(permissions);
         long externalAttributes = Integer.toUnsignedLong(mode << 16);
         return externalAttributes | lowAttributes;
-    }
-
-    /// Stores a synthetic named user principal.
-    ///
-    /// @param name the stable principal name
-    private record NamedUserPrincipal(String name) implements UserPrincipal {
-        /// Returns the stable principal name.
-        @Override
-        public String getName() {
-            return name;
-        }
-    }
-
-    /// Stores a synthetic named group principal.
-    ///
-    /// @param name the stable principal name
-    private record NamedGroupPrincipal(String name) implements GroupPrincipal {
-        /// Returns the stable principal name.
-        @Override
-        public String getName() {
-            return name;
-        }
-    }
-
-    /// Resolves the stable synthesized ZIP owner and group principals.
-    @NotNullByDefault
-    private static final class SyntheticUserPrincipalLookupService extends UserPrincipalLookupService {
-        /// Looks up the synthesized ZIP owner principal.
-        @Override
-        public UserPrincipal lookupPrincipalByName(String name) throws UserPrincipalNotFoundException {
-            if (DEFAULT_OWNER.getName().equals(name)) {
-                return DEFAULT_OWNER;
-            }
-            throw new UserPrincipalNotFoundException(name);
-        }
-
-        /// Looks up the synthesized ZIP group principal.
-        @Override
-        public GroupPrincipal lookupPrincipalByGroupName(String group) throws UserPrincipalNotFoundException {
-            if (DEFAULT_GROUP.getName().equals(group)) {
-                return DEFAULT_GROUP;
-            }
-            throw new UserPrincipalNotFoundException(group);
-        }
     }
 }

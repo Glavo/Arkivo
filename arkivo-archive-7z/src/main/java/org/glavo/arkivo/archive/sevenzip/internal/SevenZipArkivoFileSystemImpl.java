@@ -14,6 +14,7 @@ import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
+import org.glavo.arkivo.archive.internal.PosixPermissions;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
@@ -70,7 +71,6 @@ import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -1996,19 +1996,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// Returns POSIX permissions stored by a file attribute.
     private static Set<PosixFilePermission> posixPermissions(FileAttribute<?> attribute) {
-        Object value = attribute.value();
-        if (!(value instanceof Set<?> values)) {
-            throw new IllegalArgumentException("posix:permissions value must be a Set");
-        }
-
-        EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
-        for (Object element : values) {
-            if (!(element instanceof PosixFilePermission permission)) {
-                throw new IllegalArgumentException("posix:permissions contains a non-POSIX permission value");
-            }
-            permissions.add(permission);
-        }
-        return permissions;
+        return PosixPermissions.copyOf(attribute.value(), "posix:permissions");
     }
 
     /// Opens a seekable channel that stages one update-mode entry body.
@@ -2390,17 +2378,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 setGroup(path, group);
             }
             case "permissions" -> {
-                if (!(value instanceof Set<?> values)) {
-                    throw new IllegalArgumentException("7z POSIX permissions value must be Set");
-                }
-                EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
-                for (Object item : values) {
-                    if (!(item instanceof PosixFilePermission permission)) {
-                        throw new IllegalArgumentException("7z POSIX permissions contain an invalid value");
-                    }
-                    permissions.add(permission);
-                }
-                setPermissions(path, permissions);
+                setPermissions(path, PosixPermissions.copyOf(value, "7z POSIX permissions"));
             }
             default -> throw new UnsupportedOperationException("Unsupported writable 7z POSIX attribute: " + name);
         }

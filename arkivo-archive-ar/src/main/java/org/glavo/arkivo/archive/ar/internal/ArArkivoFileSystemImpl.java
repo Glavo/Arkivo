@@ -17,6 +17,8 @@ import org.glavo.arkivo.archive.ar.ArArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingReader;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter;
 import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
+import org.glavo.arkivo.archive.internal.PosixModes;
+import org.glavo.arkivo.archive.internal.PosixPermissions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -66,7 +68,6 @@ import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalLookupService;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -1325,19 +1326,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
     /// Returns POSIX permissions stored by a file attribute.
     private static Set<PosixFilePermission> posixPermissions(FileAttribute<?> attribute) {
-        Object value = attribute.value();
-        if (!(value instanceof Set<?> values)) {
-            throw new IllegalArgumentException("posix:permissions value must be a Set");
-        }
-
-        EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
-        for (Object element : values) {
-            if (!(element instanceof PosixFilePermission permission)) {
-                throw new IllegalArgumentException("posix:permissions contains a non-POSIX permission value");
-            }
-            permissions.add(permission);
-        }
-        return permissions;
+        return PosixPermissions.copyOf(attribute.value(), "posix:permissions");
     }
 
     /// Requires this file system to be in read or update mode.
@@ -1681,17 +1670,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 setGroup(path, group);
             }
             case "permissions" -> {
-                if (!(value instanceof Set<?> values)) {
-                    throw new IllegalArgumentException("AR POSIX permissions value must be Set");
-                }
-                EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
-                for (Object item : values) {
-                    if (!(item instanceof PosixFilePermission permission)) {
-                        throw new IllegalArgumentException("AR POSIX permissions contain an invalid value");
-                    }
-                    permissions.add(permission);
-                }
-                setPermissions(path, permissions);
+                setPermissions(path, PosixPermissions.copyOf(value, "AR POSIX permissions"));
             }
             default -> throw new UnsupportedOperationException("Unsupported writable AR POSIX attribute: " + name);
         }
@@ -1783,7 +1762,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 attributes,
                 attributes.userId(),
                 attributes.groupId(),
-                (attributes.mode() & ~0777) | permissionsMode(permissions),
+                (attributes.mode() & ~0777) | PosixModes.permissionBits(permissions),
                 attributes.size(),
                 attributes.lastModifiedTime()
         ));
@@ -1894,25 +1873,6 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 && ArPosixSupport.isDirectory(firstMode) == ArPosixSupport.isDirectory(secondMode)
                 && ArPosixSupport.isSymbolicLink(firstMode) == ArPosixSupport.isSymbolicLink(secondMode)
                 && ArPosixSupport.isOther(firstMode) == ArPosixSupport.isOther(secondMode);
-    }
-
-    /// Returns POSIX permission bits for the given permission set.
-    private static int permissionsMode(Set<PosixFilePermission> permissions) {
-        int mode = 0;
-        for (PosixFilePermission permission : permissions) {
-            switch (permission) {
-                case OWNER_READ -> mode |= 0400;
-                case OWNER_WRITE -> mode |= 0200;
-                case OWNER_EXECUTE -> mode |= 0100;
-                case GROUP_READ -> mode |= 0040;
-                case GROUP_WRITE -> mode |= 0020;
-                case GROUP_EXECUTE -> mode |= 0010;
-                case OTHERS_READ -> mode |= 0004;
-                case OTHERS_WRITE -> mode |= 0002;
-                case OTHERS_EXECUTE -> mode |= 0001;
-            }
-        }
-        return mode;
     }
 
     /// Returns copied metadata with selected AR values changed.

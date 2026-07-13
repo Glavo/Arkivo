@@ -20,6 +20,7 @@ import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
+import org.glavo.arkivo.archive.internal.PosixPermissions;
 
 
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
@@ -80,7 +81,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -2269,19 +2269,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Returns POSIX permissions stored by a file attribute.
     private static Set<PosixFilePermission> posixPermissions(FileAttribute<?> attribute) {
-        Object value = attribute.value();
-        if (!(value instanceof Set<?> values)) {
-            throw new IllegalArgumentException("posix:permissions value must be a Set");
-        }
-
-        EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
-        for (Object element : values) {
-            if (!(element instanceof PosixFilePermission permission)) {
-                throw new IllegalArgumentException("posix:permissions contains a non-POSIX permission value");
-            }
-            permissions.add(permission);
-        }
-        return permissions;
+        return PosixPermissions.copyOf(attribute.value(), "posix:permissions");
     }
 
     /// Returns a normalized symbolic link target path text.

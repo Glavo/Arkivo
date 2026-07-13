@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.tar.internal;
 
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
+import org.glavo.arkivo.archive.internal.PosixModes;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributeView;
@@ -34,7 +35,6 @@ import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -68,10 +68,10 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     private static final FileTime UNIX_EPOCH = FileTime.fromMillis(0L);
 
     /// The synthesized default owner for pending POSIX attributes.
-    private static final UserPrincipal DEFAULT_OWNER = new NamedUserPrincipal("");
+    private static final UserPrincipal DEFAULT_OWNER = TarPosixSupport.DEFAULT_OWNER;
 
     /// The synthesized default group for pending POSIX attributes.
-    private static final GroupPrincipal DEFAULT_GROUP = new NamedGroupPrincipal("");
+    private static final GroupPrincipal DEFAULT_GROUP = TarPosixSupport.DEFAULT_GROUP;
 
     /// Identifies the type requested for a pending streaming entry.
     private enum EntryType {
@@ -814,58 +814,6 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         }
     }
 
-    /// Returns the POSIX permissions encoded by the given mode bits.
-    private static Set<PosixFilePermission> modePermissions(int mode) {
-        EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
-        if ((mode & 0400) != 0) {
-            permissions.add(PosixFilePermission.OWNER_READ);
-        }
-        if ((mode & 0200) != 0) {
-            permissions.add(PosixFilePermission.OWNER_WRITE);
-        }
-        if ((mode & 0100) != 0) {
-            permissions.add(PosixFilePermission.OWNER_EXECUTE);
-        }
-        if ((mode & 0040) != 0) {
-            permissions.add(PosixFilePermission.GROUP_READ);
-        }
-        if ((mode & 0020) != 0) {
-            permissions.add(PosixFilePermission.GROUP_WRITE);
-        }
-        if ((mode & 0010) != 0) {
-            permissions.add(PosixFilePermission.GROUP_EXECUTE);
-        }
-        if ((mode & 0004) != 0) {
-            permissions.add(PosixFilePermission.OTHERS_READ);
-        }
-        if ((mode & 0002) != 0) {
-            permissions.add(PosixFilePermission.OTHERS_WRITE);
-        }
-        if ((mode & 0001) != 0) {
-            permissions.add(PosixFilePermission.OTHERS_EXECUTE);
-        }
-        return Set.copyOf(permissions);
-    }
-
-    /// Returns the mode bits represented by the given POSIX permissions.
-    private static int permissionsMode(Set<PosixFilePermission> permissions) {
-        int mode = 0;
-        for (PosixFilePermission permission : permissions) {
-            switch (permission) {
-                case OWNER_READ -> mode |= 0400;
-                case OWNER_WRITE -> mode |= 0200;
-                case OWNER_EXECUTE -> mode |= 0100;
-                case GROUP_READ -> mode |= 0040;
-                case GROUP_WRITE -> mode |= 0020;
-                case GROUP_EXECUTE -> mode |= 0010;
-                case OTHERS_READ -> mode |= 0004;
-                case OTHERS_WRITE -> mode |= 0002;
-                case OTHERS_EXECUTE -> mode |= 0001;
-            }
-        }
-        return mode;
-    }
-
     /// Ensures this writer is still open.
     private void ensureOpen() throws IOException {
         if (!open) {
@@ -1122,8 +1070,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
 
         /// Returns the pending owner principal.
         private UserPrincipal owner() {
-            String name = userName;
-            return name != null ? new NamedUserPrincipal(name) : DEFAULT_OWNER;
+            return TarPosixSupport.owner(userName);
         }
 
         /// Sets the pending owner principal.
@@ -1134,8 +1081,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
 
         /// Returns the pending group principal.
         private GroupPrincipal group() {
-            String name = groupName;
-            return name != null ? new NamedGroupPrincipal(name) : DEFAULT_GROUP;
+            return TarPosixSupport.group(groupName);
         }
 
         /// Sets the pending group principal.
@@ -1200,7 +1146,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         @Override
         public void setPermissions(Set<PosixFilePermission> permissions) {
             Objects.requireNonNull(permissions, "permissions");
-            entry.attributes.setMode(permissionsMode(permissions));
+            entry.attributes.setMode(PosixModes.permissionBits(permissions));
         }
     }
 
@@ -1347,39 +1293,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         /// Returns the pending permissions.
         @Override
         public Set<PosixFilePermission> permissions() {
-            return modePermissions(mode());
-        }
-    }
-
-    /// Stores a named user principal.
-    ///
-    /// @param name the principal name
-    private record NamedUserPrincipal(String name) implements UserPrincipal {
-        /// Creates a named user principal.
-        private NamedUserPrincipal {
-            Objects.requireNonNull(name, "name");
-        }
-
-        /// Returns the principal name.
-        @Override
-        public String getName() {
-            return name;
-        }
-    }
-
-    /// Stores a named group principal.
-    ///
-    /// @param name the principal name
-    private record NamedGroupPrincipal(String name) implements GroupPrincipal {
-        /// Creates a named group principal.
-        private NamedGroupPrincipal {
-            Objects.requireNonNull(name, "name");
-        }
-
-        /// Returns the principal name.
-        @Override
-        public String getName() {
-            return name;
+            return PosixModes.permissions(mode());
         }
     }
 

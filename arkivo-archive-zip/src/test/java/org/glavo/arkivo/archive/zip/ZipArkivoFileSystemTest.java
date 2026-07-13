@@ -79,6 +79,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
+import java.util.stream.StreamSupport;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
@@ -5332,12 +5333,29 @@ public final class ZipArkivoFileSystemTest {
     public void paths() throws IOException {
         try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(Path.of("sample.zip"))) {
             Path path = fileSystem.getPath("/a/b/../c.txt");
+            Path normalized = fileSystem.getPath("/a/c.txt");
 
             assertEquals("/a/b/../c.txt", path.toString());
+            assertEquals(fileSystem, path.getFileSystem());
+            assertEquals(true, path.isAbsolute());
+            assertEquals("/", path.getRoot().toString());
             assertEquals("c.txt", path.getFileName().toString());
             assertEquals("/a/b/..", path.getParent().toString());
-            assertEquals("/a/c.txt", path.normalize().toString());
+            assertEquals(4, path.getNameCount());
+            assertEquals("b", path.getName(1).toString());
+            assertEquals("b/..", path.subpath(1, 3).toString());
+            assertEquals(true, path.startsWith("/a"));
+            assertEquals(true, path.endsWith("c.txt"));
+            assertEquals(normalized, path.normalize());
+            assertEquals("/a/child", fileSystem.getPath("/a").resolve("child").toString());
+            assertEquals("/a/child", normalized.resolveSibling("child").toString());
             assertEquals("b/../c.txt", fileSystem.getPath("/a").relativize(path).toString());
+            assertEquals("/relative", fileSystem.getPath("relative").toAbsolutePath().toString());
+            assertEquals(0, normalized.compareTo(fileSystem.getPath("/a/c.txt")));
+            assertEquals(List.of("a", "b", "..", "c.txt"),
+                    StreamSupport.stream(path.spliterator(), false).map(Path::toString).toList());
+            assertEquals(false, path.startsWith(Path.of("/a")));
+            assertThrows(IllegalArgumentException.class, () -> path.resolve(Path.of("other")));
         }
     }
 

@@ -13,6 +13,8 @@ import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
+import org.glavo.arkivo.archive.internal.PosixModes;
+import org.glavo.arkivo.archive.internal.PosixPermissions;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
@@ -68,7 +70,6 @@ import java.nio.file.attribute.UserPrincipalLookupService;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -744,7 +745,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             TarEntryAttributes entryAttributes = defaultAttributes(
                     entryPath,
                     TarEntryAttributes.DIRECTORY_TYPE,
-                    permissions != null ? permissionsMode(permissions) : 0755,
+                    permissions != null ? PosixModes.permissionBits(permissions) : 0755,
                     null,
                     0L
             );
@@ -777,7 +778,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             TarEntryAttributes entryAttributes = defaultAttributes(
                     entryPath,
                     TarEntryAttributes.SYMBOLIC_LINK_TYPE,
-                    permissions != null ? permissionsMode(permissions) : 0777,
+                    permissions != null ? PosixModes.permissionBits(permissions) : 0777,
                     archivePathText(target),
                     0L
             );
@@ -1420,19 +1421,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Returns POSIX permissions stored by a file attribute.
     private static Set<PosixFilePermission> posixPermissions(FileAttribute<?> attribute) {
-        Object value = attribute.value();
-        if (!(value instanceof Set<?> values)) {
-            throw new IllegalArgumentException("posix:permissions value must be a Set");
-        }
-
-        EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
-        for (Object element : values) {
-            if (!(element instanceof PosixFilePermission permission)) {
-                throw new IllegalArgumentException("posix:permissions contains a non-POSIX permission value");
-            }
-            permissions.add(permission);
-        }
-        return permissions;
+        return PosixPermissions.copyOf(attribute.value(), "posix:permissions");
     }
 
     /// Requires this file system to be in read mode.
@@ -1597,7 +1586,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 ? existing.attributes()
                 : defaultAttributes(channel.path(), TarEntryAttributes.REGULAR_TYPE, 0644, null, size);
         int mode = existing == null && channel.initialPermissions() != null
-                ? permissionsMode(channel.initialPermissions())
+                ? PosixModes.permissionBits(channel.initialPermissions())
                 : base.mode();
         TarEntryAttributes attributes = new TarEntryAttributes(
                 channel.path(),
@@ -1754,25 +1743,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         return replacement;
     }
 
-    /// Returns POSIX permission bits for the given permission set.
-    private static int permissionsMode(Set<PosixFilePermission> permissions) {
-        int mode = 0;
-        for (PosixFilePermission permission : permissions) {
-            switch (permission) {
-                case OWNER_READ -> mode |= 0400;
-                case OWNER_WRITE -> mode |= 0200;
-                case OWNER_EXECUTE -> mode |= 0100;
-                case GROUP_READ -> mode |= 0040;
-                case GROUP_WRITE -> mode |= 0020;
-                case GROUP_EXECUTE -> mode |= 0010;
-                case OTHERS_READ -> mode |= 0004;
-                case OTHERS_WRITE -> mode |= 0002;
-                case OTHERS_EXECUTE -> mode |= 0001;
-            }
-        }
-        return mode;
-    }
-
     /// Converts hard links that target a deleted entry into independent regular files.
     private void materializeHardLinksTo(String deletedPath) throws IOException {
         ArrayDeque<String> deletedTargets = new ArrayDeque<>();
@@ -1873,17 +1843,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 setGroup(path, group);
             }
             case "permissions" -> {
-                if (!(value instanceof Set<?> values)) {
-                    throw new IllegalArgumentException("TAR POSIX permissions value must be Set");
-                }
-                EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
-                for (Object item : values) {
-                    if (!(item instanceof PosixFilePermission permission)) {
-                        throw new IllegalArgumentException("TAR POSIX permissions contain an invalid value");
-                    }
-                    permissions.add(permission);
-                }
-                setPermissions(path, permissions);
+                setPermissions(path, PosixPermissions.copyOf(value, "TAR POSIX permissions"));
             }
             default -> throw new UnsupportedOperationException("Unsupported writable TAR POSIX attribute: " + name);
         }
@@ -1964,7 +1924,10 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         Objects.requireNonNull(permissions, "permissions");
         mutateAttributes(
                 path,
-                attributes -> copyWithMode(attributes, (attributes.mode() & ~0777) | permissionsMode(permissions))
+                attributes -> copyWithMode(
+                        attributes,
+                        (attributes.mode() & ~0777) | PosixModes.permissionBits(permissions)
+                )
         );
     }
 
