@@ -131,7 +131,7 @@ public final class ArArkivoFormat implements
             Map<String, ?> environment
     ) {
         Objects.requireNonNull(environment, "environment");
-        return ArArkivoStreamingReader.open(source);
+        return ArArkivoStreamingReader.open(source, environment);
     }
 
     /// Opens a streaming AR reader from a readable channel.
@@ -147,7 +147,7 @@ public final class ArArkivoFormat implements
             Map<String, ?> environment
     ) {
         Objects.requireNonNull(environment, "environment");
-        return ArArkivoStreamingReader.open(source);
+        return ArArkivoStreamingReader.open(source, environment);
     }
 
     /// Opens a streaming AR writer over an output stream.

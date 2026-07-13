@@ -3,8 +3,6 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
-import org.glavo.arkivo.codec.bzip2.internal.BZip2OutputStream;
-import org.glavo.arkivo.codec.deflate64.internal.Deflate64OutputStream;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.transform.TransformingOutputStream;
 import org.glavo.arkivo.codec.transform.ByteTransform;
@@ -24,13 +22,19 @@ import org.jetbrains.annotations.Unmodifiable;
 import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.FileTime;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
@@ -40,14 +44,13 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.zip.CRC32;
-import java.util.zip.Deflater;
-import java.util.zip.DeflaterOutputStream;
 
 /// Writes 7z folders, decoded substreams, and file metadata directly to a seekable archive channel.
 ///
 /// Consecutive non-empty files with equal coder settings may share one solid folder up to the configured file-count
 /// limit. Empty files and directories are represented only by file properties. The writer keeps entry and folder
-/// metadata in memory but streams every packed body directly to the destination channel.
+/// metadata in memory and streams linear packed bodies directly to the destination channel. BCJ2 folders use bounded
+/// temporary-file staging so their four physical packed streams remain contiguous in the archive.
 @NotNullByDefault
 final class SevenZipArchiveWriter implements AutoCloseable {
     /// The fixed 7z signature bytes.
@@ -140,6 +143,9 @@ final class SevenZipArchiveWriter implements AutoCloseable {
 
     /// The x86 BCJ filter method ID.
     private static final byte @Unmodifiable [] BCJ_X86_METHOD_ID = new byte[]{0x03, 0x03, 0x01, 0x03};
+
+    /// The x86 BCJ2 four-stream filter method ID.
+    private static final byte @Unmodifiable [] BCJ2_METHOD_ID = new byte[]{0x03, 0x03, 0x01, 0x1b};
 
     /// The PowerPC BCJ filter method ID.
     private static final byte @Unmodifiable [] BCJ_PPC_METHOD_ID = new byte[]{0x03, 0x03, 0x02, 0x05};
@@ -332,6 +338,14 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
             } finally {
+                if (failure != null && currentFolderEncoder != null) {
+                    try {
+                        currentFolderEncoder.abort();
+                    } catch (IOException | RuntimeException | Error exception) {
+                        failure = appendFailure(failure, exception);
+                    }
+                    currentFolderEncoder = null;
+                }
                 clearKey();
             }
         } else {
@@ -361,8 +375,22 @@ final class SevenZipArchiveWriter implements AutoCloseable {
     }
 
 
-    /// Opens the configured coder chain for the first non-empty substream of a folder.
+    /// Opens the configured coder graph for the first non-empty substream of a folder.
     private FolderEncoder openFolderEncoder(PendingEntry entry) throws IOException {
+        List<SevenZipFilter> filters = entry.filters().filters();
+        if (filters.size() == 1 && filters.get(0).method() == SevenZipFilterMethod.BCJ2) {
+            return Bcj2FolderEncoder.open(
+                    channel,
+                    encryptionKey,
+                    entry.compression(),
+                    entry.filters()
+            );
+        }
+        return openLinearFolderEncoder(entry);
+    }
+
+    /// Opens one direct single-packed-stream coder pipeline.
+    private LinearFolderEncoder openLinearFolderEncoder(PendingEntry entry) throws IOException {
         PackedOutputStream packedOutput = new PackedOutputStream(channel);
         @Nullable AesOutputStream aesOutput = null;
         @Nullable CountingOutputStream encryptedInput = null;
@@ -382,7 +410,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             filters.add(filter);
             output = new TransformingOutputStream(output, filter.transform());
         }
-        return new FolderEncoder(
+        return new LinearFolderEncoder(
                 output,
                 packedOutput,
                 encryptedInput,
@@ -407,15 +435,15 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             case LZMA -> openLzma(compression.parameter(), output);
             case LZMA2 -> openLzma2(compression.parameter(), output);
             case BZIP2 -> new CompressionOutput(
-                    new BZip2OutputStream(output, compression.parameter()),
+                    SevenZipCompressionCodecs.openEncoder("bzip2", compression.parameter(), output),
                     new MethodDescriptor(BZIP2_METHOD_ID, new byte[0])
             );
             case DEFLATE -> new CompressionOutput(
-                    new RawDeflateOutputStream(output, compression.parameter()),
+                    SevenZipCompressionCodecs.openEncoder("deflate", compression.parameter(), output),
                     new MethodDescriptor(DEFLATE_METHOD_ID, new byte[0])
             );
             case DEFLATE64 -> new CompressionOutput(
-                    new Deflate64OutputStream(output, compression.parameter()),
+                    SevenZipCompressionCodecs.openEncoder("deflate64", compression.parameter(), output),
                     new MethodDescriptor(DEFLATE64_METHOD_ID, new byte[0])
             );
         };
@@ -474,6 +502,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         byte[] properties = bcjProperties(filter.parameter());
         return switch (filter.method()) {
             case DELTA -> throw new AssertionError("Delta filter was handled before BCJ dispatch");
+            case BCJ2 -> throw new AssertionError("BCJ2 is handled as a multi-stream folder graph");
             case BCJ_X86 -> new FilterDescriptor(
                     BCJTransforms.x86(true, startOffset),
                     new MethodDescriptor(BCJ_X86_METHOD_ID, properties)
@@ -559,15 +588,20 @@ final class SevenZipArchiveWriter implements AutoCloseable {
     private static void writeMainStreamsInfo(ByteArrayOutputStream output, List<Folder> folders) {
         output.write(NID_PACK_INFO);
         writeUint64(output, 0L);
-        writeUint64(output, folders.size());
+        long packedStreamCount = folders.stream().mapToLong(folder -> folder.packedStreams().size()).sum();
+        writeUint64(output, packedStreamCount);
         output.write(NID_SIZE);
         for (Folder folder : folders) {
-            writeUint64(output, folder.packedSize());
+            for (PackedStream packedStream : folder.packedStreams()) {
+                writeUint64(output, packedStream.size());
+            }
         }
         output.write(NID_CRC);
         output.write(1);
         for (Folder folder : folders) {
-            writeIntLittleEndian(output, folder.packedCrc32());
+            for (PackedStream packedStream : folder.packedStreams()) {
+                writeIntLittleEndian(output, packedStream.crc32());
+            }
         }
         output.write(NID_END);
 
@@ -576,12 +610,14 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         writeUint64(output, folders.size());
         output.write(0);
         for (Folder folder : folders) {
-            writeFolder(output, folder.coders());
+            writeFolder(output, folder);
         }
         output.write(NID_CODERS_UNPACK_SIZE);
         for (Folder folder : folders) {
             for (Coder coder : folder.coders()) {
-                writeUint64(output, coder.unpackSize());
+                for (long unpackSize : coder.unpackSizes()) {
+                    writeUint64(output, unpackSize);
+                }
             }
         }
         output.write(NID_CRC);
@@ -621,27 +657,38 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         output.write(NID_END);
     }
 
-    /// Writes one linear folder definition in packed-to-decoded coder order.
-    private static void writeFolder(ByteArrayOutputStream output, List<Coder> coders) {
-        writeUint64(output, coders.size());
-        for (Coder coder : coders) {
+    /// Writes one arbitrary connected folder coder graph.
+    private static void writeFolder(ByteArrayOutputStream output, Folder folder) {
+        writeUint64(output, folder.coders().size());
+        for (Coder coder : folder.coders()) {
             int flags = coder.methodId().length;
+            if (coder.inputStreamCount() != 1 || coder.outputStreamCount() != 1) {
+                flags |= 0x10;
+            }
             if (coder.properties().length != 0) {
                 flags |= 0x20;
             }
             output.write(flags);
             output.writeBytes(coder.methodId());
+            if ((flags & 0x10) != 0) {
+                writeUint64(output, coder.inputStreamCount());
+                writeUint64(output, coder.outputStreamCount());
+            }
             if (coder.properties().length != 0) {
                 writeUint64(output, coder.properties().length);
                 output.writeBytes(coder.properties());
             }
         }
-        for (int coderIndex = 1; coderIndex < coders.size(); coderIndex++) {
-            writeUint64(output, coderIndex);
-            writeUint64(output, coderIndex - 1L);
+        for (BindPair bindPair : folder.bindPairs()) {
+            writeUint64(output, bindPair.inputStreamIndex());
+            writeUint64(output, bindPair.outputStreamIndex());
+        }
+        if (folder.packedInputStreamIndexes().length != 1) {
+            for (int inputStreamIndex : folder.packedInputStreamIndexes()) {
+                writeUint64(output, inputStreamIndex);
+            }
         }
     }
-
 
     /// Writes names, empty-stream flags, timestamps, and Windows attributes.
     private void writeFilesInfo(ByteArrayOutputStream output) {
@@ -1036,21 +1083,51 @@ final class SevenZipArchiveWriter implements AutoCloseable {
     }
 
 
-    /// Stores one completed packed stream, coder chain, and its decoded substreams.
+    /// Stores one physical packed stream digest.
     ///
-    /// @param size        the total decoded folder size
-    /// @param crc32       the CRC-32 of the concatenated decoded folder bytes
-    /// @param packedSize  the packed stream size
-    /// @param packedCrc32 the packed stream CRC-32
-    /// @param coders      the packed-to-decoded coder sequence
-    /// @param substreams  the decoded file substreams in archive order
+    /// @param size the packed byte count
+    /// @param crc32 the packed CRC-32
+    @NotNullByDefault
+    private record PackedStream(long size, long crc32) {
+        /// Validates one packed stream.
+        private PackedStream {
+            if (size < 0L) {
+                throw new IllegalArgumentException("packed stream size must be non-negative");
+            }
+        }
+    }
+
+    /// Stores one folder binding from a coder input to another coder output.
+    ///
+    /// @param inputStreamIndex the global folder input stream index
+    /// @param outputStreamIndex the global folder output stream index
+    @NotNullByDefault
+    private record BindPair(int inputStreamIndex, int outputStreamIndex) {
+        /// Validates non-negative folder stream indexes.
+        private BindPair {
+            if (inputStreamIndex < 0 || outputStreamIndex < 0) {
+                throw new IllegalArgumentException("bind pair stream indexes must be non-negative");
+            }
+        }
+    }
+
+    /// Stores one completed physical stream set, coder graph, and its decoded substreams.
+    ///
+    /// @param size the total decoded folder size
+    /// @param crc32 the CRC-32 of the concatenated decoded folder bytes
+    /// @param packedStreams the physical streams in pack-info order
+    /// @param coders the coders in folder declaration order
+    /// @param bindPairs the coder bindings in folder declaration order
+    /// @param packedInputStreamIndexes the unbound coder inputs in physical stream order
+    /// @param substreams the decoded file substreams in archive order
     @NotNullByDefault
     private record Folder(
             long size,
             long crc32,
-            long packedSize,
-            long packedCrc32,
+            @Unmodifiable List<PackedStream> packedStreams,
             @Unmodifiable List<Coder> coders,
+            @Unmodifiable List<BindPair> bindPairs,
+            int @Unmodifiable [] packedInputStreamIndexes,
             @Unmodifiable List<Substream> substreams
     ) {
         /// Creates immutable validated folder metadata.
@@ -1058,11 +1135,17 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             if (size <= 0L) {
                 throw new IllegalArgumentException("folder size must be positive");
             }
-            if (packedSize < 0L) {
-                throw new IllegalArgumentException("packedSize must be non-negative");
-            }
+            packedStreams = List.copyOf(packedStreams);
             coders = List.copyOf(coders);
+            bindPairs = List.copyOf(bindPairs);
+            packedInputStreamIndexes = packedInputStreamIndexes.clone();
             substreams = List.copyOf(substreams);
+            if (packedStreams.isEmpty()) {
+                throw new IllegalArgumentException("folder must contain at least one packed stream");
+            }
+            if (packedStreams.size() != packedInputStreamIndexes.length) {
+                throw new IllegalArgumentException("packed streams do not match packed folder inputs");
+            }
             if (coders.isEmpty()) {
                 throw new IllegalArgumentException("folder must contain at least one coder");
             }
@@ -1076,32 +1159,80 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             if (decodedSize != size) {
                 throw new IllegalArgumentException("folder size does not match its substreams");
             }
-            if (coders.get(coders.size() - 1).unpackSize() != size) {
+
+            byte[][] methodIds = new byte[coders.size()][];
+            byte[][] properties = new byte[coders.size()][];
+            int[] inputCounts = new int[coders.size()];
+            int[] outputCounts = new int[coders.size()];
+            int totalOutputCount = coders.stream().mapToInt(Coder::outputStreamCount).sum();
+            long[] unpackSizes = new long[totalOutputCount];
+            int outputIndex = 0;
+            for (int coderIndex = 0; coderIndex < coders.size(); coderIndex++) {
+                Coder coder = coders.get(coderIndex);
+                methodIds[coderIndex] = coder.methodId();
+                properties[coderIndex] = coder.properties();
+                inputCounts[coderIndex] = coder.inputStreamCount();
+                outputCounts[coderIndex] = coder.outputStreamCount();
+                long[] coderSizes = coder.unpackSizes();
+                System.arraycopy(coderSizes, 0, unpackSizes, outputIndex, coderSizes.length);
+                outputIndex += coderSizes.length;
+            }
+            int[] bindInputs = bindPairs.stream().mapToInt(BindPair::inputStreamIndex).toArray();
+            int[] bindOutputs = bindPairs.stream().mapToInt(BindPair::outputStreamIndex).toArray();
+            SevenZipFolderMethod method = SevenZipFolderMethod.graph(
+                    methodIds,
+                    properties,
+                    inputCounts,
+                    outputCounts,
+                    bindInputs,
+                    bindOutputs,
+                    packedInputStreamIndexes,
+                    unpackSizes
+            );
+            if (method.finalUnpackSize() != size) {
                 throw new IllegalArgumentException("final coder size does not match the folder size");
             }
+        }
+
+        /// Returns a defensive packed-input-index copy.
+        @Override
+        public int[] packedInputStreamIndexes() {
+            return packedInputStreamIndexes.clone();
         }
     }
 
     /// Stores one decoder-facing coder descriptor.
     ///
-    /// @param methodId   the 7z method identifier
+    /// @param methodId the 7z method identifier
     /// @param properties the serialized coder properties
-    /// @param unpackSize the coder output size
+    /// @param inputStreamCount the number of graph input streams consumed
+    /// @param outputStreamCount the number of graph output streams produced
+    /// @param unpackSizes the unpack size produced by each output stream
     @NotNullByDefault
     private record Coder(
             byte @Unmodifiable [] methodId,
             byte @Unmodifiable [] properties,
-            long unpackSize
+            int inputStreamCount,
+            int outputStreamCount,
+            long @Unmodifiable [] unpackSizes
     ) {
         /// Creates one immutable coder descriptor.
         private Coder {
             methodId = methodId.clone();
             properties = properties.clone();
-            if (unpackSize < 0L) {
-                throw new IllegalArgumentException("unpackSize must be non-negative");
+            unpackSizes = unpackSizes.clone();
+            if (inputStreamCount <= 0 || outputStreamCount <= 0) {
+                throw new IllegalArgumentException("coder stream counts must be positive");
+            }
+            if (unpackSizes.length != outputStreamCount) {
+                throw new IllegalArgumentException("coder unpack sizes must match its output count");
+            }
+            for (long unpackSize : unpackSizes) {
+                if (unpackSize < 0L) {
+                    throw new IllegalArgumentException("coder unpack sizes must be non-negative");
+                }
             }
         }
-
 
         /// Returns a defensive method-ID copy.
         @Override
@@ -1109,18 +1240,22 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             return methodId.clone();
         }
 
-
         /// Returns a defensive properties copy.
         @Override
         public byte[] properties() {
             return properties.clone();
         }
+
+        /// Returns a defensive unpack-size copy.
+        @Override
+        public long[] unpackSizes() {
+            return unpackSizes.clone();
+        }
     }
 
-
-    /// Stores method identity and properties before the unpack size is known.
+    /// Stores method identity and properties before stream counts and unpack sizes are known.
     ///
-    /// @param methodId   the 7z method identifier
+    /// @param methodId the 7z method identifier
     /// @param properties the serialized coder properties
     @NotNullByDefault
     private record MethodDescriptor(
@@ -1133,13 +1268,16 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             properties = properties.clone();
         }
 
-
-        /// Creates a sized coder descriptor.
+        /// Creates a sized single-input, single-output coder descriptor.
         private Coder coder(long unpackSize) {
-            return new Coder(methodId, properties, unpackSize);
+            return coder(1, unpackSize);
+        }
+
+        /// Creates a coder descriptor with one or more output sizes.
+        private Coder coder(int inputStreamCount, long... unpackSizes) {
+            return new Coder(methodId, properties, inputStreamCount, unpackSizes.length, unpackSizes);
         }
     }
-
 
     /// Stores an opened compression stream and its method descriptor.
     ///
@@ -1169,9 +1307,135 @@ final class SevenZipArchiveWriter implements AutoCloseable {
     }
 
 
-    /// Streams consecutive file substreams through one filter, compression, and optional AES pipeline.
+    /// Accepts consecutive decoded substreams and finalizes one folder coder graph.
     @NotNullByDefault
-    private static final class FolderEncoder {
+    private interface FolderEncoder {
+        /// Returns whether another entry can share this folder.
+        boolean accepts(PendingEntry entry, int maximumSubstreams);
+
+        /// Writes decoded folder bytes.
+        void write(byte[] buffer, int offset, int length) throws IOException;
+
+        /// Records one completed non-empty file substream.
+        void completeSubstream(long substreamSize, long substreamCrc32);
+
+        /// Finishes the coder graph and its physical packed streams.
+        void close() throws IOException;
+
+        /// Abandons the active folder and releases temporary resources.
+        void abort() throws IOException;
+
+        /// Returns completed folder metadata.
+        Folder completedFolder();
+    }
+
+    /// Implements folder lifecycle, decoded digests, and solid-substream bookkeeping.
+    @NotNullByDefault
+    private abstract static class AbstractFolderEncoder implements FolderEncoder {
+        /// The resolved compression setting shared by this folder.
+        private final SevenZipCompression compressionSetting;
+
+        /// The resolved filter chain shared by this folder.
+        private final SevenZipFilterChain filterSetting;
+
+        /// Metadata for completed decoded substreams.
+        private final List<Substream> substreams = new ArrayList<>();
+
+        /// The CRC-32 of all concatenated decoded substreams.
+        private final CRC32 crc32 = new CRC32();
+
+        /// The total decoded folder size.
+        private long size;
+
+        /// Completed folder metadata, or `null` until close succeeds.
+        private @Nullable Folder completedFolder;
+
+        /// Whether the encoder has closed successfully.
+        private boolean closed;
+
+        /// Creates common folder state.
+        private AbstractFolderEncoder(
+                SevenZipCompression compressionSetting,
+                SevenZipFilterChain filterSetting
+        ) {
+            this.compressionSetting = Objects.requireNonNull(compressionSetting, "compressionSetting");
+            this.filterSetting = Objects.requireNonNull(filterSetting, "filterSetting");
+        }
+
+        /// Returns the resolved compression setting shared by this folder.
+        protected final SevenZipCompression compressionSetting() {
+            return compressionSetting;
+        }
+
+        /// Returns whether another entry can share this folder.
+        @Override
+        public final boolean accepts(PendingEntry entry, int maximumSubstreams) {
+            return !closed
+                    && substreams.size() < maximumSubstreams
+                    && compressionSetting.equals(entry.compression())
+                    && filterSetting.equals(entry.filters());
+        }
+
+        /// Writes decoded folder bytes and updates the aggregate digest.
+        @Override
+        public final void write(byte[] buffer, int offset, int length) throws IOException {
+            if (closed) {
+                throw new ClosedChannelException();
+            }
+            writeBody(buffer, offset, length);
+            crc32.update(buffer, offset, length);
+            try {
+                size = Math.addExact(size, length);
+            } catch (ArithmeticException exception) {
+                throw new IOException("7z folder size is too large", exception);
+            }
+        }
+
+        /// Writes bytes into the concrete encoder or staging destination.
+        protected abstract void writeBody(byte[] buffer, int offset, int length) throws IOException;
+
+        /// Records one completed non-empty file substream.
+        @Override
+        public final void completeSubstream(long substreamSize, long substreamCrc32) {
+            if (closed) {
+                throw new IllegalStateException("7z folder encoder is closed");
+            }
+            substreams.add(new Substream(substreamSize, substreamCrc32));
+        }
+
+        /// Finishes the concrete graph and records immutable folder metadata.
+        @Override
+        public final void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            if (substreams.isEmpty()) {
+                throw new IOException("Cannot close a 7z folder without substreams");
+            }
+            completedFolder = finishFolder(size, crc32.getValue(), List.copyOf(substreams));
+            closed = true;
+        }
+
+        /// Produces concrete folder metadata and closes every owned output.
+        protected abstract Folder finishFolder(
+                long decodedSize,
+                long decodedCrc32,
+                List<Substream> completedSubstreams
+        ) throws IOException;
+
+        /// Returns completed folder metadata.
+        @Override
+        public final Folder completedFolder() {
+            if (!closed) {
+                throw new IllegalStateException("7z folder encoder is not closed");
+            }
+            return Objects.requireNonNull(completedFolder, "completedFolder");
+        }
+    }
+
+    /// Streams a linear coder pipeline directly into one physical packed stream.
+    @NotNullByDefault
+    private static final class LinearFolderEncoder extends AbstractFolderEncoder {
         /// The outermost stream that accepts decoded folder bytes.
         private final OutputStream output;
 
@@ -1190,26 +1454,8 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         /// The preprocessing filter descriptors in packed-to-decoded coder order.
         private final @Unmodifiable List<FilterDescriptor> filters;
 
-        /// The resolved compression setting shared by this folder.
-        private final SevenZipCompression compressionSetting;
-
-        /// The resolved filter chain shared by this folder.
-        private final SevenZipFilterChain filterSetting;
-
-        /// Metadata for completed decoded substreams.
-        private final List<Substream> substreams = new ArrayList<>();
-
-        /// The CRC-32 of all concatenated decoded substreams.
-        private final CRC32 crc32 = new CRC32();
-
-        /// The total decoded folder size.
-        private long size;
-
-        /// Whether the encoder chain has closed successfully.
-        private boolean closed;
-
-        /// Creates one active folder encoder.
-        private FolderEncoder(
+        /// Creates one active direct folder encoder.
+        private LinearFolderEncoder(
                 OutputStream output,
                 PackedOutputStream packedOutput,
                 @Nullable CountingOutputStream encryptedInput,
@@ -1219,82 +1465,427 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                 SevenZipCompression compressionSetting,
                 SevenZipFilterChain filterSetting
         ) {
+            super(compressionSetting, filterSetting);
             this.output = Objects.requireNonNull(output, "output");
             this.packedOutput = Objects.requireNonNull(packedOutput, "packedOutput");
             this.encryptedInput = encryptedInput;
             this.aesOutput = aesOutput;
             this.compression = Objects.requireNonNull(compression, "compression");
             this.filters = List.copyOf(filters);
-            this.compressionSetting = Objects.requireNonNull(compressionSetting, "compressionSetting");
-            this.filterSetting = Objects.requireNonNull(filterSetting, "filterSetting");
         }
 
-
-        /// Returns whether another entry can share this folder.
-        private boolean accepts(PendingEntry entry, int maximumSubstreams) {
-            return !closed
-                    && substreams.size() < maximumSubstreams
-                    && compressionSetting.equals(entry.compression())
-                    && filterSetting.equals(entry.filters());
-        }
-
-
-        /// Writes decoded folder bytes and updates the aggregate digest.
-        private void write(byte[] buffer, int offset, int length) throws IOException {
+        /// Writes bytes through the direct coder pipeline.
+        @Override
+        protected void writeBody(byte[] buffer, int offset, int length) throws IOException {
             output.write(buffer, offset, length);
-            crc32.update(buffer, offset, length);
-            try {
-                size = Math.addExact(size, length);
-            } catch (ArithmeticException exception) {
-                throw new IOException("7z folder size is too large", exception);
-            }
         }
 
-
-        /// Records one completed non-empty file substream.
-        private void completeSubstream(long substreamSize, long substreamCrc32) {
-            if (closed) {
-                throw new IllegalStateException("7z folder encoder is closed");
-            }
-            substreams.add(new Substream(substreamSize, substreamCrc32));
-        }
-
-
-        /// Finishes every encoder in the pipeline.
-        private void close() throws IOException {
-            if (closed) {
-                return;
-            }
-            if (substreams.isEmpty()) {
-                throw new IOException("Cannot close a 7z folder without substreams");
-            }
+        /// Closes the direct pipeline and builds its linear graph metadata.
+        @Override
+        protected Folder finishFolder(
+                long decodedSize,
+                long decodedCrc32,
+                List<Substream> completedSubstreams
+        ) throws IOException {
             output.close();
-            closed = true;
-        }
-
-
-        /// Creates completed folder metadata after the pipeline has closed.
-        private Folder completedFolder() {
-            if (!closed) {
-                throw new IllegalStateException("7z folder encoder is not closed");
-            }
             ArrayList<Coder> coders = new ArrayList<>(2 + filters.size());
             if (aesOutput != null) {
                 coders.add(new MethodDescriptor(AES_METHOD_ID, aesOutput.properties())
                         .coder(Objects.requireNonNull(encryptedInput, "encryptedInput").count()));
             }
-            coders.add(compression.coder(size));
+            coders.add(compression.coder(decodedSize));
             for (FilterDescriptor filter : filters) {
-                coders.add(filter.descriptor().coder(size));
+                coders.add(filter.descriptor().coder(decodedSize));
+            }
+            ArrayList<BindPair> bindPairs = new ArrayList<>(Math.max(0, coders.size() - 1));
+            for (int coderIndex = 1; coderIndex < coders.size(); coderIndex++) {
+                bindPairs.add(new BindPair(coderIndex, coderIndex - 1));
             }
             return new Folder(
-                    size,
-                    crc32.getValue(),
-                    packedOutput.count(),
-                    packedOutput.crc32(),
+                    decodedSize,
+                    decodedCrc32,
+                    List.of(new PackedStream(packedOutput.count(), packedOutput.crc32())),
                     List.copyOf(coders),
-                    List.copyOf(substreams)
+                    List.copyOf(bindPairs),
+                    new int[]{0},
+                    completedSubstreams
             );
+        }
+
+        /// Closes the direct pipeline while abandoning its metadata.
+        @Override
+        public void abort() throws IOException {
+            output.close();
+        }
+    }
+
+    /// Stages a decoded folder, splits it into BCJ2 branches, and writes four contiguous packed streams.
+    @NotNullByDefault
+    private static final class Bcj2FolderEncoder extends AbstractFolderEncoder {
+        /// The destination archive channel.
+        private final SeekableByteChannel channel;
+
+        /// The shared derived AES key, or `null` when branch encryption is disabled.
+        private final byte @Nullable [] encryptionKey;
+
+        /// The temporary decoded folder path.
+        private final Path stagingPath;
+
+        /// The temporary decoded folder output.
+        private final OutputStream stagingOutput;
+
+        /// Creates one active staged BCJ2 folder.
+        private Bcj2FolderEncoder(
+                SeekableByteChannel channel,
+                byte @Nullable [] encryptionKey,
+                SevenZipCompression compressionSetting,
+                SevenZipFilterChain filterSetting,
+                Path stagingPath,
+                OutputStream stagingOutput
+        ) {
+            super(compressionSetting, filterSetting);
+            this.channel = Objects.requireNonNull(channel, "channel");
+            this.encryptionKey = encryptionKey;
+            this.stagingPath = Objects.requireNonNull(stagingPath, "stagingPath");
+            this.stagingOutput = Objects.requireNonNull(stagingOutput, "stagingOutput");
+        }
+
+        /// Opens temporary storage for one BCJ2 folder.
+        private static Bcj2FolderEncoder open(
+                SeekableByteChannel channel,
+                byte @Nullable [] encryptionKey,
+                SevenZipCompression compressionSetting,
+                SevenZipFilterChain filterSetting
+        ) throws IOException {
+            Path path = Files.createTempFile("arkivo-7z-bcj2-", ".tmp");
+            try {
+                OutputStream output = new BufferedOutputStream(Files.newOutputStream(
+                        path,
+                        StandardOpenOption.WRITE,
+                        StandardOpenOption.TRUNCATE_EXISTING
+                ));
+                return new Bcj2FolderEncoder(
+                        channel,
+                        encryptionKey,
+                        compressionSetting,
+                        filterSetting,
+                        path,
+                        output
+                );
+            } catch (IOException | RuntimeException | Error exception) {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (IOException cleanupFailure) {
+                    exception.addSuppressed(cleanupFailure);
+                }
+                throw exception;
+            }
+        }
+
+        /// Writes decoded bytes to temporary folder storage.
+        @Override
+        protected void writeBody(byte[] buffer, int offset, int length) throws IOException {
+            stagingOutput.write(buffer, offset, length);
+        }
+
+        /// Splits, compresses, encrypts, and serializes the four BCJ2 branches.
+        @Override
+        protected Folder finishFolder(
+                long decodedSize,
+                long decodedCrc32,
+                List<Substream> completedSubstreams
+        ) throws IOException {
+            Path[] branches = new Path[4];
+            @Nullable Throwable failure = null;
+            try {
+                stagingOutput.close();
+                for (int index = 0; index < branches.length; index++) {
+                    branches[index] = Files.createTempFile("arkivo-7z-bcj2-branch-", ".tmp");
+                }
+                try (InputStream source = new BufferedInputStream(Files.newInputStream(stagingPath));
+                     OutputStream main = temporaryOutput(branches[0]);
+                     OutputStream call = temporaryOutput(branches[1]);
+                     OutputStream jump = temporaryOutput(branches[2]);
+                     OutputStream range = temporaryOutput(branches[3])) {
+                    SevenZipBcj2Encoder.encode(source, decodedSize, main, call, jump, range);
+                }
+                Files.deleteIfExists(stagingPath);
+
+                BranchOutput main = writePackedBranch(branches[0], compressionSetting());
+                BranchOutput range = writePackedBranch(branches[3], null);
+                BranchOutput call = writePackedBranch(branches[1], compressionSetting());
+                BranchOutput jump = writePackedBranch(branches[2], compressionSetting());
+                return buildFolder(
+                        decodedSize,
+                        decodedCrc32,
+                        completedSubstreams,
+                        main,
+                        range,
+                        call,
+                        jump
+                );
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+                throw exception;
+            } finally {
+                @Nullable Throwable cleanupFailure = deleteTemporary(stagingPath, null);
+                for (Path branch : branches) {
+                    if (branch != null) {
+                        cleanupFailure = deleteTemporary(branch, cleanupFailure);
+                    }
+                }
+                if (failure != null && cleanupFailure != null) {
+                    failure.addSuppressed(cleanupFailure);
+                } else if (cleanupFailure != null) {
+                    throwFailure(cleanupFailure);
+                }
+            }
+        }
+
+
+        /// Opens a buffered output over one existing temporary branch file.
+        private static OutputStream temporaryOutput(Path path) throws IOException {
+            return new BufferedOutputStream(Files.newOutputStream(
+                    path,
+                    StandardOpenOption.WRITE,
+                    StandardOpenOption.TRUNCATE_EXISTING
+            ));
+        }
+
+        /// Writes one branch through optional compression and AES into the archive channel.
+        private BranchOutput writePackedBranch(
+                Path path,
+                @Nullable SevenZipCompression compressionSetting
+        ) throws IOException {
+            long decodedSize = Files.size(path);
+            PackedOutputStream packedOutput = new PackedOutputStream(channel);
+            @Nullable AesOutputStream aesOutput = null;
+            @Nullable CountingOutputStream encryptedInput = null;
+            OutputStream packedTarget = packedOutput;
+            if (encryptionKey != null) {
+                aesOutput = new AesOutputStream(packedOutput, encryptionKey);
+                encryptedInput = new CountingOutputStream(aesOutput);
+                packedTarget = encryptedInput;
+            }
+
+            @Nullable CompressionOutput compression = compressionSetting == null
+                    ? null
+                    : openCompression(compressionSetting, packedTarget);
+            OutputStream output = compression == null ? packedTarget : compression.output();
+            @Nullable Throwable failure = null;
+            try (InputStream input = new BufferedInputStream(Files.newInputStream(path));
+                 OutputStream ownedOutput = output) {
+                transfer(input, ownedOutput);
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+                throw exception;
+            } finally {
+                if (failure != null) {
+                    try {
+                        output.close();
+                    } catch (IOException | RuntimeException | Error closeFailure) {
+                        failure.addSuppressed(closeFailure);
+                    }
+                }
+            }
+            return new BranchOutput(
+                    new PackedStream(packedOutput.count(), packedOutput.crc32()),
+                    decodedSize,
+                    compression == null ? null : compression.descriptor(),
+                    aesOutput == null ? null : new MethodDescriptor(AES_METHOD_ID, aesOutput.properties()),
+                    encryptedInput == null ? 0L : encryptedInput.count()
+            );
+        }
+
+        /// Builds the complete branch, BCJ2, binding, and physical-input graph.
+        private static Folder buildFolder(
+                long decodedSize,
+                long decodedCrc32,
+                List<Substream> completedSubstreams,
+                BranchOutput main,
+                BranchOutput range,
+                BranchOutput call,
+                BranchOutput jump
+        ) {
+            FolderGraphBuilder graph = new FolderGraphBuilder();
+            BranchNode mainNode = graph.addBranch(main);
+            BranchNode rangeNode = graph.addBranch(range);
+            BranchNode callNode = graph.addBranch(call);
+            BranchNode jumpNode = graph.addBranch(jump);
+            CoderNode bcj2 = graph.addCoder(new MethodDescriptor(BCJ2_METHOD_ID, new byte[0])
+                    .coder(4, decodedSize));
+            graph.bind(bcj2.firstInputStreamIndex(), mainNode.finalOutputStreamIndex());
+            graph.bind(bcj2.firstInputStreamIndex() + 1, callNode.finalOutputStreamIndex());
+            graph.bind(bcj2.firstInputStreamIndex() + 2, jumpNode.finalOutputStreamIndex());
+
+            int rangePackedInput;
+            if (rangeNode.finalOutputStreamIndex() >= 0) {
+                graph.bind(bcj2.firstInputStreamIndex() + 3, rangeNode.finalOutputStreamIndex());
+                rangePackedInput = rangeNode.packedInputStreamIndex();
+            } else {
+                rangePackedInput = bcj2.firstInputStreamIndex() + 3;
+            }
+            return new Folder(
+                    decodedSize,
+                    decodedCrc32,
+                    List.of(main.packedStream(), range.packedStream(), call.packedStream(), jump.packedStream()),
+                    graph.coders(),
+                    graph.bindPairs(),
+                    new int[]{
+                            mainNode.packedInputStreamIndex(),
+                            rangePackedInput,
+                            callNode.packedInputStreamIndex(),
+                            jumpNode.packedInputStreamIndex()
+                    },
+                    completedSubstreams
+            );
+        }
+
+        /// Copies one complete branch without retaining it in memory.
+        private static void transfer(InputStream input, OutputStream output) throws IOException {
+            byte[] buffer = new byte[8192];
+            for (;;) {
+                int count = input.read(buffer);
+                if (count < 0) {
+                    return;
+                }
+                if (count == 0) {
+                    int value = input.read();
+                    if (value < 0) {
+                        return;
+                    }
+                    output.write(value);
+                } else {
+                    output.write(buffer, 0, count);
+                }
+            }
+        }
+
+        /// Abandons temporary folder storage.
+        @Override
+        public void abort() throws IOException {
+            @Nullable Throwable failure = null;
+            try {
+                stagingOutput.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+            }
+            failure = deleteTemporary(stagingPath, failure);
+            throwFailure(failure);
+        }
+
+        /// Deletes one temporary path while retaining an earlier failure.
+        private static @Nullable Throwable deleteTemporary(Path path, @Nullable Throwable failure) {
+            try {
+                Files.deleteIfExists(path);
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+            return failure;
+        }
+    }
+
+    /// Stores one completed BCJ2 branch and its optional decoder chain.
+    ///
+    /// @param packedStream the physical packed stream digest
+    /// @param decodedSize the uncompressed branch size
+    /// @param compression the branch compression coder, or `null` for the range stream
+    /// @param aes the AES coder, or `null` when data encryption is disabled
+    /// @param encryptedInputSize the unpadded AES input size
+    @NotNullByDefault
+    private record BranchOutput(
+            PackedStream packedStream,
+            long decodedSize,
+            @Nullable MethodDescriptor compression,
+            @Nullable MethodDescriptor aes,
+            long encryptedInputSize
+    ) {
+        /// Validates one encoded branch.
+        private BranchOutput {
+            Objects.requireNonNull(packedStream, "packedStream");
+            if (decodedSize < 0L || encryptedInputSize < 0L) {
+                throw new IllegalArgumentException("branch sizes must be non-negative");
+            }
+        }
+    }
+
+    /// Stores the graph endpoints created for one physical BCJ2 branch.
+    ///
+    /// @param packedInputStreamIndex the branch's unbound physical input
+    /// @param finalOutputStreamIndex the decoded branch output, or `-1` for a direct packed input
+    @NotNullByDefault
+    private record BranchNode(int packedInputStreamIndex, int finalOutputStreamIndex) {
+    }
+
+    /// Stores the implicit global stream indexes assigned to one declared coder.
+    ///
+    /// @param firstInputStreamIndex the coder's first graph input
+    /// @param firstOutputStreamIndex the coder's first graph output
+    @NotNullByDefault
+    private record CoderNode(int firstInputStreamIndex, int firstOutputStreamIndex) {
+    }
+
+    /// Assigns global stream indexes while assembling a connected folder graph.
+    @NotNullByDefault
+    private static final class FolderGraphBuilder {
+        /// The coders in declaration order.
+        private final List<Coder> coders = new ArrayList<>();
+
+        /// The graph bindings in declaration order.
+        private final List<BindPair> bindPairs = new ArrayList<>();
+
+        /// The next unassigned graph input index.
+        private int inputStreamCount;
+
+        /// The next unassigned graph output index.
+        private int outputStreamCount;
+
+        /// Adds one optional AES and compression branch chain.
+        private BranchNode addBranch(BranchOutput branch) {
+            int packedInput = -1;
+            int finalOutput = -1;
+            if (branch.aes() != null) {
+                CoderNode aes = addCoder(branch.aes().coder(branch.encryptedInputSize()));
+                packedInput = aes.firstInputStreamIndex();
+                finalOutput = aes.firstOutputStreamIndex();
+            }
+            if (branch.compression() != null) {
+                CoderNode compression = addCoder(branch.compression().coder(branch.decodedSize()));
+                if (finalOutput >= 0) {
+                    bind(compression.firstInputStreamIndex(), finalOutput);
+                } else {
+                    packedInput = compression.firstInputStreamIndex();
+                }
+                finalOutput = compression.firstOutputStreamIndex();
+            }
+            return new BranchNode(packedInput, finalOutput);
+        }
+
+        /// Adds one coder and returns its implicit first stream indexes.
+        private CoderNode addCoder(Coder coder) {
+            CoderNode node = new CoderNode(inputStreamCount, outputStreamCount);
+            coders.add(coder);
+            inputStreamCount = Math.addExact(inputStreamCount, coder.inputStreamCount());
+            outputStreamCount = Math.addExact(outputStreamCount, coder.outputStreamCount());
+            return node;
+        }
+
+        /// Binds one coder input to one earlier coder output.
+        private void bind(int inputStreamIndex, int outputStreamIndex) {
+            if (inputStreamIndex < 0 || outputStreamIndex < 0) {
+                throw new IllegalArgumentException("folder binding endpoints must be coder streams");
+            }
+            bindPairs.add(new BindPair(inputStreamIndex, outputStreamIndex));
+        }
+
+        /// Returns an immutable coder snapshot.
+        private @Unmodifiable List<Coder> coders() {
+            return List.copyOf(coders);
+        }
+
+        /// Returns an immutable binding snapshot.
+        private @Unmodifiable List<BindPair> bindPairs() {
+            return List.copyOf(bindPairs);
         }
     }
 
@@ -1558,62 +2149,6 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             result[1] = (byte) (initializationVector.length - 1);
             System.arraycopy(initializationVector, 0, result, 2, initializationVector.length);
             return result;
-        }
-    }
-
-
-    /// Finishes a raw Deflate stream, releases its native state, and closes its downstream output.
-    @NotNullByDefault
-    private static final class RawDeflateOutputStream extends OutputStream {
-        /// The native Deflate state.
-        private final Deflater deflater;
-
-        /// The raw Deflate output stream.
-        private final DeflaterOutputStream output;
-
-        /// Whether this stream has closed.
-        private boolean closed;
-
-        /// Creates a raw Deflate encoder.
-        private RawDeflateOutputStream(OutputStream output, int level) {
-            this.deflater = new Deflater(level, true);
-            this.output = new DeflaterOutputStream(output, deflater);
-        }
-
-
-        /// Writes one decoded byte.
-        @Override
-        public void write(int value) throws IOException {
-            output.write(value);
-        }
-
-
-        /// Writes decoded bytes.
-        @Override
-        public void write(byte[] buffer, int offset, int length) throws IOException {
-            output.write(buffer, offset, length);
-        }
-
-
-        /// Flushes the Deflate output.
-        @Override
-        public void flush() throws IOException {
-            output.flush();
-        }
-
-
-        /// Finishes Deflate, releases native state, and closes the downstream stream.
-        @Override
-        public void close() throws IOException {
-            if (closed) {
-                return;
-            }
-            try {
-                output.close();
-            } finally {
-                deflater.end();
-                closed = true;
-            }
         }
     }
 }

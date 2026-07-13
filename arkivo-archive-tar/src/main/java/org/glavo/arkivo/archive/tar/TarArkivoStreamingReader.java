@@ -79,8 +79,11 @@ public abstract sealed class TarArkivoStreamingReader extends ArkivoStreamingRea
                     : probe.codec();
             archiveSource = probe.channel();
         }
-        return new TarArkivoStreamingReaderImpl(StreamChannelAdapters.inputStream(
-                TarCompressionStreams.openArchiveInput(archiveSource, compressionCodec)
-        ));
+        return new TarArkivoStreamingReaderImpl(
+                StreamChannelAdapters.inputStream(
+                        TarCompressionStreams.openArchiveInput(archiveSource, compressionCodec)
+                ),
+                environment
+        );
     }
 }

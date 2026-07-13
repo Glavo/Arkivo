@@ -3,11 +3,10 @@
 
 /// Provides 7z archive APIs for Arkivo.
 module org.glavo.arkivo.archive.sevenzip {
-    requires org.glavo.arkivo.archive;
+    requires transitive org.glavo.arkivo.archive;
+    requires org.glavo.arkivo.codec;
     requires org.glavo.arkivo.codec.bcj;
     requires org.glavo.arkivo.codec.delta;
-    requires static org.glavo.arkivo.codec.bzip2;
-    requires static org.glavo.arkivo.codec.deflate64;
     requires static org.glavo.arkivo.codec.lzma;
     requires static org.jetbrains.annotations;
 

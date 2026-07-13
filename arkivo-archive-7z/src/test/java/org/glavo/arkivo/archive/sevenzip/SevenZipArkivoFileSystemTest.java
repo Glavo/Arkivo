@@ -44,6 +44,7 @@ import javax.crypto.Cipher;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -396,6 +397,12 @@ public final class SevenZipArkivoFileSystemTest {
         Files.write(firstVolume, volumes[0]);
         Files.write(secondVolume, volumes[1]);
 
+        List<Path> discoveredPaths = Objects.requireNonNull(
+                SevenZipArkivoFormat.instance().discoverVolumePaths(firstVolume)
+        );
+        assertEquals(List.of(firstVolume, secondVolume), discoveredPaths);
+        assertThrows(UnsupportedOperationException.class, discoveredPaths::clear);
+
         try {
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(firstVolume)) {
                 Path file = fileSystem.getPath("/hello.txt");
@@ -635,6 +642,162 @@ public final class SevenZipArkivoFileSystemTest {
             deleteTemporaryArchive(derivedPath);
             deleteTemporaryArchive(archivePath);
         }
+    }
+
+    /// Verifies that channel-source update mode requires a commit target before opening the source.
+    @Test
+    public void seekableChannelSourceUpdateRequiresCommitTarget() throws IOException {
+        TestSeekableChannelSource source = new TestSeekableChannelSource(minimalArchive());
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+        );
+
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> SevenZipArkivoFileSystem.open(source, environment)
+        );
+
+        assertEquals(
+                "7z channel-source update mode requires ArkivoFileSystem.COMMIT_TARGET",
+                exception.getMessage()
+        );
+        assertEquals(0, source.openCount());
+        assertEquals(1, source.closeCount());
+    }
+
+    /// Verifies that a channel-source update publishes a derived encrypted solid archive without mutating the source.
+    @Test
+    public void updatesSeekableChannelSourceToDerivedArchive() throws IOException {
+        byte[] originalArchive = archiveWithCopySubStreams(
+                "onetwo".getBytes(StandardCharsets.UTF_8),
+                3
+        );
+        byte[] password = "channel-update-password".getBytes(StandardCharsets.UTF_16LE);
+        TestSeekableChannelSource source = new TestSeekableChannelSource(originalArchive);
+        Path derivedPath = createTemporaryArchivePath("channel-update-derived-7z-");
+        try {
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.COMMIT_TARGET.key(),
+                    ArkivoCommitTarget.writeTo(derivedPath),
+                    SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                    ArkivoPasswordProvider.fixed(password),
+                    SevenZipArkivoFileSystem.COMPRESSION.key(),
+                    SevenZipCompression.lzma2(SevenZipCompression.MIN_DICTIONARY_SIZE),
+                    SevenZipArkivoFileSystem.FILTER.key(),
+                    SevenZipFilter.bcj2(),
+                    SevenZipArkivoFileSystem.SOLID_FILE_COUNT.key(),
+                    2,
+                    SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(),
+                    true
+            );
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(source, environment)) {
+                assertEquals("one", Files.readString(fileSystem.getPath("/one.txt"), StandardCharsets.UTF_8));
+                assertEquals("two", Files.readString(fileSystem.getPath("/two.txt"), StandardCharsets.UTF_8));
+                Files.writeString(fileSystem.getPath("/one.txt"), "updated-one", StandardCharsets.UTF_8);
+                Files.delete(fileSystem.getPath("/two.txt"));
+                Files.writeString(fileSystem.getPath("/new.txt"), "new", StandardCharsets.UTF_8);
+            }
+
+            assertEquals(1, source.closeCount());
+            assertEquals(true, source.openCount() > 1);
+            assertEquals(true, source.allOpenedChannelsClosed());
+            assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(derivedPath));
+            try (SevenZipArkivoFileSystem derived = SevenZipArkivoFileSystem.open(
+                    derivedPath,
+                    Map.of(
+                            SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                            ArkivoPasswordProvider.fixed(password)
+                    )
+            )) {
+                Path one = derived.getPath("/one.txt");
+                Path added = derived.getPath("/new.txt");
+                assertEquals("updated-one", Files.readString(one, StandardCharsets.UTF_8));
+                assertEquals(false, Files.exists(derived.getPath("/two.txt")));
+                assertEquals("new", Files.readString(added, StandardCharsets.UTF_8));
+                SevenZipArkivoEntryAttributes oneAttributes =
+                        Files.readAttributes(one, SevenZipArkivoEntryAttributes.class);
+                SevenZipArkivoEntryAttributes addedAttributes =
+                        Files.readAttributes(added, SevenZipArkivoEntryAttributes.class);
+                assertEquals(true, oneAttributes.solid());
+                assertEquals(true, addedAttributes.solid());
+                assertEquals(4, oneAttributes.packedStreams().size());
+                assertEquals(oneAttributes.coderGraph(), addedAttributes.coderGraph());
+                SevenZipCoderGraph graph = Objects.requireNonNull(oneAttributes.coderGraph());
+                assertEquals(
+                        1L,
+                        graph.coders().stream()
+                                .filter(coder -> coder.method() == SevenZipCoderMethod.BCJ2)
+                                .count()
+                );
+            }
+
+            TestSeekableChannelSource originalSource = new TestSeekableChannelSource(originalArchive);
+            try (SevenZipArkivoFileSystem original = SevenZipArkivoFileSystem.open(originalSource)) {
+                assertEquals("one", Files.readString(original.getPath("/one.txt"), StandardCharsets.UTF_8));
+                assertEquals("two", Files.readString(original.getPath("/two.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchive(derivedPath);
+        }
+    }
+
+    /// Verifies that an owned seekable channel can back a complete-rewrite update and is closed with the file system.
+    @Test
+    public void updatesOwnedSeekableChannelToDerivedArchive() throws IOException {
+        MemorySeekableByteChannel channel = new MemorySeekableByteChannel(
+                archiveWithCopyFile("before".getBytes(StandardCharsets.UTF_8)),
+                false
+        );
+        Path derivedPath = createTemporaryArchivePath("owned-channel-update-derived-7z-");
+        try {
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.COMMIT_TARGET.key(),
+                    ArkivoCommitTarget.writeTo(derivedPath)
+            );
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(channel, environment)) {
+                Files.writeString(fileSystem.getPath("/hello.txt"), "after", StandardCharsets.UTF_8);
+            }
+
+            assertEquals(false, channel.isOpen());
+            try (SevenZipArkivoFileSystem derived = SevenZipArkivoFileSystem.open(derivedPath)) {
+                assertEquals("after", Files.readString(derived.getPath("/hello.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            deleteTemporaryArchive(derivedPath);
+        }
+    }
+
+    /// Verifies that failed channel-source publication closes source resources and remains idempotent.
+    @Test
+    public void failedSeekableChannelSourceUpdateClosesOwnership() throws IOException {
+        TestSeekableChannelSource source = new TestSeekableChannelSource(
+                archiveWithCopyFile("before".getBytes(StandardCharsets.UTF_8))
+        );
+        ArkivoCommitTarget failingTarget = sourcePath -> {
+            assertNull(sourcePath);
+            throw new IOException("channel update commit failed");
+        };
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                ArkivoFileSystem.COMMIT_TARGET.key(),
+                failingTarget
+        );
+        SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(source, environment);
+        Files.writeString(fileSystem.getPath("/hello.txt"), "after", StandardCharsets.UTF_8);
+
+        IOException exception = assertThrows(IOException.class, fileSystem::close);
+
+        assertEquals("channel update commit failed", exception.getMessage());
+        assertEquals(1, source.closeCount());
+        assertEquals(true, source.allOpenedChannelsClosed());
+        fileSystem.close();
+        assertEquals(1, source.closeCount());
     }
 
     /// Verifies that commit setup failure leaves the original 7z archive untouched.
@@ -1860,6 +2023,198 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies BCJ2 output uses four physical streams and a connected multi-input coder graph.
+    @Test
+    public void createsBcj2ArchiveWithFourPackedStreams() throws IOException {
+        byte[] content = new byte[32 * 1024];
+        for (int index = 0; index < content.length; index++) {
+            content[index] = (byte) (index * 37 + 11);
+        }
+        for (int position = 64; position + 5 < content.length; position += 257) {
+            content[position] = (byte) (position % 2 == 0 ? 0xe8 : 0xe9);
+            ByteBuffer.wrap(content, position + 1, Integer.BYTES)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .putInt(16 - position - 5);
+        }
+
+        Path archivePath = createTemporaryArchivePath("bcj2-output-");
+        try {
+            try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
+                    archivePath,
+                    Map.of(
+                            SevenZipArkivoFileSystem.COMPRESSION.key(),
+                            SevenZipCompression.lzma2(64 * 1024),
+                            SevenZipArkivoFileSystem.FILTER.key(),
+                            SevenZipFilter.bcj2()
+                    )
+            )) {
+                writeStreamingContent(writer, content);
+            }
+
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                Path entry = fileSystem.getPath("/content.bin");
+                assertArrayEquals(content, Files.readAllBytes(entry));
+                SevenZipArkivoEntryAttributes attributes = Files.readAttributes(
+                        entry,
+                        SevenZipArkivoEntryAttributes.class
+                );
+                assertEquals(4, attributes.packedStreams().size());
+                SevenZipCoderGraph graph = Objects.requireNonNull(attributes.coderGraph());
+                assertEquals(4, graph.packedStreamCount());
+                assertEquals(7, graph.inputStreamCount());
+                assertEquals(4, graph.outputStreamCount());
+                assertEquals(
+                        List.of(
+                                SevenZipCoderMethod.LZMA2,
+                                SevenZipCoderMethod.LZMA2,
+                                SevenZipCoderMethod.LZMA2,
+                                SevenZipCoderMethod.BCJ2
+                        ),
+                        graph.coders().stream().map(SevenZipCoder::method).toList()
+                );
+                SevenZipCoder bcj2 = graph.coders().get(3);
+                assertEquals(4, bcj2.inputStreamCount());
+                assertEquals(1, bcj2.outputStreamCount());
+                assertEquals(content.length, graph.finalUnpackSize());
+                assertEquals(0, graph.packedStreamOrdinal(0));
+                assertEquals(2, graph.packedStreamOrdinal(1));
+                assertEquals(3, graph.packedStreamOrdinal(2));
+                assertEquals(1, graph.packedStreamOrdinal(6));
+            }
+
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+    /// Verifies every 7z output compression can encode all three compressible BCJ2 branches.
+    @Test
+    public void createsBcj2ArchivesWithEveryCompression() throws IOException {
+        List<SevenZipCompression> compressions = List.of(
+                SevenZipCompression.copy(),
+                SevenZipCompression.lzma(64 * 1024),
+                SevenZipCompression.lzma2(64 * 1024),
+                SevenZipCompression.bzip2(1),
+                SevenZipCompression.deflate(1),
+                SevenZipCompression.deflate64(9)
+        );
+        List<SevenZipCoderMethod> methods = List.of(
+                SevenZipCoderMethod.COPY,
+                SevenZipCoderMethod.LZMA,
+                SevenZipCoderMethod.LZMA2,
+                SevenZipCoderMethod.BZIP2,
+                SevenZipCoderMethod.DEFLATE,
+                SevenZipCoderMethod.DEFLATE64
+        );
+        byte[] content = new byte[8192];
+        for (int index = 0; index < content.length; index++) {
+            content[index] = (byte) (index * 19 + 5);
+        }
+        for (int position = 24; position + 5 < content.length; position += 149) {
+            content[position] = (byte) (position % 3 == 0 ? 0xe8 : 0xe9);
+            ByteBuffer.wrap(content, position + 1, Integer.BYTES)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .putInt(4 - position - 5);
+        }
+
+        for (int index = 0; index < compressions.size(); index++) {
+            Path archivePath = createTemporaryArchivePath("bcj2-compression-");
+            try {
+                try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
+                        archivePath,
+                        Map.of(
+                                SevenZipArkivoFileSystem.COMPRESSION.key(),
+                                compressions.get(index),
+                                SevenZipArkivoFileSystem.FILTER.key(),
+                                SevenZipFilter.bcj2()
+                        )
+                )) {
+                    writeStreamingContent(writer, content);
+                }
+
+                try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                    Path path = fileSystem.getPath("/content.bin");
+                    assertArrayEquals(content, Files.readAllBytes(path));
+                    SevenZipCoderGraph graph = Objects.requireNonNull(Files.readAttributes(
+                            path,
+                            SevenZipArkivoEntryAttributes.class
+                    ).coderGraph());
+                    SevenZipCoderMethod method = methods.get(index);
+                    assertEquals(
+                            3L,
+                            graph.coders().stream().filter(coder -> coder.method() == method).count()
+                    );
+                    assertEquals(SevenZipCoderMethod.BCJ2, graph.coders().get(3).method());
+                    assertEquals(4, graph.packedStreamCount());
+                }
+            } finally {
+                deleteTemporaryArchive(archivePath);
+            }
+        }
+    }
+    /// Verifies an available official 7-Zip CLI can fully test Arkivo BCJ2 output.
+    @Test
+    public void officialSevenZipReadsBcj2OutputWhenAvailable() throws IOException {
+        String executableValue = System.getenv("ARKIVO_7Z_EXECUTABLE");
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                executableValue != null && Files.isRegularFile(Path.of(executableValue)),
+                "ARKIVO_7Z_EXECUTABLE does not name an official 7-Zip CLI"
+        );
+
+        String passwordText = "arkivo-bcj2-interop";
+        byte[] password = passwordText.getBytes(StandardCharsets.UTF_16LE);
+        byte[] content = new byte[16 * 1024];
+        for (int index = 0; index < content.length; index++) {
+            content[index] = (byte) (index * 43 + 7);
+        }
+        for (int position = 48; position + 5 < content.length; position += 211) {
+            content[position] = (byte) 0xe8;
+            ByteBuffer.wrap(content, position + 1, Integer.BYTES)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .putInt(12 - position - 5);
+        }
+
+        Path archivePath = createTemporaryArchivePath("bcj2-official-");
+        try {
+            try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
+                    archivePath,
+                    Map.of(
+                            SevenZipArkivoFileSystem.COMPRESSION.key(),
+                            SevenZipCompression.lzma2(64 * 1024),
+                            SevenZipArkivoFileSystem.FILTER.key(),
+                            SevenZipFilter.bcj2(),
+                            SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                            ArkivoPasswordProvider.fixed(password),
+                            SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(),
+                            true
+                    )
+            )) {
+                writeStreamingContent(writer, content);
+            }
+
+            Process process = new ProcessBuilder(
+                    executableValue,
+                    "t",
+                    "-bb0",
+                    "-p" + passwordText,
+                    archivePath.toAbsolutePath().toString()
+            ).redirectErrorStream(true).start();
+            String output;
+            try (InputStream input = process.getInputStream()) {
+                output = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+            }
+            int exitCode;
+            try {
+                exitCode = process.waitFor();
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while testing BCJ2 output with 7-Zip", exception);
+            }
+            assertEquals(0, exitCode, output);
+        } finally {
+            Arrays.fill(password, (byte) 0);
+            deleteTemporaryArchive(archivePath);
+        }
+    }
     /// Verifies every configurable preprocessing filter through Arkivo and Commons Compress readers.
     @Test
     public void createsArchivesWithAllFilterMethods() throws IOException {
@@ -1881,6 +2236,8 @@ public final class SevenZipArkivoFileSystemTest {
                 SevenZMethod.BCJ_ARM_THUMB_FILTER,
                 SevenZMethod.BCJ_SPARC_FILTER
         );
+        String passwordText = "arkivo-bcj2-interop";
+        byte[] password = passwordText.getBytes(StandardCharsets.UTF_16LE);
         byte[] content = new byte[16 * 1024];
         for (int index = 0; index < content.length; index++) {
             content[index] = (byte) (index * 29 + index / 7);
@@ -1947,7 +2304,9 @@ public final class SevenZipArkivoFileSystemTest {
         for (int index = 0; index < filters.size(); index++) {
             SevenZipFilter filter = filters.get(index);
             byte[] pattern = patterns.get(index);
-            byte[] content = new byte[16 * 1024];
+            String passwordText = "arkivo-bcj2-interop";
+        byte[] password = passwordText.getBytes(StandardCharsets.UTF_16LE);
+        byte[] content = new byte[16 * 1024];
             for (int offset = 0; offset < content.length; offset += pattern.length) {
                 System.arraycopy(pattern, 0, content, offset, pattern.length);
             }
@@ -2288,6 +2647,85 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies BCJ2 solid folders compose with per-branch AES, encrypted headers, and split publication.
+    @Test
+    public void createsEncryptedSolidBcj2SplitArchive() throws IOException {
+        byte[] password = "bcj2-solid-password".getBytes(StandardCharsets.UTF_16LE);
+        byte[][] contents = new byte[3][4096];
+        for (int fileIndex = 0; fileIndex < contents.length; fileIndex++) {
+            byte[] content = contents[fileIndex];
+            for (int index = 0; index < content.length; index++) {
+                content[index] = (byte) (index * 31 + fileIndex * 17);
+            }
+            for (int position = 32; position + 5 < content.length; position += 193) {
+                content[position] = (byte) 0xe8;
+                ByteBuffer.wrap(content, position + 1, Integer.BYTES)
+                        .order(ByteOrder.LITTLE_ENDIAN)
+                        .putInt(8 - position - 5);
+            }
+        }
+        TestVolumeTarget target = new TestVolumeTarget(-1L, false);
+
+        try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
+                target,
+                256L,
+                Map.of(
+                        SevenZipArkivoFileSystem.COMPRESSION.key(),
+                        SevenZipCompression.lzma2(64 * 1024),
+                        SevenZipArkivoFileSystem.FILTER.key(),
+                        SevenZipFilter.bcj2(),
+                        SevenZipArkivoFileSystem.SOLID_FILE_COUNT.key(),
+                        3,
+                        SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                        ArkivoPasswordProvider.fixed(password),
+                        SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(),
+                        true
+                )
+        )) {
+            for (int index = 0; index < contents.length; index++) {
+                writer.beginFile("file-" + index + ".bin");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write(contents[index]);
+                }
+            }
+        }
+
+        byte[][] volumes = target.committedVolumes();
+        assertEquals(true, volumes.length > 1);
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                new SplitVolumeSource(volumes),
+                Map.of(
+                        SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                        ArkivoPasswordProvider.fixed(password)
+                )
+        )) {
+            for (int index = 0; index < contents.length; index++) {
+                Path path = fileSystem.getPath("/file-" + index + ".bin");
+                assertArrayEquals(contents[index], Files.readAllBytes(path));
+                SevenZipArkivoEntryAttributes attributes = Files.readAttributes(
+                        path,
+                        SevenZipArkivoEntryAttributes.class
+                );
+                assertEquals(true, attributes.solid());
+                assertEquals(index, attributes.substreamIndex());
+                assertEquals(contents.length, attributes.substreamCount());
+                assertEquals(4, attributes.packedStreams().size());
+            }
+
+            SevenZipCoderGraph graph = Objects.requireNonNull(Files.readAttributes(
+                    fileSystem.getPath("/file-0.bin"),
+                    SevenZipArkivoEntryAttributes.class
+            ).coderGraph());
+            List<SevenZipCoderMethod> methods = graph.coders().stream().map(SevenZipCoder::method).toList();
+            assertEquals(4L, methods.stream().filter(method -> method == SevenZipCoderMethod.AES).count());
+            assertEquals(3L, methods.stream().filter(method -> method == SevenZipCoderMethod.LZMA2).count());
+            assertEquals(1L, methods.stream().filter(method -> method == SevenZipCoderMethod.BCJ2).count());
+            assertEquals(4, graph.packedStreamCount());
+            assertEquals(contents[0].length * contents.length, graph.finalUnpackSize());
+        } finally {
+            Arrays.fill(password, (byte) 0);
+        }
+    }
     /// Verifies that path-backed 7z writes produce conventional bounded split volumes that can be reopened.
     @Test
     public void createsPathBackedSplitArchive() throws IOException {
@@ -3557,6 +3995,61 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies malformed folder sizes cannot violate the BCJ2 output-size invariant.
+    @Test
+    public void rejectsMismatchedBcj2GraphSizes() throws IOException {
+        Path archivePath = createTemporaryArchivePath("bcj2-graph-size-");
+        Files.write(
+                archivePath,
+                archiveWithBcj2CopyGraphFile(
+                        false,
+                        new byte[]{0x00, 0x7f, (byte) 0xff, (byte) 0xfc, 0x00},
+                        4
+                )
+        );
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                IOException exception = assertThrows(
+                        IOException.class,
+                        () -> Files.readAllBytes(fileSystem.getPath("/bcj2.bin"))
+                );
+                assertEquals("Invalid 7z BCJ2 stream sizes", exception.getMessage());
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies a BCJ2 folder rejects a nonzero range code at complete logical EOF.
+    @Test
+    public void rejectsUnfinishedBcj2RangeCode() throws IOException {
+        Path archivePath = createTemporaryArchivePath("bcj2-range-finish-");
+        Files.write(
+                archivePath,
+                archiveWithBcj2CopyGraphFile(
+                        false,
+                        new byte[]{0x00, (byte) 0x80, 0x00, 0x00, 0x00},
+                        5
+                )
+        );
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                IOException exception = assertThrows(
+                        IOException.class,
+                        () -> Files.readAllBytes(fileSystem.getPath("/bcj2.bin"))
+                );
+                assertEquals(
+                        "7z BCJ2 range decoder did not finish with a zero code",
+                        exception.getMessage()
+                );
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies a BCJ2 folder whose four graph branches are independently LZMA2-compressed.
     @Test
     public void bcj2Lzma2GraphFileEntry() throws IOException {
@@ -4523,16 +5016,33 @@ public final class SevenZipArkivoFileSystemTest {
 
     /// Returns a BCJ2 Copy graph archive with an optionally corrupted CALL-stream digest.
     private static byte[] archiveWithBcj2CopyGraphFile(boolean corruptCallCrc) throws IOException {
+        return archiveWithBcj2CopyGraphFile(
+                corruptCallCrc,
+                new byte[]{0x00, 0x7f, (byte) 0xff, (byte) 0xfc, 0x00},
+                5
+        );
+    }
+
+    /// Returns a BCJ2 Copy graph archive with selected range bytes and declared output size.
+    private static byte[] archiveWithBcj2CopyGraphFile(
+            boolean corruptCallCrc,
+            byte[] range,
+            int uncompressedSize
+    ) throws IOException {
         byte[] main = {(byte) 0xe8};
         byte[] call = {0x00, 0x00, 0x00, 0x06};
         byte[] jump = new byte[0];
-        byte[] range = {0x00, (byte) 0x80, 0x00, 0x00, 0x00};
         int[] packedSizes = {range.length, main.length, jump.length, call.length};
         long[] packedCrc32s = {crc32(range), crc32(main), crc32(jump), crc32(call)};
         if (corruptCallCrc) {
             packedCrc32s[3] ^= 1L;
         }
-        byte[] header = bcj2CopyGraphFileHeader(packedSizes, packedCrc32s, 5, "bcj2.bin");
+        byte[] header = bcj2CopyGraphFileHeader(
+                packedSizes,
+                packedCrc32s,
+                uncompressedSize,
+                "bcj2.bin"
+        );
         return archive(concatenateAll(range, main, jump, call), header, crc32(header));
     }
 
@@ -4541,7 +5051,7 @@ public final class SevenZipArkivoFileSystemTest {
         byte[] main = {(byte) 0xe8};
         byte[] call = {0x00, 0x00, 0x00, 0x06};
         byte[] jump = new byte[0];
-        byte[] range = {0x00, (byte) 0x80, 0x00, 0x00, 0x00};
+        byte[] range = {0x00, 0x7f, (byte) 0xff, (byte) 0xfc, 0x00};
         CoderPayload mainPayload = lzma2Payload(main);
         CoderPayload callPayload = lzma2Payload(call);
         CoderPayload jumpPayload = lzma2Payload(jump);

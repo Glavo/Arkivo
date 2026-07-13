@@ -8,9 +8,14 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.io.IOException;
 
 /// Creates transactional output for a multi-volume archive.
+///
+/// Passing a target to an Arkivo factory does not transfer ownership of the target itself. The selected format owns the
+/// ArkivoVolumeOutput transaction returned by openOutput() and must commit or roll it back.
+///
+/// ArkivoPathVolumeTarget provides reusable staged publication for caller-defined ArkivoVolumePathLayout naming.
 @FunctionalInterface
 @NotNullByDefault
 public interface ArkivoVolumeTarget {
-    /// Opens a new independent multi-volume output transaction.
+    /// Opens a new independent multi-volume output transaction owned by the caller.
     ArkivoVolumeOutput openOutput() throws IOException;
 }

@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.ar.internal;
 
+import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingReader;
@@ -18,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.util.Arrays;
+import java.util.Map;
 import java.util.Objects;
 
 /// Implements the public forward-only AR streaming reader API.
@@ -34,6 +36,9 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
 
     /// The backing archive input stream.
     private final InputStream source;
+
+    /// The common archive read-limit tracker.
+    private final ArkivoReadLimitTracker readLimits;
 
     /// Whether the global archive signature has been consumed.
     private boolean globalHeaderRead;
@@ -60,14 +65,16 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     private byte @Nullable @Unmodifiable [] gnuNameTable;
 
     /// Creates a streaming AR reader.
-    public ArArkivoStreamingReaderImpl(InputStream source) {
+    public ArArkivoStreamingReaderImpl(InputStream source, Map<String, ?> environment) {
         this.source = Objects.requireNonNull(source, "source");
+        this.readLimits = ArkivoReadLimitTracker.fromEnvironment(environment);
     }
 
     /// Advances to the next real archive member.
     @Override
     public boolean next() throws IOException {
         ensureOpen();
+        readLimits.requireWithinLimits();
         readGlobalHeader();
         skipCurrentEntry();
 
@@ -81,11 +88,13 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             HeaderFields fields = parseHeader(header);
             String identifier = fields.identifier();
             if ("//".equals(identifier)) {
+                readLimits.acceptMetadata(fields.size(), null);
                 gnuNameTable = readBytes(fields.size(), "Unexpected end of AR GNU filename table");
                 skipPadding(fields.size());
                 continue;
             }
             if ("/".equals(identifier) || "/SYM64/".equals(identifier) || isBsdSymbolTable(identifier)) {
+                readLimits.acceptMetadata(fields.size(), null);
                 skipBytes(fields.size());
                 skipPadding(fields.size());
                 continue;
@@ -93,6 +102,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
 
             ResolvedName resolvedName = resolveName(identifier, fields.size());
             if (isBsdSymbolTable(resolvedName.path())) {
+                readLimits.acceptMetadata(resolvedName.dataSize(), resolvedName.path());
                 skipBytes(resolvedName.dataSize());
                 skipPadding(fields.size());
                 continue;
@@ -100,7 +110,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             remainingEntryBytes = resolvedName.dataSize();
             pendingEntryPadding = (fields.size() & 1L) != 0;
             currentBodyOpened = false;
-            currentAttributes = new ArEntryAttributes(
+            ArEntryAttributes attributes = new ArEntryAttributes(
                     resolvedName.path(),
                     identifier,
                     fields.userId(),
@@ -109,6 +119,8 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
                     resolvedName.dataSize(),
                     lastModifiedTime(fields.timestamp())
             );
+            readLimits.acceptEntry(attributes.path(), attributes.size());
+            currentAttributes = attributes;
             return true;
         }
     }
@@ -174,6 +186,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             return;
         }
         byte[] header = readBytes(GLOBAL_HEADER.length, "Unexpected end of AR global header");
+        readLimits.acceptMetadata(header.length, null);
         if (!Arrays.equals(header, GLOBAL_HEADER)) {
             throw new IOException("Invalid AR global header");
         }
@@ -194,6 +207,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             }
             offset += read;
         }
+        readLimits.acceptMetadata(header.length, null);
         if (header[58] != MEMBER_TRAILER[0] || header[59] != MEMBER_TRAILER[1]) {
             throw new IOException("Invalid AR member header trailer");
         }
@@ -218,6 +232,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             if (nameLength > memberSize) {
                 throw new IOException("AR BSD long name exceeds member size");
             }
+            readLimits.acceptMetadata(nameLength, null);
             String path = new String(
                     readBytes(nameLength, "Unexpected end of AR BSD long name"),
                     StandardCharsets.UTF_8

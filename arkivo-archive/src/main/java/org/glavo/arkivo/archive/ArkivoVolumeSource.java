@@ -18,6 +18,9 @@ import java.util.List;
 ///
 /// Each successful call to `openVolume(long)` transfers ownership of the returned channel to the consumer. Repeated
 /// calls for the same index must return newly opened channels with independent positions and lifecycles.
+/// Closing the source releases future volume-discovery resources but does not close channels returned by earlier calls.
+/// ArkivoVolumeChannel opens a finite source as one read-only logical seekable channel.
+@FunctionalInterface
 @NotNullByDefault
 public interface ArkivoVolumeSource extends Closeable {
     /// Returns a source backed by a finite list of volume paths.
@@ -35,6 +38,8 @@ public interface ArkivoVolumeSource extends Closeable {
     @Nullable SeekableByteChannel openVolume(long index) throws IOException;
 
     /// Closes resources owned by this source when the archive consumer no longer needs to open volume channels.
+    ///
+    /// This method does not close independently returned volume channels.
     @Override
     default void close() throws IOException {
     }

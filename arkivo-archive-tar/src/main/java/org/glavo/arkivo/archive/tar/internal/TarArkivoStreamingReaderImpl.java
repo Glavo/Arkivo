@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.tar.internal;
 
+import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingReader;
@@ -57,6 +58,9 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     /// The backing archive input stream.
     private final InputStream source;
 
+    /// The common archive read-limit tracker.
+    private final ArkivoReadLimitTracker readLimits;
+
     /// The current entry attributes, or `null` when no entry is active.
     private @Nullable TarEntryAttributes currentAttributes;
 
@@ -97,14 +101,16 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     private boolean sourceClosed;
 
     /// Creates a streaming TAR reader.
-    public TarArkivoStreamingReaderImpl(InputStream source) {
+    public TarArkivoStreamingReaderImpl(InputStream source, Map<String, ?> environment) {
         this.source = Objects.requireNonNull(source, "source");
+        this.readLimits = ArkivoReadLimitTracker.fromEnvironment(environment);
     }
 
     /// Advances to the next TAR entry and returns whether an entry is available.
     @Override
     public boolean next() throws IOException {
         ensureOpen();
+        readLimits.requireWithinLimits();
         if (finished) {
             currentAttributes = null;
             return false;
@@ -122,6 +128,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
             if (header.length != RECORD_SIZE) {
                 throw new EOFException("Unexpected end of TAR header");
             }
+            readLimits.acceptMetadata(header.length, null);
             if (isZeroBlock(header)) {
                 finished = true;
                 currentAttributes = null;
@@ -138,22 +145,26 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
 
             byte typeFlag = attributes.typeFlag();
             if (typeFlag == TarEntryAttributes.GNU_LONG_PATH_TYPE) {
-                pendingLongPath = readCurrentEntryBodyString("GNU long path");
+                pendingLongPath = readCurrentEntryBodyString("GNU long path", attributes.path());
                 skipCurrentEntryBody();
                 continue;
             }
             if (typeFlag == TarEntryAttributes.GNU_LONG_LINK_TYPE) {
-                pendingLongLink = readCurrentEntryBodyString("GNU long link");
+                pendingLongLink = readCurrentEntryBodyString("GNU long link", attributes.path());
                 skipCurrentEntryBody();
                 continue;
             }
             if (typeFlag == TarEntryAttributes.PAX_EXTENDED_HEADER_TYPE) {
-                mergePendingPaxHeaders(parsePaxHeaders(readCurrentEntryBodyBytes("PAX extended header")));
+                mergePendingPaxHeaders(parsePaxHeaders(
+                        readCurrentEntryBodyBytes("PAX extended header", attributes.path())
+                ));
                 skipCurrentEntryBody();
                 continue;
             }
             if (typeFlag == TarEntryAttributes.PAX_GLOBAL_EXTENDED_HEADER_TYPE) {
-                mergeGlobalPaxHeaders(parsePaxHeaders(readCurrentEntryBodyBytes("PAX global header")));
+                mergeGlobalPaxHeaders(parsePaxHeaders(
+                        readCurrentEntryBodyBytes("PAX global header", attributes.path())
+                ));
                 skipCurrentEntryBody();
                 continue;
             }
@@ -171,8 +182,9 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 @Nullable @Unmodifiable List<SparseBlock> declaredBlocks = sparseSpec.blocks();
                 currentSparseMap = declaredBlocks != null
                         ? validateSparseMap(sparseSpec.logicalSize(), declaredBlocks, currentBodyRemaining)
-                        : readSparseMapFromBody(sparseSpec.logicalSize());
+                        : readSparseMapFromBody(sparseSpec.logicalSize(), resolvedAttributes.path());
             }
+            readLimits.acceptEntry(resolvedAttributes.path(), resolvedAttributes.size());
             currentAttributes = resolvedAttributes;
             return true;
         }
@@ -569,7 +581,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     }
 
     /// Reads the current metadata entry body as bytes.
-    private byte[] readCurrentEntryBodyBytes(String description) throws IOException {
+    private byte[] readCurrentEntryBodyBytes(String description, String entryPath) throws IOException {
+        readLimits.acceptMetadata(currentBodyRemaining, entryPath);
         if (currentBodyRemaining > Integer.MAX_VALUE) {
             throw new IOException("TAR " + description + " is too large");
         }
@@ -583,8 +596,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     }
 
     /// Reads the current metadata entry body as a string.
-    private String readCurrentEntryBodyString(String description) throws IOException {
-        byte[] body = readCurrentEntryBodyBytes(description);
+    private String readCurrentEntryBodyString(String description, String entryPath) throws IOException {
+        byte[] body = readCurrentEntryBodyBytes(description, entryPath);
         int length = body.length;
         while (length > 0 && body[length - 1] == 0) {
             length--;
@@ -853,8 +866,8 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     }
 
     /// Reads and validates a GNU sparse 1.0 map stored at the beginning of the entry body.
-    private SparseMap readSparseMapFromBody(long logicalSize) throws IOException {
-        SparseMapBodyReader reader = new SparseMapBodyReader();
+    private SparseMap readSparseMapFromBody(long logicalSize, String entryPath) throws IOException {
+        SparseMapBodyReader reader = new SparseMapBodyReader(entryPath);
         long countValue = reader.readNumber("block count");
         if (countValue > Integer.MAX_VALUE) {
             throw new IOException("GNU sparse block count is too large");
@@ -1132,8 +1145,16 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     /// Parses a GNU sparse 1.0 map directly from the current physical entry body.
     @NotNullByDefault
     private final class SparseMapBodyReader {
+        /// The archive-local path associated with this sparse map.
+        private final String entryPath;
+
         /// The number of unpadded map bytes consumed from the body.
         private long byteCount;
+
+        /// Creates a sparse-map body reader for one entry.
+        private SparseMapBodyReader(String entryPath) {
+            this.entryPath = Objects.requireNonNull(entryPath, "entryPath");
+        }
 
         /// Reads one newline-terminated non-negative decimal map number.
         private long readNumber(String description) throws IOException {
@@ -1149,6 +1170,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                 }
                 currentBodyRemaining--;
                 byteCount++;
+                readLimits.acceptMetadata(1L, entryPath);
                 if (next == '\n') {
                     if (!hasDigit) {
                         throw new IOException("GNU sparse " + description + " is empty");
@@ -1179,6 +1201,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
                     throw new EOFException("Unexpected end of GNU sparse map padding");
                 }
                 currentBodyRemaining--;
+                readLimits.acceptMetadata(1L, entryPath);
                 if (next != 0) {
                     throw new IOException("GNU sparse map padding must contain only null bytes");
                 }

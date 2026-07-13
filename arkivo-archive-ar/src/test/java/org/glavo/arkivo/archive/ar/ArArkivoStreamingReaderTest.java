@@ -5,6 +5,8 @@ package org.glavo.arkivo.archive.ar;
 
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
+import org.glavo.arkivo.archive.ArkivoReadLimitException;
+import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -46,6 +48,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /// Tests AR streaming reader behavior.
@@ -1049,6 +1052,30 @@ public final class ArArkivoStreamingReaderTest {
                 assertArrayEquals(content, input.readAllBytes());
             }
             assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies BSD inline names are rejected before their variable metadata body is buffered.
+    @Test
+    public void enforcesMetadataLimitBeforeBsdNameAllocation() throws IOException {
+        byte[] path = ("a".repeat(60) + ".txt").getBytes(StandardCharsets.UTF_8);
+        byte[] archive = archive(member("#1/" + path.length, 20, 10, 11, 0100644, path));
+        long maximum = 8L + 60L;
+
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                Map.of(ArkivoFileSystem.MAX_METADATA_SIZE.key(), maximum)
+        )) {
+            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
+            assertEquals(ArkivoReadLimitKind.METADATA_SIZE, exception.kind());
+            assertEquals(maximum, exception.maximum());
+            assertEquals(maximum + path.length, exception.actual());
+            assertNull(exception.entryPath());
+
+            ArkivoReadLimitException repeated = assertThrows(ArkivoReadLimitException.class, reader::next);
+            assertEquals(exception.kind(), repeated.kind());
+            assertEquals(exception.maximum(), repeated.maximum());
+            assertEquals(exception.actual(), repeated.actual());
         }
     }
 

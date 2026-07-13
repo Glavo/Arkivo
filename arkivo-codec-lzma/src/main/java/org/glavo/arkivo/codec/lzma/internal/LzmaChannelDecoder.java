@@ -60,6 +60,11 @@ public final class LzmaChannelDecoder implements CompressionDecoder {
                 throw new IOException("Unsupported LZMA dictionary size: " + dictionarySize);
             }
             long expectedSize = readLittleEndian(Long.BYTES);
+            if (expectedSize < -1L) {
+                throw new IOException(
+                        "Unsupported LZMA uncompressed size: " + Long.toUnsignedString(expectedSize)
+                );
+            }
             LzmaProperties properties;
             try {
                 properties = LzmaProperties.decode(propertyByte, (int) dictionarySize);

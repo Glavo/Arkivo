@@ -3,8 +3,10 @@
 
 package org.glavo.arkivo.archive.rar.internal;
 
+import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.rar.RarArkivoStreamingReader;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -28,6 +30,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Arrays;
+import java.util.Map;
 import java.util.Objects;
 import java.util.zip.CRC32;
 
@@ -295,6 +298,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// The password provider for encrypted RAR headers and entries, or `null` when none is configured.
     private final @Nullable ArkivoPasswordProvider passwordProvider;
 
+    /// The common archive read-limit tracker.
+    private final ArkivoReadLimitTracker readLimits;
+
     /// The CRC32 calculator reused for header validation.
     private final CRC32 headerCrc32 = new CRC32();
 
@@ -393,19 +399,52 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Creates a streaming RAR reader.
     public RarArkivoStreamingReaderImpl(InputStream source) {
-        this(source, null);
+        this(source, null, Map.of());
+    }
+
+    /// Creates a streaming RAR reader that owns a multi-volume source.
+    public RarArkivoStreamingReaderImpl(ArkivoVolumeSource source) {
+        this(source, null, Map.of());
+    }
+
+    /// Creates a streaming RAR reader that owns a multi-volume source with an optional password provider.
+    public RarArkivoStreamingReaderImpl(
+            ArkivoVolumeSource source,
+            @Nullable ArkivoPasswordProvider passwordProvider
+    ) {
+        this(source, passwordProvider, Map.of());
+    }
+
+    /// Creates a configured streaming RAR reader that owns a multi-volume source.
+    public RarArkivoStreamingReaderImpl(
+            ArkivoVolumeSource source,
+            @Nullable ArkivoPasswordProvider passwordProvider,
+            Map<String, ?> environment
+    ) {
+        this(new RarVolumeInputStream(source, true), passwordProvider, environment);
     }
 
     /// Creates a streaming RAR reader with an optional password provider.
     public RarArkivoStreamingReaderImpl(InputStream source, @Nullable ArkivoPasswordProvider passwordProvider) {
+        this(source, passwordProvider, Map.of());
+    }
+
+    /// Creates a configured streaming RAR reader with an optional password provider.
+    public RarArkivoStreamingReaderImpl(
+            InputStream source,
+            @Nullable ArkivoPasswordProvider passwordProvider,
+            Map<String, ?> environment
+    ) {
         this.source = Objects.requireNonNull(source, "source");
         this.passwordProvider = passwordProvider;
+        this.readLimits = ArkivoReadLimitTracker.fromEnvironment(environment);
     }
 
     /// Advances to the next RAR file entry and returns whether an entry is available.
     @Override
     public boolean next() throws IOException {
         ensureOpen();
+        readLimits.requireWithinLimits();
         readSignature();
         if (finished) {
             currentAttributes = null;
@@ -433,8 +472,10 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 }
                 case HEADER_TYPE_FILE -> {
                     ParsedFileHeader parsedFile = parseFileHeader(block);
-                    currentAttributes = parsedFile.attributes();
-                    currentPartAttributes = parsedFile.attributes();
+                    RarEntryAttributes attributes = parsedFile.attributes();
+                    readLimits.acceptEntry(attributes.path(), attributes.unpackedSize());
+                    currentAttributes = attributes;
+                    currentPartAttributes = attributes;
                     currentPartEncryption = parsedFile.encryptionInfo();
                     currentPartCompression = parsedFile.compressionInfo();
                     currentPackedRemaining = block.dataSize();
@@ -547,7 +588,11 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             return openEncryptedChannel(attributes);
         }
         currentBodyOpened = true;
-        return StreamChannelAdapters.readableChannel(new EntryInputStream());
+        InputStream entryInput = new EntryInputStream();
+        if (attributes.unpackedSize() == RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE) {
+            entryInput = readLimits.trackUnknownEntrySize(attributes.path(), entryInput);
+        }
+        return StreamChannelAdapters.readableChannel(entryInput);
     }
 
     /// Opens one supported compressed body through its format-specific stateful decoder.
@@ -962,11 +1007,13 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             window[count % window.length] = (byte) value;
             count++;
             if (endsWith(window, count, RAR5_SIGNATURE)) {
+                readLimits.acceptMetadata(RAR5_SIGNATURE.length, null);
                 rarVersion = RAR_VERSION_5;
                 signatureRead = true;
                 return;
             }
             if (endsWith(window, count, RAR4_SIGNATURE)) {
+                readLimits.acceptMetadata(RAR4_SIGNATURE.length, null);
                 rarVersion = RAR_VERSION_4;
                 signatureRead = true;
                 return;
@@ -1041,6 +1088,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (headerSize.value() > MAX_HEADER_SIZE) {
             throw new IOException("RAR header is too large");
         }
+        readLimits.acceptMetadata(Integer.BYTES + headerSize.bytes().length + headerSize.value(), null);
         byte[] headerData = new byte[(int) headerSize.value()];
         readFully(headerData, 0, headerData.length, "Unexpected end of RAR header");
 
@@ -1091,6 +1139,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                     "RAR encrypted header size"
             );
             int encryptedHeaderSize = alignedHeaderSize(plainHeaderSize);
+            readLimits.acceptMetadata((long) initializationVector.length + encryptedHeaderSize, null);
             plaintext = new byte[encryptedHeaderSize];
             System.arraycopy(firstPlaintext, 0, plaintext, 0, firstPlaintext.length);
 
@@ -1272,6 +1321,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (headerSize > MAX_HEADER_SIZE) {
             throw new IOException("RAR4 header is too large");
         }
+        readLimits.acceptMetadata(headerSize, null);
         header = Arrays.copyOf(header, headerSize);
         readFully(header, 7, header.length - 7, "Unexpected end of RAR4 header");
         return decodeRar4BlockHeader(header);
@@ -1328,6 +1378,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 }
 
                 int encryptedHeaderSize = alignedHeaderSize(headerSize);
+                readLimits.acceptMetadata((long) salt.length + encryptedHeaderSize, null);
                 plaintext = new byte[encryptedHeaderSize];
                 System.arraycopy(firstPlaintext, 0, plaintext, 0, firstPlaintext.length);
                 for (int offset = Rar3Crypto.BLOCK_SIZE;

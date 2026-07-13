@@ -3,22 +3,25 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
-import com.github.luben.zstd.ZstdOutputStream;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.lzma.internal.LzmaOutputStream;
 import org.glavo.arkivo.codec.lzma.internal.LzmaProperties;
-import org.glavo.arkivo.codec.xz.internal.XzOutputStream;
+
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.ArkivoPathVolumeTarget;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoVolumeOutput;
+import org.glavo.arkivo.archive.ArkivoVolumePathLayout;
+import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
-import org.glavo.arkivo.codec.bzip2.internal.BZip2OutputStream;
-import org.glavo.arkivo.codec.deflate64.internal.Deflate64OutputStream;
+
+
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
@@ -30,6 +33,7 @@ import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -79,6 +83,7 @@ import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -125,7 +130,10 @@ import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.writeInt;
 import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.writeLong;
 import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.writeShort;
 
-/// Implements a forward-only ZIP archive file system for streaming writes.
+/// Implements forward-only ZIP creation and complete-rewrite editing of existing archives.
+///
+/// Complete-rewrite sessions expose existing entries and completed staged entries for reading. Direct streaming
+/// creation remains write-only because emitted entry bytes cannot be recovered from the output endpoint.
 @NotNullByDefault
 public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// The LZMA SDK major version stored in ZIP LZMA property headers.
@@ -152,6 +160,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     private static final long END_OF_CENTRAL_DIRECTORY_SIZE =
             Integer.BYTES + Short.BYTES * 4L + Integer.BYTES * 2L + Short.BYTES;
 
+    /// The fixed size of a local file header before variable data.
+    private static final int ZIP_LOCAL_FILE_HEADER_MIN_SIZE = 30;
+
     /// The fixed size of a central directory file header before variable data.
     private static final int ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE = 46;
 
@@ -171,7 +182,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     private final @Nullable Path archivePath;
 
     /// The repeatable archive source used by a non-path update, or `null` otherwise.
-    private final @Nullable ArkivoSeekableChannelSource archiveSource;
+    private final @Nullable ArkivoVolumeSource archiveSource;
+
+    /// The transactional volume target used by an explicit multi-volume rewrite, or `null` otherwise.
+    private final @Nullable ArkivoVolumeTarget rewriteVolumeTarget;
+
+    /// The maximum output volume size for an explicit multi-volume rewrite, or `NO_SPLIT_SIZE` otherwise.
+    private final long rewriteSplitSize;
 
     /// Whether closing the repeatable archive source has completed.
     private boolean archiveSourceClosed;
@@ -194,8 +211,17 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// The existing archive snapshot that requires a full rewrite, or `null` for a new archive.
     private final @Nullable ZipArkivoFileSystemImpl.CentralDirectorySnapshot rewriteSnapshot;
 
-    /// The relocated local header offsets for surviving existing entries.
-    private final HashMap<String, Long> relocatedExistingEntryOffsets = new HashMap<>();
+    /// The borrowed read-only view of an archive being updated, or `null` outside complete-rewrite mode.
+    private final @Nullable ZipArkivoFileSystemImpl existingArchiveReader;
+
+    /// Uncompressed staged bodies for entries written during complete-rewrite mode.
+    private final HashMap<String, ArkivoStoredContent> stagedEntryContents = new HashMap<>();
+
+    /// The next unique storage suffix used for an uncompressed staged entry body.
+    private long stagedEntrySequence;
+
+    /// The relocated local header locations for surviving existing entries.
+    private final HashMap<String, RelocatedLocalHeader> relocatedExistingEntryOffsets = new HashMap<>();
 
     /// The raw archive comment written to the final end of central directory record.
     private final byte @Unmodifiable [] archiveComment;
@@ -273,6 +299,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         this.provider = Objects.requireNonNull(provider, "provider");
         this.archivePath = Objects.requireNonNull(archivePath, "archivePath");
         this.archiveSource = null;
+        this.rewriteVolumeTarget = null;
+        this.rewriteSplitSize = ZipArkivoFileSystemConfig.NO_SPLIT_SIZE;
         this.archiveSourceClosed = true;
         this.config = Objects.requireNonNull(config, "config");
         this.lock = ZipLocks.create(config.threadSafety());
@@ -414,6 +442,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             this.existingCentralDirectoryEntries = List.of();
             this.existingEntryNames = Set.of();
         }
+        this.existingArchiveReader = appendSnapshot != null
+                ? ZipArkivoFileSystemImpl.openUpdateReader(provider, archivePath, config)
+                : null;
         this.rootPath = ZipArkivoPath.root(this);
     }
 
@@ -470,7 +501,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                         "ZIP channel-source update mode always performs a complete archive rewrite"
                 );
             }
-            return new StreamingZipArkivoFileSystemImpl(provider, source, config);
+            return new StreamingZipArkivoFileSystemImpl(
+                    provider,
+                    source,
+                    null,
+                    ZipArkivoFileSystemConfig.NO_SPLIT_SIZE,
+                    config
+            );
         } catch (IOException | RuntimeException | Error exception) {
             try {
                 source.close();
@@ -481,16 +518,68 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
     }
 
-    /// Creates a complete-rewrite ZIP editor over a repeatable single-volume source.
+    /// Opens a complete-rewrite ZIP update over an owned multi-volume source.
+    public static StreamingZipArkivoFileSystemImpl openUpdate(
+            ZipArkivoFileSystemProvider provider,
+            ArkivoVolumeSource source,
+            ArkivoVolumeTarget target,
+            long splitSize,
+            ZipArkivoFileSystemConfig config
+    ) throws IOException {
+        Objects.requireNonNull(provider, "provider");
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(config, "config");
+        try {
+            if (!config.archiveWritable() || !config.openOptions().contains(StandardOpenOption.APPEND)) {
+                throw new UnsupportedOperationException(
+                        "ZIP volume updates require read/write archive options"
+                );
+            }
+            if (splitSize < ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE
+                    || splitSize > ZipArkivoFileSystem.MAXIMUM_SPLIT_SIZE) {
+                throw new IllegalArgumentException(
+                        "splitSize must be between MINIMUM_SPLIT_SIZE and MAXIMUM_SPLIT_SIZE"
+                );
+            }
+            if (config.commitTarget() != null) {
+                throw new UnsupportedOperationException("ZIP volume updates use an ArkivoVolumeTarget");
+            }
+            if (config.splitSize() != ZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
+                throw new UnsupportedOperationException(
+                        "ZIP volume update splitSize must be provided as the factory argument"
+                );
+            }
+            if (config.sourceMutationPolicy() != null) {
+                throw new UnsupportedOperationException(
+                        "ZIP volume updates always perform a complete archive rewrite"
+                );
+            }
+            return new StreamingZipArkivoFileSystemImpl(provider, source, target, splitSize, config);
+        } catch (IOException | RuntimeException | Error exception) {
+            try {
+                source.close();
+            } catch (IOException | RuntimeException | Error closeFailure) {
+                exception.addSuppressed(closeFailure);
+            }
+            throw exception;
+        }
+    }
+
+    /// Creates a complete-rewrite ZIP editor over a repeatable volume source.
     private StreamingZipArkivoFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
-            ArkivoSeekableChannelSource source,
+            ArkivoVolumeSource source,
+            @Nullable ArkivoVolumeTarget rewriteVolumeTarget,
+            long rewriteSplitSize,
             ZipArkivoFileSystemConfig config
     ) throws IOException {
         super(config.threadSafety());
         this.provider = provider;
         this.archivePath = null;
         this.archiveSource = source;
+        this.rewriteVolumeTarget = rewriteVolumeTarget;
+        this.rewriteSplitSize = rewriteSplitSize;
         this.archiveSourceClosed = false;
         this.config = config;
         this.lock = ZipLocks.create(config.threadSafety());
@@ -556,6 +645,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         this.archiveComment = snapshot.archiveComment();
         this.existingCentralDirectoryEntries = snapshot.entries();
         this.existingEntryNames = snapshot.entryNames();
+        this.existingArchiveReader = ZipArkivoFileSystemImpl.openUpdateReader(provider, source, config);
         this.rootPath = ZipArkivoPath.root(this);
     }
 
@@ -574,6 +664,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         this.provider = Objects.requireNonNull(provider, "provider");
         this.archivePath = null;
         this.archiveSource = null;
+        this.rewriteVolumeTarget = null;
+        this.rewriteSplitSize = ZipArkivoFileSystemConfig.NO_SPLIT_SIZE;
         this.archiveSourceClosed = true;
         this.config = Objects.requireNonNull(config, "config");
         this.lock = ZipLocks.create(config.threadSafety());
@@ -593,6 +685,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         );
         this.existingCentralDirectoryEntries = List.of();
         this.existingEntryNames = Set.of();
+        this.existingArchiveReader = null;
         this.rootPath = ZipArkivoPath.root(this);
     }
 
@@ -617,8 +710,11 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             ZipArkivoFileSystemConfig config
     ) throws IOException {
         super(config.threadSafety());
-        if (splitSize <= 0) {
-            throw new IllegalArgumentException("splitSize must be positive");
+        if (splitSize < ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE
+                || splitSize > ZipArkivoFileSystem.MAXIMUM_SPLIT_SIZE) {
+            throw new IllegalArgumentException(
+                    "splitSize must be between MINIMUM_SPLIT_SIZE and MAXIMUM_SPLIT_SIZE"
+            );
         }
         if (config.commitTarget() != null) {
             throw new UnsupportedOperationException("ZIP volume target output does not support commit targets");
@@ -626,6 +722,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         this.provider = Objects.requireNonNull(provider, "provider");
         this.archivePath = null;
         this.archiveSource = null;
+        this.rewriteVolumeTarget = null;
+        this.rewriteSplitSize = ZipArkivoFileSystemConfig.NO_SPLIT_SIZE;
         this.archiveSourceClosed = true;
         this.config = Objects.requireNonNull(config, "config");
         this.lock = ZipLocks.create(config.threadSafety());
@@ -639,6 +737,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         this.output = SplitCountingOutputStream.open(Objects.requireNonNull(target, "target"), splitSize);
         this.existingCentralDirectoryEntries = List.of();
         this.existingEntryNames = Set.of();
+        this.existingArchiveReader = null;
         this.rootPath = ZipArkivoPath.root(this);
     }
 
@@ -673,6 +772,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                             failure = exception;
                         }
                     }
+                    failure = closeExistingArchiveReader(failure);
                     failure = closeArchiveSource(failure);
                     throwFailure(failure);
                     return;
@@ -690,6 +790,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     }
                 } catch (IOException | RuntimeException | Error exception) {
                     failure = exception;
+                    abortSplitOutput(output);
                 } finally {
                     try {
                         output.close();
@@ -710,6 +811,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 } else {
                     failure = finishCommitOutput(failure);
                 }
+                failure = closeExistingArchiveReader(failure);
                 failure = closeArchiveSource(failure);
                 Runnable action = closeAction;
                 try {
@@ -728,6 +830,22 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Reassembles an existing archive from surviving local records and publishes the complete result.
     private void rewriteExistingArchive() throws IOException {
+        ArkivoVolumeTarget volumeTarget = rewriteVolumeTarget;
+        if (volumeTarget != null) {
+            try (SplitCountingOutputStream splitOutput =
+                         SplitCountingOutputStream.open(volumeTarget, rewriteSplitSize)) {
+                output = splitOutput;
+                try {
+                    copySurvivingLocalRecords();
+                    writeCentralDirectory();
+                } catch (IOException | RuntimeException | Error exception) {
+                    splitOutput.abort();
+                    throw exception;
+                }
+            }
+            return;
+        }
+
         ArkivoEditStorage storage = Objects.requireNonNull(editStorage, "editStorage");
         try (ArkivoStoredContent assembledArchive = storage.createContent(
                 ASSEMBLED_ARCHIVE_PATH,
@@ -749,6 +867,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
     }
 
+    /// Marks a transactional split output for rollback when finalization fails outside a write operation.
+    private static void abortSplitOutput(CountingOutputStream output) {
+        if (output instanceof SplitCountingOutputStream splitOutput) {
+            splitOutput.abort();
+        }
+    }
+
     /// Copies the preamble and every surviving local record into the assembled archive.
     private void copySurvivingLocalRecords() throws IOException {
         ArkivoStoredContent records = Objects.requireNonNull(stagedRecords, "stagedRecords");
@@ -758,7 +883,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
         try (SeekableByteChannel source = openExistingArchiveChannel();
              SeekableByteChannel staged = records.openChannel(Set.of(StandardOpenOption.READ))) {
-            copyRange(source, 0L, snapshot.preambleSize(), output);
+            copyRange(source, snapshot.preambleOffset(), snapshot.preambleSize(), output);
 
             ArrayList<ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot> survivingEntries =
                     new ArrayList<>();
@@ -771,12 +896,18 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot::localHeaderOffset
             ));
             for (ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot entry : survivingEntries) {
-                relocatedExistingEntryOffsets.put(entry.entryName(), output.position());
+                output.startRecord(entry.localHeaderSize());
+                relocatedExistingEntryOffsets.put(
+                        entry.entryName(),
+                        new RelocatedLocalHeader(output.diskNumber(), output.diskPosition())
+                );
                 copyRange(source, entry.localHeaderOffset(), entry.localRecordSize(), output);
             }
 
             for (CentralEntry entry : centralEntries) {
-                entry.relocatedLocalHeaderOffset = output.position();
+                output.startRecord(entry.localHeaderSize);
+                entry.relocatedLocalHeaderDiskNumber = output.diskNumber();
+                entry.relocatedLocalHeaderOffset = output.diskPosition();
                 copyRange(staged, entry.localHeaderOffset, entry.localRecordSize, output);
             }
         }
@@ -788,7 +919,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         if (path != null) {
             return Files.newByteChannel(path, StandardOpenOption.READ);
         }
-        return Objects.requireNonNull(archiveSource, "archiveSource").openChannel();
+        return ZipArkivoFileSystemImpl.openLogicalArchiveChannel(
+                Objects.requireNonNull(archiveSource, "archiveSource")
+        );
     }
 
     /// Publishes an assembled archive through the configured commit target.
@@ -859,6 +992,19 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
     }
 
+    /// Closes the borrowed read-only archive view and returns the accumulated failure.
+    private @Nullable Throwable closeExistingArchiveReader(@Nullable Throwable failure) {
+        ZipArkivoFileSystemImpl reader = existingArchiveReader;
+        if (reader != null && reader.isOpen()) {
+            try {
+                reader.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        return failure;
+    }
+
     /// Closes the owned repeatable archive source and returns the accumulated failure.
     private @Nullable Throwable closeArchiveSource(@Nullable Throwable failure) {
         if (!archiveSourceClosed) {
@@ -874,6 +1020,17 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Closes rewrite staging resources and returns the accumulated failure.
     private @Nullable Throwable closeRewriteStorage(@Nullable Throwable failure) {
+        Iterator<ArkivoStoredContent> entryContents = stagedEntryContents.values().iterator();
+        while (entryContents.hasNext()) {
+            ArkivoStoredContent content = entryContents.next();
+            try {
+                content.close();
+                entryContents.remove();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+
         ArkivoStoredContent records = stagedRecords;
         if (records != null) {
             try {
@@ -1437,20 +1594,81 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
     }
 
+    /// Opens storage that captures an uncompressed entry body during complete-rewrite mode.
+    private @Nullable OutputStream openStagedEntryOutput(String entryName) throws IOException {
+        ArkivoEditStorage storage = editStorage;
+        if (storage == null) {
+            return null;
+        }
+
+        ArkivoStoredContent content = storage.createContent(
+                "zip-update-entry-" + stagedEntrySequence++,
+                ArkivoEditStorage.UNKNOWN_SIZE
+        );
+        @Nullable SeekableByteChannel channel = null;
+        try {
+            channel = content.openChannel(Set.of(
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE
+            ));
+            OutputStream stagedOutput = Channels.newOutputStream(channel);
+            channel = null;
+            stagedEntryContents.put(entryName, content);
+            return stagedOutput;
+        } catch (IOException | RuntimeException | Error exception) {
+            if (channel != null) {
+                try {
+                    channel.close();
+                } catch (IOException | RuntimeException | Error cleanupFailure) {
+                    exception.addSuppressed(cleanupFailure);
+                }
+            }
+            try {
+                content.close();
+            } catch (IOException | RuntimeException | Error cleanupFailure) {
+                exception.addSuppressed(cleanupFailure);
+            }
+            throw exception;
+        }
+    }
+
+    /// Stores one complete uncompressed entry body for reads during complete-rewrite mode.
+    private void stageCompleteEntryContent(String entryName, byte[] contentBytes) throws IOException {
+        OutputStream stagedOutput = openStagedEntryOutput(entryName);
+        if (stagedOutput == null) {
+            return;
+        }
+        try (stagedOutput) {
+            stagedOutput.write(contentBytes);
+        }
+    }
+
     /// Opens an output stream for the next ZIP entry.
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
         return newOutputStream(path, EntryMetadata.deflated(config.defaultEncryption()), options);
     }
 
-    /// Opens a forward-only writable byte channel for the next ZIP entry.
+    /// Opens a readable existing or staged entry channel, or a forward-only writable channel.
     public SeekableByteChannel newByteChannel(
             Path path,
             Set<? extends OpenOption> options,
             FileAttribute<?>... attributes
     ) throws IOException {
+        Objects.requireNonNull(options, "options");
+        Objects.requireNonNull(attributes, "attributes");
+        boolean read = options.isEmpty() || options.contains(StandardOpenOption.READ);
+        boolean write = requestsEntryWrite(options);
+        if (read && write) {
+            throw new UnsupportedOperationException("ZIP update entry channels do not support combined read/write access");
+        }
+        if (!write) {
+            try (Operation ignored = beginReadOperation()) {
+                return manageReadChannel(newReadByteChannelLocked(path, options, attributes));
+            }
+        }
+
         try (Operation ignored = beginWriteOperation()) {
-            Objects.requireNonNull(options, "options");
-            Objects.requireNonNull(attributes, "attributes");
             EntryMetadata metadata = applyInitialAttributes(
                     EntryMetadata.deflated(config.defaultEncryption()),
                     false,
@@ -1463,6 +1681,72 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             );
             return manageWriteChannel(new EntryWritableByteChannel(outputStream));
         }
+    }
+
+    /// Opens an input stream over an existing or completed staged entry.
+    public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
+        Objects.requireNonNull(options, "options");
+        return Channels.newInputStream(newByteChannel(
+                path,
+                Set.copyOf(Arrays.asList(options))
+        ));
+    }
+
+    /// Opens a read channel while the caller holds a shared file-system operation.
+    private SeekableByteChannel newReadByteChannelLocked(
+            Path path,
+            Set<? extends OpenOption> options,
+            FileAttribute<?>... attributes
+    ) throws IOException {
+        lock();
+        try {
+            checkOpen();
+            requireNoActiveEntry();
+            if (attributes.length != 0) {
+                throw new UnsupportedOperationException("ZIP read channels do not accept initial attributes");
+            }
+            for (OpenOption option : options) {
+                if (option != StandardOpenOption.READ) {
+                    throw new UnsupportedOperationException("Unsupported ZIP entry read option: " + option);
+                }
+            }
+
+            String entryName = entryName(path);
+            ArkivoStoredContent stagedContent = stagedEntryContents.get(entryName);
+            if (stagedContent != null && visibleWrittenEntry(entryName)) {
+                return stagedContent.openChannel(Set.of(StandardOpenOption.READ));
+            }
+            if (visibleExistingEntry(entryName)) {
+                ZipArkivoFileSystemImpl reader = Objects.requireNonNull(
+                        existingArchiveReader,
+                        "existingArchiveReader"
+                );
+                return reader.newByteChannel(
+                        reader.getPath("/" + entryName),
+                        options,
+                        attributes
+                );
+            }
+            if (visibleWrittenEntry(entryName)) {
+                throw new IOException("ZIP entry does not expose readable file content: " + path);
+            }
+            throw new NoSuchFileException(path.toString());
+        } finally {
+            unlock();
+        }
+    }
+
+    /// Returns whether entry open options request output or mutation behavior.
+    private static boolean requestsEntryWrite(Set<? extends OpenOption> options) {
+        return options.contains(StandardOpenOption.WRITE)
+                || options.contains(StandardOpenOption.APPEND)
+                || options.contains(StandardOpenOption.CREATE)
+                || options.contains(StandardOpenOption.CREATE_NEW)
+                || options.contains(StandardOpenOption.TRUNCATE_EXISTING)
+                || options.contains(StandardOpenOption.DELETE_ON_CLOSE)
+                || options.contains(StandardOpenOption.SPARSE)
+                || options.contains(StandardOpenOption.SYNC)
+                || options.contains(StandardOpenOption.DSYNC);
     }
 
     /// Opens an output stream for the next ZIP entry with central directory attributes.
@@ -1485,16 +1769,18 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             boolean replacingExistingEntry = checkWritableFileEntry(entryName, options);
             byte @Nullable [] password = passwordForMetadata(entryName, metadata);
             byte[] rawName = rawEntryName(entryName);
+            int flags = metadata.generalPurposeFlags();
+            boolean zip64LocalHeader = metadata.zip64LocalHeaderNeeded();
+            byte[] localExtraData = metadata.localHeaderExtraData(zip64LocalHeader);
+            output.startRecord(localHeaderSize(rawName, localExtraData));
             registerWritableFileEntry(entryName, replacingExistingEntry);
 
             long localHeaderAbsoluteOffset = output.position();
             int localHeaderDiskNumber = output.diskNumber();
             long localHeaderOffset = output.diskPosition();
-            int flags = metadata.generalPurposeFlags();
-            boolean zip64LocalHeader = metadata.zip64LocalHeaderNeeded();
             writeLocalHeader(
                     rawName,
-                    metadata.localHeaderExtraData(zip64LocalHeader),
+                    localExtraData,
                     metadata.versionNeeded(zip64LocalHeader),
                     flags,
                     metadata.headerMethod(),
@@ -1577,14 +1863,16 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             requireNoActiveEntry();
             requireNewEntry(entryName);
             byte[] rawName = rawEntryName(entryName);
+            int flags = metadata.generalPurposeFlags() & ~DATA_DESCRIPTOR_FLAG;
+            boolean zip64LocalHeader = metadata.zip64LocalHeaderNeeded();
+            byte[] localExtraData = metadata.localHeaderExtraData(zip64LocalHeader);
+            output.startRecord(localHeaderSize(rawName, localExtraData));
             long localHeaderAbsoluteOffset = output.position();
             int localHeaderDiskNumber = output.diskNumber();
             long localHeaderOffset = output.diskPosition();
-            int flags = metadata.generalPurposeFlags() & ~DATA_DESCRIPTOR_FLAG;
-            boolean zip64LocalHeader = metadata.zip64LocalHeaderNeeded();
             writeLocalHeader(
                     rawName,
-                    metadata.localHeaderExtraData(zip64LocalHeader),
+                    localExtraData,
                     metadata.versionNeeded(zip64LocalHeader),
                     flags,
                     STORED_METHOD,
@@ -1606,6 +1894,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     0,
                     localHeaderDiskNumber,
                     localHeaderOffset,
+                    output.position() - localHeaderAbsoluteOffset,
                     output.position() - localHeaderAbsoluteOffset,
                     metadata
             ));
@@ -1655,15 +1944,18 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             byte @Nullable [] password = passwordForMetadata(entryName, metadata);
             byte[] rawName = rawEntryName(entryName);
             requireNewEntry(entryName);
-            long localHeaderAbsoluteOffset = output.position();
-            int localHeaderDiskNumber = output.diskNumber();
-            long localHeaderOffset = output.diskPosition();
+            stageCompleteEntryContent(entryName, content);
             int flags = metadata.generalPurposeFlags() & ~DATA_DESCRIPTOR_FLAG;
             long compressedSize = metadata.encryptedCompressedSize(size);
             boolean zip64LocalHeader = metadata.zip64LocalHeaderNeeded(compressedSize, size);
+            byte[] localExtraData = metadata.localHeaderExtraData(zip64LocalHeader, compressedSize, size);
+            output.startRecord(localHeaderSize(rawName, localExtraData));
+            long localHeaderAbsoluteOffset = output.position();
+            int localHeaderDiskNumber = output.diskNumber();
+            long localHeaderOffset = output.diskPosition();
             writeLocalHeader(
                     rawName,
-                    metadata.localHeaderExtraData(zip64LocalHeader, compressedSize, size),
+                    localExtraData,
                     metadata.versionNeeded(zip64LocalHeader),
                     flags,
                     metadata.headerMethod(),
@@ -1673,6 +1965,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     zip32Field(compressedSize, zip64LocalHeader),
                     zip32Field(size, zip64LocalHeader)
             );
+            long localHeaderSize = output.position() - localHeaderAbsoluteOffset;
             if (metadata.traditionalEncrypted()) {
                 byte[] encryptionPassword = Objects.requireNonNull(password, "password");
                 OutputStream encrypted = ZipTraditionalCrypto.openEncryptingStream(
@@ -1706,6 +1999,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     size,
                     localHeaderDiskNumber,
                     localHeaderOffset,
+                    localHeaderSize,
                     output.position() - localHeaderAbsoluteOffset,
                     metadata
             ));
@@ -1752,16 +2046,28 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
     }
 
-    /// Returns the number of bytes stored before the ZIP archive body.
+    /// Returns the number of bytes stored before an archive being updated.
     @Override
-    public long preambleSize() {
-        throw new UnsupportedOperationException("Streaming ZIP output does not expose a preamble");
+    public long preambleSize() throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            ZipArkivoFileSystemImpl reader = existingArchiveReader;
+            if (reader == null) {
+                throw new UnsupportedOperationException("Streaming ZIP creation does not expose a preamble");
+            }
+            return reader.preambleSize();
+        }
     }
 
-    /// Opens a read-only channel over the bytes stored before the ZIP archive body.
+    /// Opens a read-only channel over preamble bytes of an archive being updated.
     @Override
-    public SeekableByteChannel openPreambleChannel() {
-        throw new UnsupportedOperationException("Streaming ZIP output does not expose a preamble");
+    public SeekableByteChannel openPreambleChannel() throws IOException {
+        try (Operation ignored = beginReadOperation()) {
+            ZipArkivoFileSystemImpl reader = existingArchiveReader;
+            if (reader == null) {
+                throw new UnsupportedOperationException("Streaming ZIP creation does not expose a preamble");
+            }
+            return manageReadChannel(reader.openPreambleChannel());
+        }
     }
 
     /// Requires this file system to be open.
@@ -1890,11 +2196,15 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         return false;
     }
 
-    /// Removes a written entry from the final central directory.
-    private void removeWrittenEntry(String entryName) {
+    /// Removes a written entry and its staged readable body from the final archive state.
+    private void removeWrittenEntry(String entryName) throws IOException {
         writtenEntries.removeIf(writtenEntry -> entryNameKey(writtenEntry).equals(entryName));
         centralEntries.removeIf(entry -> entryNameKey(entry.entryName).equals(entryName));
         writtenSymbolicLinkTargets.remove(entryName);
+        ArkivoStoredContent content = stagedEntryContents.remove(entryName);
+        if (content != null) {
+            content.close();
+        }
     }
 
     /// Returns the normalized key for a written entry name.
@@ -2043,6 +2353,11 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         return metadata.encrypted() ? passwordForEntry(entryName) : null;
     }
 
+    /// Returns the complete local file header size before entry data.
+    private static long localHeaderSize(byte[] rawName, byte[] localExtraData) {
+        return ZIP_LOCAL_FILE_HEADER_MIN_SIZE + (long) rawName.length + localExtraData.length;
+    }
+
     /// Writes the local file header for an entry.
     private void writeLocalHeader(
             byte[] rawName,
@@ -2091,39 +2406,55 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Writes the central directory and end record.
     private void writeCentralDirectory() throws IOException {
+        ArrayList<byte[]> centralDirectoryRecords = new ArrayList<>();
+        appendExistingCentralDirectoryEntries(centralDirectoryRecords);
+        for (CentralEntry entry : centralEntries) {
+            centralDirectoryRecords.add(centralDirectoryEntryBytes(entry));
+        }
+
+        if (!centralDirectoryRecords.isEmpty()) {
+            output.startRecord(centralDirectoryRecords.get(0).length);
+        }
         long centralDirectoryAbsoluteOffset = output.position();
         int centralDirectoryDiskNumber = output.diskNumber();
         long centralDirectoryOffset = output.diskPosition();
-        long copiedEntryCount = writeExistingCentralDirectoryEntries();
-        int[] centralEntryDiskNumbers = new int[centralEntries.size()];
-        for (int index = 0; index < centralEntries.size(); index++) {
+        int[] centralEntryDiskNumbers = new int[centralDirectoryRecords.size()];
+        for (int index = 0; index < centralDirectoryRecords.size(); index++) {
+            byte[] record = centralDirectoryRecords.get(index);
+            output.startRecord(record.length);
             centralEntryDiskNumbers[index] = output.diskNumber();
-            CentralEntry entry = centralEntries.get(index);
-            writeCentralDirectoryEntry(entry);
+            output.write(record);
         }
+
         long centralDirectorySize = output.position() - centralDirectoryAbsoluteOffset;
-        long entryCount = copiedEntryCount + centralEntries.size();
+        long entryCount = centralEntryDiskNumbers.length;
         requireUInt16(archiveComment.length, "archive comment length");
+        long endRecordSize = END_OF_CENTRAL_DIRECTORY_SIZE + archiveComment.length;
+        output.startRecord(endRecordSize);
         boolean zip64EndRecord = entryCount > UINT16_MAX
                 || centralDirectorySize > UINT32_MAX
                 || centralDirectoryOffset > UINT32_MAX
                 || centralDirectoryDiskNumber > UINT16_MAX
                 || output.diskNumber() > UINT16_MAX;
         if (zip64EndRecord) {
-            writeZip64EndRecord(
+            Zip64EndLocation zip64End = writeZip64EndRecord(
                     entryCount,
                     centralDirectorySize,
                     centralDirectoryDiskNumber,
                     centralDirectoryOffset,
-                    copiedEntryCount,
                     centralEntryDiskNumbers
             );
+            long finalRecordsSize = ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE + endRecordSize;
+            output.startRecord(finalRecordsSize);
+            int totalDisks = output.diskCountAfter(finalRecordsSize);
+            writeInt(output, ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIGNATURE);
+            writeInt(output, zip64End.diskNumber());
+            writeLong(output, zip64End.offset());
+            writeInt(output, totalDisks);
         }
 
         int endRecordDiskNumber = output.diskNumber();
-        long entriesOnEndRecordDisk =
-                initialCentralEntryCountOnDisk(copiedEntryCount, centralDirectoryDiskNumber, endRecordDiskNumber)
-                        + centralEntryCountOnDisk(centralEntryDiskNumbers, endRecordDiskNumber);
+        long entriesOnEndRecordDisk = centralEntryCountOnDisk(centralEntryDiskNumbers, endRecordDiskNumber);
         writeInt(output, END_OF_CENTRAL_DIRECTORY_SIGNATURE);
         writeShort(output, zip16Field(endRecordDiskNumber, zip64EndRecord));
         writeShort(output, zip16Field(centralDirectoryDiskNumber, zip64EndRecord));
@@ -2135,154 +2466,149 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         output.write(archiveComment);
     }
 
-    /// Writes existing central directory entries that remain visible after append-mode replacements.
-    private long writeExistingCentralDirectoryEntries() throws IOException {
-        long copiedEntryCount = 0L;
+    /// Appends existing central directory records that remain visible after replacements.
+    private void appendExistingCentralDirectoryEntries(List<byte[]> records) throws IOException {
         for (ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot entry : existingCentralDirectoryEntries) {
             if (!replacedEntries.contains(entry.entryName()) && !deletedEntries.contains(entry.entryName())) {
-                Long relocatedOffset = relocatedExistingEntryOffsets.get(entry.entryName());
-                if (relocatedOffset == null) {
+                RelocatedLocalHeader relocatedHeader = relocatedExistingEntryOffsets.get(entry.entryName());
+                if (relocatedHeader == null) {
                     throw new IOException("ZIP existing entry was not relocated: " + entry.entryName());
                 }
-                output.write(relocateCentralDirectoryEntry(entry.bytes(), relocatedOffset));
-                copiedEntryCount++;
+                records.add(relocateCentralDirectoryEntry(entry.bytes(), relocatedHeader));
             }
         }
-        return copiedEntryCount;
     }
 
-    /// Returns an existing central directory entry with its local header offset relocated.
-    private static byte[] relocateCentralDirectoryEntry(byte[] rawEntry, long localHeaderOffset) throws IOException {
+    /// Returns an existing central directory entry with its local header location relocated.
+    private static byte[] relocateCentralDirectoryEntry(
+            byte[] rawEntry,
+            RelocatedLocalHeader relocatedHeader
+    ) throws IOException {
+        Objects.requireNonNull(rawEntry, "rawEntry");
+        Objects.requireNonNull(relocatedHeader, "relocatedHeader");
+        long localHeaderOffset = relocatedHeader.offset();
+        long localHeaderDiskNumber = relocatedHeader.diskNumber();
         requireUInt64(localHeaderOffset, "local header offset");
+        requireUInt32(localHeaderDiskNumber, "local header disk number");
         if (rawEntry.length < ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE) {
             throw new IOException("Invalid ZIP central directory header");
         }
 
-        ByteBuffer buffer = ByteBuffer.wrap(rawEntry.clone()).order(ByteOrder.LITTLE_ENDIAN);
-        if (buffer.getInt(0) != CENTRAL_DIRECTORY_HEADER_SIGNATURE) {
+        ByteBuffer source = ByteBuffer.wrap(rawEntry).order(ByteOrder.LITTLE_ENDIAN);
+        if (source.getInt(0) != CENTRAL_DIRECTORY_HEADER_SIGNATURE) {
             throw new IOException("Invalid ZIP central directory header");
         }
-        int nameLength = Short.toUnsignedInt(buffer.getShort(28));
-        int extraLength = Short.toUnsignedInt(buffer.getShort(30));
-        int commentLength = Short.toUnsignedInt(buffer.getShort(32));
+        int nameLength = Short.toUnsignedInt(source.getShort(28));
+        int extraLength = Short.toUnsignedInt(source.getShort(30));
+        int commentLength = Short.toUnsignedInt(source.getShort(32));
         int extraOffset = ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE + nameLength;
         if (extraOffset + extraLength + commentLength != rawEntry.length) {
             throw new IOException("Invalid ZIP central directory variable data length");
         }
 
-        boolean zip64UncompressedSize = Integer.toUnsignedLong(buffer.getInt(24)) == UINT32_MAX;
-        boolean zip64CompressedSize = Integer.toUnsignedLong(buffer.getInt(20)) == UINT32_MAX;
-        boolean zip64LocalHeaderOffset = Integer.toUnsignedLong(buffer.getInt(42)) == UINT32_MAX;
-        boolean zip64DiskNumber = Short.toUnsignedInt(buffer.getShort(34)) == UINT16_MAX;
-        buffer.putShort(34, (short) 0);
+        boolean zip64UncompressedSize = Integer.toUnsignedLong(source.getInt(24)) == UINT32_MAX;
+        boolean zip64CompressedSize = Integer.toUnsignedLong(source.getInt(20)) == UINT32_MAX;
+        boolean originalZip64LocalHeaderOffset = Integer.toUnsignedLong(source.getInt(42)) == UINT32_MAX;
+        boolean originalZip64DiskNumber = Short.toUnsignedInt(source.getShort(34)) == UINT16_MAX;
+        boolean zip64LocalHeaderOffset = originalZip64LocalHeaderOffset || localHeaderOffset > UINT32_MAX;
+        boolean zip64DiskNumber = originalZip64DiskNumber || localHeaderDiskNumber > UINT16_MAX;
 
-        if (zip64LocalHeaderOffset) {
-            byte[] extraData = Arrays.copyOfRange(rawEntry, extraOffset, extraOffset + extraLength);
-            ZipExtraFields.Field zip64 = ZipExtraFields.find(
-                    extraData,
-                    ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID
-            );
-            int valueOffset = (zip64UncompressedSize ? Long.BYTES : 0)
-                    + (zip64CompressedSize ? Long.BYTES : 0);
-            if (zip64 == null || zip64.dataSize() - valueOffset < Long.BYTES) {
-                throw new IOException("ZIP64 central directory entry is missing its local header offset");
-            }
-            buffer.putLong(extraOffset + zip64.dataOffset() + valueOffset, localHeaderOffset);
-            return buffer.array();
-        }
-
-        if (localHeaderOffset <= UINT32_MAX) {
-            buffer.putInt(42, (int) localHeaderOffset);
-            return buffer.array();
-        }
-        return addZip64LocalHeaderOffset(
-                buffer.array(),
-                extraOffset,
-                extraLength,
-                zip64UncompressedSize,
-                zip64CompressedSize,
-                zip64DiskNumber,
-                localHeaderOffset
-        );
-    }
-
-    /// Adds a ZIP64 local header offset to a central directory entry that previously used ZIP32.
-    private static byte[] addZip64LocalHeaderOffset(
-            byte[] rawEntry,
-            int extraOffset,
-            int extraLength,
-            boolean zip64UncompressedSize,
-            boolean zip64CompressedSize,
-            boolean zip64DiskNumber,
-            long localHeaderOffset
-    ) throws IOException {
         byte[] extraData = Arrays.copyOfRange(rawEntry, extraOffset, extraOffset + extraLength);
-        ZipExtraFields.Field zip64 = ZipExtraFields.find(extraData, ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID);
-        int insertionOffset;
-        int addedSize;
-        if (zip64 == null) {
-            insertionOffset = extraOffset + extraLength;
-            addedSize = Integer.BYTES + Long.BYTES;
-        } else {
-            int sizeValueLength = (zip64UncompressedSize ? Long.BYTES : 0)
-                    + (zip64CompressedSize ? Long.BYTES : 0);
-            int requiredExistingLength = sizeValueLength + (zip64DiskNumber ? Integer.BYTES : 0);
-            if (zip64.dataSize() < requiredExistingLength) {
+        ZipExtraFields.validate(extraData);
+        ZipExtraFields.Field zip64 = ZipExtraFields.find(
+                extraData,
+                ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID
+        );
+        int sizeValueLength = (zip64UncompressedSize ? Long.BYTES : 0)
+                + (zip64CompressedSize ? Long.BYTES : 0);
+        int originalLocationLength = (originalZip64LocalHeaderOffset ? Long.BYTES : 0)
+                + (originalZip64DiskNumber ? Integer.BYTES : 0);
+        if (zip64 == null && sizeValueLength + originalLocationLength != 0) {
+            throw new IOException("ZIP64 central directory entry is missing extended information");
+        }
+
+        byte[] relocatedExtraData = extraData;
+        if (zip64 != null || zip64LocalHeaderOffset || zip64DiskNumber) {
+            int oldDataOffset = zip64 == null ? extraData.length : zip64.dataOffset();
+            int oldDataSize = zip64 == null ? 0 : zip64.dataSize();
+            if (oldDataSize < sizeValueLength + originalLocationLength) {
                 throw new IOException("Invalid ZIP64 central directory extra field length");
             }
-            insertionOffset = extraOffset + zip64.dataOffset() + sizeValueLength;
-            addedSize = Long.BYTES;
-        }
-        requireUInt16(extraLength + addedSize, "central directory extra data length");
+            int trailingOffset = oldDataOffset + sizeValueLength + originalLocationLength;
+            int trailingLength = oldDataSize - sizeValueLength - originalLocationLength;
+            int newDataSize = sizeValueLength
+                    + (zip64LocalHeaderOffset ? Long.BYTES : 0)
+                    + (zip64DiskNumber ? Integer.BYTES : 0)
+                    + trailingLength;
+            byte[] zip64Field = new byte[Integer.BYTES + newDataSize];
+            ByteBuffer zip64Buffer = ByteBuffer.wrap(zip64Field).order(ByteOrder.LITTLE_ENDIAN);
+            zip64Buffer.putShort((short) ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID);
+            zip64Buffer.putShort((short) newDataSize);
+            if (sizeValueLength > 0) {
+                zip64Buffer.put(extraData, oldDataOffset, sizeValueLength);
+            }
+            if (zip64LocalHeaderOffset) {
+                zip64Buffer.putLong(localHeaderOffset);
+            }
+            if (zip64DiskNumber) {
+                zip64Buffer.putInt((int) localHeaderDiskNumber);
+            }
+            if (trailingLength > 0) {
+                zip64Buffer.put(extraData, trailingOffset, trailingLength);
+            }
 
-        byte[] relocated = new byte[rawEntry.length + addedSize];
-        System.arraycopy(rawEntry, 0, relocated, 0, insertionOffset);
+            int oldFieldOffset = zip64 == null ? extraData.length : zip64.dataOffset() - Integer.BYTES;
+            int oldFieldLength = zip64 == null ? 0 : Integer.BYTES + zip64.dataSize();
+            relocatedExtraData = new byte[extraData.length - oldFieldLength + zip64Field.length];
+            System.arraycopy(extraData, 0, relocatedExtraData, 0, oldFieldOffset);
+            System.arraycopy(zip64Field, 0, relocatedExtraData, oldFieldOffset, zip64Field.length);
+            System.arraycopy(
+                    extraData,
+                    oldFieldOffset + oldFieldLength,
+                    relocatedExtraData,
+                    oldFieldOffset + zip64Field.length,
+                    extraData.length - oldFieldOffset - oldFieldLength
+            );
+        }
+        requireUInt16(relocatedExtraData.length, "central directory extra data length");
+
+        byte[] relocated = new byte[
+                rawEntry.length - extraLength + relocatedExtraData.length
+        ];
+        System.arraycopy(rawEntry, 0, relocated, 0, extraOffset);
+        System.arraycopy(relocatedExtraData, 0, relocated, extraOffset, relocatedExtraData.length);
         System.arraycopy(
                 rawEntry,
-                insertionOffset,
+                extraOffset + extraLength,
                 relocated,
-                insertionOffset + addedSize,
-                rawEntry.length - insertionOffset
+                extraOffset + relocatedExtraData.length,
+                commentLength
         );
-        ByteBuffer buffer = ByteBuffer.wrap(relocated).order(ByteOrder.LITTLE_ENDIAN);
-        buffer.putShort(6, (short) Math.max(Short.toUnsignedInt(buffer.getShort(6)), ZIP64_VERSION_NEEDED));
-        buffer.putShort(30, (short) (extraLength + addedSize));
-        buffer.putInt(42, (int) UINT32_MAX);
-        if (zip64 == null) {
-            buffer.putShort(insertionOffset, (short) ZIP64_EXTENDED_INFORMATION_EXTRA_FIELD_ID);
-            buffer.putShort(insertionOffset + Short.BYTES, (short) Long.BYTES);
-            buffer.putLong(insertionOffset + Integer.BYTES, localHeaderOffset);
-        } else {
-            int zip64LengthOffset = extraOffset + zip64.dataOffset() - Short.BYTES;
-            buffer.putShort(zip64LengthOffset, (short) (zip64.dataSize() + Long.BYTES));
-            buffer.putLong(insertionOffset, localHeaderOffset);
+        ByteBuffer result = ByteBuffer.wrap(relocated).order(ByteOrder.LITTLE_ENDIAN);
+        if (zip64LocalHeaderOffset || zip64DiskNumber) {
+            result.putShort(6, (short) Math.max(
+                    Short.toUnsignedInt(result.getShort(6)),
+                    ZIP64_VERSION_NEEDED
+            ));
         }
+        result.putShort(30, (short) relocatedExtraData.length);
+        result.putShort(34, (short) (zip64DiskNumber ? UINT16_MAX : localHeaderDiskNumber));
+        result.putInt(42, (int) (zip64LocalHeaderOffset ? UINT32_MAX : localHeaderOffset));
         return relocated;
     }
 
-    /// Writes ZIP64 end records for an archive whose end metadata exceeds ZIP32 fields.
-    private void writeZip64EndRecord(
+    /// Writes a ZIP64 end record and returns its physical location.
+    private Zip64EndLocation writeZip64EndRecord(
             long entryCount,
             long centralDirectorySize,
             int centralDirectoryDiskNumber,
             long centralDirectoryOffset,
-            long initialCentralDirectoryEntryCount,
             int[] centralEntryDiskNumbers
     ) throws IOException {
+        output.startRecord(ZIP64_END_OF_CENTRAL_DIRECTORY_SIZE);
         int zip64EndDiskNumber = output.diskNumber();
         long zip64EndOffset = output.diskPosition();
-        long entriesOnZip64EndDisk =
-                initialCentralEntryCountOnDisk(
-                        initialCentralDirectoryEntryCount,
-                        centralDirectoryDiskNumber,
-                        zip64EndDiskNumber
-                ) + centralEntryCountOnDisk(centralEntryDiskNumbers, zip64EndDiskNumber);
-        int totalDisks = output.diskCountAfter(
-                ZIP64_END_OF_CENTRAL_DIRECTORY_SIZE
-                        + ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE
-                        + END_OF_CENTRAL_DIRECTORY_SIZE
-                        + archiveComment.length
-        );
+        long entriesOnZip64EndDisk = centralEntryCountOnDisk(centralEntryDiskNumbers, zip64EndDiskNumber);
         writeInt(output, ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE);
         writeLong(output, ZIP64_END_OF_CENTRAL_DIRECTORY_PAYLOAD_SIZE);
         writeShort(output, ZIP64_VERSION_NEEDED);
@@ -2293,48 +2619,48 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         writeLong(output, entryCount);
         writeLong(output, centralDirectorySize);
         writeLong(output, centralDirectoryOffset);
-
-        writeInt(output, ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIGNATURE);
-        writeInt(output, zip64EndDiskNumber);
-        writeLong(output, zip64EndOffset);
-        writeInt(output, totalDisks);
+        return new Zip64EndLocation(zip64EndDiskNumber, zip64EndOffset);
     }
 
-    /// Returns how many copied central directory entries start on the given disk.
-    private static long initialCentralEntryCountOnDisk(long entryCount, int centralDirectoryDiskNumber, int diskNumber) {
-        return centralDirectoryDiskNumber == diskNumber ? entryCount : 0L;
-    }
-
-    /// Writes one central directory entry.
-    private void writeCentralDirectoryEntry(CentralEntry entry) throws IOException {
+    /// Serializes one complete central directory entry.
+    private static byte[] centralDirectoryEntryBytes(CentralEntry entry) throws IOException {
         requireUInt16(entry.versionMadeBy, "version made by");
         requireUInt16(entry.internalAttributes, "internal attributes");
-        requireUInt16(entry.localHeaderDiskNumber, "local header disk number");
+        requireUInt32(entry.finalLocalHeaderDiskNumber(), "local header disk number");
         requireUInt32(entry.externalAttributes, "external attributes");
         byte[] centralDirectoryExtraData = entry.centralDirectoryExtraData();
         requireUInt16(centralDirectoryExtraData.length, "central directory extra data length");
         requireUInt16(entry.rawComment.length, "comment length");
 
-        writeInt(output, CENTRAL_DIRECTORY_HEADER_SIGNATURE);
-        writeShort(output, entry.versionMadeBy);
-        writeShort(output, entry.finalVersionNeeded());
-        writeShort(output, entry.flags);
-        writeShort(output, entry.method);
-        writeShort(output, entry.dosTime);
-        writeShort(output, entry.dosDate);
-        writeInt(output, entry.crc32);
-        writeInt(output, zip32Field(entry.compressedSize, entry.zip64CompressedSize()));
-        writeInt(output, zip32Field(entry.uncompressedSize, entry.zip64UncompressedSize()));
-        writeShort(output, entry.rawName.length);
-        writeShort(output, centralDirectoryExtraData.length);
-        writeShort(output, entry.rawComment.length);
-        writeShort(output, entry.localHeaderDiskNumber);
-        writeShort(output, entry.internalAttributes);
-        writeInt(output, entry.externalAttributes);
-        writeInt(output, zip32Field(entry.finalLocalHeaderOffset(), entry.zip64LocalHeaderOffset()));
-        output.write(entry.rawName);
-        output.write(centralDirectoryExtraData);
-        output.write(entry.rawComment);
+        int size = Math.addExact(
+                ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE + entry.rawName.length,
+                centralDirectoryExtraData.length + entry.rawComment.length
+        );
+        ByteBuffer record = ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN);
+        record.putInt(CENTRAL_DIRECTORY_HEADER_SIGNATURE);
+        record.putShort((short) entry.versionMadeBy);
+        record.putShort((short) entry.finalVersionNeeded());
+        record.putShort((short) entry.flags);
+        record.putShort((short) entry.method);
+        record.putShort((short) entry.dosTime);
+        record.putShort((short) entry.dosDate);
+        record.putInt((int) entry.crc32);
+        record.putInt((int) zip32Field(entry.compressedSize, entry.zip64CompressedSize()));
+        record.putInt((int) zip32Field(entry.uncompressedSize, entry.zip64UncompressedSize()));
+        record.putShort((short) entry.rawName.length);
+        record.putShort((short) centralDirectoryExtraData.length);
+        record.putShort((short) entry.rawComment.length);
+        record.putShort((short) zip16Field(
+                entry.finalLocalHeaderDiskNumber(),
+                entry.zip64LocalHeaderDiskNumber()
+        ));
+        record.putShort((short) entry.internalAttributes);
+        record.putInt((int) entry.externalAttributes);
+        record.putInt((int) zip32Field(entry.finalLocalHeaderOffset(), entry.zip64LocalHeaderOffset()));
+        record.put(entry.rawName);
+        record.put(centralDirectoryExtraData);
+        record.put(entry.rawComment);
+        return record.array();
     }
 
     /// Returns how many central directory entries start on the given disk.
@@ -2387,7 +2713,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
     }
 
-    /// Returns a ZIP64 extended information extra field.
+    /// Returns a ZIP64 extended information extra field without a disk number.
     private static byte[] zip64ExtendedInformationExtra(
             boolean includeUncompressedSize,
             boolean includeCompressedSize,
@@ -2395,6 +2721,29 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             long uncompressedSize,
             long compressedSize,
             long localHeaderOffset
+    ) {
+        return zip64ExtendedInformationExtra(
+                includeUncompressedSize,
+                includeCompressedSize,
+                includeLocalHeaderOffset,
+                false,
+                uncompressedSize,
+                compressedSize,
+                localHeaderOffset,
+                0
+        );
+    }
+
+    /// Returns a ZIP64 extended information extra field.
+    private static byte[] zip64ExtendedInformationExtra(
+            boolean includeUncompressedSize,
+            boolean includeCompressedSize,
+            boolean includeLocalHeaderOffset,
+            boolean includeDiskNumber,
+            long uncompressedSize,
+            long compressedSize,
+            long localHeaderOffset,
+            int diskNumber
     ) {
         int payloadSize = 0;
         if (includeUncompressedSize) {
@@ -2405,6 +2754,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
         if (includeLocalHeaderOffset) {
             payloadSize += Long.BYTES;
+        }
+        if (includeDiskNumber) {
+            payloadSize += Integer.BYTES;
         }
 
         ByteBuffer buffer = ByteBuffer.allocate(Integer.BYTES + payloadSize).order(ByteOrder.LITTLE_ENDIAN);
@@ -2418,6 +2770,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
         if (includeLocalHeaderOffset) {
             buffer.putLong(localHeaderOffset);
+        }
+        if (includeDiskNumber) {
+            buffer.putInt(diskNumber);
         }
         return buffer.array();
     }
@@ -2522,6 +2877,12 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         /// The stream that receives uncompressed bytes from the caller.
         private final OutputStream entryOutput;
 
+        /// The optional channel-first compression encoder used by this entry.
+        private final @Nullable CompressionEncoder compressionEncoder;
+
+        /// The optional storage stream that preserves uncompressed bytes for update-session reads.
+        private final @Nullable OutputStream stagedEntryOutput;
+
         /// The WinZip AES output stream, or `null` when this entry does not use WinZip AES.
         private final @Nullable ZipAesCrypto.EncryptingOutputStream aesOutput;
 
@@ -2553,6 +2914,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             this.metadata = Objects.requireNonNull(metadata, "metadata");
             OutputStream dataOutput = output;
             ZipAesCrypto.EncryptingOutputStream entryAesOutput = null;
+            long localHeaderSize = output.position() - localHeaderAbsoluteOffset;
             if (metadata.traditionalEncrypted()) {
                 byte[] encryptionPassword = Objects.requireNonNull(password, "password");
                 dataOutput = ZipTraditionalCrypto.openEncryptingStream(
@@ -2570,29 +2932,36 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 dataOutput = entryAesOutput;
             }
             this.aesOutput = entryAesOutput;
+            CompressionEncoder entryCompressionEncoder = null;
             if (metadata.method == DEFLATED_METHOD) {
                 Deflater entryDeflater = new Deflater(Deflater.DEFAULT_COMPRESSION, true);
                 this.deflater = entryDeflater;
                 this.entryOutput = new DeflaterOutputStream(dataOutput, entryDeflater);
             } else if (metadata.method == DEFLATE64_METHOD) {
                 this.deflater = null;
-                this.entryOutput = new Deflate64OutputStream(dataOutput);
+                entryCompressionEncoder = ZipCompressionCodecs.openEncoder("deflate64", dataOutput);
+                this.entryOutput = StreamChannelAdapters.outputStream(entryCompressionEncoder);
             } else if (metadata.method == BZIP2_METHOD) {
                 this.deflater = null;
-                this.entryOutput = new BZip2OutputStream(dataOutput);
+                entryCompressionEncoder = ZipCompressionCodecs.openEncoder("bzip2", dataOutput);
+                this.entryOutput = StreamChannelAdapters.outputStream(entryCompressionEncoder);
             } else if (isZstandardMethod(metadata.method)) {
                 this.deflater = null;
-                this.entryOutput = new ZstdOutputStream(new NonClosingOutputStream(dataOutput));
+                entryCompressionEncoder = ZipCompressionCodecs.openEncoder("zstd", dataOutput);
+                this.entryOutput = StreamChannelAdapters.outputStream(entryCompressionEncoder);
             } else if (metadata.method == LZMA_METHOD) {
                 this.deflater = null;
                 this.entryOutput = new ZipLzmaOutputStream(dataOutput);
             } else if (metadata.method == XZ_METHOD) {
                 this.deflater = null;
-                this.entryOutput = new XzOutputStream(new NonClosingOutputStream(dataOutput));
+                entryCompressionEncoder = ZipCompressionCodecs.openEncoder("xz", dataOutput);
+                this.entryOutput = StreamChannelAdapters.outputStream(entryCompressionEncoder);
             } else {
                 this.deflater = null;
                 this.entryOutput = dataOutput;
             }
+            this.compressionEncoder = entryCompressionEncoder;
+            this.stagedEntryOutput = openStagedEntryOutput(entryName);
         }
 
         /// Writes one byte to the current ZIP entry.
@@ -2603,6 +2972,10 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 ensureEntryOpen();
                 crc32.update(value);
                 uncompressedSize++;
+                OutputStream stagedOutput = stagedEntryOutput;
+                if (stagedOutput != null) {
+                    stagedOutput.write(value);
+                }
                 entryOutput.write(value);
             } finally {
                 unlock();
@@ -2618,6 +2991,10 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 ensureEntryOpen();
                 crc32.update(bytes, offset, length);
                 uncompressedSize += length;
+                OutputStream stagedOutput = stagedEntryOutput;
+                if (stagedOutput != null) {
+                    stagedOutput.write(bytes, offset, length);
+                }
                 entryOutput.write(bytes, offset, length);
             } finally {
                 unlock();
@@ -2634,18 +3011,17 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 }
                 entryOpen = false;
                 try {
-                    if (entryOutput instanceof DeflaterOutputStream deflatedOutput) {
+                    OutputStream stagedOutput = stagedEntryOutput;
+                    if (stagedOutput != null) {
+                        stagedOutput.close();
+                    }
+                    CompressionEncoder entryCompressionEncoder = compressionEncoder;
+                    if (entryCompressionEncoder != null) {
+                        entryCompressionEncoder.finish();
+                    } else if (entryOutput instanceof DeflaterOutputStream deflatedOutput) {
                         deflatedOutput.finish();
-                    } else if (entryOutput instanceof Deflate64OutputStream deflate64Output) {
-                        deflate64Output.finish();
-                    } else if (entryOutput instanceof BZip2OutputStream bzip2Output) {
-                        bzip2Output.finish();
-                    } else if (entryOutput instanceof ZstdOutputStream zstandardOutput) {
-                        zstandardOutput.close();
                     } else if (entryOutput instanceof ZipLzmaOutputStream lzmaOutput) {
                         lzmaOutput.finish();
-                    } else if (entryOutput instanceof XzOutputStream xzOutput) {
-                        xzOutput.finish();
                     }
                     ZipAesCrypto.EncryptingOutputStream entryAesOutput = aesOutput;
                     if (entryAesOutput != null) {
@@ -2681,9 +3057,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                             uncompressedSize,
                             localHeaderDiskNumber,
                             localHeaderOffset,
+                            compressedDataOffset - localHeaderAbsoluteOffset,
                             output.position() - localHeaderAbsoluteOffset,
                             metadata
                     ));
+                } catch (IOException | RuntimeException | Error exception) {
+                    abortSplitOutput(output);
+                    throw exception;
                 } finally {
                     Deflater entryDeflater = deflater;
                     if (entryDeflater != null) {
@@ -2851,6 +3231,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             return 1;
         }
 
+        /// Starts a ZIP record that must remain on one physical disk.
+        void startRecord(long recordSize) throws IOException {
+            if (recordSize < 0L) {
+                throw new IllegalArgumentException("recordSize must not be negative");
+            }
+        }
+
         /// Writes one byte.
         @Override
         public void write(int value) throws IOException {
@@ -2891,167 +3278,53 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             this.openOptions = Set.copyOf(openOptions);
         }
 
-        /// Opens a new staged path-backed volume output.
+        /// Opens staged output through the shared path volume transaction implementation.
         @Override
         public ArkivoVolumeOutput openOutput() throws IOException {
             requireSplitTargetOptions(archivePath, openOptions);
-            Path stagingDirectory = Files.createTempDirectory(
-                    PathVolumeOutput.outputDirectory(archivePath),
-                    PathVolumeOutput.STAGING_DIRECTORY_PREFIX
-            );
-            return new PathVolumeOutput(
-                    archivePath,
-                    stagingDirectory,
-                    PathVolumeOutput.stagingOpenOptions(openOptions),
-                    !openOptions.contains(StandardOpenOption.CREATE_NEW)
-            );
+            return new ArkivoPathVolumeTarget(new PathVolumeLayout(archivePath), openOptions).openOutput();
         }
     }
 
-    /// Stages and publishes conventional path-backed ZIP split volumes.
+    /// Maps conventional split ZIP disks to their final published paths.
+    ///
+    /// @param archivePath the normalized final ZIP archive path
     @NotNullByDefault
-    private static final class PathVolumeOutput implements ArkivoVolumeOutput {
-        /// The prefix used for temporary split output directories.
-        private static final String STAGING_DIRECTORY_PREFIX = ".arkivo-zip-split-";
-
-        /// The final archive path.
-        private final Path archivePath;
-
-        /// The directory that holds unpublished split output and backups.
-        private final Path stagingDirectory;
-
-        /// The open options used for staged volume paths.
-        private final @Unmodifiable Set<OpenOption> stagingOpenOptions;
-
-        /// Whether existing output volumes may be replaced during publication.
-        private final boolean replaceExistingOutput;
-
-        /// The existing output paths moved into staging for rollback.
-        private final ArrayList<OutputBackup> backups = new ArrayList<>();
-
-        /// The staged output paths already moved into their published locations.
-        private final ArrayList<Path> publishedPaths = new ArrayList<>();
-
-        /// The number of staged volume channels opened so far.
-        private int openedVolumeCount;
-
-        /// Whether publication has started.
-        private boolean publicationStarted;
-
-        /// Whether the new output has been published successfully.
-        private boolean committed;
-
-        /// Whether this output has been committed or rolled back.
-        private boolean finished;
-
-        /// Whether all staging and backup paths have been removed or restored.
-        private boolean cleanupComplete;
-
-        /// Creates path-backed volume output.
-        private PathVolumeOutput(
-                Path archivePath,
-                Path stagingDirectory,
-                Set<OpenOption> stagingOpenOptions,
-                boolean replaceExistingOutput
-        ) {
-            this.archivePath = Objects.requireNonNull(archivePath, "archivePath");
-            this.stagingDirectory = Objects.requireNonNull(stagingDirectory, "stagingDirectory");
-            this.stagingOpenOptions = Set.copyOf(stagingOpenOptions);
-            this.replaceExistingOutput = replaceExistingOutput;
+    private record PathVolumeLayout(Path archivePath) implements ArkivoVolumePathLayout {
+        /// Creates one conventional ZIP path layout.
+        private PathVolumeLayout(Path archivePath) {
+            this.archivePath = Objects.requireNonNull(archivePath, "archivePath")
+                    .toAbsolutePath()
+                    .normalize();
         }
 
-        /// Opens the next staged volume channel.
+        /// Returns the common output directory for the ZIP archive and its numbered disks.
         @Override
-        public WritableByteChannel openVolume(long index) throws IOException {
-            ensureOpen();
-            if (index < 0 || index != openedVolumeCount) {
-                throw new IllegalArgumentException("Volume indexes must be opened once in ascending order");
+        public Path outputDirectory() {
+            Path parent = archivePath.getParent();
+            if (parent == null) {
+                throw new IllegalArgumentException("archivePath must have a parent directory");
             }
-            SeekableByteChannel channel = Files.newByteChannel(
-                    stagedVolumePath(stagingDirectory, (int) index),
-                    stagingOpenOptions
-            );
-            openedVolumeCount++;
-            return channel;
+            return parent;
         }
 
-        /// Publishes all staged volumes using conventional ZIP volume paths.
+        /// Returns a numbered path for a preceding disk or the archive path for the final disk.
         @Override
-        public void commit(long finalVolumeIndex) throws IOException {
-            ensureOpen();
-            if (finalVolumeIndex < 0 || finalVolumeIndex != openedVolumeCount - 1L) {
-                throw new IllegalArgumentException("finalVolumeIndex must identify the last opened volume");
+        public Path volumePath(long index, long finalVolumeIndex) {
+            if (index < 0L || index > finalVolumeIndex || index > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("Invalid ZIP disk index: " + index);
             }
-            publicationStarted = true;
-            try {
-                if (replaceExistingOutput) {
-                    backupExistingOutput();
-                } else {
-                    requireNoExistingOutput();
-                }
-                for (int diskNumber = 0; diskNumber <= (int) finalVolumeIndex; diskNumber++) {
-                    Path outputPath = outputPath(diskNumber, (int) finalVolumeIndex);
-                    Files.move(stagedVolumePath(stagingDirectory, diskNumber), outputPath);
-                    publishedPaths.add(outputPath);
-                }
-            } catch (IOException | RuntimeException | Error exception) {
-                finished = true;
-                @Nullable Throwable failure = rollbackPublication(exception);
-                throwFailure(failure);
-                return;
-            }
-            committed = true;
-            finished = true;
-            deleteStagingDirectory(stagingDirectory);
-            cleanupComplete = true;
+            return index == finalVolumeIndex
+                    ? archivePath
+                    : ZipSplitVolumePaths.numberedVolumePath(archivePath, (int) index);
         }
 
-        /// Removes unpublished output or retries cleanup after a completed publication attempt.
+        /// Returns all existing final and numbered disk paths owned by this ZIP layout.
         @Override
-        public void rollback() throws IOException {
-            if (cleanupComplete) {
-                return;
-            }
-            finished = true;
-            if (publicationStarted && !committed) {
-                @Nullable Throwable failure = rollbackPublication(null);
-                throwFailure(failure);
-                return;
-            }
-            deleteStagingDirectory(stagingDirectory);
-            cleanupComplete = true;
-        }
-
-        /// Closes this output and rolls it back when necessary.
-        @Override
-        public void close() throws IOException {
-            rollback();
-        }
-
-        /// Moves all existing split output paths into staging for a possible rollback.
-        private void backupExistingOutput() throws IOException {
-            int backupIndex = 0;
-            for (Path outputPath : existingOutputPaths()) {
-                Path backupPath = stagingDirectory.resolve("backup-" + backupIndex++);
-                Files.move(outputPath, backupPath);
-                backups.add(new OutputBackup(outputPath, backupPath));
-            }
-        }
-
-        /// Rejects output publication when create-new output paths already exist.
-        private void requireNoExistingOutput() throws IOException {
-            List<Path> existingPaths = existingOutputPaths();
-            if (!existingPaths.isEmpty()) {
-                throw new FileAlreadyExistsException(existingPaths.get(0).toString());
-            }
-        }
-
-        /// Returns every existing conventional split output path for this archive name.
-        private @Unmodifiable List<Path> existingOutputPaths() throws IOException {
-            Path outputDirectory = outputDirectory(archivePath);
+        public @Unmodifiable List<Path> existingVolumePaths() throws IOException {
             String baseName = outputBaseName(archivePath);
             ArrayList<Path> paths = new ArrayList<>();
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(outputDirectory)) {
+            try (DirectoryStream<Path> stream = Files.newDirectoryStream(outputDirectory())) {
                 for (Path path : stream) {
                     Path fileName = path.getFileName();
                     if (fileName != null && isNumberedVolumeName(fileName.toString(), baseName)) {
@@ -3059,72 +3332,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     }
                 }
             }
-            Path finalArchivePath = archivePath.toAbsolutePath();
-            if (Files.exists(finalArchivePath)) {
-                paths.add(finalArchivePath);
+            if (Files.exists(archivePath)) {
+                paths.add(archivePath);
             }
             return List.copyOf(paths);
         }
 
-        /// Returns the published output path for one disk.
-        private Path outputPath(int diskNumber, int finalDiskNumber) {
-            return diskNumber == finalDiskNumber
-                    ? archivePath
-                    : ZipSplitVolumePaths.numberedVolumePath(archivePath, diskNumber);
-        }
-
-        /// Removes published output and restores every backed-up output path after a failed publication.
-        private @Nullable Throwable rollbackPublication(@Nullable Throwable failure) {
-            boolean cleanupFailed = false;
-            for (int index = publishedPaths.size() - 1; index >= 0; index--) {
-                try {
-                    Files.deleteIfExists(publishedPaths.get(index));
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = appendFailure(failure, exception);
-                    cleanupFailed = true;
-                }
-            }
-            for (int index = backups.size() - 1; index >= 0; index--) {
-                OutputBackup backup = backups.get(index);
-                if (!Files.exists(backup.backupPath())) {
-                    continue;
-                }
-                try {
-                    Files.move(backup.backupPath(), backup.outputPath());
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = appendFailure(failure, exception);
-                    cleanupFailed = true;
-                }
-            }
-            try {
-                deleteStagingDirectory(stagingDirectory);
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = appendFailure(failure, exception);
-                cleanupFailed = true;
-            }
-            if (!cleanupFailed) {
-                cleanupComplete = true;
-            }
-            return failure;
-        }
-
-        /// Requires this volume output to remain unfinished.
-        private void ensureOpen() throws IOException {
-            if (finished) {
-                throw new IOException("Volume output is closed");
-            }
-        }
-
-        /// Returns the directory in which split output is published.
-        private static Path outputDirectory(Path archivePath) {
-            Path parent = archivePath.toAbsolutePath().getParent();
-            if (parent == null) {
-                throw new IllegalArgumentException("archivePath must have a parent directory");
-            }
-            return parent;
-        }
-
-        /// Returns the base file name used by conventional split volumes.
+        /// Returns the base file name used by conventional numbered ZIP disks.
         private static String outputBaseName(Path archivePath) {
             Path fileName = archivePath.getFileName();
             if (fileName == null) {
@@ -3136,7 +3350,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     : name;
         }
 
-        /// Returns whether a file name is a conventional numbered volume for the given output base name.
+        /// Returns whether a file name is a conventional numbered disk for the output base name.
         private static boolean isNumberedVolumeName(String fileName, String baseName) {
             String prefix = baseName + ".z";
             if (!fileName.startsWith(prefix) || fileName.length() == prefix.length()) {
@@ -3148,41 +3362,6 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 }
             }
             return true;
-        }
-
-        /// Returns the path used to stage one output volume.
-        private static Path stagedVolumePath(Path stagingDirectory, int diskNumber) {
-            return stagingDirectory.resolve("volume-" + diskNumber);
-        }
-
-        /// Removes all staged output and backup paths.
-        private static void deleteStagingDirectory(Path stagingDirectory) throws IOException {
-            try (DirectoryStream<Path> stream = Files.newDirectoryStream(stagingDirectory)) {
-                for (Path path : stream) {
-                    Files.deleteIfExists(path);
-                }
-            }
-            Files.deleteIfExists(stagingDirectory);
-        }
-
-        /// Returns open options suitable for new staged volume paths.
-        private static @Unmodifiable Set<OpenOption> stagingOpenOptions(Set<OpenOption> openOptions) {
-            HashSet<OpenOption> volumeOpenOptions = new HashSet<>(openOptions);
-            volumeOpenOptions.remove(StandardOpenOption.APPEND);
-            volumeOpenOptions.remove(StandardOpenOption.CREATE);
-            volumeOpenOptions.remove(StandardOpenOption.TRUNCATE_EXISTING);
-            volumeOpenOptions.remove(StandardOpenOption.CREATE_NEW);
-            volumeOpenOptions.add(StandardOpenOption.CREATE_NEW);
-            volumeOpenOptions.add(StandardOpenOption.WRITE);
-            return Set.copyOf(volumeOpenOptions);
-        }
-
-        /// Stores a staged backup of a previously published output path.
-        ///
-        /// @param outputPath the original published path
-        /// @param backupPath the staged backup path
-        @NotNullByDefault
-        private record OutputBackup(Path outputPath, Path backupPath) {
         }
     }
 
@@ -3204,6 +3383,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         /// The first write or flush failure that prevents publication.
         private @Nullable Throwable writeFailure;
 
+        /// Whether a higher-level archive operation requires rollback.
+        private boolean rollbackOnly;
+
         /// Whether this stream has been closed.
         private boolean closed;
 
@@ -3216,6 +3398,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 channel = Objects.requireNonNull(volumeOutput.openVolume(0L), "volume channel");
                 stream = Channels.newOutputStream(channel);
                 SplitCountingOutputStream result = new SplitCountingOutputStream(volumeOutput, splitSize, stream);
+                writeInt(result, DATA_DESCRIPTOR_SIGNATURE);
                 stream = null;
                 channel = null;
                 return result;
@@ -3293,6 +3476,25 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             return (int) diskCount;
         }
 
+        /// Starts a ZIP record on a disk where the complete record fits.
+        @Override
+        void startRecord(long recordSize) throws IOException {
+            if (recordSize < 0L) {
+                throw new IllegalArgumentException("recordSize must not be negative");
+            }
+            if (recordSize > splitSize) {
+                throw new IOException("ZIP record exceeds the configured split size");
+            }
+            try {
+                if (currentDiskPosition > 0L && recordSize > splitSize - currentDiskPosition) {
+                    openNextDisk();
+                }
+            } catch (IOException | RuntimeException | Error exception) {
+                recordWriteFailure(exception);
+                throw exception;
+            }
+        }
+
         /// Writes one byte.
         @Override
         public void write(int value) throws IOException {
@@ -3345,14 +3547,14 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 return;
             }
             closed = true;
-            @Nullable Throwable failure = writeFailure;
+            @Nullable Throwable failure = null;
             try {
                 output.close();
             } catch (IOException | RuntimeException | Error exception) {
                 failure = appendFailure(failure, exception);
             }
             try {
-                if (failure == null) {
+                if (writeFailure == null && failure == null && !rollbackOnly) {
                     volumeOutput.commit(currentDiskNumber);
                 } else {
                     volumeOutput.rollback();
@@ -3365,7 +3567,15 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             } catch (IOException | RuntimeException | Error exception) {
                 failure = appendFailure(failure, exception);
             }
+            if (failure == null && writeFailure != null) {
+                failure = new IOException("ZIP split output was rolled back after an earlier write failure");
+            }
             throwFailure(failure);
+        }
+
+        /// Marks this output transaction for rollback without replacing the higher-level failure.
+        private void abort() {
+            rollbackOnly = true;
         }
 
         /// Records a failed volume output operation.
@@ -3378,6 +3588,11 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             if (currentDiskPosition < splitSize) {
                 return;
             }
+            openNextDisk();
+        }
+
+        /// Closes the current disk and opens the next physical output disk.
+        private void openNextDisk() throws IOException {
             output.close();
             int nextDiskNumber = Math.addExact(currentDiskNumber, 1);
             WritableByteChannel nextChannel = Objects.requireNonNull(
@@ -4505,6 +4720,36 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
     }
 
+    /// Stores the physical location of a ZIP64 end record.
+    ///
+    /// @param diskNumber the zero-based output disk number
+    /// @param offset     the record offset relative to the output disk
+    private record Zip64EndLocation(int diskNumber, long offset) {
+        /// Validates a ZIP64 end record location.
+        private Zip64EndLocation {
+            if (diskNumber < 0 || offset < 0L) {
+                throw new IllegalArgumentException("ZIP64 end record location must not be negative");
+            }
+        }
+    }
+
+    /// Describes a relocated local header location.
+    ///
+    /// @param diskNumber the zero-based output disk number
+    /// @param offset the local header offset relative to the output disk
+    @NotNullByDefault
+    private record RelocatedLocalHeader(int diskNumber, long offset) {
+        /// Creates a relocated local header location.
+        private RelocatedLocalHeader {
+            if (diskNumber < 0) {
+                throw new IllegalArgumentException("diskNumber must not be negative");
+            }
+            if (offset < 0L) {
+                throw new IllegalArgumentException("offset must not be negative");
+            }
+        }
+    }
+
     /// Stores central directory metadata for one entry.
     @NotNullByDefault
     private static final class CentralEntry {
@@ -4541,8 +4786,14 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         /// The local header offset relative to its starting disk.
         private final long localHeaderOffset;
 
+        /// The exact size of the local header before compressed data.
+        private final long localHeaderSize;
+
         /// The exact size of the local header, compressed data, and optional descriptor.
         private final long localRecordSize;
+
+        /// The local header disk number in a rewritten archive, or `-1` before relocation.
+        private int relocatedLocalHeaderDiskNumber = -1;
 
         /// The local header offset in a rewritten archive, or `-1` before relocation.
         private long relocatedLocalHeaderOffset = -1L;
@@ -4581,6 +4832,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 long uncompressedSize,
                 int localHeaderDiskNumber,
                 long localHeaderOffset,
+                long localHeaderSize,
                 long localRecordSize,
                 EntryMetadata metadata
         ) {
@@ -4595,6 +4847,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             this.uncompressedSize = uncompressedSize;
             this.localHeaderDiskNumber = localHeaderDiskNumber;
             this.localHeaderOffset = localHeaderOffset;
+            this.localHeaderSize = localHeaderSize;
             this.localRecordSize = localRecordSize;
             this.versionNeeded = metadata.versionNeeded(zip64Needed());
             this.versionMadeBy = metadata.versionMadeBy;
@@ -4607,7 +4860,10 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
         /// Returns whether the central directory entry needs ZIP64 extra metadata.
         private boolean zip64Needed() {
-            return zip64UncompressedSize() || zip64CompressedSize() || zip64LocalHeaderOffset();
+            return zip64UncompressedSize()
+                    || zip64CompressedSize()
+                    || zip64LocalHeaderOffset()
+                    || zip64LocalHeaderDiskNumber();
         }
 
         /// Returns whether the uncompressed size needs ZIP64 metadata.
@@ -4623,6 +4879,18 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         /// Returns whether the local header offset needs ZIP64 metadata.
         private boolean zip64LocalHeaderOffset() {
             return zip64Field(finalLocalHeaderOffset());
+        }
+
+        /// Returns whether the local header disk number needs ZIP64 metadata.
+        private boolean zip64LocalHeaderDiskNumber() {
+            return Integer.toUnsignedLong(finalLocalHeaderDiskNumber()) > UINT16_MAX;
+        }
+
+        /// Returns the local header disk number to store in the final central directory.
+        private int finalLocalHeaderDiskNumber() {
+            return relocatedLocalHeaderDiskNumber >= 0
+                    ? relocatedLocalHeaderDiskNumber
+                    : localHeaderDiskNumber;
         }
 
         /// Returns the local header offset to store in the final central directory.
@@ -4652,9 +4920,11 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                             zip64UncompressedSize(),
                             zip64CompressedSize(),
                             zip64LocalHeaderOffset(),
+                            zip64LocalHeaderDiskNumber(),
                             uncompressedSize,
                             compressedSize,
-                            finalLocalHeaderOffset()
+                            finalLocalHeaderOffset(),
+                            finalLocalHeaderDiskNumber()
                     )
             );
         }

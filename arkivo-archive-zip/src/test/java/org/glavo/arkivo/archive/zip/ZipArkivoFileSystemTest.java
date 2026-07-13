@@ -11,6 +11,7 @@ import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.archive.ArkivoVolumeChannel;
 import org.glavo.arkivo.archive.ArkivoVolumeOutput;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
@@ -76,6 +77,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Random;
 import java.util.Set;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
@@ -101,6 +103,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Tests basic ZIP Arkivo file system behavior.
 @NotNullByDefault
 public final class ZipArkivoFileSystemTest {
+    /// The standards-compliant split size used by ZIP volume tests.
+    private static final int TEST_SPLIT_SIZE = Math.toIntExact(ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE);
+
     /// The ZIP LZMA general purpose flag indicating an EOS marker.
     private static final int LZMA_EOS_MARKER_FLAG = 1 << 1;
 
@@ -270,12 +275,6 @@ public final class ZipArkivoFileSystemTest {
     /// Verifies that central directory entries store oversized local header offsets in ZIP64 extra data.
     @Test
     public void streamingWriterZip64CentralDirectoryEntryForLargeOffset() throws Exception {
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        StreamingZipArkivoFileSystemImpl fileSystem = new StreamingZipArkivoFileSystemImpl(
-                ZipArkivoFileSystemProvider.instance(),
-                output,
-                ZipArkivoFileSystemConfig.fromEnvironment(Map.of())
-        );
         byte[] rawName = "large-offset.txt".getBytes(StandardCharsets.UTF_8);
         Object metadata = zipEntryMetadata();
         Object centralEntry = zipCentralEntry(
@@ -287,14 +286,12 @@ public final class ZipArkivoFileSystemTest {
                 metadata
         );
 
-        Method writeCentralDirectoryEntry = StreamingZipArkivoFileSystemImpl.class.getDeclaredMethod(
-                "writeCentralDirectoryEntry",
+        Method centralDirectoryEntryBytes = StreamingZipArkivoFileSystemImpl.class.getDeclaredMethod(
+                "centralDirectoryEntryBytes",
                 centralEntry.getClass()
         );
-        writeCentralDirectoryEntry.setAccessible(true);
-        writeCentralDirectoryEntry.invoke(fileSystem, centralEntry);
-
-        byte[] centralDirectory = output.toByteArray();
+        centralDirectoryEntryBytes.setAccessible(true);
+        byte[] centralDirectory = (byte[]) centralDirectoryEntryBytes.invoke(null, centralEntry);
         ByteBuffer buffer = ByteBuffer.wrap(centralDirectory).order(ByteOrder.LITTLE_ENDIAN);
         int extraOffset = 46 + rawName.length;
 
@@ -3108,9 +3105,14 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, updateEnvironment)) {
                 assertEquals(false, fileSystem.isReadOnly());
+                assertEquals("before", Files.readString(fileSystem.getPath("/replace.txt"), StandardCharsets.UTF_8));
+                assertEquals("keep", Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8));
                 Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
+                assertEquals("added", Files.readString(fileSystem.getPath("/added.txt"), StandardCharsets.UTF_8));
                 Files.writeString(fileSystem.getPath("/replace.txt"), "after", StandardCharsets.UTF_8);
+                assertEquals("after", Files.readString(fileSystem.getPath("/replace.txt"), StandardCharsets.UTF_8));
                 Files.delete(fileSystem.getPath("/remove.txt"));
+                assertThrows(NoSuchFileException.class, () -> Files.readAllBytes(fileSystem.getPath("/remove.txt")));
             }
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
@@ -3400,10 +3402,11 @@ public final class ZipArkivoFileSystemTest {
                                     StandardOpenOption.WRITE
                             ),
                             ZipArkivoFileSystem.SPLIT_SIZE.key(),
-                            64L
+                            (long) TEST_SPLIT_SIZE
                     )
             )) {
                 Files.writeString(fileSystem.getPath("/hello.txt"), "split file system", StandardCharsets.UTF_8);
+                Files.write(fileSystem.getPath("/padding.bin"), splitTestContent(TEST_SPLIT_SIZE * 2));
             }
 
             List<Path> volumes = splitVolumePaths(archivePath);
@@ -3427,11 +3430,18 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), 64L)
+                    Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), (long) TEST_SPLIT_SIZE)
             )) {
                 writer.beginFile("stream.txt");
                 try (OutputStream output = writer.openOutputStream()) {
                     output.write("split streaming writer".getBytes(StandardCharsets.UTF_8));
+                }
+                writer.beginFile("padding.bin");
+                ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(view);
+                view.setMethod(ZipMethod.stored());
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write(splitTestContent(TEST_SPLIT_SIZE * 2));
                 }
             }
 
@@ -3451,13 +3461,10 @@ public final class ZipArkivoFileSystemTest {
     /// Verifies that streaming ZIP writers publish readable split archives to custom volume targets.
     @Test
     public void streamingWriterPublishesToCustomVolumeTarget() throws IOException {
-        byte[] content = new byte[512];
-        for (int index = 0; index < content.length; index++) {
-            content[index] = (byte) index;
-        }
+        byte[] content = splitTestContent(TEST_SPLIT_SIZE * 2);
         TestVolumeTarget target = new TestVolumeTarget();
 
-        try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(target, 64L)) {
+        try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(target, TEST_SPLIT_SIZE)) {
             writer.beginFile("content.bin");
             ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
             assertNotNull(view);
@@ -3478,12 +3485,188 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies writable ZIP file systems publish split archives to custom volume targets.
+    @Test
+    public void fileSystemCreatesSplitArchiveOnCustomVolumeTarget() throws IOException {
+        byte[] content = splitTestContent(TEST_SPLIT_SIZE * 2);
+        TestVolumeTarget target = new TestVolumeTarget();
+
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.create(target, TEST_SPLIT_SIZE)) {
+            Path entry = fileSystem.getPath("/content.bin");
+            Files.write(entry, content);
+        }
+
+        TestVolumeOutput output = target.output();
+        assertEquals(true, output.volumeCount() > 1);
+        assertEquals(output.volumeCount() - 1L, output.finalVolumeIndex());
+        assertEquals(true, output.allVolumeSizesAtMost(TEST_SPLIT_SIZE));
+        assertEquals(1, output.commitCount());
+        assertEquals(0, output.rollbackCount());
+        assertEquals(1, output.closeCount());
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(output.volumeSource())) {
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/content.bin")));
+        }
+    }
+
+    /// Verifies complete-rewrite mutation from split input to explicitly sized split output.
+    @Test
+    public void fileSystemUpdatesSplitArchiveOnCustomVolumeTarget() throws IOException {
+        byte[] keepContent = splitTestContent(TEST_SPLIT_SIZE * 2);
+        byte[] replacedContent = "replaced-local-record-secret".getBytes(StandardCharsets.UTF_8);
+        byte[] removedContent = "removed-local-record-secret".getBytes(StandardCharsets.UTF_8);
+        TestVolumeTarget originalTarget = new TestVolumeTarget();
+
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.create(originalTarget, TEST_SPLIT_SIZE)) {
+            Files.write(fileSystem.getPath("/keep.bin"), keepContent);
+            Files.write(fileSystem.getPath("/replace.txt"), replacedContent);
+            Files.write(fileSystem.getPath("/remove.txt"), removedContent);
+        }
+
+        TrackingVolumeSource source =
+                new TrackingVolumeSource(originalTarget.output().volumeSource());
+        TestVolumeTarget updatedTarget = new TestVolumeTarget();
+        byte[] updatedContent = "updated".getBytes(StandardCharsets.UTF_8);
+        byte[] addedContent = new byte[137];
+        for (int index = 0; index < addedContent.length; index++) {
+            addedContent[index] = (byte) (index * 17);
+        }
+
+        try (ZipArkivoFileSystem fileSystem =
+                     ZipArkivoFileSystem.update(source, updatedTarget, TEST_SPLIT_SIZE)) {
+            assertEquals(false, fileSystem.isReadOnly());
+            assertArrayEquals(keepContent, Files.readAllBytes(fileSystem.getPath("/keep.bin")));
+            assertArrayEquals(replacedContent, Files.readAllBytes(fileSystem.getPath("/replace.txt")));
+            Files.write(fileSystem.getPath("/replace.txt"), updatedContent);
+            Files.delete(fileSystem.getPath("/remove.txt"));
+            Files.write(fileSystem.getPath("/added.bin"), addedContent);
+            assertArrayEquals(updatedContent, Files.readAllBytes(fileSystem.getPath("/replace.txt")));
+            assertArrayEquals(addedContent, Files.readAllBytes(fileSystem.getPath("/added.bin")));
+            assertThrows(
+                    NoSuchFileException.class,
+                    () -> Files.readAllBytes(fileSystem.getPath("/remove.txt"))
+            );
+        }
+
+        assertEquals(1, source.closeCount());
+        TestVolumeOutput output = updatedTarget.output();
+        assertEquals(true, output.volumeCount() > 1);
+        assertEquals(true, output.allVolumeSizesAtMost(TEST_SPLIT_SIZE));
+        assertEquals(1, output.commitCount());
+        assertEquals(0, output.rollbackCount());
+        assertEquals(1, output.closeCount());
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(output.volumeSource())) {
+            assertEquals(0L, fileSystem.preambleSize());
+            assertArrayEquals(keepContent, Files.readAllBytes(fileSystem.getPath("/keep.bin")));
+            assertArrayEquals(updatedContent, Files.readAllBytes(fileSystem.getPath("/replace.txt")));
+            assertArrayEquals(addedContent, Files.readAllBytes(fileSystem.getPath("/added.bin")));
+            assertEquals(false, Files.exists(fileSystem.getPath("/remove.txt")));
+        }
+        try (ZipArkivoFileSystem fileSystem =
+                     ZipArkivoFileSystem.open(originalTarget.output().volumeSource())) {
+            assertArrayEquals(replacedContent, Files.readAllBytes(fileSystem.getPath("/replace.txt")));
+            assertArrayEquals(removedContent, Files.readAllBytes(fileSystem.getPath("/remove.txt")));
+        }
+        byte[] updatedArchive = output.archiveBytes();
+        ByteBuffer updatedHeader = ByteBuffer.wrap(updatedArchive).order(ByteOrder.LITTLE_ENDIAN);
+        assertEquals(0x08074b50, updatedHeader.getInt());
+        assertEquals(0x04034b50, updatedHeader.getInt());
+        assertEquals(false, containsBytes(updatedArchive, "remove.txt".getBytes(StandardCharsets.UTF_8)));
+    }
+
+    /// Verifies explicit volume updates preserve preamble bytes while changing the output split layout.
+    @Test
+    public void volumeUpdatePreservesPreambleInSplitOutput() throws IOException {
+        byte[] preamble = new byte[]{9, 7, 5, 3, 1};
+        TrackingVolumeSource source = new TrackingVolumeSource(
+                new TestSeekableChannelSource(updateSourceZip(preamble))
+        );
+        TestVolumeTarget target = new TestVolumeTarget();
+
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.update(source, target, TEST_SPLIT_SIZE)) {
+            assertEquals(preamble.length, fileSystem.preambleSize());
+            assertPreambleContent(preamble, fileSystem);
+            Files.writeString(fileSystem.getPath("/replace.txt"), "new", StandardCharsets.UTF_8);
+            Files.delete(fileSystem.getPath("/remove.txt"));
+            Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
+            Files.write(fileSystem.getPath("/padding.bin"), splitTestContent(TEST_SPLIT_SIZE * 2));
+        }
+
+        assertEquals(1, source.closeCount());
+        TestVolumeOutput output = target.output();
+        assertEquals(true, output.volumeCount() > 1);
+        assertEquals(true, output.allVolumeSizesAtMost(TEST_SPLIT_SIZE));
+        assertEquals(1, output.commitCount());
+        assertEquals(0, output.rollbackCount());
+        byte[] archive = output.archiveBytes();
+        assertEquals(
+                0x08074b50,
+                ByteBuffer.wrap(archive).order(ByteOrder.LITTLE_ENDIAN).getInt()
+        );
+        assertArrayEquals(preamble, Arrays.copyOfRange(archive, Integer.BYTES, Integer.BYTES + preamble.length));
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(output.volumeSource())) {
+            assertEquals(preamble.length, fileSystem.preambleSize());
+            assertPreambleContent(preamble, fileSystem);
+            assertEquals("keep", Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8));
+            assertEquals("new", Files.readString(fileSystem.getPath("/replace.txt"), StandardCharsets.UTF_8));
+            assertEquals(false, Files.exists(fileSystem.getPath("/remove.txt")));
+            assertEquals("added", Files.readString(fileSystem.getPath("/added.txt"), StandardCharsets.UTF_8));
+        }
+    }
+
+    /// Verifies a failed split rewrite rolls back its output and releases the owned input source.
+    @Test
+    public void volumeUpdateRollsBackAfterOutputVolumeFailure() throws IOException {
+        TestVolumeTarget originalTarget = new TestVolumeTarget();
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.create(originalTarget, TEST_SPLIT_SIZE)) {
+            Files.writeString(fileSystem.getPath("/original.txt"), "original", StandardCharsets.UTF_8);
+        }
+        TrackingVolumeSource source = new TrackingVolumeSource(originalTarget.output().volumeSource());
+        TestVolumeTarget failingTarget = new TestVolumeTarget(1);
+        ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.update(source, failingTarget, TEST_SPLIT_SIZE);
+        Files.write(fileSystem.getPath("/added.bin"), splitTestContent(TEST_SPLIT_SIZE * 2));
+
+        IOException exception = assertThrows(IOException.class, fileSystem::close);
+        assertEquals(true, exception.getMessage().contains("volume open failed"));
+        assertEquals(1, source.closeCount());
+        TestVolumeOutput output = failingTarget.output();
+        assertEquals(0, output.commitCount());
+        assertEquals(1, output.rollbackCount());
+        assertEquals(1, output.closeCount());
+        try (ZipArkivoFileSystem original =
+                     ZipArkivoFileSystem.open(originalTarget.output().volumeSource())) {
+            assertEquals(
+                    "original",
+                    Files.readString(original.getPath("/original.txt"), StandardCharsets.UTF_8)
+            );
+            assertEquals(false, Files.exists(original.getPath("/added.bin")));
+        }
+    }
+    /// Verifies archive finalization failures roll back custom split output transactions.
+    @Test
+    public void splitVolumeTargetRollsBackAfterEntryFinalizationFailure() throws IOException {
+        byte[] content = "invalid expected size".getBytes(StandardCharsets.UTF_8);
+        TestVolumeTarget target = new TestVolumeTarget();
+        ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(target, TEST_SPLIT_SIZE);
+        writer.beginFile("invalid.txt");
+        ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+        assertNotNull(view);
+        view.setUncompressedSizeAndCrc32(content.length + 1L, crc32(content));
+        OutputStream outputStream = writer.openOutputStream();
+        outputStream.write(content);
+
+        IOException exception = assertThrows(IOException.class, writer::close);
+        assertEquals(true, exception.getMessage().contains("configured size"));
+        TestVolumeOutput output = target.output();
+        assertEquals(0, output.commitCount());
+        assertEquals(1, output.rollbackCount());
+        assertEquals(1, output.closeCount());
+    }
     /// Verifies that a custom volume target is rolled back when opening a later volume fails.
     @Test
     public void streamingWriterRollsBackCustomVolumeTargetAfterWriteFailure() throws IOException {
-        byte[] content = new byte[512];
+        byte[] content = splitTestContent(TEST_SPLIT_SIZE * 2);
         TestVolumeTarget target = new TestVolumeTarget(1);
-        ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(target, 64L);
+        ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(target, TEST_SPLIT_SIZE);
         writer.beginFile("content.bin");
         ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
         assertNotNull(view);
@@ -3499,19 +3682,64 @@ public final class ZipArkivoFileSystemTest {
         assertEquals(1, volumeOutput.closeCount());
     }
 
+    /// Verifies that split sizes outside the PKWARE bounds are rejected before opening a target.
+    @Test
+    public void rejectsSplitSizesOutsideSpecificationBounds() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ZipArkivoStreamingWriter.open(
+                        new TestVolumeTarget(),
+                        ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE - 1L
+                )
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ZipArkivoStreamingWriter.open(
+                        new TestVolumeTarget(),
+                        ZipArkivoFileSystem.MAXIMUM_SPLIT_SIZE + 1L
+                )
+        );
+    }
+
+    /// Verifies local and central directory header records start on disks where they fit completely.
+    @Test
+    public void splitWriterKeepsHeaderRecordsWithinVolumes() throws IOException {
+        String firstName = "first.bin";
+        String secondName = "second.bin";
+        int firstHeaderSize = 30 + firstName.getBytes(StandardCharsets.UTF_8).length;
+        int secondHeaderSize = 30 + secondName.getBytes(StandardCharsets.UTF_8).length;
+        byte[] firstContent = splitTestContent(TEST_SPLIT_SIZE - Integer.BYTES - firstHeaderSize - 10);
+        byte[] secondContent = splitTestContent(TEST_SPLIT_SIZE - secondHeaderSize - 20);
+        TestVolumeTarget target = new TestVolumeTarget();
+
+        try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(target, TEST_SPLIT_SIZE)) {
+            writeCompleteStoredEntry(writer, firstName, firstContent);
+            writeCompleteStoredEntry(writer, secondName, secondContent);
+        }
+
+        TestVolumeOutput output = target.output();
+        assertEquals(3, output.volumeCount());
+        assertEquals(TEST_SPLIT_SIZE - 10, output.volumeBytes(0).length);
+        assertEquals(TEST_SPLIT_SIZE - 20, output.volumeBytes(1).length);
+        ByteBuffer firstVolume = ByteBuffer.wrap(output.volumeBytes(0)).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer secondVolume = ByteBuffer.wrap(output.volumeBytes(1)).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer finalVolume = ByteBuffer.wrap(output.volumeBytes(2)).order(ByteOrder.LITTLE_ENDIAN);
+        assertEquals(0x08074b50, firstVolume.getInt(0));
+        assertEquals(0x04034b50, firstVolume.getInt(Integer.BYTES));
+        assertEquals(0x04034b50, secondVolume.getInt(0));
+        assertEquals(0x02014b50, finalVolume.getInt(0));
+    }
+
     /// Verifies that replacement split output removes numbered volumes from the previous archive.
     @Test
     public void splitOutputReplacementRemovesStaleVolumes() throws IOException {
         Path archivePath = createTemporaryArchivePath("split-replace-");
-        byte[] originalContent = new byte[512];
-        for (int index = 0; index < originalContent.length; index++) {
-            originalContent[index] = (byte) index;
-        }
+        byte[] originalContent = splitTestContent(TEST_SPLIT_SIZE * 3);
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), 64L)
+                    Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), (long) TEST_SPLIT_SIZE)
             )) {
                 writer.beginFile("original.bin");
                 ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -3525,7 +3753,7 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), 4096L)
+                    Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), (long) TEST_SPLIT_SIZE)
             )) {
                 writer.beginFile("replacement.txt");
                 try (OutputStream output = writer.openOutputStream()) {
@@ -3545,35 +3773,32 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
-    /// Verifies that a failed split output publication leaves existing output untouched and removes staging data.
+    /// Verifies that create-new split output rejects any existing volume before staging starts.
     @Test
-    public void splitOutputCreateNewFailureCleansStagingData() throws IOException {
+    public void splitOutputCreateNewRejectsExistingVolumeAtOpen() throws IOException {
         Path archivePath = createTemporaryArchivePath("split-create-new-failure-");
         Path existingVolumePath = splitVolumePath(archivePath, 0);
         byte[] existingContent = "existing volume".getBytes(StandardCharsets.UTF_8);
 
         try {
             Files.write(existingVolumePath, existingContent);
-            ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
-                    archivePath,
-                    Map.of(
-                            ArkivoFileSystem.OPEN_OPTIONS.key(),
-                            Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE),
-                            ZipArkivoFileSystem.SPLIT_SIZE.key(),
-                            64L
+            assertThrows(
+                    FileAlreadyExistsException.class,
+                    () -> ZipArkivoStreamingWriter.create(
+                            archivePath,
+                            Map.of(
+                                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                                    Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE),
+                                    ZipArkivoFileSystem.SPLIT_SIZE.key(),
+                                    (long) TEST_SPLIT_SIZE
+                            )
                     )
             );
-            writer.beginFile("new.txt");
-            try (OutputStream output = writer.openOutputStream()) {
-                output.write("new output".getBytes(StandardCharsets.UTF_8));
-            }
-
-            assertThrows(FileAlreadyExistsException.class, writer::close);
             assertArrayEquals(existingContent, Files.readAllBytes(existingVolumePath));
             assertEquals(false, Files.exists(archivePath));
             try (DirectoryStream<Path> entries = Files.newDirectoryStream(archivePath.getParent())) {
                 for (Path path : entries) {
-                    assertEquals(false, path.getFileName().toString().startsWith(".arkivo-zip-split-"));
+                    assertEquals(false, path.getFileName().toString().startsWith(".arkivo-volumes-"));
                 }
             }
         } finally {
@@ -5205,9 +5430,16 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(source, environment)) {
                 assertEquals(false, fileSystem.isReadOnly());
+                assertEquals(preamble.length, fileSystem.preambleSize());
+                assertPreambleContent(preamble, fileSystem);
+                assertEquals("keep", Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8));
+                assertEquals("replace", Files.readString(fileSystem.getPath("/replace.txt"), StandardCharsets.UTF_8));
                 Files.writeString(fileSystem.getPath("/replace.txt"), "new", StandardCharsets.UTF_8);
+                assertEquals("new", Files.readString(fileSystem.getPath("/replace.txt"), StandardCharsets.UTF_8));
                 Files.delete(fileSystem.getPath("/remove.txt"));
+                assertThrows(NoSuchFileException.class, () -> Files.readAllBytes(fileSystem.getPath("/remove.txt")));
                 Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
+                assertEquals("added", Files.readString(fileSystem.getPath("/added.txt"), StandardCharsets.UTF_8));
             }
 
             assertEquals(true, source.openCount() > 1);
@@ -5243,8 +5475,10 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(channel, environment)) {
+                assertEquals("keep", Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8));
                 Files.delete(fileSystem.getPath("/remove.txt"));
                 Files.writeString(fileSystem.getPath("/added.txt"), "owned", StandardCharsets.UTF_8);
+                assertEquals("owned", Files.readString(fileSystem.getPath("/added.txt"), StandardCharsets.UTF_8));
             }
 
             assertEquals(false, channel.isOpen());
@@ -6572,6 +6806,21 @@ public final class ZipArkivoFileSystemTest {
         Files.write(archivePath, volumes[1]);
 
         try {
+            List<Path> discoveredPaths = Objects.requireNonNull(
+                    ZipArkivoFormat.instance().discoverVolumePaths(archivePath)
+            );
+            assertEquals(List.of(firstVolume, archivePath), discoveredPaths);
+            assertThrows(UnsupportedOperationException.class, discoveredPaths::clear);
+
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(archivePath)) {
+                assertEquals(true, reader.next());
+                assertEquals("hello.txt", reader.readAttributes(ZipArkivoEntryAttributes.class).path());
+                try (InputStream input = reader.openInputStream()) {
+                    assertEquals("split", new String(input.readAllBytes(), StandardCharsets.UTF_8));
+                }
+                assertEquals(false, reader.next());
+            }
+
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
                 assertEquals("split", Files.readString(fileSystem.getPath("/hello.txt"), StandardCharsets.UTF_8));
             }
@@ -6860,10 +7109,8 @@ public final class ZipArkivoFileSystemTest {
                 1,
                 new SparseSegment(0, new byte[]{2})
         );
-        SeekableByteChannel channel = newConcatenatedArchiveChannel(
-                new SeekableByteChannel[]{first, second},
-                new long[]{0, 1},
-                2
+        SeekableByteChannel channel = ArkivoVolumeChannel.open(
+                index -> index == 0L ? first : index == 1L ? second : null
         );
 
         IOException exception = assertThrows(IOException.class, channel::close);
@@ -7040,20 +7287,6 @@ public final class ZipArkivoFileSystemTest {
         return (SeekableByteChannel) constructor.newInstance(channel);
     }
 
-    /// Creates a concatenated archive channel around the given delegate channels.
-    private static SeekableByteChannel newConcatenatedArchiveChannel(
-            SeekableByteChannel[] channels,
-            long[] starts,
-            long size
-    ) throws ReflectiveOperationException {
-        Class<?> type = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemImpl$ConcatenatedArchiveChannel"
-        );
-        Constructor<?> constructor = type.getDeclaredConstructor(SeekableByteChannel[].class, long[].class, long.class);
-        constructor.setAccessible(true);
-        return (SeekableByteChannel) constructor.newInstance((Object) channels, starts, size);
-    }
-
     /// Creates a validating seekable ZIP entry stream through its private constructor.
     private static InputStream newValidatingEntryInputStream(
             InputStream input,
@@ -7165,6 +7398,7 @@ public final class ZipArkivoFileSystemTest {
                  int.class,
                  long.class,
                  long.class,
+                 long.class,
                  metadata.getClass()
         );
         constructor.setAccessible(true);
@@ -7180,6 +7414,7 @@ public final class ZipArkivoFileSystemTest {
                 uncompressedSize,
                  0,
                  localHeaderOffset,
+                 0L,
                  0L,
                  metadata
         );
@@ -9480,6 +9715,29 @@ public final class ZipArkivoFileSystemTest {
         return openDecryptor.invoke(null, new ByteArrayInputStream(header.toByteArray()), password, 0);
     }
 
+    /// Writes one stored streaming entry with exact size and CRC-32 metadata.
+    private static void writeCompleteStoredEntry(
+            ZipArkivoStreamingWriter writer,
+            String entryName,
+            byte[] content
+    ) throws IOException {
+        writer.beginFile(entryName);
+        ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+        assertNotNull(view);
+        view.setMethod(ZipMethod.stored());
+        view.setUncompressedSizeAndCrc32(content.length, crc32(content));
+        try (OutputStream output = writer.openOutputStream()) {
+            output.write(content);
+        }
+    }
+
+    /// Returns deterministic incompressible content for split ZIP tests.
+    private static byte[] splitTestContent(int size) {
+        byte[] content = new byte[size];
+        new Random(0x41524b49564fL + size).nextBytes(content);
+        return content;
+    }
+
     /// Returns malformed extra field data with an incomplete payload.
     private static byte[] malformedExtraField() {
         return new byte[]{0x01, 0x00, 0x02, 0x00, 0x00};
@@ -10790,6 +11048,46 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Repeatable volume source that tracks ownership closure.
+    @NotNullByDefault
+    private static final class TrackingVolumeSource implements ArkivoVolumeSource {
+        /// The source that opens the actual volume channels.
+        private final ArkivoVolumeSource delegate;
+
+        /// The number of close attempts.
+        private int closeCount;
+
+        /// Whether this source has been closed.
+        private boolean closed;
+
+        /// Creates a tracking source.
+        private TrackingVolumeSource(ArkivoVolumeSource delegate) {
+            this.delegate = Objects.requireNonNull(delegate, "delegate");
+        }
+
+        /// Opens one independently positioned volume channel.
+        @Override
+        public @Nullable SeekableByteChannel openVolume(long index) throws IOException {
+            if (closed) {
+                throw new IOException("volume source is closed");
+            }
+            return delegate.openVolume(index);
+        }
+
+        /// Closes the delegate and records source ownership release.
+        @Override
+        public void close() throws IOException {
+            closeCount++;
+            closed = true;
+            delegate.close();
+        }
+
+        /// Returns the number of close attempts.
+        private int closeCount() {
+            return closeCount;
+        }
+    }
+
     /// Test target that creates one in-memory multi-volume output transaction.
     @NotNullByDefault
     private static final class TestVolumeTarget implements ArkivoVolumeTarget {
@@ -10919,6 +11217,33 @@ public final class ZipArkivoFileSystemTest {
                 }
                 return new TestByteArraySeekableChannel(volumes.get((int) index).toByteArray());
             };
+        }
+
+        /// Returns a copy of one physical volume's bytes.
+        private byte[] volumeBytes(int index) {
+            return volumes.get(index).toByteArray();
+        }
+
+        /// Returns the concatenated logical archive bytes.
+        private byte[] archiveBytes() {
+            ByteArrayOutputStream archive = new ByteArrayOutputStream();
+            for (ByteArrayOutputStream volume : volumes) {
+                archive.writeBytes(volume.toByteArray());
+            }
+            return archive.toByteArray();
+        }
+
+        /// Returns whether every physical volume respects the requested maximum size.
+        private boolean allVolumeSizesAtMost(long maximumSize) {
+            if (maximumSize <= 0L) {
+                throw new IllegalArgumentException("maximumSize must be positive");
+            }
+            for (ByteArrayOutputStream volume : volumes) {
+                if (volume.size() > maximumSize) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         /// Returns the number of opened volumes.

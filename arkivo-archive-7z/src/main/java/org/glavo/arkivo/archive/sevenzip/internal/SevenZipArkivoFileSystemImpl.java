@@ -9,9 +9,11 @@ import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
+import org.glavo.arkivo.archive.ArkivoVolumeChannel;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
+import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
@@ -267,8 +269,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             if (sourceCount != 1) {
                 throw new IllegalArgumentException("7z update mode requires exactly one archive path or volume source");
             }
-            if (volumes != null && outputTarget == null) {
-                throw new IllegalArgumentException("7z volume-source updates require a transactional volume target");
+            if (volumes != null && outputTarget == null && config.commitTarget() == null) {
+                throw new IllegalArgumentException(
+                        "7z volume-source updates require a commit target or transactional volume target"
+                );
             }
         } else {
             int backingCount = sourceCount + (outputTarget != null ? 1 : 0);
@@ -1136,6 +1140,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
         InputStream decoded = SevenZipLZMADecoder.openFolder(
                 packedInputs,
+                metadata.packedStreams().stream().mapToLong(SevenZipPackedStream::size).toArray(),
                 metadata.method(),
                 checkedDecodedLimit(metadata),
                 config.passwordProvider()
@@ -1619,11 +1624,13 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// Publishes a single-volume updated archive through an Arkivo commit transaction.
     private void commitSingleVolumeUpdate() throws IOException {
-        Path sourcePath = Objects.requireNonNull(archivePath, "archivePath");
+        @Nullable Path sourcePath = archivePath;
         @Nullable ArkivoCommitTarget configuredTarget = config.commitTarget();
         ArkivoCommitTarget target = configuredTarget != null
                 ? configuredTarget
-                : ArkivoCommitTarget.atomicReplace(defaultCommitDirectory(sourcePath));
+                : ArkivoCommitTarget.atomicReplace(defaultCommitDirectory(
+                        Objects.requireNonNull(sourcePath, "archivePath")
+                ));
         ArkivoCommitOutput output = target.openOutput(sourcePath);
         @Nullable Throwable failure = null;
         @Nullable SevenZipHeaderEncryption encryption = null;
@@ -2806,7 +2813,21 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Reads archive metadata from the archive storage.
     private SevenZipArchiveMetadata readArchiveMetadata() throws IOException {
         try (SeekableByteChannel channel = openArchiveChannel()) {
-            return SevenZipHeaderReader.readArchiveMetadata(channel, config.passwordProvider());
+            ArkivoReadLimitTracker readLimits = ArkivoReadLimitTracker.fromLimits(
+                    config.maximumEntryCount(),
+                    config.maximumEntrySize(),
+                    config.maximumTotalEntrySize(),
+                    config.maximumMetadataSize()
+            );
+            SevenZipArchiveMetadata metadata = SevenZipHeaderReader.readArchiveMetadata(
+                    channel,
+                    config.passwordProvider(),
+                    readLimits
+            );
+            for (SevenZipEntryMetadata entry : metadata.entries()) {
+                readLimits.acceptEntry(entry.path(), entry.size());
+            }
+            return metadata;
         }
     }
 
@@ -2815,7 +2836,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         if (archivePath != null) {
             List<Path> splitVolumePaths = SevenZipSplitVolumePaths.discover(archivePath);
             if (splitVolumePaths != null) {
-                return SevenZipVolumeChannel.open(index -> {
+                return ArkivoVolumeChannel.open(index -> {
                     if (index < 0 || index >= splitVolumePaths.size()) {
                         return null;
                     }
@@ -2825,7 +2846,7 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             return Files.newByteChannel(archivePath, sourceOpenOptions());
         }
         if (volumes != null) {
-            return SevenZipVolumeChannel.open(volumes);
+            return ArkivoVolumeChannel.open(volumes);
         }
         throw new IOException("7z archive storage is not available");
     }

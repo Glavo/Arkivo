@@ -237,7 +237,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 Map<String, Node> nodes;
                 if (!newArchive) {
                     try (InputStream input = Files.newInputStream(archivePath, StandardOpenOption.READ)) {
-                        nodes = readNodes(input, editStorage, ownedContents);
+                        nodes = readNodes(input, editStorage, ownedContents, environment);
                     }
                 } else if (openOptions.contains(StandardOpenOption.CREATE)) {
                     nodes = rootNodes();
@@ -301,7 +301,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         try {
             Map<String, Node> nodes;
             try (InputStream input = Files.newInputStream(archivePath, openOptions.toArray(OpenOption[]::new))) {
-                nodes = readNodes(input, editStorage, ownedContents);
+                nodes = readNodes(input, editStorage, ownedContents, environment);
             }
             return new ArArkivoFileSystemImpl(
                     provider,
@@ -377,7 +377,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             try (SeekableByteChannel channel = source.openChannel()) {
                 archiveSize = channel.size();
                 channel.position(0L);
-                nodes = readNodes(Channels.newInputStream(channel), editStorage, ownedContents);
+                nodes = readNodes(Channels.newInputStream(channel), editStorage, ownedContents, environment);
             }
             return new ArArkivoFileSystemImpl(
                     provider,
@@ -2277,13 +2277,14 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     private static Map<String, Node> readNodes(
             InputStream input,
             ArkivoEditStorage editStorage,
-            Set<ArkivoStoredContent> ownedContents
+            Set<ArkivoStoredContent> ownedContents,
+            Map<String, ?> environment
     ) throws IOException {
         LinkedHashMap<String, Node> nodes = new LinkedHashMap<>();
         Node root = new Node("", syntheticDirectoryAttributes("/"), true, null, true);
         nodes.put("", root);
 
-        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(input)) {
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(input, environment)) {
             while (reader.next()) {
                 ArArkivoEntryAttributes attributes = reader.readAttributes(ArArkivoEntryAttributes.class);
                 String path = normalizeEntryPath(attributes.path());

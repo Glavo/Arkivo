@@ -10,6 +10,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.InputStream;
 import java.nio.channels.ReadableByteChannel;
+import java.util.Map;
 import java.util.Objects;
 
 /// Reads AR entries from a forward-only stream.
@@ -22,13 +23,28 @@ public abstract sealed class ArArkivoStreamingReader extends ArkivoStreamingRead
 
     /// Opens a streaming AR reader from an input stream.
     public static ArArkivoStreamingReader open(InputStream source) {
+        return open(source, Map.of());
+    }
+
+    /// Opens a streaming AR reader from an input stream with common archive read options.
+    public static ArArkivoStreamingReader open(InputStream source, Map<String, ?> environment) {
         Objects.requireNonNull(source, "source");
-        return open(StreamChannelAdapters.readableChannel(source));
+        Objects.requireNonNull(environment, "environment");
+        return open(StreamChannelAdapters.readableChannel(source), environment);
     }
 
     /// Opens a streaming AR reader from a readable channel.
     public static ArArkivoStreamingReader open(ReadableByteChannel source) {
+        return open(source, Map.of());
+    }
+
+    /// Opens a streaming AR reader from a readable channel with common archive read options.
+    public static ArArkivoStreamingReader open(ReadableByteChannel source, Map<String, ?> environment) {
         Objects.requireNonNull(source, "source");
-        return new ArArkivoStreamingReaderImpl(StreamChannelAdapters.inputStream(source));
+        Objects.requireNonNull(environment, "environment");
+        return new ArArkivoStreamingReaderImpl(
+                StreamChannelAdapters.inputStream(source),
+                environment
+        );
     }
 }

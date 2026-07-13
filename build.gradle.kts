@@ -1,5 +1,9 @@
+plugins {
+    base
+}
+
 group = "org.glavo"
-version = "1.0-SNAPSHOT"
+version = providers.gradleProperty("releaseVersion").getOrElse("1.0-SNAPSHOT")
 
 allprojects {
     group = rootProject.group
@@ -42,3 +46,5 @@ subprojects {
         useJUnitPlatform()
     }
 }
+
+apply(from = "gradle/publishing.gradle.kts")

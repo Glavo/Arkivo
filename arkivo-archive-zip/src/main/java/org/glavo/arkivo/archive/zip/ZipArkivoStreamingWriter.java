@@ -82,8 +82,11 @@ public abstract sealed class ZipArkivoStreamingWriter extends ArkivoStreamingWri
     ) throws IOException {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(environment, "environment");
-        if (splitSize <= 0) {
-            throw new IllegalArgumentException("splitSize must be positive");
+        if (splitSize < ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE
+                || splitSize > ZipArkivoFileSystem.MAXIMUM_SPLIT_SIZE) {
+            throw new IllegalArgumentException(
+                    "splitSize must be between MINIMUM_SPLIT_SIZE and MAXIMUM_SPLIT_SIZE"
+            );
         }
         if (environment.containsKey(ZipArkivoFileSystem.SPLIT_SIZE.key())) {
             throw new IllegalArgumentException(

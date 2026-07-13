@@ -29,6 +29,9 @@ public final class SevenZipArkivoFileSystemConfig {
     /// The split size value used when split output is disabled.
     public static final long NO_SPLIT_SIZE = -1L;
 
+    /// The primitive value used when a common archive read limit is not configured.
+    public static final long NO_READ_LIMIT = -1L;
+
     /// The default maximum number of non-empty files in one 7z folder.
     public static final int DEFAULT_SOLID_FILE_COUNT = 1;
 
@@ -52,7 +55,11 @@ public final class SevenZipArkivoFileSystemConfig {
             false,
             ArkivoFileSystemThreadSafety.CONCURRENT_READ,
             null,
-            null
+            null,
+            NO_READ_LIMIT,
+            NO_READ_LIMIT,
+            NO_READ_LIMIT,
+            NO_READ_LIMIT
     );
 
 
@@ -89,6 +96,18 @@ public final class SevenZipArkivoFileSystemConfig {
     /// The target used to publish a rewritten single-volume update, or `null` for default publication.
     private final @Nullable ArkivoCommitTarget commitTarget;
 
+    /// The maximum accepted logical entry count, or `NO_READ_LIMIT`.
+    private final long maximumEntryCount;
+
+    /// The maximum accepted logical size of one entry, or `NO_READ_LIMIT`.
+    private final long maximumEntrySize;
+
+    /// The maximum accepted sum of logical entry sizes, or `NO_READ_LIMIT`.
+    private final long maximumTotalEntrySize;
+
+    /// The maximum cumulative archive metadata size, or NO_READ_LIMIT.
+    private final long maximumMetadataSize;
+
     /// Creates parsed 7z file system configuration.
     public SevenZipArkivoFileSystemConfig(
             Set<? extends OpenOption> openOptions,
@@ -110,7 +129,11 @@ public final class SevenZipArkivoFileSystemConfig {
                 encryptHeaders,
                 threadSafety,
                 null,
-                null
+                null,
+                NO_READ_LIMIT,
+                NO_READ_LIMIT,
+                NO_READ_LIMIT,
+                NO_READ_LIMIT
         );
     }
 
@@ -127,7 +150,11 @@ public final class SevenZipArkivoFileSystemConfig {
             boolean encryptHeaders,
             ArkivoFileSystemThreadSafety threadSafety,
             @Nullable ArkivoEditStorage editStorage,
-            @Nullable ArkivoCommitTarget commitTarget
+            @Nullable ArkivoCommitTarget commitTarget,
+            long maximumEntryCount,
+            long maximumEntrySize,
+            long maximumTotalEntrySize,
+            long maximumMetadataSize
     ) {
         if (solidFileCount <= 0) {
             throw new IllegalArgumentException("solidFileCount must be positive");
@@ -146,6 +173,10 @@ public final class SevenZipArkivoFileSystemConfig {
         this.threadSafety = Objects.requireNonNull(threadSafety, "threadSafety");
         this.editStorage = editStorage;
         this.commitTarget = commitTarget;
+        this.maximumEntryCount = requireReadLimit(maximumEntryCount, "maximumEntryCount");
+        this.maximumEntrySize = requireReadLimit(maximumEntrySize, "maximumEntrySize");
+        this.maximumTotalEntrySize = requireReadLimit(maximumTotalEntrySize, "maximumTotalEntrySize");
+        this.maximumMetadataSize = requireReadLimit(maximumMetadataSize, "maximumMetadataSize");
     }
 
 
@@ -207,7 +238,11 @@ public final class SevenZipArkivoFileSystemConfig {
                         ArkivoFileSystemThreadSafety.CONCURRENT_READ
                 ),
                 ArkivoFileSystem.EDIT_STORAGE.read(environment),
-                ArkivoFileSystem.COMMIT_TARGET.read(environment)
+                ArkivoFileSystem.COMMIT_TARGET.read(environment),
+                readLimit(ArkivoFileSystem.MAX_ENTRY_COUNT.read(environment)),
+                readLimit(ArkivoFileSystem.MAX_ENTRY_SIZE.read(environment)),
+                readLimit(ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE.read(environment)),
+                readLimit(ArkivoFileSystem.MAX_METADATA_SIZE.read(environment))
         );
         if (!config.archiveWritable() && SevenZipArkivoFileSystem.COMPRESSION.isPresent(environment)) {
             throw new IllegalArgumentException("7z compression requires write archive options");
@@ -320,11 +355,47 @@ public final class SevenZipArkivoFileSystemConfig {
     }
 
 
+    /// Returns the maximum accepted logical entry count, or `NO_READ_LIMIT`.
+    public long maximumEntryCount() {
+        return maximumEntryCount;
+    }
+
+
+    /// Returns the maximum accepted logical size of one entry, or `NO_READ_LIMIT`.
+    public long maximumEntrySize() {
+        return maximumEntrySize;
+    }
+
+
+    /// Returns the maximum accepted sum of logical entry sizes, or `NO_READ_LIMIT`.
+    public long maximumTotalEntrySize() {
+        return maximumTotalEntrySize;
+    }
+
+    /// Returns the maximum cumulative archive metadata size, or NO_READ_LIMIT.
+    public long maximumMetadataSize() {
+        return maximumMetadataSize;
+    }
+
     /// Parses the password provider from an environment map.
     private static @Nullable ArkivoPasswordProvider passwordProvider(Map<String, ?> environment) {
         return SevenZipArkivoFileSystem.PASSWORD_PROVIDER.read(environment);
     }
 
+
+    /// Converts an optional boxed common read limit to its primitive representation.
+    private static long readLimit(@Nullable Long value) {
+        return value != null ? value : NO_READ_LIMIT;
+    }
+
+
+    /// Validates one primitive common read limit.
+    private static long requireReadLimit(long value, String name) {
+        if (value < NO_READ_LIMIT) {
+            throw new IllegalArgumentException(name + " must be -1 or non-negative");
+        }
+        return value;
+    }
 
     /// Parses the configured default filter chain.
     private static SevenZipFilterChain filters(Map<String, ?> environment) {

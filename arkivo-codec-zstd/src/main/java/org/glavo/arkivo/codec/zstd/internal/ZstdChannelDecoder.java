@@ -5,6 +5,7 @@ package org.glavo.arkivo.codec.zstd.internal;
 
 import com.github.luben.zstd.ZstdDecompressCtx;
 import com.github.luben.zstd.ZstdDirectBufferDecompressingStreamNoFinalizer;
+import com.github.luben.zstd.ZstdException;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
@@ -146,7 +147,11 @@ public final class ZstdChannelDecoder implements CompressionDecoder {
 
             outputBuffer.clear();
             int inputPosition = inputBuffer.position();
-            frameFinished = context.decompressDirectByteBufferStream(outputBuffer, inputBuffer);
+            try {
+                frameFinished = context.decompressDirectByteBufferStream(outputBuffer, inputBuffer);
+            } catch (ZstdException exception) {
+                throw new IOException("Invalid Zstandard frame", exception);
+            }
             inputBytes += inputBuffer.position() - inputPosition;
             outputBuffer.flip();
             if (outputBuffer.hasRemaining()) {

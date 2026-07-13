@@ -14,6 +14,9 @@ import java.util.Map;
 import java.util.Objects;
 
 /// Describes an archive format that can expose a random-access NIO file system.
+///
+/// A repeatable source opens independent logical archive views. A directly supplied seekable channel instead defines
+/// logical archive offset zero at its current position.
 @NotNullByDefault
 public interface ArkivoFileSystemFormat extends ArkivoFormat {
     /// Opens an archive file system from a path.
@@ -50,7 +53,7 @@ public interface ArkivoFileSystemFormat extends ArkivoFormat {
         return open(source, Map.of());
     }
 
-    /// Opens a read-only file system from an owned repeatable seekable channel source with environment options.
+    /// Opens a file system from an owned repeatable seekable channel source with environment options.
     ArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
             Map<String, ?> environment
@@ -61,7 +64,7 @@ public interface ArkivoFileSystemFormat extends ArkivoFormat {
         return open(source, Map.of());
     }
 
-    /// Opens a read-only file system from one owned seekable channel with environment options.
+    /// Opens a file system from one owned seekable channel with environment options.
     ArkivoFileSystem open(
             SeekableByteChannel source,
             Map<String, ?> environment

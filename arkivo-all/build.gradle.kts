@@ -1,5 +1,341 @@
+import java.lang.module.ModuleDescriptor
+import java.lang.module.ModuleFinder
+import org.gradle.api.tasks.JavaExec
+import org.gradle.api.tasks.bundling.Jar
+
+val benchmarkSourceSet = sourceSets.create("benchmark") {
+    compileClasspath += sourceSets.main.get().output
+    runtimeClasspath += output + compileClasspath
+}
+
+configurations[benchmarkSourceSet.implementationConfigurationName].extendsFrom(
+    configurations.api.get(),
+    configurations.implementation.get()
+)
+configurations[benchmarkSourceSet.runtimeOnlyConfigurationName].extendsFrom(
+    configurations.runtimeOnly.get()
+)
+
 dependencies {
     api(project(":arkivo-archive"))
     api(project(":arkivo-archive-all"))
     api(project(":arkivo-codec-all"))
+    testImplementation("org.tukaani:xz:1.12")
+    testImplementation("org.apache.commons:commons-compress:1.28.0")
+    add(benchmarkSourceSet.compileOnlyConfigurationName, "org.jetbrains:annotations:26.1.0")
+    add(benchmarkSourceSet.implementationConfigurationName, "org.openjdk.jmh:jmh-core:1.37")
+    add(
+        benchmarkSourceSet.annotationProcessorConfigurationName,
+        "org.openjdk.jmh:jmh-generator-annprocess:1.37"
+    )
+}
+
+val benchmarkArguments = providers.gradleProperty("benchmarkArgs")
+
+val benchmark by tasks.registering(JavaExec::class) {
+    group = "benchmark"
+    description = "Runs the Arkivo JMH codec and archive benchmarks."
+    dependsOn(tasks.named(benchmarkSourceSet.classesTaskName))
+    classpath = benchmarkSourceSet.runtimeClasspath
+    mainClass.set("org.openjdk.jmh.Main")
+    doFirst {
+        if (benchmarkArguments.isPresent) {
+            setArgs(
+                benchmarkArguments.get()
+                    .trim()
+                    .split(Regex("\\s+"))
+                    .filter(String::isNotEmpty)
+            )
+        }
+    }
+}
+
+val publicApiSignatureBaseline = layout.projectDirectory.file(
+    "src/test/resources/org/glavo/arkivo/all/public-api-signatures.txt"
+)
+
+val updatePublicApiSignatures by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description = "Updates the reviewed text baseline for exported public JVM signatures."
+    dependsOn(tasks.named("testClasses"))
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass.set("org.glavo.arkivo.all.PublicApiBaselineGenerator")
+    args(publicApiSignatureBaseline.asFile.absolutePath)
+    inputs.files(sourceSets.test.get().output.classesDirs)
+    outputs.file(publicApiSignatureBaseline)
+}
+
+val moduleProjectPaths = listOf(
+    ":arkivo-all",
+    ":arkivo-archive",
+    ":arkivo-archive-7z",
+    ":arkivo-archive-all",
+    ":arkivo-archive-ar",
+    ":arkivo-archive-rar",
+    ":arkivo-archive-tar",
+    ":arkivo-archive-zip",
+    ":arkivo-codec",
+    ":arkivo-codec-all",
+    ":arkivo-codec-bcj",
+    ":arkivo-codec-bzip2",
+    ":arkivo-codec-deflate",
+    ":arkivo-codec-deflate64",
+    ":arkivo-codec-delta",
+    ":arkivo-codec-gzip",
+    ":arkivo-codec-lzma",
+    ":arkivo-codec-xz",
+    ":arkivo-codec-zlib",
+    ":arkivo-codec-zstd"
+)
+val moduleJarTasks = moduleProjectPaths.map { projectPath ->
+    project(projectPath).tasks.named<Jar>("jar")
+}
+val moduleJarFiles = moduleJarTasks.map { jarTask ->
+    jarTask.flatMap { it.archiveFile }
+}
+
+val verifyModuleDescriptors by tasks.registering {
+    group = "verification"
+    description = "Verifies packaged JPMS descriptors and public module boundaries."
+    dependsOn(moduleJarTasks)
+    inputs.files(moduleJarFiles)
+
+    doLast {
+        val expectedModules = setOf(
+            "org.glavo.arkivo.all",
+            "org.glavo.arkivo.archive",
+            "org.glavo.arkivo.archive.all",
+            "org.glavo.arkivo.archive.ar",
+            "org.glavo.arkivo.archive.rar",
+            "org.glavo.arkivo.archive.sevenzip",
+            "org.glavo.arkivo.archive.tar",
+            "org.glavo.arkivo.archive.zip",
+            "org.glavo.arkivo.codec",
+            "org.glavo.arkivo.codec.all",
+            "org.glavo.arkivo.codec.bcj",
+            "org.glavo.arkivo.codec.bzip2",
+            "org.glavo.arkivo.codec.deflate",
+            "org.glavo.arkivo.codec.deflate64",
+            "org.glavo.arkivo.codec.delta",
+            "org.glavo.arkivo.codec.gzip",
+            "org.glavo.arkivo.codec.lzma",
+            "org.glavo.arkivo.codec.xz",
+            "org.glavo.arkivo.codec.zlib",
+            "org.glavo.arkivo.codec.zstd"
+        )
+        val descriptors = ModuleFinder.of(
+            *moduleJarFiles.map { it.get().asFile.toPath() }.toTypedArray()
+        ).findAll().associate { reference ->
+            reference.descriptor().name() to reference.descriptor()
+        }
+        check(descriptors.keys == expectedModules) {
+            "Packaged Arkivo modules differ from the expected set: " + descriptors.keys
+        }
+        descriptors.values.forEach { descriptor ->
+            check(!descriptor.isAutomatic) {
+                "Arkivo module must have an explicit descriptor: " + descriptor.name()
+            }
+            check(!descriptor.isOpen) {
+                "Arkivo module must not be open: " + descriptor.name()
+            }
+        }
+
+        val archiveModule = "org.glavo.arkivo.archive"
+        val codecModule = "org.glavo.arkivo.codec"
+        val expectedTransitiveRequirements = mapOf(
+            "org.glavo.arkivo.all" to setOf(
+                archiveModule,
+                "org.glavo.arkivo.archive.all",
+                "org.glavo.arkivo.codec.all"
+            ),
+            "org.glavo.arkivo.archive.all" to setOf(
+                archiveModule,
+                "org.glavo.arkivo.archive.ar",
+                "org.glavo.arkivo.archive.rar",
+                "org.glavo.arkivo.archive.sevenzip",
+                "org.glavo.arkivo.archive.tar",
+                "org.glavo.arkivo.archive.zip"
+            ),
+            "org.glavo.arkivo.archive.ar" to setOf(archiveModule),
+            "org.glavo.arkivo.archive.rar" to setOf(archiveModule),
+            "org.glavo.arkivo.archive.sevenzip" to setOf(archiveModule),
+            "org.glavo.arkivo.archive.tar" to setOf(archiveModule, codecModule),
+            "org.glavo.arkivo.archive.zip" to setOf(archiveModule),
+            "org.glavo.arkivo.codec.all" to setOf(
+                codecModule,
+                "org.glavo.arkivo.codec.bcj",
+                "org.glavo.arkivo.codec.bzip2",
+                "org.glavo.arkivo.codec.deflate",
+                "org.glavo.arkivo.codec.deflate64",
+                "org.glavo.arkivo.codec.delta",
+                "org.glavo.arkivo.codec.gzip",
+                "org.glavo.arkivo.codec.lzma",
+                "org.glavo.arkivo.codec.xz",
+                "org.glavo.arkivo.codec.zlib",
+                "org.glavo.arkivo.codec.zstd"
+            ),
+            "org.glavo.arkivo.codec.bcj" to setOf(codecModule),
+            "org.glavo.arkivo.codec.bzip2" to setOf(codecModule),
+            "org.glavo.arkivo.codec.deflate" to setOf(codecModule),
+            "org.glavo.arkivo.codec.deflate64" to setOf(codecModule),
+            "org.glavo.arkivo.codec.delta" to setOf(codecModule),
+            "org.glavo.arkivo.codec.gzip" to setOf(codecModule),
+            "org.glavo.arkivo.codec.lzma" to setOf(codecModule),
+            "org.glavo.arkivo.codec.xz" to setOf(codecModule),
+            "org.glavo.arkivo.codec.zlib" to setOf(codecModule),
+            "org.glavo.arkivo.codec.zstd" to setOf(codecModule)
+        )
+        descriptors.forEach { (moduleName, descriptor) ->
+            val actual = descriptor.requires()
+                .filter { ModuleDescriptor.Requires.Modifier.TRANSITIVE in it.modifiers() }
+                .map { it.name() }
+                .toSet()
+            val expected = expectedTransitiveRequirements[moduleName].orEmpty()
+            check(actual == expected) {
+                "$moduleName has transitive requirements $actual instead of $expected"
+            }
+        }
+
+        val expectedPublicExports = mapOf(
+            archiveModule to setOf(
+                "org.glavo.arkivo.archive",
+                "org.glavo.arkivo.archive.spi"
+            ),
+            "org.glavo.arkivo.archive.ar" to setOf("org.glavo.arkivo.archive.ar"),
+            "org.glavo.arkivo.archive.rar" to setOf("org.glavo.arkivo.archive.rar"),
+            "org.glavo.arkivo.archive.sevenzip" to setOf("org.glavo.arkivo.archive.sevenzip"),
+            "org.glavo.arkivo.archive.tar" to setOf("org.glavo.arkivo.archive.tar"),
+            "org.glavo.arkivo.archive.zip" to setOf("org.glavo.arkivo.archive.zip"),
+            codecModule to setOf(
+                "org.glavo.arkivo.codec",
+                "org.glavo.arkivo.codec.spi",
+                "org.glavo.arkivo.codec.transform"
+            ),
+            "org.glavo.arkivo.codec.bcj" to setOf("org.glavo.arkivo.codec.bcj"),
+            "org.glavo.arkivo.codec.bzip2" to setOf("org.glavo.arkivo.codec.bzip2"),
+            "org.glavo.arkivo.codec.deflate" to setOf("org.glavo.arkivo.codec.deflate"),
+            "org.glavo.arkivo.codec.deflate64" to setOf("org.glavo.arkivo.codec.deflate64"),
+            "org.glavo.arkivo.codec.delta" to setOf("org.glavo.arkivo.codec.delta"),
+            "org.glavo.arkivo.codec.gzip" to setOf("org.glavo.arkivo.codec.gzip"),
+            "org.glavo.arkivo.codec.lzma" to setOf("org.glavo.arkivo.codec.lzma"),
+            "org.glavo.arkivo.codec.xz" to setOf("org.glavo.arkivo.codec.xz"),
+            "org.glavo.arkivo.codec.zlib" to setOf("org.glavo.arkivo.codec.zlib"),
+            "org.glavo.arkivo.codec.zstd" to setOf("org.glavo.arkivo.codec.zstd")
+        )
+        descriptors.forEach { (moduleName, descriptor) ->
+            val actual = descriptor.exports()
+                .filter { !it.isQualified }
+                .map { it.source() }
+                .toSet()
+            val expected = expectedPublicExports[moduleName].orEmpty()
+            check(actual == expected) {
+                "$moduleName publicly exports $actual instead of $expected"
+            }
+        }
+
+        val expectedQualifiedExports = mapOf(
+            archiveModule to mapOf(
+                "org.glavo.arkivo.archive.internal" to setOf(
+                    "org.glavo.arkivo.archive.ar",
+                    "org.glavo.arkivo.archive.rar",
+                    "org.glavo.arkivo.archive.sevenzip",
+                    "org.glavo.arkivo.archive.tar",
+                    "org.glavo.arkivo.archive.zip"
+                )
+            ),
+
+            "org.glavo.arkivo.codec.lzma" to mapOf(
+                "org.glavo.arkivo.codec.lzma.internal" to setOf(
+                    "org.glavo.arkivo.archive.sevenzip",
+                    "org.glavo.arkivo.archive.zip",
+                    "org.glavo.arkivo.codec.xz"
+                )
+            )
+        )
+        descriptors.forEach { (moduleName, descriptor) ->
+            val actual = descriptor.exports()
+                .filter { it.isQualified }
+                .associate { it.source() to it.targets() }
+            val expected = expectedQualifiedExports[moduleName].orEmpty()
+            check(actual == expected) {
+                "$moduleName has qualified exports $actual instead of $expected"
+            }
+        }
+
+        val archiveFormatService = "org.glavo.arkivo.archive.ArkivoFormat"
+        val compressionCodecService = "org.glavo.arkivo.codec.CompressionCodec"
+        val streamingSourceService = "org.glavo.arkivo.archive.spi.ArkivoStreamingSourceProvider"
+        val expectedUses = mapOf(
+            archiveModule to setOf(archiveFormatService, streamingSourceService),
+            codecModule to setOf(compressionCodecService)
+        )
+        descriptors.forEach { (moduleName, descriptor) ->
+            val expected = expectedUses[moduleName].orEmpty()
+            check(descriptor.uses() == expected) {
+                "$moduleName uses " + descriptor.uses() + " instead of $expected"
+            }
+        }
+
+        val expectedProviders = mapOf(
+            "org.glavo.arkivo.all" to mapOf(
+                streamingSourceService to setOf(
+                    "org.glavo.arkivo.all.internal.CompressionStreamingSourceProvider"
+                )
+            ),
+            "org.glavo.arkivo.archive.ar" to mapOf(
+                archiveFormatService to setOf("org.glavo.arkivo.archive.ar.ArArkivoFormat")
+            ),
+            "org.glavo.arkivo.archive.rar" to mapOf(
+                archiveFormatService to setOf("org.glavo.arkivo.archive.rar.RarArkivoFormat")
+            ),
+            "org.glavo.arkivo.archive.sevenzip" to mapOf(
+                archiveFormatService to setOf(
+                    "org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFormat"
+                )
+            ),
+            "org.glavo.arkivo.archive.tar" to mapOf(
+                archiveFormatService to setOf("org.glavo.arkivo.archive.tar.TarArkivoFormat")
+            ),
+            "org.glavo.arkivo.archive.zip" to mapOf(
+                archiveFormatService to setOf("org.glavo.arkivo.archive.zip.ZipArkivoFormat")
+            ),
+            "org.glavo.arkivo.codec.bzip2" to mapOf(
+                compressionCodecService to setOf("org.glavo.arkivo.codec.bzip2.BZip2Codec")
+            ),
+            "org.glavo.arkivo.codec.deflate" to mapOf(
+                compressionCodecService to setOf("org.glavo.arkivo.codec.deflate.DeflateCodec")
+            ),
+            "org.glavo.arkivo.codec.deflate64" to mapOf(
+                compressionCodecService to setOf("org.glavo.arkivo.codec.deflate64.Deflate64Codec")
+            ),
+            "org.glavo.arkivo.codec.gzip" to mapOf(
+                compressionCodecService to setOf("org.glavo.arkivo.codec.gzip.GzipCodec")
+            ),
+            "org.glavo.arkivo.codec.lzma" to mapOf(
+                compressionCodecService to setOf("org.glavo.arkivo.codec.lzma.LZMACodec")
+            ),
+            "org.glavo.arkivo.codec.xz" to mapOf(
+                compressionCodecService to setOf("org.glavo.arkivo.codec.xz.XZCodec")
+            ),
+            "org.glavo.arkivo.codec.zlib" to mapOf(
+                compressionCodecService to setOf("org.glavo.arkivo.codec.zlib.ZlibCodec")
+            ),
+            "org.glavo.arkivo.codec.zstd" to mapOf(
+                compressionCodecService to setOf("org.glavo.arkivo.codec.zstd.ZstdCodec")
+            )
+        )
+        descriptors.forEach { (moduleName, descriptor) ->
+            val actual = descriptor.provides().associate {
+                it.service() to it.providers().toSet()
+            }
+            val expected = expectedProviders[moduleName].orEmpty()
+            check(actual == expected) {
+                "$moduleName provides $actual instead of $expected"
+            }
+        }
+    }
+}
+
+tasks.named("check") {
+    dependsOn(verifyModuleDescriptors, benchmarkSourceSet.classesTaskName)
 }

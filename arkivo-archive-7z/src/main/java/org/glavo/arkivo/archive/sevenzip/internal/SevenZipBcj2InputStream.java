@@ -15,6 +15,9 @@ import java.util.Objects;
 /// Merges the four streams produced by the 7z BCJ2 x86 branch converter.
 @NotNullByDefault
 final class SevenZipBcj2InputStream extends InputStream {
+    /// Indicates that the exact input stream sizes are unavailable.
+    private static final long UNKNOWN_SIZE = -1L;
+
     /// The number of adaptive probability models used by BCJ2.
     private static final int PROBABILITY_COUNT = 258;
 
@@ -48,6 +51,21 @@ final class SevenZipBcj2InputStream extends InputStream {
     /// The exact number of bytes exposed by this stream.
     private final long outputLimit;
 
+    /// The complete decoded stream size declared by the folder graph.
+    private final long expectedOutputSize;
+
+    /// The declared MAIN stream size, or `UNKNOWN_SIZE`.
+    private final long mainSize;
+
+    /// The declared CALL stream size, or `UNKNOWN_SIZE`.
+    private final long callSize;
+
+    /// The declared JUMP stream size, or `UNKNOWN_SIZE`.
+    private final long jumpSize;
+
+    /// The declared range stream size, or `UNKNOWN_SIZE`.
+    private final long rangeSize;
+
     /// The adaptive BCJ2 probability models.
     private final int[] probabilities = new int[PROBABILITY_COUNT];
 
@@ -68,6 +86,21 @@ final class SevenZipBcj2InputStream extends InputStream {
 
     /// The exclusive end of valid bytes in `mainBuffer`.
     private int mainBufferLimit;
+
+    /// The number of MAIN bytes fetched into the reusable buffer.
+    private long mainBytesRead;
+
+    /// The number of MAIN bytes consumed by the decoder.
+    private long mainBytesConsumed;
+
+    /// The number of CALL bytes consumed by the decoder.
+    private long callBytesConsumed;
+
+    /// The number of JUMP bytes consumed by the decoder.
+    private long jumpBytesConsumed;
+
+    /// The number of range bytes consumed by the decoder.
+    private long rangeBytesConsumed;
 
     /// Whether the range decoder has been initialized.
     private boolean rangeInitialized;
@@ -111,6 +144,9 @@ final class SevenZipBcj2InputStream extends InputStream {
     /// Whether this stream has been closed.
     private boolean closed;
 
+    /// Whether full-stream terminal state has been validated.
+    private boolean finished;
+
     /// Creates a BCJ2 stream that exposes exactly `outputLimit` decoded bytes.
     SevenZipBcj2InputStream(
             InputStream main,
@@ -119,14 +155,73 @@ final class SevenZipBcj2InputStream extends InputStream {
             InputStream range,
             long outputLimit
     ) {
+        this(
+                main,
+                call,
+                jump,
+                range,
+                UNKNOWN_SIZE,
+                UNKNOWN_SIZE,
+                UNKNOWN_SIZE,
+                UNKNOWN_SIZE,
+                outputLimit,
+                outputLimit
+        );
+    }
+
+    /// Creates a BCJ2 stream with exact input and complete output sizes from a 7z folder graph.
+    SevenZipBcj2InputStream(
+            InputStream main,
+            InputStream call,
+            InputStream jump,
+            InputStream range,
+            long mainSize,
+            long callSize,
+            long jumpSize,
+            long rangeSize,
+            long outputLimit,
+            long expectedOutputSize
+    ) {
         if (outputLimit < 0) {
             throw new IllegalArgumentException("outputLimit must be non-negative");
+        }
+        if (expectedOutputSize < outputLimit) {
+            throw new IllegalArgumentException("expectedOutputSize must not be less than outputLimit");
+        }
+        boolean sizesKnown = mainSize != UNKNOWN_SIZE
+                || callSize != UNKNOWN_SIZE
+                || jumpSize != UNKNOWN_SIZE
+                || rangeSize != UNKNOWN_SIZE;
+        if (sizesKnown) {
+            if (mainSize < 0 || callSize < 0 || jumpSize < 0 || rangeSize < 0) {
+                throw new IllegalArgumentException("BCJ2 input sizes must all be known or all be UNKNOWN_SIZE");
+            }
+            if ((callSize & 3L) != 0L || (jumpSize & 3L) != 0L) {
+                throw new IllegalArgumentException("BCJ2 CALL and JUMP stream sizes must be multiples of four");
+            }
+            if (rangeSize < rangeHeader.length) {
+                throw new IllegalArgumentException("BCJ2 range stream must contain at least five bytes");
+            }
+            long calculatedOutputSize;
+            try {
+                calculatedOutputSize = Math.addExact(Math.addExact(mainSize, callSize), jumpSize);
+            } catch (ArithmeticException exception) {
+                throw new IllegalArgumentException("BCJ2 output size is too large", exception);
+            }
+            if (expectedOutputSize != calculatedOutputSize) {
+                throw new IllegalArgumentException("BCJ2 output size must equal MAIN + CALL + JUMP stream sizes");
+            }
         }
         this.main = Objects.requireNonNull(main, "main");
         this.call = Objects.requireNonNull(call, "call");
         this.jump = Objects.requireNonNull(jump, "jump");
         this.rangeInput = Objects.requireNonNull(range, "range");
+        this.mainSize = mainSize;
+        this.callSize = callSize;
+        this.jumpSize = jumpSize;
+        this.rangeSize = rangeSize;
         this.outputLimit = outputLimit;
+        this.expectedOutputSize = expectedOutputSize;
         Arrays.fill(probabilities, PROBABILITY_TOTAL >>> 1);
     }
 
@@ -146,6 +241,9 @@ final class SevenZipBcj2InputStream extends InputStream {
             return 0;
         }
         if (outputPosition == outputLimit) {
+            if (outputLimit == expectedOutputSize) {
+                validateFinished();
+            }
             return -1;
         }
 
@@ -166,6 +264,16 @@ final class SevenZipBcj2InputStream extends InputStream {
         closed = true;
 
         @Nullable Throwable failure = null;
+        if (mainSize != UNKNOWN_SIZE
+                && outputPosition == outputLimit
+                && outputLimit == expectedOutputSize
+                && !finished) {
+            try {
+                validateFinished();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+            }
+        }
         failure = closeInput(main, failure);
         failure = closeInput(call, failure);
         failure = closeInput(jump, failure);
@@ -176,6 +284,9 @@ final class SevenZipBcj2InputStream extends InputStream {
     /// Reads the next decoded byte without checking whether this stream is open.
     private int readDecodedByte() throws IOException {
         if (outputPosition == outputLimit) {
+            if (outputLimit == expectedOutputSize) {
+                validateFinished();
+            }
             return -1;
         }
         ensureRangeInitialized();
@@ -224,6 +335,7 @@ final class SevenZipBcj2InputStream extends InputStream {
                 throw new EOFException("Unexpected end of 7z BCJ2 range stream");
             }
             rangeHeaderLength += count;
+            rangeBytesConsumed += count;
         }
 
         if (rangeHeader[0] != 0) {
@@ -266,10 +378,7 @@ final class SevenZipBcj2InputStream extends InputStream {
             return;
         }
         range <<= 8;
-        code = ((code << 8) | readRequiredByte(
-                rangeInput,
-                "Unexpected end of 7z BCJ2 range stream"
-        )) & INITIAL_RANGE;
+        code = ((code << 8) | readRangeByte()) & INITIAL_RANGE;
     }
 
     /// Reads a selected absolute branch address and prepares its relative little-endian form.
@@ -289,6 +398,11 @@ final class SevenZipBcj2InputStream extends InputStream {
                 throw new EOFException(failureMessage);
             }
             branchAddressLength += count;
+            if (branchAddressUsesCallStream) {
+                callBytesConsumed += count;
+            } else {
+                jumpBytesConsumed += count;
+            }
         }
 
         int absoluteAddress = (int) readUnsignedBigEndianInt(branchAddress, 0);
@@ -304,21 +418,90 @@ final class SevenZipBcj2InputStream extends InputStream {
     /// Reads one required main-stream byte through the reusable bulk buffer.
     private int readMainByte() throws IOException {
         if (mainBufferPosition == mainBufferLimit) {
-            int count = readAtLeastOne(main, mainBuffer, 0, mainBuffer.length);
+            int length = mainBuffer.length;
+            if (mainSize != UNKNOWN_SIZE) {
+                long remaining = mainSize - mainBytesRead;
+                if (remaining == 0) {
+                    throw new EOFException("Unexpected end of 7z BCJ2 main stream");
+                }
+                length = (int) Math.min(length, remaining);
+            }
+            int count = readAtLeastOne(main, mainBuffer, 0, length);
             if (count < 0) {
                 throw new EOFException("Unexpected end of 7z BCJ2 main stream");
             }
             mainBufferPosition = 0;
             mainBufferLimit = count;
+            mainBytesRead += count;
         }
+        mainBytesConsumed++;
         return Byte.toUnsignedInt(mainBuffer[mainBufferPosition++]);
     }
 
     /// Emits one byte and advances the wrapping x86 instruction pointer.
-    private int emit(int value) {
+    private int emit(int value) throws IOException {
         outputPosition++;
         instructionPointer++;
         previousOutputByte = value;
+        if (outputPosition == outputLimit && outputLimit == expectedOutputSize) {
+            validateFinished();
+        }
+        return value;
+    }
+
+    /// Validates the range decoder state and exact four-stream consumption at complete logical EOF.
+    private void validateFinished() throws IOException {
+        if (finished) {
+            return;
+        }
+        ensureRangeInitialized();
+        if (markerDecisionPending) {
+            decodeMarkerDecision();
+        }
+        if (branchAddressPending || convertedAddressPosition < convertedAddress.length) {
+            throw new IOException("7z BCJ2 stream requires branch bytes beyond its declared output size");
+        }
+        if (range < RANGE_TOP_VALUE && (rangeSize == UNKNOWN_SIZE || rangeBytesConsumed < rangeSize)) {
+            normalizeRange();
+        }
+        if (code != 0) {
+            throw new IOException("7z BCJ2 range decoder did not finish with a zero code");
+        }
+        if (mainSize != UNKNOWN_SIZE) {
+            if (mainBytesConsumed != mainSize) {
+                throw new IOException("7z BCJ2 MAIN stream was not consumed exactly");
+            }
+            if (callBytesConsumed != callSize) {
+                throw new IOException("7z BCJ2 CALL stream was not consumed exactly");
+            }
+            if (jumpBytesConsumed != jumpSize) {
+                throw new IOException("7z BCJ2 JUMP stream was not consumed exactly");
+            }
+            if (rangeBytesConsumed != rangeSize) {
+                throw new IOException("7z BCJ2 range stream was not consumed exactly");
+            }
+            requireEndOfInput(main, "MAIN");
+            requireEndOfInput(call, "CALL");
+            requireEndOfInput(jump, "JUMP");
+            requireEndOfInput(rangeInput, "range");
+        }
+        finished = true;
+    }
+
+    /// Requires one declared BCJ2 input to contain no additional decoded bytes.
+    private static void requireEndOfInput(InputStream input, String streamName) throws IOException {
+        if (input.read() >= 0) {
+            throw new IOException("7z BCJ2 " + streamName + " stream exceeds its declared size");
+        }
+    }
+
+    /// Reads one required byte from the range stream without exceeding its declared size.
+    private int readRangeByte() throws IOException {
+        if (rangeSize != UNKNOWN_SIZE && rangeBytesConsumed == rangeSize) {
+            throw new EOFException("Unexpected end of 7z BCJ2 range stream");
+        }
+        int value = readRequiredByte(rangeInput, "Unexpected end of 7z BCJ2 range stream");
+        rangeBytesConsumed++;
         return value;
     }
 

@@ -3,16 +3,22 @@
 
 package org.glavo.arkivo.all;
 
+import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoFormat;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
+import org.glavo.arkivo.archive.ArkivoPathVolumeFormat;
 import org.glavo.arkivo.archive.ArkivoStreamingReaderFormat;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.glavo.arkivo.archive.ArkivoStreamingWriterFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoVolumeFileSystemFormat;
+import org.glavo.arkivo.archive.ArkivoVolumeOutput;
+import org.glavo.arkivo.archive.ArkivoVolumeStreamingReaderFormat;
+import org.glavo.arkivo.archive.ArkivoVolumeStreamingWriterFormat;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
+import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter;
 import org.glavo.arkivo.archive.ar.ArArkivoFileSystem;
 import org.glavo.arkivo.archive.rar.RarArkivoStreamingReader;
@@ -41,9 +47,15 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Random;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -101,7 +113,7 @@ final class StreamingAggregationTest {
             assertInstanceOf(RarArkivoStreamingReader.class, reader);
             assertFalse(reader.next());
         }
-        assertTrue(rarSource.closed());
+        assertEquals(1, rarSource.closeCount());
     }
 
     /// Verifies named reader lookup rejects unknown and write-only formats and closes their sources.
@@ -126,6 +138,29 @@ final class StreamingAggregationTest {
         );
         assertTrue(writeOnlyFailure.getMessage().contains("7z"));
         assertFalse(writeOnlySource.isOpen());
+
+        TrackingInputStream unknownStream = new TrackingInputStream(new byte[]{1, 2, 3});
+        IOException unknownStreamFailure = assertThrows(
+                IOException.class,
+                () -> ArkivoFormats.openStreamingReader("missing", unknownStream)
+        );
+        assertEquals("Unknown archive format: missing", unknownStreamFailure.getMessage());
+        assertEquals(1, unknownStream.closeCount());
+
+        TrackingInputStream writeOnlyStream = new TrackingInputStream(new byte[0]);
+        UnsupportedOperationException writeOnlyStreamFailure = assertThrows(
+                UnsupportedOperationException.class,
+                () -> ArkivoFormats.openStreamingReader("7z", writeOnlyStream)
+        );
+        assertTrue(writeOnlyStreamFailure.getMessage().contains("7z"));
+        assertEquals(1, writeOnlyStream.closeCount());
+
+        TrackingInputStream invalidArgumentStream = new TrackingInputStream(new byte[0]);
+        assertThrows(
+                NullPointerException.class,
+                () -> ArkivoFormats.openStreamingReader((String) null, invalidArgumentStream)
+        );
+        assertEquals(0, invalidArgumentStream.closeCount());
     }
 
     /// Verifies the installed formats that advertise forward-only writers.
@@ -137,6 +172,270 @@ final class StreamingAggregationTest {
                 .map(ArkivoFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
         assertEquals(Set.of("7z", "ar", "tar", "zip"), formatNames);
+    }
+
+    /// Verifies the installed formats that advertise transactional multi-volume streaming writers.
+    @Test
+    void discoversVolumeStreamingWriterFormats() {
+        Set<String> formatNames = ArkivoFormats.installed()
+                .stream()
+                .filter(ArkivoVolumeStreamingWriterFormat.class::isInstance)
+                .map(ArkivoFormat::name)
+                .collect(Collectors.toUnmodifiableSet());
+        assertEquals(Set.of("7z", "zip"), formatNames);
+    }
+
+    /// Verifies the installed formats that advertise conventional path volume discovery.
+    @Test
+    void discoversPathVolumeFormats() {
+        Set<String> formatNames = ArkivoFormats.installed()
+                .stream()
+                .filter(ArkivoPathVolumeFormat.class::isInstance)
+                .map(ArkivoFormat::name)
+                .collect(Collectors.toUnmodifiableSet());
+        assertEquals(Set.of("7z", "rar", "zip"), formatNames);
+    }
+
+    /// Verifies the installed formats that advertise multi-volume forward-only readers.
+    @Test
+    void discoversVolumeStreamingReaderFormats() {
+        Set<String> formatNames = ArkivoFormats.installed()
+                .stream()
+                .filter(ArkivoVolumeStreamingReaderFormat.class::isInstance)
+                .map(ArkivoFormat::name)
+                .collect(Collectors.toUnmodifiableSet());
+        assertEquals(Set.of("rar", "zip"), formatNames);
+    }
+
+    /// Verifies named and detected factories read an actual split ZIP stream and own each source.
+    @Test
+    void readsSplitZipStreamingVolumesByNameAndDetection() throws IOException {
+        byte[] content = volumeContent("zip");
+        RecordingVolumeTarget target = new RecordingVolumeTarget();
+        try (ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter(
+                "zip",
+                target,
+                ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE
+        )) {
+            writeEntry(writer, ENTRY_PATH, content);
+        }
+        byte[][] volumes = target.committedVolumes();
+        assertTrue(volumes.length > 1);
+
+        TrackingVolumeSource namedSource = new TrackingVolumeSource(volumes);
+        try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader("zip", namedSource)) {
+            assertEntry(reader, content);
+        }
+        assertEquals(1, namedSource.closeCount());
+
+        TrackingVolumeSource detectedSource = new TrackingVolumeSource(volumes);
+        try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(
+                (ArkivoVolumeSource) detectedSource
+        )) {
+            assertEntry(reader, content);
+        }
+        assertEquals(1, detectedSource.closeCount());
+    }
+    /// Verifies detected and named path factories discover split ZIP storage.
+    @Test
+    void readsSplitZipStreamingPathByNameAndDetection() throws IOException {
+        byte[] content = volumeContent("zip");
+        RecordingVolumeTarget target = new RecordingVolumeTarget();
+        try (ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter(
+                "zip",
+                target,
+                ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE
+        )) {
+            writeEntry(writer, ENTRY_PATH, content);
+        }
+
+        Path directory = Files.createTempDirectory("arkivo-split-streaming-path-");
+        Path archivePath = directory.resolve("sample.zip");
+        List<Path> volumePaths = writeSplitZipVolumes(archivePath, target.committedVolumes());
+        try {
+            ArkivoPathVolumeFormat format = assertInstanceOf(
+                    ArkivoPathVolumeFormat.class,
+                    ArkivoFormats.find("zip")
+            );
+            assertEquals(volumePaths, format.discoverVolumePaths(archivePath));
+
+            try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader("zip", archivePath)) {
+                assertEntry(reader, content);
+            }
+            try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(archivePath)) {
+                assertEntry(reader, content);
+            }
+
+            assertTrue(volumePaths.size() > 2);
+            Path missingVolume = volumePaths.get(1);
+            Files.delete(missingVolume);
+            NoSuchFileException failure = assertThrows(
+                    NoSuchFileException.class,
+                    () -> ArkivoFormats.openStreamingReader(archivePath)
+            );
+            assertEquals(missingVolume.toString(), failure.getFile());
+        } finally {
+            for (Path volumePath : volumePaths) {
+                Files.deleteIfExists(volumePath);
+            }
+            Files.deleteIfExists(directory);
+        }
+    }
+    /// Verifies path detection retains installed outer source transformations.
+    @Test
+    void readsCompressedTarStreamingPathByDetection() throws IOException {
+        Path path = Files.createTempFile("arkivo-compressed-streaming-path-", ".tar.gz");
+        try {
+            Files.write(path, compressedTarArchive());
+            try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(path)) {
+                assertEntry(reader);
+            }
+        } finally {
+            Files.deleteIfExists(path);
+        }
+    }
+
+    /// Verifies named multi-volume lookup dispatches RAR readers and transfers source ownership.
+    @Test
+    void readsRarStreamingVolumesByName() throws IOException {
+        TrackingVolumeSource source = new TrackingVolumeSource(
+                new byte[][]{{'R', 'a', 'r', '!', 0x1a, 0x07, 0x01, 0x00}}
+        );
+
+        try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(
+                "rar",
+                (ArkivoVolumeSource) source
+        )) {
+            assertInstanceOf(RarArkivoStreamingReader.class, reader);
+            assertFalse(reader.next());
+        }
+
+        assertEquals(1, source.closeCount());
+    }
+
+    /// Verifies unavailable multi-volume reader requests close their owned sources before failing.
+    @Test
+    void rejectsUnavailableVolumeStreamingReadersAndClosesSources() throws IOException {
+        TrackingVolumeSource unsupported = new TrackingVolumeSource(new byte[][]{tarArchive()});
+        UnsupportedOperationException unsupportedFailure = assertThrows(
+                UnsupportedOperationException.class,
+                () -> ArkivoFormats.openStreamingReader("tar", (ArkivoVolumeSource) unsupported)
+        );
+        assertTrue(unsupportedFailure.getMessage().contains("tar"));
+        assertEquals(1, unsupported.closeCount());
+
+        TrackingVolumeSource unknown = new TrackingVolumeSource(new byte[][]{{1, 2, 3}});
+        IOException unknownFailure = assertThrows(
+                IOException.class,
+                () -> ArkivoFormats.openStreamingReader("missing", (ArkivoVolumeSource) unknown)
+        );
+        assertEquals("Unknown archive format: missing", unknownFailure.getMessage());
+        assertEquals(1, unknown.closeCount());
+
+        TrackingVolumeSource detectedUnsupported = new TrackingVolumeSource(
+                splitArchive(sevenZipArchive(), 11)
+        );
+        UnsupportedOperationException detectedFailure = assertThrows(
+                UnsupportedOperationException.class,
+                () -> ArkivoFormats.openStreamingReader((ArkivoVolumeSource) detectedUnsupported)
+        );
+        assertTrue(detectedFailure.getMessage().contains("7z"));
+        assertEquals(1, detectedUnsupported.closeCount());
+    }
+
+    /// Verifies successful multi-volume readers propagate owned source cleanup failures.
+    @Test
+    void volumeStreamingReaderPropagatesSourceCloseFailure() throws IOException {
+        TrackingVolumeSource source = new TrackingVolumeSource(
+                new byte[][]{zipArchive()},
+                true
+        );
+        ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader("zip", (ArkivoVolumeSource) source);
+
+        IOException failure = assertThrows(IOException.class, reader::close);
+
+        assertEquals("source close failed", failure.getMessage());
+        assertEquals(1, source.closeCount());
+    }
+
+    /// Verifies multi-volume reader setup failures release source ownership once.
+    @Test
+    void closesVolumeStreamingReaderSourceAfterSetupFailure() throws IOException {
+        TrackingVolumeSource source = new TrackingVolumeSource(new byte[][]{zipArchive()});
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ArkivoFormats.openStreamingReader(
+                        "zip",
+                        (ArkivoVolumeSource) source,
+                        Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), "invalid")
+                )
+        );
+
+        assertEquals(1, source.closeCount());
+    }
+
+    /// Verifies unified named lookup creates valid transactional split streams for every capable format.
+    @Test
+    void writesVolumeStreamingFormatsByName() throws IOException {
+        assertUnifiedVolumeStreamingWriter("zip", "zip");
+        assertUnifiedVolumeStreamingWriter("sevenzip", "7z");
+    }
+
+    /// Verifies unavailable and invalid multi-volume writer requests leave targets unopened.
+    @Test
+    void rejectsUnavailableVolumeStreamingWritersWithoutOpeningTargets() {
+        RecordingVolumeTarget unsupportedTarget = new RecordingVolumeTarget();
+        UnsupportedOperationException unsupportedFailure = assertThrows(
+                UnsupportedOperationException.class,
+                () -> ArkivoFormats.openStreamingWriter("tar", unsupportedTarget, 64L)
+        );
+        assertTrue(unsupportedFailure.getMessage().contains("tar"));
+        assertEquals(0, unsupportedTarget.openOutputCount());
+
+        RecordingVolumeTarget unknownTarget = new RecordingVolumeTarget();
+        IOException unknownFailure = assertThrows(
+                IOException.class,
+                () -> ArkivoFormats.openStreamingWriter("missing", unknownTarget, 64L)
+        );
+        assertEquals("Unknown archive format: missing", unknownFailure.getMessage());
+        assertEquals(0, unknownTarget.openOutputCount());
+
+        RecordingVolumeTarget invalidSizeTarget = new RecordingVolumeTarget();
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ArkivoFormats.openStreamingWriter("zip", invalidSizeTarget, 0L)
+        );
+        assertEquals(0, invalidSizeTarget.openOutputCount());
+
+        RecordingVolumeTarget conflictingOptionTarget = new RecordingVolumeTarget();
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ArkivoFormats.openStreamingWriter(
+                        "zip",
+                        conflictingOptionTarget,
+                        ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE,
+                        Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE)
+                )
+        );
+        assertEquals(0, conflictingOptionTarget.openOutputCount());
+    }
+
+    /// Verifies unified multi-volume writers roll back unpublished output when target commit fails.
+    @Test
+    void rollsBackVolumeStreamingWritersAfterCommitFailure() throws IOException {
+        for (String formatName : Set.of("zip", "sevenzip")) {
+            long splitSize = volumeSplitSize(formatName, 64L);
+            byte[] content = volumeContent(formatName);
+            RecordingVolumeTarget target = new RecordingVolumeTarget(true);
+            ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter(formatName, target, splitSize);
+            writeEntry(writer, ENTRY_PATH, content);
+
+            IOException failure = assertThrows(IOException.class, writer::close, formatName);
+            assertEquals("commit failed", failure.getMessage(), formatName);
+            assertEquals(1, target.openOutputCount(), formatName);
+            assertEquals(1, target.rollbackCount(), formatName);
+        }
     }
 
     /// Verifies unified writer lookup creates every writable streaming archive through an owned channel.
@@ -343,6 +642,59 @@ final class StreamingAggregationTest {
         assertRepeatableSourceFileSystem("tar", compressedTarArchive(), false);
     }
 
+    /// Verifies detected and named unified factories update every editable format from repeatable channel sources.
+    @Test
+    void updatesRandomAccessFormatsFromRepeatableSources() throws IOException {
+        for (Map.Entry<String, byte[]> archive : Map.of(
+                "ar", arArchive(),
+                "tar", tarArchive(),
+                "zip", zipArchive(),
+                "7z", sevenZipArchive()
+        ).entrySet()) {
+            assertRepeatableSourceUpdate(null, archive.getKey(), archive.getValue());
+            assertRepeatableSourceUpdate(archive.getKey(), archive.getKey(), archive.getValue());
+        }
+    }
+
+    /// Verifies detected and named unified factories update every editable format from owned seekable channels.
+    @Test
+    void updatesRandomAccessFormatsFromOwnedSeekableChannels() throws IOException {
+        for (Map.Entry<String, byte[]> archive : Map.of(
+                "ar", arArchive(),
+                "tar", tarArchive(),
+                "zip", zipArchive(),
+                "7z", sevenZipArchive()
+        ).entrySet()) {
+            assertOwnedChannelUpdate(null, archive.getKey(), archive.getValue());
+            assertOwnedChannelUpdate(archive.getKey(), archive.getKey(), archive.getValue());
+        }
+    }
+
+    /// Verifies unified channel-source updates require explicit publication and release ownership once on rejection.
+    @Test
+    void rejectsChannelSourceUpdatesWithoutCommitTargets() throws IOException {
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+        );
+        for (Map.Entry<String, byte[]> archive : Map.of(
+                "ar", arArchive(),
+                "tar", tarArchive(),
+                "zip", zipArchive(),
+                "7z", sevenZipArchive()
+        ).entrySet()) {
+            TrackingSeekableSource source = new TrackingSeekableSource(archive.getValue());
+
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> ArkivoFormats.openFileSystem(source, environment),
+                    archive.getKey()
+            );
+
+            assertEquals(1, source.closeCount(), archive.getKey());
+        }
+    }
+
     /// Verifies detected and named volume factories preserve logical archives across physical boundaries.
     @Test
     void opensRandomAccessFormatsFromVolumeSources() throws IOException {
@@ -360,6 +712,106 @@ final class StreamingAggregationTest {
         assertVolumeSourceFileSystem("rar", emptyRar, true);
         assertVolumeSourceFileSystem(null, emptyRar, true);
         assertVolumeSourceFileSystem("sevenzip", splitArchive(sevenZipArchive(), 11), false);
+    }
+
+    /// Verifies named unified factories create writable ZIP and 7z volume file systems.
+    @Test
+    void createsRandomAccessFormatsInVolumeTargets() throws IOException {
+        assertUnifiedVolumeCreation("zip", "zip");
+        assertUnifiedVolumeCreation("sevenzip", "7z");
+    }
+
+    /// Verifies detected and named unified factories update ZIP and 7z volume sources.
+    @Test
+    void updatesRandomAccessFormatsBetweenVolumeEndpoints() throws IOException {
+        for (Map.Entry<String, byte[]> archive : Map.of(
+                "zip", zipArchive(),
+                "7z", sevenZipArchive()
+        ).entrySet()) {
+            assertUnifiedVolumeUpdate(null, archive.getKey(), archive.getValue());
+            assertUnifiedVolumeUpdate(
+                    archive.getKey().equals("7z") ? "sevenzip" : archive.getKey(),
+                    archive.getKey(),
+                    archive.getValue()
+            );
+        }
+    }
+
+    /// Verifies unified volume writes reject unavailable formats without opening output transactions.
+    @Test
+    void rejectsUnavailableUnifiedVolumeWrites() throws IOException {
+        RecordingVolumeTarget createTarget = new RecordingVolumeTarget();
+        UnsupportedOperationException createFailure = assertThrows(
+                UnsupportedOperationException.class,
+                () -> ArkivoFormats.createFileSystem("rar", createTarget, 64L)
+        );
+        assertTrue(createFailure.getMessage().contains("rar"));
+        assertEquals(0, createTarget.openOutputCount());
+
+        TrackingVolumeSource readOnlySource = new TrackingVolumeSource(
+                new byte[][]{{'R', 'a', 'r', '!', 0x1a, 0x07, 0x01, 0x00}},
+                true
+        );
+        RecordingVolumeTarget updateTarget = new RecordingVolumeTarget();
+        UnsupportedOperationException updateFailure = assertThrows(
+                UnsupportedOperationException.class,
+                () -> ArkivoFormats.updateFileSystem(readOnlySource, updateTarget, 64L)
+        );
+        assertTrue(updateFailure.getMessage().contains("rar"));
+        assertEquals(1, readOnlySource.closeCount());
+        assertEquals(1, updateFailure.getSuppressed().length);
+        assertEquals("source close failed", updateFailure.getSuppressed()[0].getMessage());
+        assertEquals(0, updateTarget.openOutputCount());
+
+        TrackingVolumeSource unknownSource = new TrackingVolumeSource(splitArchive(zipArchive(), 11));
+        RecordingVolumeTarget unknownTarget = new RecordingVolumeTarget();
+        IOException unknownFailure = assertThrows(
+                IOException.class,
+                () -> ArkivoFormats.updateFileSystem("missing", unknownSource, unknownTarget, 64L)
+        );
+        assertEquals("Unknown archive format: missing", unknownFailure.getMessage());
+        assertEquals(1, unknownSource.closeCount());
+        assertEquals(0, unknownTarget.openOutputCount());
+
+        TrackingVolumeSource invalidSizeSource = new TrackingVolumeSource(splitArchive(zipArchive(), 11));
+        RecordingVolumeTarget invalidSizeTarget = new RecordingVolumeTarget();
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ArkivoFormats.updateFileSystem(invalidSizeSource, invalidSizeTarget, 0L)
+        );
+        assertEquals(0, invalidSizeSource.closeCount());
+        assertEquals(0, invalidSizeTarget.openOutputCount());
+
+        TrackingVolumeSource invalidEnvironmentSource =
+                new TrackingVolumeSource(splitArchive(zipArchive(), 11));
+        RecordingVolumeTarget invalidEnvironmentTarget = new RecordingVolumeTarget();
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ArkivoFormats.updateFileSystem(
+                        "zip",
+                        invalidEnvironmentSource,
+                        invalidEnvironmentTarget,
+                        ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE,
+                        Map.of(ArkivoFileSystem.OPEN_OPTIONS.key(), Set.of(StandardOpenOption.WRITE))
+                )
+        );
+        assertEquals(1, invalidEnvironmentSource.closeCount());
+        assertEquals(0, invalidEnvironmentTarget.openOutputCount());
+
+        RecordingVolumeTarget invalidCreateTarget = new RecordingVolumeTarget();
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ArkivoFormats.createFileSystem(
+                        "zip",
+                        invalidCreateTarget,
+                        ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE,
+                        Map.of(
+                                ZipArkivoFileSystem.SPLIT_SIZE.key(),
+                                ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE + 1L
+                        )
+                )
+        );
+        assertEquals(0, invalidCreateTarget.openOutputCount());
     }
 
     /// Verifies unified source factories release ownership once after setup failures.
@@ -494,7 +946,7 @@ final class StreamingAggregationTest {
                 UnsupportedOperationException.class,
                 () -> ZipArkivoStreamingWriter.open(
                         directTarget,
-                        Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), 64L)
+                        Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE)
                 )
         );
 
@@ -509,7 +961,7 @@ final class StreamingAggregationTest {
                 () -> ArkivoFormats.openStreamingWriter(
                         "zip",
                         unifiedTarget,
-                        Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), 64L)
+                        Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE)
                 )
         );
 
@@ -790,6 +1242,128 @@ final class StreamingAggregationTest {
         return format;
     }
 
+    /// Updates one repeatable seekable source through detection or an explicit format and verifies derived publication.
+    private static void assertRepeatableSourceUpdate(
+            @Nullable String selectedFormat,
+            String archiveFormat,
+            byte[] archive
+    ) throws IOException {
+        TrackingSeekableSource source = new TrackingSeekableSource(archive);
+        Path target = Files.createTempFile("arkivo-unified-source-update-", "." + archiveFormat);
+        Files.delete(target);
+        byte[] updatedContent = ("updated-" + archiveFormat).getBytes(StandardCharsets.UTF_8);
+        try {
+            Map<String, Object> environment = updateEnvironment(target);
+            try (ArkivoFileSystem fileSystem = selectedFormat == null
+                    ? ArkivoFormats.openFileSystem(source, environment)
+                    : ArkivoFormats.openFileSystem(selectedFormat, source, environment)) {
+                assertFalse(fileSystem.isReadOnly(), archiveFormat);
+                assertArrayEquals(
+                        CONTENT,
+                        Files.readAllBytes(fileSystem.getPath("/" + ENTRY_PATH)),
+                        archiveFormat
+                );
+                Files.write(fileSystem.getPath("/" + ENTRY_PATH), updatedContent);
+                Files.writeString(
+                        fileSystem.getPath("/added.txt"),
+                        "added-" + archiveFormat,
+                        StandardCharsets.UTF_8
+                );
+                assertArrayEquals(
+                        updatedContent,
+                        Files.readAllBytes(fileSystem.getPath("/" + ENTRY_PATH)),
+                        archiveFormat
+                );
+                assertEquals(
+                        "added-" + archiveFormat,
+                        Files.readString(fileSystem.getPath("/added.txt"), StandardCharsets.UTF_8),
+                        archiveFormat
+                );
+            }
+
+            assertEquals(1, source.closeCount(), archiveFormat);
+            assertUpdatedArchive(target, archiveFormat, updatedContent);
+        } finally {
+            Files.deleteIfExists(target);
+        }
+    }
+
+    /// Updates one owned seekable channel through detection or an explicit format and verifies endpoint ownership.
+    private static void assertOwnedChannelUpdate(
+            @Nullable String selectedFormat,
+            String archiveFormat,
+            byte[] archive
+    ) throws IOException {
+        ByteArraySeekableByteChannel source = new ByteArraySeekableByteChannel(archive);
+        Path target = Files.createTempFile("arkivo-unified-channel-update-", "." + archiveFormat);
+        Files.delete(target);
+        byte[] updatedContent = ("owned-" + archiveFormat).getBytes(StandardCharsets.UTF_8);
+        try {
+            Map<String, Object> environment = updateEnvironment(target);
+            try (ArkivoFileSystem fileSystem = selectedFormat == null
+                    ? ArkivoFormats.openFileSystem(source, environment)
+                    : ArkivoFormats.openFileSystem(selectedFormat, source, environment)) {
+                assertFalse(fileSystem.isReadOnly(), archiveFormat);
+                assertArrayEquals(
+                        CONTENT,
+                        Files.readAllBytes(fileSystem.getPath("/" + ENTRY_PATH)),
+                        archiveFormat
+                );
+                Files.write(fileSystem.getPath("/" + ENTRY_PATH), updatedContent);
+                Files.writeString(
+                        fileSystem.getPath("/added.txt"),
+                        "added-" + archiveFormat,
+                        StandardCharsets.UTF_8
+                );
+                assertArrayEquals(
+                        updatedContent,
+                        Files.readAllBytes(fileSystem.getPath("/" + ENTRY_PATH)),
+                        archiveFormat
+                );
+                assertEquals(
+                        "added-" + archiveFormat,
+                        Files.readString(fileSystem.getPath("/added.txt"), StandardCharsets.UTF_8),
+                        archiveFormat
+                );
+            }
+
+            assertFalse(source.isOpen(), archiveFormat);
+            assertUpdatedArchive(target, archiveFormat, updatedContent);
+        } finally {
+            Files.deleteIfExists(target);
+        }
+    }
+
+    /// Returns the common complete-rewrite environment for a derived archive target.
+    private static Map<String, Object> updateEnvironment(Path target) {
+        return Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                ArkivoFileSystem.COMMIT_TARGET.key(),
+                ArkivoCommitTarget.writeTo(target)
+        );
+    }
+
+    /// Verifies the updated and added entries in one derived archive through automatic format detection.
+    private static void assertUpdatedArchive(
+            Path target,
+            String archiveFormat,
+            byte[] updatedContent
+    ) throws IOException {
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(target)) {
+            assertArrayEquals(
+                    updatedContent,
+                    Files.readAllBytes(fileSystem.getPath("/" + ENTRY_PATH)),
+                    archiveFormat
+            );
+            assertEquals(
+                    "added-" + archiveFormat,
+                    Files.readString(fileSystem.getPath("/added.txt"), StandardCharsets.UTF_8),
+                    archiveFormat
+            );
+        }
+    }
+
     /// Opens and verifies one repeatable seekable source through detection or an explicit format.
     private static void assertRepeatableSourceFileSystem(
             @Nullable String format,
@@ -828,6 +1402,92 @@ final class StreamingAggregationTest {
         assertEquals(1, source.closeCount(), format == null ? "detected volumes" : format);
     }
 
+    /// Creates one split archive through the named unified volume factory and verifies its committed content.
+    private static void assertUnifiedVolumeCreation(String selectedFormat, String archiveFormat) throws IOException {
+        long splitSize = volumeSplitSize(archiveFormat, 41L);
+        byte[] content = volumeContent(archiveFormat);
+        RecordingVolumeTarget target = new RecordingVolumeTarget();
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.createFileSystem(selectedFormat, target, splitSize)) {
+            assertFalse(fileSystem.isReadOnly(), archiveFormat);
+            Files.write(fileSystem.getPath("/" + ENTRY_PATH), content);
+        }
+
+        assertEquals(1, target.openOutputCount(), archiveFormat);
+        assertTrue(target.committedVolumes().length > 1, archiveFormat);
+        assertTrue(target.allCommittedVolumeSizesAtMost(splitSize), archiveFormat);
+        assertEquals(0, target.rollbackCount(), archiveFormat);
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(
+                archiveFormat,
+                (ArkivoVolumeSource) new TrackingVolumeSource(target.committedVolumes())
+        )) {
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/" + ENTRY_PATH)), archiveFormat);
+        }
+    }
+
+    /// Updates one split archive through detection or a named format and verifies endpoint ownership and publication.
+    private static void assertUnifiedVolumeUpdate(
+            @Nullable String selectedFormat,
+            String archiveFormat,
+            byte[] archive
+    ) throws IOException {
+        long splitSize = volumeSplitSize(archiveFormat, 37L);
+        TrackingVolumeSource source = new TrackingVolumeSource(splitArchive(archive, 11));
+        RecordingVolumeTarget target = new RecordingVolumeTarget();
+        byte[] updatedContent = "zip".equals(archiveFormat)
+                ? volumeContent(archiveFormat)
+                : ("volume-" + archiveFormat).getBytes(StandardCharsets.UTF_8);
+        try (ArkivoFileSystem fileSystem = selectedFormat == null
+                ? ArkivoFormats.updateFileSystem(source, target, splitSize)
+                : ArkivoFormats.updateFileSystem(selectedFormat, source, target, splitSize)) {
+            assertFalse(fileSystem.isReadOnly(), archiveFormat);
+            assertArrayEquals(CONTENT, Files.readAllBytes(fileSystem.getPath("/" + ENTRY_PATH)));
+            Files.write(fileSystem.getPath("/" + ENTRY_PATH), updatedContent);
+            Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
+        }
+
+        assertEquals(1, source.closeCount(), archiveFormat);
+        assertEquals(1, target.openOutputCount(), archiveFormat);
+        assertTrue(target.committedVolumes().length > 1, archiveFormat);
+        assertTrue(target.allCommittedVolumeSizesAtMost(splitSize), archiveFormat);
+        assertEquals(0, target.rollbackCount(), archiveFormat);
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(
+                archiveFormat,
+                (ArkivoVolumeSource) new TrackingVolumeSource(target.committedVolumes())
+        )) {
+            assertArrayEquals(updatedContent, Files.readAllBytes(fileSystem.getPath("/" + ENTRY_PATH)));
+            assertEquals("added", Files.readString(fileSystem.getPath("/added.txt"), StandardCharsets.UTF_8));
+        }
+    }
+
+    /// Writes physical ZIP volumes using the conventional numbered and final-path layout.
+    private static @Unmodifiable List<Path> writeSplitZipVolumes(
+            Path archivePath,
+            byte[][] volumes
+    ) throws IOException {
+        if (volumes.length < 2) {
+            throw new IllegalArgumentException("Split ZIP test output requires at least two volumes");
+        }
+        Path parent = Objects.requireNonNull(archivePath.getParent(), "archivePath parent");
+        String fileName = archivePath.getFileName().toString();
+        String baseName = fileName.substring(0, fileName.length() - ".zip".length());
+        ArrayList<Path> paths = new ArrayList<>(volumes.length);
+        for (int index = 0; index < volumes.length; index++) {
+            Path volumePath;
+            if (index == volumes.length - 1) {
+                volumePath = archivePath;
+            } else {
+                String number = Integer.toString(index + 1);
+                if (number.length() < 2) {
+                    number = "0" + number;
+                }
+                volumePath = parent.resolve(baseName + ".z" + number);
+            }
+            Files.write(volumePath, volumes[index]);
+            paths.add(volumePath);
+        }
+        return List.copyOf(paths);
+    }
+
     /// Splits one logical archive into fixed-size physical volume byte arrays.
     private static byte[][] splitArchive(byte[] archive, int splitSize) {
         int volumeCount = (archive.length + splitSize - 1) / splitSize;
@@ -840,6 +1500,38 @@ final class StreamingAggregationTest {
         return volumes;
     }
 
+    /// Creates, reopens, and verifies one archive through the unified multi-volume streaming writer factory.
+    private static void assertUnifiedVolumeStreamingWriter(
+            String selectedFormat,
+            String archiveFormat
+    ) throws IOException {
+        long splitSize = volumeSplitSize(archiveFormat, 64L);
+        byte[] content = volumeContent(archiveFormat);
+        RecordingVolumeTarget target = new RecordingVolumeTarget();
+        try (ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter(
+                selectedFormat,
+                target,
+                splitSize
+        )) {
+            writeEntry(writer, ENTRY_PATH, content);
+        }
+
+        byte[][] volumes = target.committedVolumes();
+        assertTrue(volumes.length > 1, archiveFormat);
+        assertTrue(target.allCommittedVolumeSizesAtMost(splitSize), archiveFormat);
+        assertEquals(0, target.rollbackCount(), archiveFormat);
+
+        TrackingVolumeSource source = new TrackingVolumeSource(volumes);
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(source)) {
+            assertArrayEquals(
+                    content,
+                    Files.readAllBytes(fileSystem.getPath("/" + ENTRY_PATH)),
+                    archiveFormat
+            );
+        }
+        assertEquals(1, source.closeCount(), archiveFormat);
+    }
+
     /// Writes one regular file entry to a streaming archive writer.
     private static void writeEntry(ArkivoStreamingWriter writer) throws IOException {
         writeEntry(writer, ENTRY_PATH);
@@ -847,10 +1539,37 @@ final class StreamingAggregationTest {
 
     /// Writes one regular file entry with the given path to a streaming archive writer.
     private static void writeEntry(ArkivoStreamingWriter writer, String entryPath) throws IOException {
+        writeEntry(writer, entryPath, CONTENT);
+    }
+
+    /// Writes one regular file entry with the given path and content.
+    private static void writeEntry(
+            ArkivoStreamingWriter writer,
+            String entryPath,
+            byte[] content
+    ) throws IOException {
         writer.beginFile(entryPath);
         try (OutputStream body = writer.openOutputStream()) {
-            body.write(CONTENT);
+            body.write(content);
         }
+    }
+
+    /// Returns a standards-compliant split size for ZIP or the requested size for another format.
+    private static long volumeSplitSize(String archiveFormat, long otherFormatSplitSize) {
+        return "zip".equals(archiveFormat)
+                ? ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE
+                : otherFormatSplitSize;
+    }
+
+    /// Returns content that forces ZIP output across volumes while keeping other format tests compact.
+    private static byte[] volumeContent(String archiveFormat) {
+        if (!"zip".equals(archiveFormat)) {
+            return CONTENT;
+        }
+        int size = Math.toIntExact(ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE * 2L);
+        byte[] content = new byte[size];
+        new Random(0x41524b49564fL).nextBytes(content);
+        return content;
     }
 
     /// Opens and verifies the single entry in an automatically detected archive.
@@ -864,15 +1583,19 @@ final class StreamingAggregationTest {
 
     /// Verifies and consumes one streaming archive entry.
     private static void assertEntry(ArkivoStreamingReader reader) throws IOException {
+        assertEntry(reader, CONTENT);
+    }
+
+    /// Verifies and consumes one streaming archive entry with the expected content.
+    private static void assertEntry(ArkivoStreamingReader reader, byte[] expectedContent) throws IOException {
         assertTrue(reader.next());
         BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);
         assertTrue(attributes.isRegularFile());
         try (InputStream body = reader.openInputStream()) {
-            assertArrayEquals(CONTENT, body.readAllBytes());
+            assertArrayEquals(expectedContent, body.readAllBytes());
         }
         assertFalse(reader.next());
     }
-
     /// Opens an archive file system over one owned seekable channel.
     @FunctionalInterface
     @NotNullByDefault
@@ -974,6 +1697,175 @@ final class StreamingAggregationTest {
         /// Returns the number of source close attempts.
         private int closeCount() {
             return closeCount;
+        }
+    }
+
+    /// Creates one in-memory transactional output for unified volume factory tests.
+    @NotNullByDefault
+    private static final class RecordingVolumeTarget implements ArkivoVolumeTarget {
+        /// Whether the transaction should reject commit.
+        private final boolean failCommit;
+
+        /// Number of output transactions opened by this target.
+        private int openOutputCount;
+
+        /// The latest output transaction, or `null` before use.
+        private @Nullable RecordingVolumeOutput output;
+
+        /// Creates a target whose output commits successfully.
+        private RecordingVolumeTarget() {
+            this(false);
+        }
+
+        /// Creates a target with configurable commit failure.
+        private RecordingVolumeTarget(boolean failCommit) {
+            this.failCommit = failCommit;
+        }
+
+        /// Opens a new recording volume transaction.
+        @Override
+        public ArkivoVolumeOutput openOutput() throws IOException {
+            if (output != null) {
+                throw new IOException("volume output is already open");
+            }
+            openOutputCount++;
+            output = new RecordingVolumeOutput(failCommit);
+            return output;
+        }
+
+        /// Returns the number of opened output transactions.
+        private int openOutputCount() {
+            return openOutputCount;
+        }
+
+        /// Returns copies of the committed physical volumes.
+        private byte @Unmodifiable [] @Unmodifiable [] committedVolumes() {
+            RecordingVolumeOutput current = Objects.requireNonNull(output, "output");
+            return current.committedVolumes();
+        }
+
+        /// Returns whether all committed volumes respect the maximum size.
+        private boolean allCommittedVolumeSizesAtMost(long maximumSize) {
+            RecordingVolumeOutput current = Objects.requireNonNull(output, "output");
+            return current.allCommittedVolumeSizesAtMost(maximumSize);
+        }
+
+        /// Returns the number of effective rollback operations.
+        private int rollbackCount() {
+            RecordingVolumeOutput current = Objects.requireNonNull(output, "output");
+            return current.rollbackCount();
+        }
+    }
+
+    /// Records one in-memory transactional multi-volume output.
+    @NotNullByDefault
+    private static final class RecordingVolumeOutput implements ArkivoVolumeOutput {
+        /// Bytes written to each physical volume.
+        private final ArrayList<ByteArrayOutputStream> volumes = new ArrayList<>();
+
+        /// Channels opened for the physical volumes.
+        private final ArrayList<WritableByteChannel> channels = new ArrayList<>();
+
+        /// Whether this output rejects commit.
+        private final boolean failCommit;
+
+        /// Number of effective rollback operations.
+        private int rollbackCount;
+
+        /// Whether the output has committed.
+        private boolean committed;
+
+        /// Whether the transaction has committed or rolled back.
+        private boolean finished;
+
+        /// Creates a recording output with configurable commit failure.
+        private RecordingVolumeOutput(boolean failCommit) {
+            this.failCommit = failCommit;
+        }
+
+        /// Opens the next physical volume channel.
+        @Override
+        public WritableByteChannel openVolume(long index) throws IOException {
+            if (finished) {
+                throw new IOException("volume output is finished");
+            }
+            if (index != channels.size()) {
+                throw new IllegalArgumentException("volume indexes must be contiguous");
+            }
+            if (!channels.isEmpty() && channels.get(channels.size() - 1).isOpen()) {
+                throw new IOException("previous volume is still open");
+            }
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            WritableByteChannel channel = Channels.newChannel(bytes);
+            volumes.add(bytes);
+            channels.add(channel);
+            return channel;
+        }
+
+        /// Commits every opened physical volume.
+        @Override
+        public void commit(long finalVolumeIndex) throws IOException {
+            if (finished) {
+                throw new IOException("volume output is finished");
+            }
+            if (finalVolumeIndex != channels.size() - 1L) {
+                throw new IllegalArgumentException("finalVolumeIndex does not identify the last volume");
+            }
+            for (WritableByteChannel channel : channels) {
+                if (channel.isOpen()) {
+                    throw new IOException("volume channel is still open");
+                }
+            }
+            if (failCommit) {
+                throw new IOException("commit failed");
+            }
+            committed = true;
+            finished = true;
+        }
+
+        /// Rolls back an unfinished transaction.
+        @Override
+        public void rollback() {
+            if (!finished) {
+                rollbackCount++;
+                finished = true;
+            }
+        }
+
+        /// Closes this transaction and rolls it back when unfinished.
+        @Override
+        public void close() {
+            rollback();
+        }
+
+        /// Returns copies of every committed physical volume.
+        private byte @Unmodifiable [] @Unmodifiable [] committedVolumes() {
+            if (!committed) {
+                throw new IllegalStateException("volume output is not committed");
+            }
+            byte[][] result = new byte[volumes.size()][];
+            for (int index = 0; index < volumes.size(); index++) {
+                result[index] = volumes.get(index).toByteArray();
+            }
+            return result;
+        }
+
+        /// Returns whether all committed volumes respect the maximum size.
+        private boolean allCommittedVolumeSizesAtMost(long maximumSize) {
+            if (!committed) {
+                throw new IllegalStateException("volume output is not committed");
+            }
+            for (ByteArrayOutputStream volume : volumes) {
+                if (volume.size() > maximumSize) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /// Returns the number of effective rollback operations.
+        private int rollbackCount() {
+            return rollbackCount;
         }
     }
 
@@ -1154,11 +2046,11 @@ final class StreamingAggregationTest {
         }
     }
 
-    /// Tracks whether a byte-array input stream has been closed.
+    /// Tracks close attempts on a byte-array input stream.
     @NotNullByDefault
     private static final class TrackingInputStream extends ByteArrayInputStream {
-        /// Whether this stream has closed.
-        private boolean closed;
+        /// The number of close attempts.
+        private int closeCount;
 
         /// Creates a tracked source over the given bytes.
         private TrackingInputStream(byte[] content) {
@@ -1168,15 +2060,19 @@ final class StreamingAggregationTest {
         /// Closes this source.
         @Override
         public void close() throws IOException {
-            closed = true;
+            closeCount++;
             super.close();
         }
 
         /// Returns whether this source has closed.
         private boolean closed() {
-            return closed;
+            return closeCount > 0;
         }
 
+        /// Returns the number of close attempts.
+        private int closeCount() {
+            return closeCount;
+        }
     }
 
     /// Reports zero progress for every bulk read.

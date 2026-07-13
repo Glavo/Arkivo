@@ -69,6 +69,42 @@ public abstract class ArkivoFileSystem extends FileSystem {
                     ArkivoSourceMutationPolicy.class
             );
 
+    /// The common environment option limiting the number of logical entries accepted while reading an archive.
+    public static final ArkivoFileSystemOption<Long> MAX_ENTRY_COUNT =
+            ArkivoFileSystemOption.of(
+                    "arkivo",
+                    "maxEntryCount",
+                    Long.class,
+                    value -> nonNegativeLongOptionValue(value, "arkivo.maxEntryCount")
+            );
+
+    /// The common environment option limiting the logical size of each archive entry in bytes.
+    public static final ArkivoFileSystemOption<Long> MAX_ENTRY_SIZE =
+            ArkivoFileSystemOption.of(
+                    "arkivo",
+                    "maxEntrySize",
+                    Long.class,
+                    value -> nonNegativeLongOptionValue(value, "arkivo.maxEntrySize")
+            );
+
+    /// The common environment option limiting the sum of logical archive entry sizes in bytes.
+    public static final ArkivoFileSystemOption<Long> MAX_TOTAL_ENTRY_SIZE =
+            ArkivoFileSystemOption.of(
+                    "arkivo",
+                    "maxTotalEntrySize",
+                    Long.class,
+                    value -> nonNegativeLongOptionValue(value, "arkivo.maxTotalEntrySize")
+            );
+
+    /// The common environment option limiting cumulative archive metadata bytes processed while reading.
+    public static final ArkivoFileSystemOption<Long> MAX_METADATA_SIZE =
+            ArkivoFileSystemOption.of(
+                    "arkivo",
+                    "maxMetadataSize",
+                    Long.class,
+                    value -> nonNegativeLongOptionValue(value, "arkivo.maxMetadataSize")
+            );
+
     /// The requested file system thread-safety strategy.
     private final ArkivoFileSystemThreadSafety threadSafety;
 
@@ -846,6 +882,30 @@ public abstract class ArkivoFileSystem extends FileSystem {
         throw new IllegalArgumentException(
                 "Expected ArkivoFileSystemThreadSafety or String for key: " + THREAD_SAFETY.key()
         );
+    }
+
+    /// Converts and validates a non-negative long environment option.
+    private static Long nonNegativeLongOptionValue(Object value, String key) {
+        long result;
+        if (value instanceof Long longValue) {
+            result = longValue;
+        } else if (value instanceof Byte || value instanceof Short || value instanceof Integer) {
+            result = ((Number) value).longValue();
+        } else if (value instanceof String stringValue) {
+            try {
+                result = Long.parseLong(stringValue);
+            } catch (NumberFormatException exception) {
+                throw new IllegalArgumentException("Invalid non-negative Long for key: " + key, exception);
+            }
+        } else {
+            throw new IllegalArgumentException(
+                    "Expected Long, compatible integral number, or String for key: " + key
+            );
+        }
+        if (result < 0L) {
+            throw new IllegalArgumentException("Expected non-negative Long for key: " + key);
+        }
+        return result;
     }
 
     /// Converts a raw open options value.

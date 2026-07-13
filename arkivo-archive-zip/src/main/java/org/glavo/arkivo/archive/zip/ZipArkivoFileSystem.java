@@ -10,6 +10,7 @@ import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
+import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoReadFileSystemImpl;
 import org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoFileSystemImpl;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemConfig;
@@ -26,7 +27,9 @@ import java.util.Objects;
 ///
 /// Single-volume channel sources support complete-rewrite updates when `READ` and `WRITE` are supplied together.
 /// Such updates require an explicit `ArkivoFileSystem.COMMIT_TARGET`, preserve preamble and surviving local-record
-/// bytes, and leave the original source unchanged. General volume sources remain read-only.
+/// bytes, and leave the original source unchanged. Existing entries and completed replacement or added entries remain
+/// readable during the update session. General volume sources remain read-only through `open`; use `update` with an
+/// explicit transactional volume target and output split size for complete-rewrite mutation.
 @NotNullByDefault
 public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
         permits StreamingZipArkivoFileSystemImpl, StreamingZipArkivoReadFileSystemImpl, ZipArkivoFileSystemImpl {
@@ -42,6 +45,12 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
                     ZipEncryption.class,
                     ZipArkivoFileSystem::defaultEncryptionOptionValue
             );
+
+    /// The minimum ZIP split volume size defined by the ZIP format.
+    public static final long MINIMUM_SPLIT_SIZE = 64L * 1024L;
+
+    /// The maximum ZIP split volume size defined by the ZIP format.
+    public static final long MAXIMUM_SPLIT_SIZE = 0xffff_ffffL;
 
     /// The environment option for a `Long` value that sets the maximum size of each output volume.
     public static final ArkivoFileSystemOption<Long> SPLIT_SIZE =
@@ -137,6 +146,98 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
         return new ZipArkivoFileSystemImpl(ZipArkivoFileSystemProvider.instance(), null, volumes, config);
     }
 
+    /// Opens a complete-rewrite update over a multi-volume source and transactional volume target.
+    ///
+    /// The returned file system owns the source after this method returns successfully. Closing the file system commits
+    /// a complete replacement archive to the target; failures roll back the target transaction.
+    public static ZipArkivoFileSystem update(
+            ArkivoVolumeSource source,
+            ArkivoVolumeTarget target,
+            long splitSize
+    ) throws IOException {
+        return update(source, target, splitSize, Map.of());
+    }
+
+    /// Opens a complete-rewrite multi-volume update with environment options.
+    ///
+    /// Archive open options, `SPLIT_SIZE`, `COMMIT_TARGET`, and source mutation policy are
+    /// determined by this factory and must not be supplied in the environment.
+    public static ZipArkivoFileSystem update(
+            ArkivoVolumeSource source,
+            ArkivoVolumeTarget target,
+            long splitSize,
+            Map<String, ?> environment
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(environment, "environment");
+        requireSplitSize(splitSize);
+        if (environment.containsKey(ArkivoFileSystem.OPEN_OPTIONS.key())) {
+            throw new IllegalArgumentException("ZIP volume update open options are determined by the factory");
+        }
+        if (environment.containsKey(SPLIT_SIZE.key())) {
+            throw new IllegalArgumentException("ZIP volume update splitSize must be provided as the factory argument");
+        }
+        if (environment.containsKey(ArkivoFileSystem.COMMIT_TARGET.key())) {
+            throw new IllegalArgumentException("ZIP volume updates use the factory volume target");
+        }
+        if (environment.containsKey(ArkivoFileSystem.SOURCE_MUTATION_POLICY.key())) {
+            throw new IllegalArgumentException("ZIP volume updates always perform a complete rewrite");
+        }
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromUpdateEnvironment(environment);
+        return StreamingZipArkivoFileSystemImpl.openUpdate(
+                ZipArkivoFileSystemProvider.instance(),
+                source,
+                target,
+                splitSize,
+                config
+        );
+    }
+
+    /// Creates a writable ZIP file system over a transactional volume target.
+    ///
+    /// The target transaction opens with the file system. A successful close commits every output volume; failures
+    /// roll back the transaction.
+    public static ZipArkivoFileSystem create(ArkivoVolumeTarget target, long splitSize) throws IOException {
+        return create(target, splitSize, Map.of());
+    }
+
+    /// Creates a writable ZIP file system over a transactional volume target with environment options.
+    ///
+    /// Archive open options and `SPLIT_SIZE` are determined by this factory. Commit targets, edit storage,
+    /// and source mutation policies do not apply to direct volume creation.
+    public static ZipArkivoFileSystem create(
+            ArkivoVolumeTarget target,
+            long splitSize,
+            Map<String, ?> environment
+    ) throws IOException {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(environment, "environment");
+        requireSplitSize(splitSize);
+        if (environment.containsKey(ArkivoFileSystem.OPEN_OPTIONS.key())) {
+            throw new IllegalArgumentException("ZIP volume target open options are determined by the factory");
+        }
+        if (environment.containsKey(SPLIT_SIZE.key())) {
+            throw new IllegalArgumentException("ZIP volume target splitSize must be provided as the factory argument");
+        }
+        if (environment.containsKey(ArkivoFileSystem.COMMIT_TARGET.key())) {
+            throw new IllegalArgumentException("ZIP volume target creation uses the factory target");
+        }
+        if (environment.containsKey(ArkivoFileSystem.EDIT_STORAGE.key())) {
+            throw new IllegalArgumentException("ZIP volume target creation does not use edit storage");
+        }
+        if (environment.containsKey(ArkivoFileSystem.SOURCE_MUTATION_POLICY.key())) {
+            throw new IllegalArgumentException("ZIP volume target creation has no source to mutate");
+        }
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromWriterEnvironment(environment);
+        return new StreamingZipArkivoFileSystemImpl(
+                ZipArkivoFileSystemProvider.instance(),
+                target,
+                splitSize,
+                config
+        );
+    }
+
     /// Returns the number of bytes stored before the ZIP archive body.
     public abstract long preambleSize() throws IOException;
 
@@ -152,6 +253,15 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
             return ZipEncryption.of(stringValue);
         }
         throw new IllegalArgumentException("Expected ZipEncryption or String for key: " + DEFAULT_ENCRYPTION.key());
+    }
+
+    /// Requires a ZIP split size within format limits.
+    private static void requireSplitSize(long splitSize) {
+        if (splitSize < MINIMUM_SPLIT_SIZE || splitSize > MAXIMUM_SPLIT_SIZE) {
+            throw new IllegalArgumentException(
+                    "splitSize must be between MINIMUM_SPLIT_SIZE and MAXIMUM_SPLIT_SIZE"
+            );
+        }
     }
 
     /// Converts a raw split size option value.

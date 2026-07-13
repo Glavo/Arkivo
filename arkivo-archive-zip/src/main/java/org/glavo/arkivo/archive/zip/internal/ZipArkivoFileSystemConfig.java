@@ -29,6 +29,9 @@ public final class ZipArkivoFileSystemConfig {
     /// The split size value used when split output is disabled.
     public static final long NO_SPLIT_SIZE = -1L;
 
+    /// The primitive value used when a common archive read limit is not configured.
+    public static final long NO_READ_LIMIT = -1L;
+
     /// The default open options used by read-only ZIP file systems.
     private static final @Unmodifiable Set<OpenOption> DEFAULT_READ_OPEN_OPTIONS =
             Set.of(StandardOpenOption.READ);
@@ -36,6 +39,10 @@ public final class ZipArkivoFileSystemConfig {
     /// The default open options used by streaming ZIP writers opened from paths.
     private static final @Unmodifiable Set<OpenOption> DEFAULT_WRITE_OPEN_OPTIONS =
             Set.of(StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+
+    /// The open options used by explicit complete-rewrite volume updates.
+    private static final @Unmodifiable Set<OpenOption> DEFAULT_UPDATE_OPEN_OPTIONS =
+            Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE);
 
     /// The default parsed ZIP file system configuration.
     public static final ZipArkivoFileSystemConfig DEFAULTS = new ZipArkivoFileSystemConfig(
@@ -47,7 +54,11 @@ public final class ZipArkivoFileSystemConfig {
             ArkivoFileSystemThreadSafety.CONCURRENT_READ,
             null,
             null,
-            null
+            null,
+            NO_READ_LIMIT,
+            NO_READ_LIMIT,
+            NO_READ_LIMIT,
+            NO_READ_LIMIT
     );
 
     /// The open options used to open the backing archive path.
@@ -77,6 +88,18 @@ public final class ZipArkivoFileSystemConfig {
     /// The configured source mutation policy override, or `null` when the file system should choose a default.
     private final @Nullable ArkivoSourceMutationPolicy sourceMutationPolicy;
 
+    /// The maximum accepted logical entry count, or NO_READ_LIMIT.
+    private final long maximumEntryCount;
+
+    /// The maximum accepted logical size of one entry, or NO_READ_LIMIT.
+    private final long maximumEntrySize;
+
+    /// The maximum accepted sum of logical entry sizes, or NO_READ_LIMIT.
+    private final long maximumTotalEntrySize;
+
+    /// The maximum cumulative archive metadata size, or NO_READ_LIMIT.
+    private final long maximumMetadataSize;
+
     /// Creates parsed ZIP file system configuration.
     public ZipArkivoFileSystemConfig(
             Set<? extends OpenOption> openOptions,
@@ -89,11 +112,48 @@ public final class ZipArkivoFileSystemConfig {
             @Nullable ArkivoCommitTarget commitTarget,
             @Nullable ArkivoSourceMutationPolicy sourceMutationPolicy
     ) {
+        this(
+                openOptions,
+                passwordProvider,
+                defaultEncryption,
+                splitSize,
+                entryNameEncoding,
+                threadSafety,
+                editStorage,
+                commitTarget,
+                sourceMutationPolicy,
+                NO_READ_LIMIT,
+                NO_READ_LIMIT,
+                NO_READ_LIMIT,
+                NO_READ_LIMIT
+        );
+    }
+
+    /// Creates parsed ZIP file system configuration with common archive read limits.
+    ZipArkivoFileSystemConfig(
+            Set<? extends OpenOption> openOptions,
+            @Nullable ArkivoPasswordProvider passwordProvider,
+            ZipEncryption defaultEncryption,
+            long splitSize,
+            ZipEntryNameEncoding entryNameEncoding,
+            ArkivoFileSystemThreadSafety threadSafety,
+            @Nullable ArkivoEditStorage editStorage,
+            @Nullable ArkivoCommitTarget commitTarget,
+            @Nullable ArkivoSourceMutationPolicy sourceMutationPolicy,
+            long maximumEntryCount,
+            long maximumEntrySize,
+            long maximumTotalEntrySize,
+            long maximumMetadataSize
+    ) {
         Set<OpenOption> normalizedOpenOptions = normalizeOpenOptions(
                 Objects.requireNonNull(openOptions, "openOptions")
         );
-        if (splitSize != NO_SPLIT_SIZE && splitSize <= 0) {
-            throw new IllegalArgumentException("splitSize must be positive or NO_SPLIT_SIZE");
+        if (splitSize != NO_SPLIT_SIZE
+                && (splitSize < ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE
+                || splitSize > ZipArkivoFileSystem.MAXIMUM_SPLIT_SIZE)) {
+            throw new IllegalArgumentException(
+                    "splitSize must be NO_SPLIT_SIZE or between MINIMUM_SPLIT_SIZE and MAXIMUM_SPLIT_SIZE"
+            );
         }
         this.openOptions = normalizedOpenOptions;
         this.passwordProvider = passwordProvider;
@@ -104,6 +164,10 @@ public final class ZipArkivoFileSystemConfig {
         this.editStorage = editStorage;
         this.commitTarget = commitTarget;
         this.sourceMutationPolicy = sourceMutationPolicy;
+        this.maximumEntryCount = requireReadLimit(maximumEntryCount, "maximumEntryCount");
+        this.maximumEntrySize = requireReadLimit(maximumEntrySize, "maximumEntrySize");
+        this.maximumTotalEntrySize = requireReadLimit(maximumTotalEntrySize, "maximumTotalEntrySize");
+        this.maximumMetadataSize = requireReadLimit(maximumMetadataSize, "maximumMetadataSize");
     }
 
     /// Parses ZIP file system configuration from an environment map.
@@ -114,6 +178,11 @@ public final class ZipArkivoFileSystemConfig {
     /// Parses ZIP streaming writer configuration from an environment map.
     public static ZipArkivoFileSystemConfig fromWriterEnvironment(Map<String, ?> environment) {
         return fromEnvironment(environment, DEFAULT_WRITE_OPEN_OPTIONS);
+    }
+
+    /// Parses ZIP complete-rewrite update configuration from an environment map.
+    public static ZipArkivoFileSystemConfig fromUpdateEnvironment(Map<String, ?> environment) {
+        return fromEnvironment(environment, DEFAULT_UPDATE_OPEN_OPTIONS);
     }
 
     /// Parses ZIP file system configuration from an environment map with open option defaults.
@@ -160,7 +229,11 @@ public final class ZipArkivoFileSystemConfig {
                 threadSafety,
                 editStorage,
                 commitTarget,
-                sourceMutationPolicy
+                sourceMutationPolicy,
+                readLimit(ArkivoFileSystem.MAX_ENTRY_COUNT.read(environment)),
+                readLimit(ArkivoFileSystem.MAX_ENTRY_SIZE.read(environment)),
+                readLimit(ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE.read(environment)),
+                readLimit(ArkivoFileSystem.MAX_METADATA_SIZE.read(environment))
         );
     }
 
@@ -214,6 +287,26 @@ public final class ZipArkivoFileSystemConfig {
         return sourceMutationPolicy;
     }
 
+    /// Returns the maximum accepted logical entry count, or NO_READ_LIMIT.
+    public long maximumEntryCount() {
+        return maximumEntryCount;
+    }
+
+    /// Returns the maximum accepted logical size of one entry, or NO_READ_LIMIT.
+    public long maximumEntrySize() {
+        return maximumEntrySize;
+    }
+
+    /// Returns the maximum accepted sum of logical entry sizes, or NO_READ_LIMIT.
+    public long maximumTotalEntrySize() {
+        return maximumTotalEntrySize;
+    }
+
+    /// Returns the maximum cumulative archive metadata size, or NO_READ_LIMIT.
+    public long maximumMetadataSize() {
+        return maximumMetadataSize;
+    }
+
     /// Parses the password provider from an environment map.
     private static @Nullable ArkivoPasswordProvider passwordProvider(Map<String, ?> environment) {
         return ZipArkivoFileSystem.PASSWORD_PROVIDER.read(environment);
@@ -223,6 +316,19 @@ public final class ZipArkivoFileSystemConfig {
     private static long splitSize(Map<String, ?> environment) {
         Long splitSize = ZipArkivoFileSystem.SPLIT_SIZE.read(environment);
         return splitSize != null ? splitSize : NO_SPLIT_SIZE;
+    }
+
+    /// Converts an optional boxed common read limit to its primitive representation.
+    private static long readLimit(@Nullable Long value) {
+        return value != null ? value : NO_READ_LIMIT;
+    }
+
+    /// Validates one primitive common read limit.
+    private static long requireReadLimit(long value, String name) {
+        if (value < NO_READ_LIMIT) {
+            throw new IllegalArgumentException(name + " must be -1 or non-negative");
+        }
+        return value;
     }
 
     /// Parses open options from an environment map.

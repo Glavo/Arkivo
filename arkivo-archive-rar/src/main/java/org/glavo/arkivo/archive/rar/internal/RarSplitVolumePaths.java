@@ -17,7 +17,7 @@ import java.util.Objects;
 
 /// Resolves conventional numbered RAR split volume paths.
 @NotNullByDefault
-final class RarSplitVolumePaths {
+public final class RarSplitVolumePaths {
     /// The first modern numbered RAR volume.
     private static final int FIRST_MODERN_VOLUME_NUMBER = 1;
 
@@ -42,7 +42,7 @@ final class RarSplitVolumePaths {
     }
 
     /// Returns conventional split volume paths for a first-volume path, or `null` for a single-volume path.
-    static @Nullable @Unmodifiable List<Path> discover(Path firstVolumePath) throws IOException {
+    public static @Nullable @Unmodifiable List<Path> discover(Path firstVolumePath) throws IOException {
         if (!Files.exists(firstVolumePath)) {
             return null;
         }

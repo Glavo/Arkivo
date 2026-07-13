@@ -3,11 +3,14 @@
 
 package org.glavo.arkivo.archive.rar;
 
+import org.glavo.arkivo.archive.ArkivoPathVolumeFormat;
 import org.glavo.arkivo.archive.ArkivoVolumeFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
-import org.glavo.arkivo.archive.ArkivoStreamingReaderFormat;
+import org.glavo.arkivo.archive.ArkivoVolumeStreamingReaderFormat;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
+import org.glavo.arkivo.archive.rar.internal.RarSplitVolumePaths;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
@@ -22,7 +25,10 @@ import java.util.Objects;
 
 /// Describes RAR4 and RAR5 archive support provided by Arkivo.
 @NotNullByDefault
-public final class RarArkivoFormat implements ArkivoVolumeFileSystemFormat, ArkivoStreamingReaderFormat {
+public final class RarArkivoFormat implements
+        ArkivoPathVolumeFormat,
+        ArkivoVolumeFileSystemFormat,
+        ArkivoVolumeStreamingReaderFormat {
     /// The stable RAR format name.
     public static final String NAME = "rar";
 
@@ -75,6 +81,13 @@ public final class RarArkivoFormat implements ArkivoVolumeFileSystemFormat, Arki
                 && prefix.get(position + 7) == 0;
     }
 
+    /// Discovers conventional modern or legacy RAR physical volume paths.
+    @Override
+    public @Nullable @Unmodifiable List<Path> discoverVolumePaths(Path path) throws IOException {
+        Objects.requireNonNull(path, "path");
+        return RarSplitVolumePaths.discover(path);
+    }
+
     /// Opens a RAR archive file system.
     @Override
     public RarArkivoFileSystem open(Path path) throws IOException {
@@ -125,6 +138,36 @@ public final class RarArkivoFormat implements ArkivoVolumeFileSystemFormat, Arki
     @Override
     public RarArkivoFileSystem open(ArkivoVolumeSource volumes, Map<String, ?> environment) throws IOException {
         return RarArkivoFileSystem.open(volumes, environment);
+    }
+
+    /// Opens a streaming RAR reader from a path and discovers conventional split storage.
+    @Override
+    public RarArkivoStreamingReader openStreamingReader(Path path) throws IOException {
+        return RarArkivoStreamingReader.open(path);
+    }
+
+    /// Opens a configured streaming RAR reader from a path and discovers conventional split storage.
+    @Override
+    public RarArkivoStreamingReader openStreamingReader(
+            Path path,
+            Map<String, ?> environment
+    ) throws IOException {
+        return RarArkivoStreamingReader.open(path, environment);
+    }
+
+    /// Opens a streaming RAR reader from a multi-volume source.
+    @Override
+    public RarArkivoStreamingReader openStreamingReader(ArkivoVolumeSource source) {
+        return RarArkivoStreamingReader.open(source);
+    }
+
+    /// Opens a streaming RAR reader from a multi-volume source with environment options.
+    @Override
+    public RarArkivoStreamingReader openStreamingReader(
+            ArkivoVolumeSource source,
+            Map<String, ?> environment
+    ) {
+        return RarArkivoStreamingReader.open(source, environment);
     }
 
     /// Opens a streaming RAR reader from an input stream.

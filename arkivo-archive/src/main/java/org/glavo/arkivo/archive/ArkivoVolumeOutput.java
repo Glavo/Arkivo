@@ -22,7 +22,8 @@ public interface ArkivoVolumeOutput extends AutoCloseable {
 
     /// Abandons all opened volumes and removes unpublished output when possible.
     ///
-    /// Repeated calls after rollback or a successful commit have no effect.
+    /// Repeated calls after cleanup completes or a successful commit have no effect. A caller may retry this method when
+    /// an earlier call reports incomplete cleanup.
     void rollback() throws IOException;
 
     /// Closes this output, rolling it back when it has not been committed.

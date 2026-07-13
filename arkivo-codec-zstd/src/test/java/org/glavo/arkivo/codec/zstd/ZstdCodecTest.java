@@ -55,6 +55,26 @@ public final class ZstdCodecTest {
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
+    /// Converts native data-corruption failures into the channel API's checked exception contract.
+    @Test
+    public void reportsCorruptFrameAsIOException() throws IOException {
+        ZstdCodec codec = new ZstdCodec();
+        byte[] content = "corrupt Zstandard frame".repeat(64).getBytes(StandardCharsets.UTF_8);
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+        codec.compress(
+                Channels.newChannel(new ByteArrayInputStream(content)),
+                Channels.newChannel(compressed)
+        );
+        byte[] frame = compressed.toByteArray();
+        frame[0] ^= 0x01;
+
+        IOException failure = assertThrows(IOException.class, () -> codec.decompress(
+                Channels.newChannel(new ByteArrayInputStream(frame)),
+                Channels.newChannel(new ByteArrayOutputStream())
+        ));
+        assertEquals("Invalid Zstandard frame", failure.getMessage());
+    }
+
     /// Verifies that the Zstandard codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {

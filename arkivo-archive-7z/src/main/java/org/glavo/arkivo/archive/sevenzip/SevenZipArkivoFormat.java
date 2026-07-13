@@ -4,12 +4,15 @@
 package org.glavo.arkivo.archive.sevenzip;
 
 import org.glavo.arkivo.archive.ArkivoFileSystem;
+import org.glavo.arkivo.archive.ArkivoPathVolumeFormat;
 import org.glavo.arkivo.archive.ArkivoVolumeFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
-import org.glavo.arkivo.archive.ArkivoStreamingWriterFormat;
+import org.glavo.arkivo.archive.ArkivoVolumeStreamingWriterFormat;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
+import org.glavo.arkivo.archive.sevenzip.internal.SevenZipSplitVolumePaths;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
@@ -20,10 +23,14 @@ import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /// Describes the 7z archive format support provided by Arkivo.
 @NotNullByDefault
-public final class SevenZipArkivoFormat implements ArkivoVolumeFileSystemFormat, ArkivoStreamingWriterFormat {
+public final class SevenZipArkivoFormat implements
+        ArkivoPathVolumeFormat,
+        ArkivoVolumeFileSystemFormat,
+        ArkivoVolumeStreamingWriterFormat {
     /// The stable 7z format name.
     public static final String NAME = "7z";
 
@@ -76,6 +83,13 @@ public final class SevenZipArkivoFormat implements ArkivoVolumeFileSystemFormat,
                 && prefix.get(position + 5) == 0x1c;
     }
 
+    /// Discovers conventional numbered 7z physical volume paths.
+    @Override
+    public @Nullable @Unmodifiable List<Path> discoverVolumePaths(Path path) throws IOException {
+        Objects.requireNonNull(path, "path");
+        return SevenZipSplitVolumePaths.discover(path);
+    }
+
     /// Opens a streaming 7z writer over an output stream.
     @Override
     public SevenZipArkivoStreamingWriter openStreamingWriter(OutputStream output) throws IOException {
@@ -106,6 +120,25 @@ public final class SevenZipArkivoFormat implements ArkivoVolumeFileSystemFormat,
         return SevenZipArkivoStreamingWriter.open(output, environment);
     }
 
+    /// Opens a split streaming 7z writer over a transactional volume target.
+    @Override
+    public SevenZipArkivoStreamingWriter openStreamingWriter(
+            ArkivoVolumeTarget target,
+            long splitSize
+    ) throws IOException {
+        return SevenZipArkivoStreamingWriter.open(target, splitSize);
+    }
+
+    /// Opens a split streaming 7z writer over a transactional volume target with environment options.
+    @Override
+    public SevenZipArkivoStreamingWriter openStreamingWriter(
+            ArkivoVolumeTarget target,
+            long splitSize,
+            Map<String, ?> environment
+    ) throws IOException {
+        return SevenZipArkivoStreamingWriter.open(target, splitSize, environment);
+    }
+
     /// Opens a 7z archive file system.
     @Override
     public ArkivoFileSystem open(Path path) throws IOException {
@@ -124,7 +157,7 @@ public final class SevenZipArkivoFormat implements ArkivoVolumeFileSystemFormat,
         return SevenZipArkivoFileSystem.open(source);
     }
 
-    /// Opens a read-only 7z archive file system directly from one owned seekable channel with environment options.
+    /// Opens a 7z archive file system directly from one owned seekable channel with environment options.
     @Override
     public ArkivoFileSystem open(SeekableByteChannel source, Map<String, ?> environment) throws IOException {
         return SevenZipArkivoFileSystem.open(source, environment);
@@ -138,7 +171,7 @@ public final class SevenZipArkivoFormat implements ArkivoVolumeFileSystemFormat,
         return SevenZipArkivoFileSystem.open(source);
     }
 
-    /// Opens a read-only 7z archive file system from a repeatable seekable channel source with environment options.
+    /// Opens a 7z archive file system from a repeatable seekable channel source with environment options.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
     @Override
@@ -159,6 +192,7 @@ public final class SevenZipArkivoFormat implements ArkivoVolumeFileSystemFormat,
     }
 
     /// Opens a complete-rewrite update over multi-volume input and transactional output.
+    @Override
     public ArkivoFileSystem update(
             ArkivoVolumeSource source,
             ArkivoVolumeTarget target,
@@ -168,6 +202,7 @@ public final class SevenZipArkivoFormat implements ArkivoVolumeFileSystemFormat,
     }
 
     /// Opens a complete-rewrite multi-volume update with environment options.
+    @Override
     public ArkivoFileSystem update(
             ArkivoVolumeSource source,
             ArkivoVolumeTarget target,
@@ -178,11 +213,13 @@ public final class SevenZipArkivoFormat implements ArkivoVolumeFileSystemFormat,
     }
 
     /// Creates a forward-only 7z file system that publishes split output to a transactional volume target.
+    @Override
     public ArkivoFileSystem create(ArkivoVolumeTarget target, long splitSize) throws IOException {
         return SevenZipArkivoFileSystem.create(target, splitSize);
     }
 
     /// Creates a forward-only 7z file system over a transactional volume target with environment options.
+    @Override
     public ArkivoFileSystem create(
             ArkivoVolumeTarget target,
             long splitSize,

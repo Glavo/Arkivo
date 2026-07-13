@@ -13,6 +13,9 @@ import java.util.Map;
 import java.util.Objects;
 
 /// Describes an archive format that can write entries to a forward-only target.
+///
+/// The configured WritableByteChannel factory is the implementation contract. Stream factories are convenience adapters
+/// that wrap a channel before dispatching to that contract.
 @NotNullByDefault
 public interface ArkivoStreamingWriterFormat extends ArkivoFormat {
     /// Opens a streaming writer and takes ownership of the output stream when successful.

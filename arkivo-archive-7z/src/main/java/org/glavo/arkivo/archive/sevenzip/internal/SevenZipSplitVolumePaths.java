@@ -19,7 +19,7 @@ import java.util.List;
 
 /// Resolves conventional numbered 7z split volume paths.
 @NotNullByDefault
-final class SevenZipSplitVolumePaths {
+public final class SevenZipSplitVolumePaths {
     /// The fixed 7z file signature bytes.
     private static final byte @Unmodifiable [] SIGNATURE = new byte[]{'7', 'z', (byte) 0xbc, (byte) 0xaf, 0x27, 0x1c};
 
@@ -48,7 +48,7 @@ final class SevenZipSplitVolumePaths {
     }
 
     /// Returns conventional split volume paths for a first-volume path, or `null` for a single-volume path.
-    static @Nullable @Unmodifiable List<Path> discover(Path firstVolumePath) throws IOException {
+    public static @Nullable @Unmodifiable List<Path> discover(Path firstVolumePath) throws IOException {
         Path fileNamePath = firstVolumePath.getFileName();
         if (fileNamePath == null || splitVolumeNumber(fileNamePath.toString()) != FIRST_VOLUME_NUMBER) {
             return null;

@@ -4,12 +4,16 @@
 package org.glavo.arkivo.archive.zip;
 
 import org.glavo.arkivo.archive.ArkivoFileSystem;
+import org.glavo.arkivo.archive.ArkivoPathVolumeFormat;
 import org.glavo.arkivo.archive.ArkivoVolumeFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
-import org.glavo.arkivo.archive.ArkivoStreamingReaderFormat;
-import org.glavo.arkivo.archive.ArkivoStreamingWriterFormat;
+import org.glavo.arkivo.archive.ArkivoVolumeStreamingReaderFormat;
+import org.glavo.arkivo.archive.ArkivoVolumeStreamingWriterFormat;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
+import org.glavo.arkivo.archive.ArkivoVolumeTarget;
+import org.glavo.arkivo.archive.zip.internal.ZipSplitVolumePaths;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
@@ -22,13 +26,15 @@ import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /// Describes the ZIP archive format support provided by Arkivo.
 @NotNullByDefault
 public final class ZipArkivoFormat implements
+        ArkivoPathVolumeFormat,
         ArkivoVolumeFileSystemFormat,
-        ArkivoStreamingReaderFormat,
-        ArkivoStreamingWriterFormat {
+        ArkivoVolumeStreamingReaderFormat,
+        ArkivoVolumeStreamingWriterFormat {
     /// The stable ZIP format name.
     public static final String NAME = "zip";
 
@@ -76,6 +82,13 @@ public final class ZipArkivoFormat implements
         return third == 3 && fourth == 4
                 || third == 5 && fourth == 6
                 || third == 7 && fourth == 8;
+    }
+
+    /// Discovers conventional `.z01`, `.z02`, ..., `.zip` physical volume paths.
+    @Override
+    public @Nullable @Unmodifiable List<Path> discoverVolumePaths(Path path) throws IOException {
+        Objects.requireNonNull(path, "path");
+        return ZipSplitVolumePaths.discover(path);
     }
 
     /// Opens a ZIP archive file system.
@@ -130,6 +143,43 @@ public final class ZipArkivoFormat implements
         return ZipArkivoFileSystem.open(volumes, environment);
     }
 
+    /// Opens a complete-rewrite update over multi-volume input and transactional output.
+    @Override
+    public ArkivoFileSystem update(
+            ArkivoVolumeSource source,
+            ArkivoVolumeTarget target,
+            long splitSize
+    ) throws IOException {
+        return ZipArkivoFileSystem.update(source, target, splitSize);
+    }
+
+    /// Opens a complete-rewrite multi-volume update with environment options.
+    @Override
+    public ArkivoFileSystem update(
+            ArkivoVolumeSource source,
+            ArkivoVolumeTarget target,
+            long splitSize,
+            Map<String, ?> environment
+    ) throws IOException {
+        return ZipArkivoFileSystem.update(source, target, splitSize, environment);
+    }
+
+    /// Creates a writable ZIP file system over a transactional volume target.
+    @Override
+    public ArkivoFileSystem create(ArkivoVolumeTarget target, long splitSize) throws IOException {
+        return ZipArkivoFileSystem.create(target, splitSize);
+    }
+
+    /// Creates a writable ZIP file system over a transactional volume target with environment options.
+    @Override
+    public ArkivoFileSystem create(
+            ArkivoVolumeTarget target,
+            long splitSize,
+            Map<String, ?> environment
+    ) throws IOException {
+        return ZipArkivoFileSystem.create(target, splitSize, environment);
+    }
+
     /// Opens a streaming ZIP writer over an output stream.
     @Override
     public ZipArkivoStreamingWriter openStreamingWriter(OutputStream output) {
@@ -158,6 +208,55 @@ public final class ZipArkivoFormat implements
             Map<String, ?> environment
     ) {
         return ZipArkivoStreamingWriter.open(output, environment);
+    }
+
+    /// Opens a split streaming ZIP writer over a transactional volume target.
+    @Override
+    public ZipArkivoStreamingWriter openStreamingWriter(
+            ArkivoVolumeTarget target,
+            long splitSize
+    ) throws IOException {
+        return ZipArkivoStreamingWriter.open(target, splitSize);
+    }
+
+    /// Opens a split streaming ZIP writer over a transactional volume target with environment options.
+    @Override
+    public ZipArkivoStreamingWriter openStreamingWriter(
+            ArkivoVolumeTarget target,
+            long splitSize,
+            Map<String, ?> environment
+    ) throws IOException {
+        return ZipArkivoStreamingWriter.open(target, splitSize, environment);
+    }
+
+    /// Opens a streaming ZIP reader from a path and discovers conventional split storage.
+    @Override
+    public ZipArkivoStreamingReader openStreamingReader(Path path) throws IOException {
+        return ZipArkivoStreamingReader.open(path);
+    }
+
+    /// Opens a configured streaming ZIP reader from a path and discovers conventional split storage.
+    @Override
+    public ZipArkivoStreamingReader openStreamingReader(
+            Path path,
+            Map<String, ?> environment
+    ) throws IOException {
+        return ZipArkivoStreamingReader.open(path, environment);
+    }
+
+    /// Opens a streaming ZIP reader from a multi-volume source.
+    @Override
+    public ZipArkivoStreamingReader openStreamingReader(ArkivoVolumeSource source) throws IOException {
+        return ZipArkivoStreamingReader.open(source);
+    }
+
+    /// Opens a streaming ZIP reader from a multi-volume source with environment options.
+    @Override
+    public ZipArkivoStreamingReader openStreamingReader(
+            ArkivoVolumeSource source,
+            Map<String, ?> environment
+    ) throws IOException {
+        return ZipArkivoStreamingReader.open(source, environment);
     }
 
     /// Opens a streaming ZIP reader from an input stream.

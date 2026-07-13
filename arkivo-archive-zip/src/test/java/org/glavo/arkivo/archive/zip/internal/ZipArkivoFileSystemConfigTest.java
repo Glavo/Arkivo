@@ -54,13 +54,13 @@ public final class ZipArkivoFileSystemConfigTest {
         Map<String, Object> environment = new HashMap<>();
         ArkivoFileSystem.THREAD_SAFETY.putString(environment, "strict");
         ZipArkivoFileSystem.DEFAULT_ENCRYPTION.putString(environment, "winzip-aes-256");
-        ZipArkivoFileSystem.SPLIT_SIZE.putString(environment, "1024");
+        ZipArkivoFileSystem.SPLIT_SIZE.putString(environment, "65536");
         ZipArkivoFileSystem.ENTRY_NAME_ENCODING.putString(environment, "gb18030");
 
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
 
         assertEquals(ZipEncryption.winZipAes256(), config.defaultEncryption());
-        assertEquals(1024L, config.splitSize());
+        assertEquals(65536L, config.splitSize());
         assertEquals(ZipEntryNameEncoding.parse("gb18030"), config.entryNameEncoding());
         assertEquals(ArkivoFileSystemThreadSafety.STRICT, config.threadSafety());
     }
@@ -68,11 +68,11 @@ public final class ZipArkivoFileSystemConfigTest {
     /// Verifies that split size accepts compatible integral environment values.
     @Test
     public void integralSplitSize() {
-        Map<String, Object> environment = Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), 1024);
+        Map<String, Object> environment = Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), 65536);
 
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
 
-        assertEquals(1024L, config.splitSize());
+        assertEquals(65536L, config.splitSize());
     }
 
     /// Verifies that writable ZIP configuration preserves split output settings.
@@ -82,14 +82,32 @@ public final class ZipArkivoFileSystemConfigTest {
                 ArkivoFileSystem.OPEN_OPTIONS.key(),
                 Set.of(StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE),
                 ZipArkivoFileSystem.SPLIT_SIZE.key(),
-                1024L
+                65536L
         );
 
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
 
-        assertEquals(1024L, config.splitSize());
+        assertEquals(65536L, config.splitSize());
     }
 
+    /// Verifies that ZIP configuration rejects split sizes outside the format bounds.
+    @Test
+    public void splitSizeBounds() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+                        ZipArkivoFileSystem.SPLIT_SIZE.key(),
+                        ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE - 1L
+                ))
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+                        ZipArkivoFileSystem.SPLIT_SIZE.key(),
+                        ZipArkivoFileSystem.MAXIMUM_SPLIT_SIZE + 1L
+                ))
+        );
+    }
     /// Verifies that writable ZIP configuration accepts append mode.
     @Test
     public void writableAppendMode() {

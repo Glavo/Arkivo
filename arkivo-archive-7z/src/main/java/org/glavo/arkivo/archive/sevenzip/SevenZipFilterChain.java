@@ -13,7 +13,8 @@ import java.util.Objects;
 /// Configures an immutable sequence of 7z preprocessing filters in application order.
 ///
 /// Entry bytes pass through the first filter, then each following filter, and finally the configured compression
-/// method. An empty chain disables preprocessing.
+/// method. An empty chain disables preprocessing. BCJ2 splits one logical input into four graph branches and must be
+/// the sole filter in a chain.
 ///
 /// @param filters the filters in application order
 @NotNullByDefault
@@ -24,6 +25,10 @@ public record SevenZipFilterChain(@Unmodifiable List<SevenZipFilter> filters) {
     /// Creates an immutable filter chain.
     public SevenZipFilterChain {
         filters = List.copyOf(Objects.requireNonNull(filters, "filters"));
+        if (filters.stream().anyMatch(filter -> filter.method() == SevenZipFilterMethod.BCJ2)
+                && (filters.size() != 1 || filters.get(0).method() != SevenZipFilterMethod.BCJ2)) {
+            throw new IllegalArgumentException("BCJ2 must be the sole filter in a 7z filter chain");
+        }
     }
 
     /// Creates a filter chain from filters in application order.

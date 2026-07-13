@@ -28,6 +28,10 @@ public final class ArkivoFileSystemOptionTest {
         assertEquals("openOptions", ArkivoFileSystem.OPEN_OPTIONS.name());
         assertEquals("arkivo.openOptions", ArkivoFileSystem.OPEN_OPTIONS.key());
         assertEquals(Set.class, ArkivoFileSystem.OPEN_OPTIONS.type());
+        assertEquals("arkivo.maxEntryCount", ArkivoFileSystem.MAX_ENTRY_COUNT.key());
+        assertEquals("arkivo.maxEntrySize", ArkivoFileSystem.MAX_ENTRY_SIZE.key());
+        assertEquals("arkivo.maxTotalEntrySize", ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE.key());
+        assertEquals("arkivo.maxMetadataSize", ArkivoFileSystem.MAX_METADATA_SIZE.key());
     }
 
     /// Verifies that file system thread-safety values parse stable option strings.
@@ -106,6 +110,42 @@ public final class ArkivoFileSystemOptionTest {
         ArkivoFileSystemOption<Long> option = longOption();
 
         assertThrows(IllegalArgumentException.class, () -> option.read(Map.of("test.size", 1.5)));
+    }
+
+    /// Verifies common archive read limits accept compatible non-negative integral values.
+    @Test
+    public void commonReadLimitConversion() {
+        assertEquals(0L, ArkivoFileSystem.MAX_ENTRY_COUNT.read(Map.of("arkivo.maxEntryCount", (byte) 0)));
+        assertEquals(12L, ArkivoFileSystem.MAX_ENTRY_SIZE.read(Map.of("arkivo.maxEntrySize", 12)));
+        assertEquals(
+                4096L,
+                ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE.read(Map.of("arkivo.maxTotalEntrySize", "4096"))
+        );
+        assertEquals(
+                8192L,
+                ArkivoFileSystem.MAX_METADATA_SIZE.read(Map.of("arkivo.maxMetadataSize", (short) 8192))
+        );
+    }
+
+    /// Verifies common archive read limits reject negative and non-integral values.
+    @Test
+    public void rejectInvalidCommonReadLimits() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ArkivoFileSystem.MAX_ENTRY_COUNT.read(Map.of("arkivo.maxEntryCount", -1L))
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ArkivoFileSystem.MAX_ENTRY_SIZE.read(Map.of("arkivo.maxEntrySize", 1.5))
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE.read(Map.of("arkivo.maxTotalEntrySize", "large"))
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> ArkivoFileSystem.MAX_METADATA_SIZE.read(Map.of("arkivo.maxMetadataSize", -1))
+        );
     }
 
     /// Verifies that unsupported string values are rejected before being written.

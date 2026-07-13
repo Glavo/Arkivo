@@ -55,6 +55,16 @@ arkivo-all
 
 The core `FileSystem` abstractions and reusable support classes belong in `arkivo-archive`, while each concrete archive `FileSystem` implementation belongs in the corresponding format module.
 
+Published JPMS descriptors mirror Gradle API exposure. Archive-format modules transitively expose `arkivo-archive`,
+codec implementation modules transitively expose `arkivo-codec`, and implementation-only dependencies remain
+non-transitive. Aggregate verification checks the exact public and qualified exports, transitive requirements, service
+uses, and service providers of every packaged Arkivo module.
+
+The aggregate API boundary suite records the reviewed public type set and inspects every public and protected class,
+field, constructor, method, generic, record, exception, and sealed-type signature. Public signatures may use only JDK
+types or exported Arkivo types from the same module or a transitively required module. Sealed declarations may keep
+their permitted implementations encapsulated inside the declaring module.
+
 ## Naming Model
 
 The public archive API should use `Arkivo` as the project-specific replacement for the generic `Archive` noun.
@@ -114,12 +124,18 @@ ArkivoFormat
 ArkivoFormats
 ArkivoPasswordProvider
 ArkivoVolumeSource
+ArkivoPathVolumeFormat
 ArkivoFileSystemOption
 ArkivoFileSystem
 ArkivoFileSystemFormat
 ArkivoVolumeFileSystemFormat
+ArkivoVolumeChannel
+ArkivoVolumePathLayout
+ArkivoPathVolumeTarget
 ArkivoStreamingReaderFormat
+ArkivoVolumeStreamingReaderFormat
 ArkivoStreamingWriterFormat
+ArkivoVolumeStreamingWriterFormat
 ArkivoStreamingReader
 ArkivoStreamingWriter
 ArkivoEditStorage
@@ -180,15 +196,45 @@ ZIP-specific attributes should expose both typed common ZIP properties and raw l
 
 ZIP file systems should expose the optional preamble bytes stored before the ZIP archive body, such as self-extracting executable stubs, through channel-based APIs instead of forcing the content into memory.
 
-Streaming archive APIs use channel-first reader and writer format contracts for forward-only access. AR, TAR, and ZIP expose streaming readers and writers; 7z exposes a streaming writer backed by seekable staging, while RAR exposes a read-only streaming reader.
+ZIP BZip2, Deflate64, XZ, and Zstandard entry reading and writing use the general codec context API and discover
+optional providers at runtime. The ZIP module depends on `arkivo-codec` for contracts without depending directly on
+those codec implementations or their native dependencies. Streaming BZip2, XZ, and Zstandard entries with data
+descriptors preserve exact frame boundaries through decoder progress and unconsumed-input reporting. ZIP LZMA retains
+a container adapter because its property header and raw EOS framing differ from the LZMA-alone codec contract.
 
-AR, TAR, and single-volume ZIP complete-rewrite updates support both path-backed archives and arbitrary repeatable seekable channel sources. Non-path update sessions require an explicit commit target and can publish a derived archive without mutating the source; fixed path targets accept the absent source path while source-replacement targets reject it.
+Streaming archive APIs use channel-first reader and writer format contracts for forward-only access. AR, TAR, and ZIP expose streaming readers and writers; 7z exposes a streaming writer backed by seekable staging, while RAR exposes a read-only streaming reader.
+Common archive read options limit logical entry count, individual entry size, total logical entry size, and cumulative
+metadata size across AR, TAR, ZIP, 7z, and RAR file-system and streaming readers. Declared entry sizes are rejected
+before entry data is exposed; forward-only entries whose size is absent from metadata are limited by observed decoded
+bytes, including skipped bytes. Fixed and variable metadata regions are charged before buffering or decoded expansion.
+Structured `ArkivoReadLimitException` failures remain sticky for the lifetime of a reader so parsing cannot resume
+after a configured boundary is exceeded.
+
+AR, TAR, single-volume ZIP, and single-volume 7z complete-rewrite updates support both path-backed archives and arbitrary repeatable seekable channel sources. Non-path update sessions require an explicit commit target and can publish a derived archive without mutating the source; fixed path targets accept the absent source path while source-replacement targets reject it.
+
+`ArkivoFormats` preserves that update contract for both detected and explicitly named formats when opening owned seekable channels or repeatable channel sources. It forwards the complete environment unchanged, transfers endpoint ownership exactly once, and rejects non-path updates without a commit target before exposing a writable file system.
+
+Named and detected streaming factories use channel-first endpoints. Stream overloads adapt to the same channel factories, named single-volume and multi-volume operations share capability resolution, and closeable endpoints transfer exactly once after argument validation. Detection borrows its source, while paths and volume targets remain caller-owned configuration values; selected formats own only the transactions opened from volume targets.
+
+`ArkivoFormats` provides named transactional creation and both detected and named complete-rewrite updates for multi-volume random-access formats. The unified factories preserve caller-selected split sizes, transfer source ownership once after argument validation, and leave target publication and rollback to the selected format.
+
+`ArkivoFormats` provides detected and named multi-volume streaming reader factories through
+`ArkivoVolumeStreamingReaderFormat`. ZIP reads byte-contiguous split storage through the shared logical volume channel,
+while RAR preserves format-level continuation signatures, end markers, and split-entry state across physical volumes.
+
+`ArkivoFormats` provides named multi-volume streaming writer factories through `ArkivoVolumeStreamingWriterFormat`. ZIP and 7z publish split output through transactional volume targets, while formats limited to one forward-only stream do not advertise the multi-volume capability.
 
 TAR channel-source updates preserve either the explicitly selected compression codec or the codec auto-detected from a repeatable source. Update mode validates both decoder and encoder availability before exposing a writable file system, including codecs without reliable stream signatures when selected explicitly.
 
-ZIP channel-source updates borrow the source while indexing it, retain ownership through commit, preserve preamble bytes and surviving local records through exact range copies, and rebuild the central directory with relocated offsets. General multi-volume sources remain read-only; channel-source updates publish one derived archive and do not silently collapse a split source layout.
+ZIP channel-source updates borrow the source while indexing it, retain ownership through commit, preserve preamble bytes and surviving local records through exact range copies, and rebuild the central directory with relocated offsets. Complete-rewrite sessions retain a read-only companion for surviving entries and stage uncompressed bodies for immediate reads of completed replacements and additions. General volume sources remain read-only through `open`; explicit volume-source updates publish a complete replacement through a transactional volume target with a caller-selected split size and disk-relative local-header metadata.
 
-7z compression pipelines support ordered chains of Delta and BCJ executable filters, including x86, PowerPC, IA-64, ARM, ARM-Thumb, SPARC, ARM64, and RISC-V transforms. ARM64 and RISC-V use their modern single-byte 7z method IDs. BCJ readers and writers support optional unsigned 32-bit start offsets and enforce architecture-specific alignment.
+7z channel-source updates stage decoded entry bodies through edit storage and re-encode surviving entries with the selected compression, filters, solid policy, password, and header-encryption policy. General volume sources remain read-only through the open API; explicit volume-source updates use a transactional volume target and a caller-selected split size.
+
+7z compression pipelines support ordered chains of Delta and BCJ executable filters, including x86, PowerPC, IA-64, ARM, ARM-Thumb, SPARC, ARM64, and RISC-V transforms. ARM64 and RISC-V use their modern single-byte 7z method IDs. BCJ readers and writers support optional unsigned 32-bit start offsets and enforce architecture-specific alignment. BCJ2 is exposed as a sole graph filter: output is split into MAIN, CALL, JUMP, and range branches, the first three branches use the selected compression, and every physical branch is encrypted independently when data encryption is enabled. BCJ2 folders use temporary-file staging to preserve contiguous physical streams with bounded heap use.
+
+7z Deflate, Deflate64, and BZip2 coder reading and writing use the general codec context API and discover optional
+providers at runtime. Decoder contexts enforce the coder's declared unpack size. Raw LZMA and LZMA2 remain 7z-specific
+container adapters because their coder properties and framing differ from the standalone LZMA codec contract.
 
 7z entry attributes expose immutable structured coder graphs in declaration order, including raw coder properties, input and output stream ranges, bind pairs, physical packed-stream ordinals, per-output unpack sizes, and the final decoded output.
 
@@ -213,6 +259,17 @@ Readers should first honor validated Info-ZIP Unicode path and comment extra fie
 The policy should support standard CP437 fallback, an explicit fallback charset, and deterministic automatic detection from a caller-provided or default candidate list.
 
 Split or multi-volume archives should be modeled as an archive storage layout rather than as item metadata or compression codec behavior.
+
+`ArkivoVolumeChannel` presents a finite `ArkivoVolumeSource` as one read-only logical `SeekableByteChannel`, exposes
+physical volume boundaries, and owns the independently opened channels without taking ownership of the source contract.
+ZIP and 7z share this implementation for cross-volume random access and consistent failure cleanup.
+
+`ArkivoVolumePathLayout` gives callers and format modules explicit control over final-volume-dependent path naming and stale-volume discovery. `ArkivoPathVolumeTarget` applies reusable staged publication, create-new validation, replacement cleanup, and rollback restoration to any such layout; ZIP and 7z use this common transaction implementation for path-backed split output.
+
+`ArkivoPathVolumeFormat` exposes conventional input-path discovery without moving format-specific naming rules into the
+core module. ZIP discovers numbered disks from final-disk metadata, while 7z and RAR resolve their conventional
+numbered sequences from the first volume path. Path-based streaming reader factories use this capability before
+falling back to one forward-only file and its optional outer codec transformation.
 
 Single-file archives may continue to use `Path`, `ReadableByteChannel`, `WritableByteChannel`, and `SeekableByteChannel` overloads. Split archives need storage abstractions that can resolve multiple physical volumes into one logical archive view.
 
@@ -310,6 +367,11 @@ Important rules:
 
 Public APIs should remain clear and immutable, but internal data structures may use compact records and lazily parsed views.
 
+The aggregate benchmark source set uses JMH for channel-first codec throughput, ZIP and 7z indexing, and concurrent
+random-entry reads. Benchmarks are compiled by the normal quality gate but run separately so machine-dependent timing
+does not make builds flaky. Deterministic gates verify that 50,000 ZIP entries can be indexed with a 48 MiB maximum
+heap and repeatedly read ZIP and solid 7z entries from eight concurrent tasks without corruption.
+
 Possible internal implementation types:
 
 ```java
@@ -364,9 +426,50 @@ Each archive format should define only the attribute interfaces it needs, such a
 12. Extend 7z support from Copy, LZMA, LZMA2, substreams, and basic metadata to multi-coder filter pipelines and encrypted headers.
 13. Add rar read support and a read-only rar filesystem.
 
+## Publication and Release
+
+Every module publishes a Maven binary, sources, Javadoc, POM, and Gradle Module Metadata artifact. Published JARs
+include the repository MPL 2.0 license. POM metadata identifies the project, license, developer, source repository, issue
+tracker, and exact compile or runtime dependency scope.
+
+The workspace-local Maven staging task validates all module coordinates, artifacts, checksums, metadata, and dependency
+scopes. Central Portal bundles require a non-SNAPSHOT release version and an in-memory OpenPGP key, validate signatures
+and checksums before packaging, and omit repository-level Maven metadata from the upload archive.
+
+GitHub Actions run the complete check and Javadoc gates on the minimum Java version for Linux and Windows and on the
+current LTS Java version for Linux.
+
+The aggregate verification suite freezes the reviewed 1.0 API as text rather than a checked-in binary artifact. It
+checks the exact exported type set and all public and protected JVM descriptors, generic declarations, inheritance,
+sealed hierarchies, flags, annotation defaults, and inlinable primitive and string constant values. Intentional API
+changes are reviewed through the generated baseline, while unreviewed additions, removals, and signature changes fail
+the normal `check` lifecycle.
+
 ## Compatibility Notes
 
 RAR support should initially be read-only.
+
+The aggregate verification suite dynamically generates AR, TAR, ZIP, and 7z archives with an independent
+implementation and verifies that Arkivo can read them. It also verifies the reverse direction by reading Arkivo's
+streaming output with that implementation. These fixtures cover representative long-name, Unicode, POSIX metadata,
+symbolic-link, and compression behavior without storing binary samples in the repository.
+Split interoperability fixtures cover standards-sized ZIP archives in both directions and encrypted, header-encrypted
+7z archives in both directions. ZIP split writers emit the required leading split signature, constrain configured
+volume sizes to 64 KiB through the unsigned 32-bit limit, keep local and central directory header records within one
+disk, and place the ZIP64 locator and end-of-central-directory record on the same disk.
+
+BCJ2 decoding validates the exact MAIN, CALL, JUMP, and range stream sizes, branch-stream alignment, the complete
+output-size relation, and the terminal zero range code used by the official decoder. The production writer is compared
+byte-for-byte with a deterministic independent encoder pinned to the side-stream sizes and SHA-256 values produced by
+7-Zip 26.01. Archive tests cover every supported branch compression, solid folders, four independent AES branches,
+encrypted headers, split publication, and complete-rewrite updates. An optional `ARKIVO_7Z_EXECUTABLE` gate lets an
+official 7-Zip CLI fully test generated BCJ2 archives without requiring a checked-in binary fixture.
+
+Deterministic malformed-input verification generates archive and codec fixtures at test time, applies representative
+truncations and fixed-seed bit mutations, and fully consumes every accepted entry under explicit output, metadata, and
+time bounds. The suite covers archive detection, random-access file systems, forward-only readers where supported, and
+all installed bidirectional codec decoders. Corrupt input must produce checked I/O failures rather than leaking parser
+indexing, argument-validation, or native-library runtime exceptions.
 
 Some formats may not support efficient random write operations. These formats should expose streaming or copy-on-write APIs instead of pretending to support in-place mutation.
 

@@ -10,6 +10,7 @@ import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.file.AccessDeniedException;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
@@ -22,6 +23,12 @@ import java.util.Set;
 public final class ArkivoCommitTargetSupport {
     /// The commit target that writes directly to the original archive path.
     private static final ArkivoCommitTarget REPLACE_ORIGINAL = DirectOriginalTarget.INSTANCE;
+
+    /// The maximum number of attempts made for an atomic replacement rejected by a transient file lock.
+    private static final int ATOMIC_MOVE_ATTEMPTS = 5;
+
+    /// The base delay in milliseconds between atomic replacement attempts.
+    private static final long ATOMIC_MOVE_RETRY_MILLISECONDS = 25L;
 
     /// Creates built-in archive editor commit targets.
     private ArkivoCommitTargetSupport() {
@@ -40,6 +47,32 @@ public final class ArkivoCommitTargetSupport {
     /// Returns a target that writes the assembled archive to the given path.
     public static ArkivoCommitTarget writeTo(Path path) {
         return new FixedPathTarget(path);
+    }
+
+    /// Atomically replaces a target while tolerating short-lived platform file locks.
+    private static void replaceAtomically(Path source, Path target) throws IOException {
+        for (int attempt = 1; attempt <= ATOMIC_MOVE_ATTEMPTS; attempt++) {
+            try {
+                Files.move(
+                        source,
+                        target,
+                        StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE
+                );
+                return;
+            } catch (AccessDeniedException exception) {
+                if (attempt == ATOMIC_MOVE_ATTEMPTS) {
+                    throw exception;
+                }
+                try {
+                    Thread.sleep(ATOMIC_MOVE_RETRY_MILLISECONDS * attempt);
+                } catch (InterruptedException interruptedException) {
+                    Thread.currentThread().interrupt();
+                    exception.addSuppressed(interruptedException);
+                    throw exception;
+                }
+            }
+        }
     }
 
     /// Implements direct writes to the original archive path.
@@ -78,7 +111,7 @@ public final class ArkivoCommitTargetSupport {
                 );
             }
             Files.createDirectories(directory);
-            Path temporaryPath = Files.createTempFile(directory, "arkivo-zip-archive-", ".tmp");
+            Path temporaryPath = Files.createTempFile(directory, "arkivo-archive-", ".tmp");
             return new PathCommitOutput(temporaryPath, sourcePath);
         }
     }
@@ -142,7 +175,7 @@ public final class ArkivoCommitTargetSupport {
             ensureOpen();
             Path target = replacementTarget;
             if (target != null) {
-                Files.move(path, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                replaceAtomically(path, target);
             }
             finished = true;
             cleanupComplete = true;

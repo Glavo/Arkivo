@@ -4,8 +4,6 @@
 package org.glavo.arkivo.archive.sevenzip.internal;
 
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
-import org.glavo.arkivo.codec.bzip2.internal.BZip2InputStream;
-import org.glavo.arkivo.codec.deflate64.internal.Deflate64InputStream;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.transform.TransformingInputStream;
 import org.glavo.arkivo.codec.delta.DeltaTransform;
@@ -27,12 +25,13 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import java.util.zip.Inflater;
-import java.util.zip.InflaterInputStream;
 
 /// Opens supported coder streams stored in 7z folders.
 @NotNullByDefault
 final class SevenZipLZMADecoder {
+    /// Indicates that a packed input size is unavailable to an internal compatibility overload.
+    private static final long UNKNOWN_SIZE = -1L;
+
     /// The 7z Copy method ID.
     static final byte[] COPY_METHOD_ID = new byte[]{0x00};
 
@@ -218,7 +217,7 @@ final class SevenZipLZMADecoder {
         return openFolder(List.of(input), method, finalOutputLimit, passwordProvider);
     }
 
-    /// Opens the decoder graph for a 7z folder with all physical packed inputs.
+    /// Opens the decoder graph for a 7z folder without exact physical packed input sizes.
     static InputStream openFolder(
             List<? extends InputStream> packedInputs,
             SevenZipFolderMethod method,
@@ -226,19 +225,41 @@ final class SevenZipLZMADecoder {
             @Nullable ArkivoPasswordProvider passwordProvider
     ) throws IOException {
         Objects.requireNonNull(packedInputs, "packedInputs");
+        long[] packedInputSizes = new long[packedInputs.size()];
+        Arrays.fill(packedInputSizes, UNKNOWN_SIZE);
+        return openFolder(packedInputs, packedInputSizes, method, finalOutputLimit, passwordProvider);
+    }
+
+    /// Opens the decoder graph for a 7z folder with all physical packed inputs and their exact sizes.
+    static InputStream openFolder(
+            List<? extends InputStream> packedInputs,
+            long[] packedInputSizes,
+            SevenZipFolderMethod method,
+            long finalOutputLimit,
+            @Nullable ArkivoPasswordProvider passwordProvider
+    ) throws IOException {
+        Objects.requireNonNull(packedInputs, "packedInputs");
+        Objects.requireNonNull(packedInputSizes, "packedInputSizes");
         Objects.requireNonNull(method, "method");
         if (finalOutputLimit < 0) {
             throw new IllegalArgumentException("finalOutputLimit must be non-negative");
         }
-        if (packedInputs.size() != method.packedStreamCount()) {
+        if (packedInputs.size() != method.packedStreamCount()
+                || packedInputSizes.length != method.packedStreamCount()) {
             throw new IOException("7z packed input count does not match the folder graph");
         }
         ArrayList<InputStream> inputs = new ArrayList<>(packedInputs.size());
         for (InputStream input : packedInputs) {
             inputs.add(Objects.requireNonNull(input, "packedInputs element"));
         }
+        long[] inputSizes = packedInputSizes.clone();
+        for (long inputSize : inputSizes) {
+            if (inputSize < UNKNOWN_SIZE) {
+                throw new IllegalArgumentException("packedInputSizes must contain non-negative values or UNKNOWN_SIZE");
+            }
+        }
 
-        GraphBuilder builder = new GraphBuilder(inputs, method, passwordProvider);
+        GraphBuilder builder = new GraphBuilder(inputs, inputSizes, method, passwordProvider);
         boolean completed = false;
         Throwable failure = null;
         try {
@@ -281,16 +302,19 @@ final class SevenZipLZMADecoder {
             return openLZMA2(input, properties);
         }
         if (isDeflate(methodId)) {
-            return openDeflate(input, properties);
+            return openDeflate(input, properties, outputLimit);
         }
         if (isDeflate64(methodId)) {
-            return openDeflate64(input, properties);
+            return openDeflate64(input, properties, outputLimit);
         }
         if (isBZip2(methodId)) {
-            return openBZip2(input, properties);
+            return openBZip2(input, properties, outputLimit);
         }
         if (isAes(methodId)) {
-            return openAes(input, properties, passwordProvider);
+            return new SevenZipBoundedInputStream(
+                    openAes(input, properties, passwordProvider),
+                    outputLimit
+            );
         }
         if (isDelta(methodId)) {
             return openDelta(input, properties);
@@ -307,6 +331,9 @@ final class SevenZipLZMADecoder {
         /// The physical packed input streams in folder order.
         private final List<InputStream> packedInputs;
 
+        /// The exact physical packed input sizes, or `UNKNOWN_SIZE` where unavailable.
+        private final long @Unmodifiable [] packedInputSizes;
+
         /// The folder coder graph.
         private final SevenZipFolderMethod method;
 
@@ -319,10 +346,12 @@ final class SevenZipLZMADecoder {
         /// Creates a graph builder over physical packed inputs.
         private GraphBuilder(
                 List<InputStream> packedInputs,
+                long[] packedInputSizes,
                 SevenZipFolderMethod method,
                 @Nullable ArkivoPasswordProvider passwordProvider
         ) {
             this.packedInputs = List.copyOf(packedInputs);
+            this.packedInputSizes = packedInputSizes.clone();
             this.method = method;
             this.passwordProvider = passwordProvider;
             roots.addAll(packedInputs);
@@ -330,7 +359,11 @@ final class SevenZipLZMADecoder {
 
         /// Opens the sole unbound folder output stream.
         private InputStream openFinalOutput(long outputLimit) throws IOException {
-            return openOutput(method.finalOutputStreamIndex(), outputLimit);
+            int finalOutputStreamIndex = method.finalOutputStreamIndex();
+            if (outputLimit > method.unpackSize(finalOutputStreamIndex)) {
+                throw new IOException("7z requested output exceeds the folder unpack size");
+            }
+            return openOutput(finalOutputStreamIndex, outputLimit);
         }
 
         /// Opens one folder output and recursively resolves all coder inputs.
@@ -344,20 +377,21 @@ final class SevenZipLZMADecoder {
             int inputCount = method.inputStreamCount(coderIndex);
             int firstInput = method.firstInputStreamIndex(coderIndex);
             ArrayList<InputStream> coderInputs = new ArrayList<>(inputCount);
+            long[] coderInputSizes = new long[inputCount];
             for (int index = 0; index < inputCount; index++) {
                 int inputStreamIndex = firstInput + index;
                 int boundOutputStreamIndex = method.boundOutputStreamIndex(inputStreamIndex);
                 if (boundOutputStreamIndex >= 0) {
-                    coderInputs.add(openOutput(
-                            boundOutputStreamIndex,
-                            method.unpackSize(boundOutputStreamIndex)
-                    ));
+                    long inputSize = method.unpackSize(boundOutputStreamIndex);
+                    coderInputs.add(openOutput(boundOutputStreamIndex, inputSize));
+                    coderInputSizes[index] = inputSize;
                 } else {
                     int packedStreamOrdinal = method.packedStreamOrdinal(inputStreamIndex);
                     if (packedStreamOrdinal < 0) {
                         throw new IOException("7z folder input stream has no source");
                     }
                     coderInputs.add(packedInputs.get(packedStreamOrdinal));
+                    coderInputSizes[index] = packedInputSizes[packedStreamOrdinal];
                 }
             }
 
@@ -365,19 +399,34 @@ final class SevenZipLZMADecoder {
             byte[] properties = method.properties(coderIndex);
             InputStream output;
             if (isBcj2Filter(methodId)) {
+                for (long coderInputSize : coderInputSizes) {
+                    if (coderInputSize == UNKNOWN_SIZE) {
+                        Arrays.fill(coderInputSizes, UNKNOWN_SIZE);
+                        break;
+                    }
+                }
                 if (inputCount != 4) {
                     throw new IOException("7z BCJ2 coder must consume four input streams");
                 }
                 if (properties.length != 0) {
                     throw new IOException("7z BCJ2 coder properties must be empty");
                 }
-                output = new SevenZipBcj2InputStream(
-                        coderInputs.get(0),
-                        coderInputs.get(1),
-                        coderInputs.get(2),
-                        coderInputs.get(3),
-                        outputLimit
-                );
+                try {
+                    output = new SevenZipBcj2InputStream(
+                            coderInputs.get(0),
+                            coderInputs.get(1),
+                            coderInputs.get(2),
+                            coderInputs.get(3),
+                            coderInputSizes[0],
+                            coderInputSizes[1],
+                            coderInputSizes[2],
+                            coderInputSizes[3],
+                            outputLimit,
+                            method.unpackSize(outputStreamIndex)
+                    );
+                } catch (IllegalArgumentException exception) {
+                    throw new IOException("Invalid 7z BCJ2 stream sizes", exception);
+                }
             } else {
                 if (inputCount != 1) {
                     throw new UnsupportedOperationException("Unsupported 7z multi-input coder");
@@ -484,34 +533,46 @@ final class SevenZipLZMADecoder {
         return new Lzma2InputStream(input, dictionarySize);
     }
 
-    /// Opens a raw Deflate decoder for 7z coder properties.
-    static InputStream openDeflate(InputStream input, byte[] properties) throws IOException {
+    /// Opens a size-limited raw Deflate decoder for 7z coder properties.
+    static InputStream openDeflate(
+            InputStream input,
+            byte[] properties,
+            long maximumOutputSize
+    ) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(properties, "properties");
         if (properties.length != 0) {
             throw new IOException("7z Deflate coder properties must be empty");
         }
-        return new EndingInflaterInputStream(input);
+        return SevenZipCompressionCodecs.openDecoder("deflate", input, maximumOutputSize);
     }
 
-    /// Opens a Deflate64 decoder for 7z coder properties.
-    static InputStream openDeflate64(InputStream input, byte[] properties) throws IOException {
+    /// Opens a size-limited Deflate64 decoder for 7z coder properties.
+    static InputStream openDeflate64(
+            InputStream input,
+            byte[] properties,
+            long maximumOutputSize
+    ) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(properties, "properties");
         if (properties.length != 0) {
             throw new IOException("7z Deflate64 coder properties must be empty");
         }
-        return new Deflate64InputStream(input);
+        return SevenZipCompressionCodecs.openDecoder("deflate64", input, maximumOutputSize);
     }
 
-    /// Opens a BZip2 decoder for 7z coder properties.
-    static InputStream openBZip2(InputStream input, byte[] properties) throws IOException {
+    /// Opens a size-limited BZip2 decoder for 7z coder properties.
+    static InputStream openBZip2(
+            InputStream input,
+            byte[] properties,
+            long maximumOutputSize
+    ) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(properties, "properties");
         if (properties.length != 0) {
             throw new IOException("7z BZip2 coder properties must be empty");
         }
-        return new BZip2InputStream(input);
+        return SevenZipCompressionCodecs.openDecoder("bzip2", input, maximumOutputSize);
     }
 
     /// Opens a raw Delta filter decoder for 7z coder properties.
@@ -632,37 +693,4 @@ final class SevenZipLZMADecoder {
         return startOffset;
     }
 
-    /// Inflates raw Deflate input and releases the backing inflater.
-    @NotNullByDefault
-    private static final class EndingInflaterInputStream extends InflaterInputStream {
-        /// The inflater owned by this stream.
-        private final Inflater inflater;
-
-        /// Whether the inflater has been released.
-        private boolean released;
-
-        /// Creates a raw Deflate input stream.
-        private EndingInflaterInputStream(InputStream input) {
-            this(input, new Inflater(true));
-        }
-
-        /// Creates a raw Deflate input stream with the given inflater.
-        private EndingInflaterInputStream(InputStream input, Inflater inflater) {
-            super(input, inflater);
-            this.inflater = inflater;
-        }
-
-        /// Closes the stream and releases the inflater.
-        @Override
-        public void close() throws IOException {
-            try {
-                super.close();
-            } finally {
-                if (!released) {
-                    released = true;
-                    inflater.end();
-                }
-            }
-        }
-    }
 }

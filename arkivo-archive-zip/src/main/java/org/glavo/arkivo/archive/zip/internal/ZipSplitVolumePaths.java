@@ -24,7 +24,10 @@ import static org.glavo.arkivo.archive.zip.internal.ZipConstants.ZIP64_END_OF_CE
 
 /// Resolves conventional ZIP split volume paths.
 @NotNullByDefault
-final class ZipSplitVolumePaths {
+public final class ZipSplitVolumePaths {
+    /// The sentinel returned when end metadata describes a single-volume archive.
+    private static final long NOT_SPLIT = -1L;
+
     /// The minimum ZIP end of central directory record size.
     private static final int ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE = 22;
 
@@ -46,19 +49,23 @@ final class ZipSplitVolumePaths {
     }
 
     /// Returns conventional split volume paths for the given final archive path, or `null` for a single-volume path.
-    static @Nullable @Unmodifiable List<Path> discover(Path archivePath) throws IOException {
+    public static @Nullable @Unmodifiable List<Path> discover(Path archivePath) throws IOException {
         Path firstVolumePath = numberedVolumePath(archivePath, 0);
-        if (!Files.exists(firstVolumePath) || !endRecordUsesSplitVolumes(archivePath)) {
+        if (!Files.exists(firstVolumePath)) {
             return null;
         }
 
-        ArrayList<Path> paths = new ArrayList<>();
-        for (int diskNumber = 0; ; diskNumber++) {
-            Path volumePath = numberedVolumePath(archivePath, diskNumber);
-            if (!Files.exists(volumePath)) {
-                break;
-            }
-            paths.add(volumePath);
+        long finalDiskNumber = finalDiskNumber(archivePath);
+        if (finalDiskNumber == NOT_SPLIT) {
+            return null;
+        }
+        if (finalDiskNumber >= Integer.MAX_VALUE) {
+            throw new IOException("ZIP split archive has too many conventional volumes");
+        }
+
+        ArrayList<Path> paths = new ArrayList<>((int) finalDiskNumber + 1);
+        for (int diskNumber = 0; diskNumber < finalDiskNumber; diskNumber++) {
+            paths.add(numberedVolumePath(archivePath, diskNumber));
         }
         paths.add(archivePath);
         return List.copyOf(paths);
@@ -80,12 +87,12 @@ final class ZipSplitVolumePaths {
         return parent != null ? parent.resolve(volumeFileName) : volumeFileName;
     }
 
-    /// Returns whether the final archive path declares split ZIP end metadata.
-    private static boolean endRecordUsesSplitVolumes(Path archivePath) throws IOException {
+    /// Returns the zero-based final disk number declared by ZIP end metadata, or `NOT_SPLIT`.
+    private static long finalDiskNumber(Path archivePath) throws IOException {
         try (SeekableByteChannel channel = Files.newByteChannel(archivePath, StandardOpenOption.READ)) {
             long size = channel.size();
             if (size < ZIP_END_OF_CENTRAL_DIRECTORY_MIN_SIZE) {
-                return false;
+                return NOT_SPLIT;
             }
 
             int searchSize = (int) Math.min(size, ZIP_END_OF_CENTRAL_DIRECTORY_MAX_SEARCH);
@@ -106,21 +113,23 @@ final class ZipSplitVolumePaths {
                 int endDiskNumber = Short.toUnsignedInt(buffer.getShort(index + 4));
                 int centralDirectoryDiskNumber = Short.toUnsignedInt(buffer.getShort(index + 6));
                 if (endDiskNumber == UINT16_MAX || centralDirectoryDiskNumber == UINT16_MAX) {
-                    return zip64EndRecordUsesSplitVolumes(channel, searchOffset + index);
+                    return zip64FinalDiskNumber(channel, searchOffset + index);
                 }
-                return endDiskNumber != 0 || centralDirectoryDiskNumber != 0;
+                return endDiskNumber != 0 || centralDirectoryDiskNumber != 0
+                        ? Math.max(endDiskNumber, centralDirectoryDiskNumber)
+                        : NOT_SPLIT;
             }
 
-            return false;
+            return NOT_SPLIT;
         }
     }
 
-    /// Returns whether ZIP64 end metadata declares split volumes.
-    private static boolean zip64EndRecordUsesSplitVolumes(SeekableByteChannel channel, long endRecordOffset)
+    /// Returns the zero-based final disk number declared by ZIP64 end metadata, or `NOT_SPLIT`.
+    private static long zip64FinalDiskNumber(SeekableByteChannel channel, long endRecordOffset)
             throws IOException {
         long locatorOffset = endRecordOffset - ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE;
         if (locatorOffset < 0) {
-            return false;
+            return NOT_SPLIT;
         }
 
         ByteBuffer locator = ByteBuffer.allocate(ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIZE)
@@ -128,17 +137,20 @@ final class ZipSplitVolumePaths {
         readFully(channel, locatorOffset, locator);
         locator.flip();
         if (locator.getInt(0) != ZIP64_END_OF_CENTRAL_DIRECTORY_LOCATOR_SIGNATURE) {
-            return false;
+            return NOT_SPLIT;
         }
 
         long zip64EndDiskNumber = Integer.toUnsignedLong(locator.getInt(4));
         long zip64EndOffset = locator.getLong(8);
         long totalDiskCount = Integer.toUnsignedLong(locator.getInt(16));
-        if (zip64EndDiskNumber != 0 || totalDiskCount > 1) {
-            return true;
+        if (totalDiskCount > 1) {
+            return totalDiskCount - 1L;
+        }
+        if (zip64EndDiskNumber != 0) {
+            return zip64EndDiskNumber;
         }
         if (zip64EndOffset < 0 || zip64EndOffset + ZIP64_END_OF_CENTRAL_DIRECTORY_MIN_SIZE > channel.size()) {
-            return false;
+            return NOT_SPLIT;
         }
 
         ByteBuffer record = ByteBuffer.allocate(ZIP64_END_OF_CENTRAL_DIRECTORY_MIN_SIZE)
@@ -146,12 +158,14 @@ final class ZipSplitVolumePaths {
         readFully(channel, zip64EndOffset, record);
         record.flip();
         if (record.getInt(0) != ZIP64_END_OF_CENTRAL_DIRECTORY_SIGNATURE) {
-            return false;
+            return NOT_SPLIT;
         }
 
         long recordDiskNumber = Integer.toUnsignedLong(record.getInt(16));
         long centralDirectoryDiskNumber = Integer.toUnsignedLong(record.getInt(20));
-        return recordDiskNumber != 0 || centralDirectoryDiskNumber != 0;
+        return recordDiskNumber != 0 || centralDirectoryDiskNumber != 0
+                ? Math.max(recordDiskNumber, centralDirectoryDiskNumber)
+                : NOT_SPLIT;
     }
 
     /// Reads bytes from a channel until the destination buffer is full.

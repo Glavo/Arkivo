@@ -40,4 +40,18 @@ public final class SevenZipFilterChainTest {
         assertThrows(UnsupportedOperationException.class, () -> chain.filters().clear());
         assertThrows(NullPointerException.class, () -> new SevenZipFilterChain(java.util.Arrays.asList((SevenZipFilter) null)));
     }
+
+    /// Verifies the multi-stream BCJ2 graph cannot be misrepresented as part of a linear filter chain.
+    @Test
+    public void bcj2MustBeTheSoleFilter() {
+        assertEquals(List.of(SevenZipFilter.bcj2()), SevenZipFilterChain.of(SevenZipFilter.bcj2()).filters());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> SevenZipFilterChain.of(SevenZipFilter.delta(), SevenZipFilter.bcj2())
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> SevenZipFilterChain.of(SevenZipFilter.bcj2(), SevenZipFilter.bcjX86())
+        );
+    }
 }

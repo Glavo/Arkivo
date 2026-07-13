@@ -3,7 +3,7 @@
 
 /// Provides Zstandard compression support for Arkivo.
 module org.glavo.arkivo.codec.zstd {
-    requires org.glavo.arkivo.codec;
+    requires transitive org.glavo.arkivo.codec;
     requires com.github.luben.zstd_jni;
     requires static org.jetbrains.annotations;
 

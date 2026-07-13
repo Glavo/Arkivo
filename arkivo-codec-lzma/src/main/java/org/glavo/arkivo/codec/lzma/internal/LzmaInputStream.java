@@ -131,6 +131,11 @@ public final class LzmaInputStream extends InputStream {
             throw new IOException("Unsupported LZMA dictionary size: " + dictionarySize);
         }
         long expectedSize = readLittleEndian(input, 8);
+        if (expectedSize < -1L) {
+            throw new IOException(
+                    "Unsupported LZMA uncompressed size: " + Long.toUnsignedString(expectedSize)
+            );
+        }
         return new Header(propertyByte, (int) dictionarySize, expectedSize);
     }
 

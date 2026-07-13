@@ -3,7 +3,7 @@
 
 /// Provides TAR archive streaming APIs for Arkivo.
 module org.glavo.arkivo.archive.tar {
-    requires org.glavo.arkivo.archive;
+    requires transitive org.glavo.arkivo.archive;
     requires transitive org.glavo.arkivo.codec;
     requires static org.jetbrains.annotations;
 

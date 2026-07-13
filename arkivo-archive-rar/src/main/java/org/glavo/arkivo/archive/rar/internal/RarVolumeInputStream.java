@@ -30,6 +30,9 @@ final class RarVolumeInputStream extends InputStream {
     /// The volume source opened by this stream.
     private final ArkivoVolumeSource volumes;
 
+    /// Whether closing this stream closes the volume source.
+    private final boolean closeVolumeSource;
+
     /// The currently open volume channel, or `null` before the first volume and after a volume EOF.
     private @Nullable SeekableByteChannel currentChannel;
 
@@ -42,9 +45,18 @@ final class RarVolumeInputStream extends InputStream {
     /// Whether this stream is open.
     private boolean open = true;
 
+    /// Whether owned volume-source cleanup has completed.
+    private boolean volumeSourceClosed;
+
     /// Creates a sequential input stream over the given RAR volumes.
     RarVolumeInputStream(ArkivoVolumeSource volumes) {
+        this(volumes, false);
+    }
+
+    /// Creates a sequential input stream with explicit volume-source ownership.
+    RarVolumeInputStream(ArkivoVolumeSource volumes, boolean closeVolumeSource) {
         this.volumes = Objects.requireNonNull(volumes, "volumes");
+        this.closeVolumeSource = closeVolumeSource;
     }
 
     /// Reads one byte from the current or next volume.
@@ -87,11 +99,29 @@ final class RarVolumeInputStream extends InputStream {
     /// Closes the current volume channel.
     @Override
     public void close() throws IOException {
-        if (!open && currentChannel == null) {
+        if (!open && currentChannel == null && (!closeVolumeSource || volumeSourceClosed)) {
             return;
         }
         open = false;
-        closeCurrentVolume();
+        @Nullable Throwable failure = null;
+        try {
+            closeCurrentVolume();
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+        }
+        if (closeVolumeSource && !volumeSourceClosed) {
+            try {
+                volumes.close();
+                volumeSourceClosed = true;
+            } catch (IOException | RuntimeException | Error exception) {
+                if (failure == null) {
+                    failure = exception;
+                } else if (failure != exception) {
+                    failure.addSuppressed(exception);
+                }
+            }
+        }
+        throwFailure(failure);
     }
 
     /// Advances to the next volume when the current channel ends exactly at a block-header boundary.
@@ -181,9 +211,33 @@ final class RarVolumeInputStream extends InputStream {
     private void closeCurrentVolume() throws IOException {
         SeekableByteChannel channel = currentChannel;
         if (channel != null) {
-            currentChannel = null;
-            channel.close();
+            try {
+                channel.close();
+                currentChannel = null;
+            } catch (IOException | RuntimeException | Error exception) {
+                if (!channel.isOpen()) {
+                    currentChannel = null;
+                }
+                throw exception;
+            }
         }
+    }
+
+    /// Throws a collected cleanup failure while preserving its type.
+    private static void throwFailure(@Nullable Throwable failure) throws IOException {
+        if (failure == null) {
+            return;
+        }
+        if (failure instanceof IOException exception) {
+            throw exception;
+        }
+        if (failure instanceof RuntimeException exception) {
+            throw exception;
+        }
+        if (failure instanceof Error exception) {
+            throw exception;
+        }
+        throw new AssertionError(failure);
     }
 
     /// Requires this stream to be open.

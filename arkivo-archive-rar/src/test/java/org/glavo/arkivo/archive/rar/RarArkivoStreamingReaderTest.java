@@ -7,6 +7,8 @@ import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.ArkivoReadLimitException;
+import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
@@ -14,6 +16,8 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.function.Executable;
 
 import javax.crypto.Cipher;
 import javax.crypto.Mac;
@@ -61,12 +65,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.SplittableRandom;
+import java.util.TreeSet;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Tests RAR streaming reader behavior.
 @NotNullByDefault
@@ -79,7 +88,10 @@ public final class RarArkivoStreamingReaderTest {
     private static final byte @Unmodifiable [] RAR4_SIGNATURE =
             new byte[]{'R', 'a', 'r', '!', 0x1a, 0x07, 0x00};
 
-    /// The packed body of a real RAR4 method-3 entry whose plaintext is `file1\n`.
+    /// Reproducible seed for malformed RAR mutations.
+    private static final long MALFORMED_MUTATION_SEED = 0x5241524d55544154L;
+
+    /// The packed body of a real RAR4 method-3 six-byte text fixture.
     private static final byte @Unmodifiable [] RAR4_COMPRESSED_BODY = Base64.getDecoder().decode(
             "DQwM/hAMt2G79EFqVSh/2gEYP7Diz78doSA="
     );
@@ -151,6 +163,137 @@ public final class RarArkivoStreamingReaderTest {
 
     /// The small PBKDF2 iteration exponent used by fast unit-test fixtures.
     private static final int RAR5_KDF_LOG = 3;
+
+    /// Verifies deterministic RAR truncations and mutations never leak parser runtime exceptions.
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    public void boundsAndNormalizesMalformedInputFailures() throws IOException {
+        byte[] content = "RAR malformed-input fixture".repeat(32).getBytes(StandardCharsets.UTF_8);
+        byte[] validArchive = archive(storedFile(
+                "payload.bin",
+                1_700_000_000L,
+                0100644,
+                content,
+                null
+        ));
+        @Unmodifiable Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.MAX_ENTRY_COUNT.key(), 16L,
+                ArkivoFileSystem.MAX_ENTRY_SIZE.key(), 1L << 20,
+                ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE.key(), 1L << 20,
+                ArkivoFileSystem.MAX_METADATA_SIZE.key(), 1L << 20
+        );
+        Path archivePath = createTemporaryArchivePath("rar-malformed-");
+        try {
+            Files.write(archivePath, validArchive);
+            try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem("rar", archivePath, environment)) {
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/payload.bin")));
+            }
+            assertArrayEquals(content, readSingleRarBody(validArchive, environment));
+
+            for (int length : malformedTruncationLengths(validArchive.length)) {
+                exerciseMalformedRar(
+                        archivePath,
+                        Arrays.copyOf(validArchive, length),
+                        environment,
+                        "truncation@" + length
+                );
+            }
+
+            SplittableRandom random = new SplittableRandom(MALFORMED_MUTATION_SEED);
+            for (int index = 0; index < 48; index++) {
+                byte[] mutated = validArchive.clone();
+                int changes = random.nextInt(1, 5);
+                for (int change = 0; change < changes; change++) {
+                    int offset = random.nextInt(mutated.length);
+                    mutated[offset] ^= (byte) (1 << random.nextInt(Byte.SIZE));
+                }
+                exerciseMalformedRar(archivePath, mutated, environment, "mutation#" + index);
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Exercises detection, indexed reading, and forward-only reading for one damaged RAR archive.
+    private static void exerciseMalformedRar(
+            Path archivePath,
+            byte[] archive,
+            @Unmodifiable Map<String, Object> environment,
+            String variant
+    ) throws IOException {
+        tolerateMalformedRarFailure(
+                () -> ArkivoFormats.detect(ByteBuffer.wrap(archive).asReadOnlyBuffer()),
+                variant + " detection"
+        );
+        Files.write(archivePath, archive, StandardOpenOption.TRUNCATE_EXISTING);
+        tolerateMalformedRarFailure(() -> {
+            try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem("rar", archivePath, environment)) {
+                Path payload = fileSystem.getPath("/payload.bin");
+                if (Files.exists(payload)) {
+                    Files.readAllBytes(payload);
+                }
+            }
+        }, variant + " file system");
+        tolerateMalformedRarFailure(
+                () -> readSingleRarBody(archive, environment),
+                variant + " streaming reader"
+        );
+    }
+
+    /// Reads all regular RAR entry bodies with an independent output bound.
+    private static byte[] readSingleRarBody(
+            byte[] archive,
+            @Unmodifiable Map<String, Object> environment
+    ) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (var reader = ArkivoFormats.openStreamingReader(
+                "rar",
+                Channels.newChannel(new ByteArrayInputStream(archive)),
+                environment
+        )) {
+            while (reader.next()) {
+                BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);
+                if (!attributes.isRegularFile()) {
+                    continue;
+                }
+                try (InputStream body = reader.openInputStream()) {
+                    byte[] bytes = body.readNBytes((1 << 20) + 1);
+                    if (bytes.length > 1 << 20) {
+                        throw new IOException("Malformed RAR exceeded the defensive output bound");
+                    }
+                    output.write(bytes);
+                }
+            }
+        }
+        return output.toByteArray();
+    }
+
+    /// Returns representative malformed prefix lengths around headers, body, and tail boundaries.
+    private static @Unmodifiable List<Integer> malformedTruncationLengths(int length) {
+        TreeSet<Integer> lengths = new TreeSet<>();
+        for (int value = 0; value <= Math.min(16, length - 1); value++) {
+            lengths.add(value);
+        }
+        for (int offset = 1; offset <= Math.min(16, length); offset++) {
+            lengths.add(length - offset);
+        }
+        for (int fraction = 1; fraction < 8; fraction++) {
+            lengths.add((int) ((long) length * fraction / 8L));
+        }
+        lengths.remove(length);
+        return List.copyOf(lengths);
+    }
+
+    /// Accepts malformed-input I/O failures while rejecting leaked runtime exceptions and errors.
+    private static void tolerateMalformedRarFailure(Executable operation, String context) {
+        assertDoesNotThrow(() -> {
+            try {
+                operation.execute();
+            } catch (IOException | UnsupportedOperationException expected) {
+                // A damaged RAR may be rejected while parsing metadata, decoding a body, or closing.
+            }
+        }, context);
+    }
 
     /// Verifies a RAR file system can own one arbitrary seekable channel from its current position.
     @Test
@@ -246,6 +389,77 @@ public final class RarArkivoStreamingReaderTest {
             } finally {
                 Files.deleteIfExists(archivePath);
             }
+        }
+    }
+
+    /// Verifies common read limits apply to RAR streaming readers and file systems.
+    @Test
+    public void enforcesCommonArchiveReadLimits() throws IOException {
+        byte[] first = {1, 2, 3};
+        byte[] second = {4, 5, 6, 7};
+        byte[] archive = archive(
+                storedFile("first.bin", 1_700_000_000L, 0100644, first, null),
+                storedFile("second.bin", 1_700_000_001L, 0100644, second, null)
+        );
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                Map.of(ArkivoFileSystem.MAX_ENTRY_COUNT.key(), 1L)
+        )) {
+            assertEquals(true, reader.next());
+            try (InputStream input = reader.openInputStream()) {
+                assertArrayEquals(first, input.readAllBytes());
+            }
+            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
+            assertEquals(ArkivoReadLimitKind.ENTRY_COUNT, exception.kind());
+            assertEquals(1L, exception.maximum());
+            assertEquals(2L, exception.actual());
+            assertNull(exception.entryPath());
+        }
+
+        Path archivePath = createTemporaryArchivePath("rar-read-limits-");
+        try {
+            Files.write(archivePath, archive);
+            ArkivoReadLimitException exception = assertThrows(
+                    ArkivoReadLimitException.class,
+                    () -> RarArkivoFileSystem.open(
+                            archivePath,
+                            Map.of(ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE.key(), 6L)
+                    )
+            );
+            assertEquals(ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, exception.kind());
+            assertEquals(6L, exception.maximum());
+            assertEquals(7L, exception.actual());
+            assertEquals("second.bin", exception.entryPath());
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+    }
+
+    /// Verifies RAR signatures and headers consume the common metadata budget.
+    @Test
+    public void enforcesCommonArchiveMetadataLimit() throws IOException {
+        byte[] archive = archive(storedFile(
+                "value.bin",
+                1_700_000_000L,
+                0100644,
+                new byte[]{1, 2, 3},
+                null
+        ));
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                Map.of(ArkivoFileSystem.MAX_METADATA_SIZE.key(), 8L)
+        )) {
+            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
+            assertEquals(ArkivoReadLimitKind.METADATA_SIZE, exception.kind());
+            assertEquals(8L, exception.maximum());
+            assertTrue(exception.actual() > 8L);
+            assertNull(exception.entryPath());
+
+            ArkivoReadLimitException repeated = assertThrows(ArkivoReadLimitException.class, reader::next);
+            assertEquals(exception.kind(), repeated.kind());
+            assertEquals(exception.maximum(), repeated.maximum());
+            assertEquals(exception.actual(), repeated.actual());
         }
     }
 
@@ -855,6 +1069,139 @@ public final class RarArkivoStreamingReaderTest {
         }
     }
 
+    /// Verifies conventional RAR paths are discovered and streamed without caller-managed volume lists.
+    @Test
+    public void streamsStoredSplitEntryFromConventionalPaths() throws IOException {
+        byte[] firstPart = "path ".getBytes(StandardCharsets.UTF_8);
+        byte[] secondPart = "volumes".getBytes(StandardCharsets.UTF_8);
+        byte[] content = concatenate(firstPart, secondPart);
+        long contentCrc32 = crc32(content);
+        Path firstVolume = createTemporaryArchivePath("rar-path-volumes-");
+        Path secondVolume = firstVolume.resolveSibling("sample.part2.rar");
+        Files.write(firstVolume, concatenate(
+                archiveVolume(
+                        true,
+                        true,
+                        splitStoredFilePart(
+                                "split.txt",
+                                1_700_000_000L,
+                                0100644,
+                                content.length,
+                                contentCrc32,
+                                firstPart,
+                                false,
+                                true
+                        )
+                ),
+                new byte[15]
+        ));
+        Files.write(secondVolume, archiveVolume(
+                true,
+                splitStoredFilePart(
+                        "split.txt",
+                        1_700_000_000L,
+                        0100644,
+                        content.length,
+                        contentCrc32,
+                        secondPart,
+                        true,
+                        false
+                ),
+                storedFile("after.txt", 1_700_000_001L, 0100644, "after".getBytes(StandardCharsets.UTF_8), null)
+        ));
+
+        try {
+            List<Path> discoveredPaths = Objects.requireNonNull(
+                    RarArkivoFormat.instance().discoverVolumePaths(firstVolume)
+            );
+            assertEquals(List.of(firstVolume, secondVolume), discoveredPaths);
+            assertThrows(UnsupportedOperationException.class, discoveredPaths::clear);
+
+            try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(firstVolume)) {
+                assertEquals(true, reader.next());
+                assertEquals("split.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
+                try (InputStream input = reader.openInputStream()) {
+                    assertArrayEquals(content, input.readAllBytes());
+                }
+
+                assertEquals(true, reader.next());
+                assertEquals("after.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
+                try (InputStream input = reader.openInputStream()) {
+                    assertArrayEquals("after".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
+                }
+                assertEquals(false, reader.next());
+            }
+        } finally {
+            Files.deleteIfExists(secondVolume);
+            deleteTemporaryArchive(firstVolume);
+        }
+    }
+
+    /// Verifies the public streaming reader merges a stored entry across real RAR5 volumes and owns its source.
+    @Test
+    public void streamsStoredSplitEntryFromVolumeSource() throws IOException {
+        byte[] firstPart = "streaming ".getBytes(StandardCharsets.UTF_8);
+        byte[] secondPart = "volumes".getBytes(StandardCharsets.UTF_8);
+        byte[] content = concatenate(firstPart, secondPart);
+        long contentCrc32 = crc32(content);
+        TrackingRarVolumeSource source = new TrackingRarVolumeSource(new byte[][]{
+                concatenate(
+                        archiveVolume(
+                                true,
+                                true,
+                                splitStoredFilePart(
+                                        "split.txt",
+                                        1_700_000_000L,
+                                        0100644,
+                                        content.length,
+                                        contentCrc32,
+                                        firstPart,
+                                        false,
+                                        true
+                                )
+                        ),
+                        new byte[15]
+                ),
+                archiveVolume(
+                        true,
+                        splitStoredFilePart(
+                                "split.txt",
+                                1_700_000_000L,
+                                0100644,
+                                content.length,
+                                contentCrc32,
+                                secondPart,
+                                true,
+                                false
+                        ),
+                        storedFile(
+                                "after.txt",
+                                1_700_000_001L,
+                                0100644,
+                                "after".getBytes(StandardCharsets.UTF_8),
+                                null
+                        )
+                )
+        });
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(source)) {
+            assertEquals(true, reader.next());
+            assertEquals("split.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
+            try (InputStream input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
+
+            assertEquals(true, reader.next());
+            assertEquals("after.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
+            try (InputStream input = reader.openInputStream()) {
+                assertArrayEquals("after".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+
+        assertEquals(1, source.closeCount());
+        assertEquals(true, source.allOpenedChannelsClosed());
+    }
     /// Verifies that stored RAR4 entries split across explicit archive volumes can be read.
     @Test
     public void opensStoredRar4SplitEntryFromVolumeSource() throws IOException {
@@ -2401,6 +2748,32 @@ public final class RarArkivoStreamingReaderTest {
     }
 
 
+    /// Verifies an owned multi-volume source is retried after its first close failure.
+    @Test
+    public void volumeReaderCloseRetriesSourceCleanupAfterFailure() throws IOException {
+        TrackingRarVolumeSource source = new TrackingRarVolumeSource(
+                new byte[][]{archive(storedFile(
+                        "hello.txt",
+                        0,
+                        0100644,
+                        "hello".getBytes(StandardCharsets.UTF_8),
+                        null
+                ))},
+                true
+        );
+        RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(source);
+        assertEquals(true, reader.next());
+
+        IOException exception = assertThrows(IOException.class, reader::close);
+        assertEquals("source close failed", exception.getMessage());
+        assertEquals(1, source.closeCount());
+        assertEquals(true, source.allOpenedChannelsClosed());
+
+        reader.close();
+        reader.close();
+
+        assertEquals(2, source.closeCount());
+    }
     /// Creates the deterministic plaintext stored in the real RAR5 compressed-body fixture.
     private static byte[] numberedRar5Content() {
         byte[] content = new byte[512 * 4];
@@ -3743,6 +4116,69 @@ public final class RarArkivoStreamingReaderTest {
             if (!open) {
                 throw new ClosedChannelException();
             }
+        }
+    }
+
+    /// Provides independent in-memory RAR volumes and records owned-resource cleanup.
+    @NotNullByDefault
+    private static final class TrackingRarVolumeSource implements ArkivoVolumeSource {
+        /// Immutable volume bytes.
+        private final byte @Unmodifiable [] @Unmodifiable [] volumes;
+
+        /// Channels opened from this source.
+        private final List<TestByteArraySeekableChannel> openedChannels = new ArrayList<>();
+
+        /// Number of source close calls.
+        private int closeCount;
+
+        /// Whether the first source close call fails.
+        private final boolean failFirstClose;
+
+        /// Creates a source over copied volume content.
+        private TrackingRarVolumeSource(byte[][] volumes) {
+            this(volumes, false);
+        }
+
+        /// Creates a source with configurable first-close behavior.
+        private TrackingRarVolumeSource(byte[][] volumes, boolean failFirstClose) {
+            this.volumes = new byte[volumes.length][];
+            for (int index = 0; index < volumes.length; index++) {
+                this.volumes[index] = volumes[index].clone();
+            }
+            this.failFirstClose = failFirstClose;
+        }
+
+        /// Opens one independent physical volume.
+        @Override
+        public @Nullable SeekableByteChannel openVolume(long index) throws IOException {
+            if (closeCount != 0) {
+                throw new ClosedChannelException();
+            }
+            if (index < 0L || index >= volumes.length) {
+                return null;
+            }
+            TestByteArraySeekableChannel channel = new TestByteArraySeekableChannel(volumes[(int) index]);
+            openedChannels.add(channel);
+            return channel;
+        }
+
+        /// Records source closure.
+        @Override
+        public void close() throws IOException {
+            closeCount++;
+            if (failFirstClose && closeCount == 1) {
+                throw new IOException("source close failed");
+            }
+        }
+
+        /// Returns the number of source close calls.
+        private int closeCount() {
+            return closeCount;
+        }
+
+        /// Returns whether every opened physical channel is closed.
+        private boolean allOpenedChannelsClosed() {
+            return openedChannels.stream().noneMatch(TestByteArraySeekableChannel::isOpen);
         }
     }
 

@@ -255,7 +255,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                             Files.newInputStream(archivePath, StandardOpenOption.READ),
                             compressionCodec
                     )) {
-                        nodes = readNodes(input, editStorage, ownedContents);
+                        nodes = readNodes(input, editStorage, ownedContents, environment);
                     }
                 } else if (openOptions.contains(StandardOpenOption.CREATE)) {
                     nodes = rootNodes();
@@ -334,7 +334,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     Files.newInputStream(archivePath, openOptions.toArray(OpenOption[]::new)),
                     compressionCodec
             )) {
-                nodes = readNodes(input, editStorage, ownedContents);
+                nodes = readNodes(input, editStorage, ownedContents, environment);
             }
             return new TarArkivoFileSystemImpl(
                     provider,
@@ -424,7 +424,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 archiveSize = channel.size();
                 channel.position(0L);
                 try (InputStream input = openArchiveInput(Channels.newInputStream(channel), compressionCodec)) {
-                    nodes = readNodes(input, editStorage, ownedContents);
+                    nodes = readNodes(input, editStorage, ownedContents, environment);
                 }
             }
             return new TarArkivoFileSystemImpl(
@@ -2373,12 +2373,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private static Map<String, Node> readNodes(
             InputStream input,
             ArkivoEditStorage editStorage,
-            Set<ArkivoStoredContent> ownedContents
+            Set<ArkivoStoredContent> ownedContents,
+            Map<String, ?> environment
     ) throws IOException {
         LinkedHashMap<String, Node> nodes = new LinkedHashMap<>();
         nodes.put("", new Node("", syntheticDirectoryAttributes("/"), true, null, true));
 
-        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(input)) {
+        try (TarArkivoStreamingReader reader = new TarArkivoStreamingReaderImpl(input, environment)) {
             while (reader.next()) {
                 TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
                 String path = normalizeEntryPath(attributes.path());

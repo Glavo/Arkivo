@@ -3,7 +3,7 @@
 
 /// Provides AR archive streaming APIs for Arkivo.
 module org.glavo.arkivo.archive.ar {
-    requires org.glavo.arkivo.archive;
+    requires transitive org.glavo.arkivo.archive;
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.archive.ar;

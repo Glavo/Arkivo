@@ -3,7 +3,7 @@
 
 /// Provides zlib compression support for Arkivo.
 module org.glavo.arkivo.codec.zlib {
-    requires org.glavo.arkivo.codec;
+    requires transitive org.glavo.arkivo.codec;
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.codec.zlib;

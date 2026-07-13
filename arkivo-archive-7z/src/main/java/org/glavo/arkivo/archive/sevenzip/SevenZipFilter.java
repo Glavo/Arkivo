@@ -9,8 +9,9 @@ import java.util.Objects;
 
 /// Configures one 7z output preprocessing filter and its method-specific parameter.
 ///
-/// The parameter is the Delta distance from 1 through 256 for DELTA and the unsigned 32-bit start offset for BCJ
-/// filters. BCJ start offsets must satisfy the instruction alignment required by the selected architecture.
+/// The parameter is the Delta distance from 1 through 256 for DELTA and the unsigned 32-bit start offset for
+/// single-stream BCJ filters. BCJ start offsets must satisfy the instruction alignment required by the selected
+/// architecture. BCJ2 has no parameter and requires zero.
 ///
 /// @param method the output filter method
 /// @param parameter the validated method-specific parameter
@@ -31,6 +32,10 @@ public record SevenZipFilter(SevenZipFilterMethod method, long parameter) {
         if (method == SevenZipFilterMethod.DELTA) {
             if (parameter < MIN_DELTA_DISTANCE || parameter > MAX_DELTA_DISTANCE) {
                 throw new IllegalArgumentException("Delta distance must be between 1 and 256");
+            }
+        } else if (method == SevenZipFilterMethod.BCJ2) {
+            if (parameter != 0L) {
+                throw new IllegalArgumentException("BCJ2 does not accept a parameter");
             }
         } else {
             if (parameter < 0 || parameter > MAX_BCJ_START_OFFSET) {
@@ -69,6 +74,11 @@ public record SevenZipFilter(SevenZipFilterMethod method, long parameter) {
     /// Returns an x86 BCJ filter with the requested unsigned 32-bit start offset.
     public static SevenZipFilter bcjX86(long startOffset) {
         return new SevenZipFilter(SevenZipFilterMethod.BCJ_X86, startOffset);
+    }
+
+    /// Returns the four-stream x86 BCJ2 filter.
+    public static SevenZipFilter bcj2() {
+        return new SevenZipFilter(SevenZipFilterMethod.BCJ2, 0L);
     }
 
     /// Returns a PowerPC BCJ filter.
@@ -145,6 +155,7 @@ public record SevenZipFilter(SevenZipFilterMethod method, long parameter) {
     private static int bcjAlignment(SevenZipFilterMethod method) {
         return switch (method) {
             case DELTA -> throw new IllegalArgumentException("Delta is not a BCJ filter");
+            case BCJ2 -> throw new IllegalArgumentException("BCJ2 has no start offset");
             case BCJ_X86 -> 1;
             case BCJ_PPC, BCJ_ARM, BCJ_SPARC, BCJ_ARM64 -> 4;
             case BCJ_IA64 -> 16;
@@ -155,6 +166,8 @@ public record SevenZipFilter(SevenZipFilterMethod method, long parameter) {
     /// Returns the stable method name and parameter.
     @Override
     public String toString() {
-        return method.optionName() + "(" + parameter + ")";
+        return method == SevenZipFilterMethod.BCJ2
+                ? method.optionName()
+                : method.optionName() + "(" + parameter + ")";
     }
 }

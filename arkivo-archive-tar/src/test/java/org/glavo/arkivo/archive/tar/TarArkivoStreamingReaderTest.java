@@ -5,6 +5,8 @@ package org.glavo.arkivo.archive.tar;
 
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
+import org.glavo.arkivo.archive.ArkivoReadLimitException;
+import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -1053,6 +1055,32 @@ public final class TarArkivoStreamingReaderTest {
                 assertArrayEquals(content, input.readAllBytes());
             }
             assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies PAX bodies are rejected before their variable metadata bytes are buffered.
+    @Test
+    public void enforcesMetadataLimitBeforePaxBodyAllocation() throws IOException {
+        byte[] body = paxRecord("path", "metadata-path.txt");
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeMetadataEntry(output, "PaxHeaders/entry", 'x', body);
+        long maximum = 512L;
+
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
+                new ByteArrayInputStream(output.toByteArray()),
+                Map.of(ArkivoFileSystem.MAX_METADATA_SIZE.key(), maximum)
+        )) {
+            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
+            assertEquals(ArkivoReadLimitKind.METADATA_SIZE, exception.kind());
+            assertEquals(maximum, exception.maximum());
+            assertEquals(maximum + body.length, exception.actual());
+            assertEquals("PaxHeaders/entry", exception.entryPath());
+
+            ArkivoReadLimitException repeated = assertThrows(ArkivoReadLimitException.class, reader::next);
+            assertEquals(exception.kind(), repeated.kind());
+            assertEquals(exception.maximum(), repeated.maximum());
+            assertEquals(exception.actual(), repeated.actual());
+            assertEquals(exception.entryPath(), repeated.entryPath());
         }
     }
 

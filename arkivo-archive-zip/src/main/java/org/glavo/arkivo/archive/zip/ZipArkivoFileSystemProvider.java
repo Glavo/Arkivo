@@ -151,7 +151,10 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
         if (fileSystem instanceof ZipArkivoFileSystemImpl readFileSystem) {
             return readFileSystem.newInputStream(path, options);
         }
-        throw new UnsupportedOperationException("Streaming ZIP output does not expose input streams");
+        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
+            return writeFileSystem.newInputStream(path, options);
+        }
+        throw new ProviderMismatchException();
     }
 
     /// Opens an output stream for a path inside a writable streaming ZIP archive file system.

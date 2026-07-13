@@ -69,6 +69,27 @@ public final class LZMACodecTest {
         assertEquals(LZMACodec.class, Objects.requireNonNull(CompressionCodecs.find(LZMACodec.NAME)).getClass());
     }
 
+    /// Rejects unsigned LZMA-alone output sizes that cannot be represented by the public size model.
+    @Test
+    public void rejectsUnrepresentableStandaloneSize() {
+        byte[] header = new byte[13];
+        header[0] = 0x5d;
+        header[1] = 0x00;
+        header[2] = 0x10;
+        header[12] = (byte) 0x80;
+
+        IOException channelFailure = assertThrows(IOException.class, () -> new LZMACodec().openDecoder(
+                Channels.newChannel(new ByteArrayInputStream(header))
+        ));
+        assertTrue(channelFailure.getMessage().contains("Unsupported LZMA uncompressed size"));
+
+        IOException streamFailure = assertThrows(
+                IOException.class,
+                () -> new LzmaInputStream(new ByteArrayInputStream(header))
+        );
+        assertTrue(streamFailure.getMessage().contains("Unsupported LZMA uncompressed size"));
+    }
+
     /// Verifies Arkivo's decoder against EOS-terminated LZMA-alone output from XZ for Java.
     @Test
     public void nativeDecoderReadsIndependentEndMarkedStream() throws IOException {

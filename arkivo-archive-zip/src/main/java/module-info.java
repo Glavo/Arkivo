@@ -3,12 +3,9 @@
 
 /// Provides ZIP archive APIs for Arkivo.
 module org.glavo.arkivo.archive.zip {
-    requires org.glavo.arkivo.archive;
-    requires static org.glavo.arkivo.codec.bzip2;
-    requires static org.glavo.arkivo.codec.deflate64;
+    requires transitive org.glavo.arkivo.archive;
+    requires org.glavo.arkivo.codec;
     requires static org.glavo.arkivo.codec.lzma;
-    requires static org.glavo.arkivo.codec.xz;
-    requires static com.github.luben.zstd_jni;
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.archive.zip;

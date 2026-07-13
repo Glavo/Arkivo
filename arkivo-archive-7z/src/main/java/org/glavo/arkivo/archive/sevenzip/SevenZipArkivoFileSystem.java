@@ -35,6 +35,10 @@ import java.util.Objects;
 /// Updates preserve decoded entry content and stored timestamps and attributes, then re-encode every surviving entry
 /// with the configured output compression, filter chain, solid file-count policy, password, and header-encryption
 /// policy.
+///
+/// Single-volume channel-source updates require an explicit `ArkivoFileSystem.COMMIT_TARGET` because no source path is
+/// available for replacement. General volume sources remain read-only through `open`; use `update` with an explicit
+/// transactional volume target when preserving or changing a multi-volume layout.
 @NotNullByDefault
 public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem permits SevenZipArkivoFileSystemImpl {
     /// The environment option for an `ArkivoPasswordProvider` value.
@@ -64,7 +68,8 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     ///
     /// Complete-rewrite updates use this filter for surviving entries unless an entry attribute view overrides it.
     ///
-    /// Values may be a complete filter object, a `SevenZipFilterMethod`, or a stable method name string. No filter is
+    /// Values may be a complete filter object, a `SevenZipFilterMethod`, or a stable method name string. BCJ2 creates
+    /// four physical folder streams whose MAIN, CALL, and JUMP branches use the selected compression. No filter is
     /// applied by default.
     public static final ArkivoFileSystemOption<SevenZipFilter> FILTER =
             ArkivoFileSystemOption.of(
@@ -79,8 +84,8 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     ///
     /// Filters run in list order. Complete-rewrite updates use this chain for surviving entries unless an entry
     /// attribute view overrides it. Values may be a SevenZipFilterChain, a list of SevenZipFilter values, or any
-    /// single value accepted by FILTER. An empty chain disables preprocessing. FILTER and FILTERS are mutually
-    /// exclusive.
+    /// single value accepted by FILTER. An empty chain disables preprocessing. BCJ2 must be the sole chain element.
+    /// FILTER and FILTERS are mutually exclusive.
     public static final ArkivoFileSystemOption<SevenZipFilterChain> FILTERS =
             ArkivoFileSystemOption.of(
                     "arkivo.7z",
@@ -161,7 +166,10 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     }
 
 
-    /// Opens a read-only 7z archive file system directly from one owned seekable channel with environment options.
+    /// Opens a 7z archive file system directly from one owned seekable channel with environment options.
+    ///
+    /// `READ` and `WRITE` select complete-rewrite update mode and require an explicit
+    /// `ArkivoFileSystem.COMMIT_TARGET`. The returned file system owns and closes the channel in all modes.
     public static SevenZipArkivoFileSystem open(
             SeekableByteChannel source,
             Map<String, ?> environment
@@ -179,15 +187,42 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     }
 
 
-    /// Opens a read-only 7z archive file system from a repeatable seekable channel source with environment options.
+    /// Opens a 7z archive file system from a repeatable seekable channel source with environment options.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    /// `READ` and `WRITE` select complete-rewrite update mode and require an explicit
+    /// `ArkivoFileSystem.COMMIT_TARGET`.
     public static SevenZipArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
             Map<String, ?> environment
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        return open((ArkivoVolumeSource) source, environment);
+        Objects.requireNonNull(environment, "environment");
+        SevenZipArkivoFileSystemConfig config;
+        try {
+            config = SevenZipArkivoFileSystemConfig.fromEnvironment(environment);
+            if (config.archiveWritable()) {
+                if (!config.archiveUpdate()) {
+                    throw new UnsupportedOperationException(
+                            "7z channel sources support writes only through read/write update mode"
+                    );
+                }
+                if (config.commitTarget() == null) {
+                    throw new IllegalArgumentException(
+                            "7z channel-source update mode requires ArkivoFileSystem.COMMIT_TARGET"
+                    );
+                }
+            }
+        } catch (RuntimeException | Error exception) {
+            closeSourceAfterOpenFailure(source, exception);
+            throw exception;
+        }
+        return new SevenZipArkivoFileSystemImpl(
+                SevenZipArkivoFileSystemProvider.instance(),
+                null,
+                source,
+                config
+        );
     }
 
 
@@ -421,5 +456,14 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
             return Boolean.parseBoolean(stringValue);
         }
         throw new IllegalArgumentException("Expected Boolean or String for key: " + ENCRYPT_HEADERS.key());
+    }
+
+    /// Closes a channel source after option validation fails and suppresses any cleanup failure.
+    private static void closeSourceAfterOpenFailure(ArkivoSeekableChannelSource source, Throwable failure) {
+        try {
+            source.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            failure.addSuppressed(exception);
+        }
     }
 }

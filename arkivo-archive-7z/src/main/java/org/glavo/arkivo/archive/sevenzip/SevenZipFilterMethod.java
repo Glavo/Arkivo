@@ -16,6 +16,9 @@ public enum SevenZipFilterMethod {
     /// Converts relative x86 branch addresses before compression.
     BCJ_X86("bcj-x86"),
 
+    /// Splits x86 branch addresses into the four-stream BCJ2 graph before compression.
+    BCJ2("bcj2"),
+
     /// Converts relative PowerPC branch addresses before compression.
     BCJ_PPC("bcj-ppc"),
 
