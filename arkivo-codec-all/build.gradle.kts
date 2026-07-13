@@ -11,6 +11,7 @@ dependencies {
     api(project(":arkivo-codec-delta"))
     api(project(":arkivo-codec-gzip"))
     api(project(":arkivo-codec-lzma"))
+    api(project(":arkivo-codec-ppmd"))
     api(project(":arkivo-codec-xz"))
     api(project(":arkivo-codec-zlib"))
     api(project(":arkivo-codec-zstd"))

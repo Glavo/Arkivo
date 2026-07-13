@@ -7,6 +7,7 @@ import java.util.zip.ZipFile
 
 dependencies {
     api(project(":arkivo-archive"))
+    api(project(":arkivo-codec-ppmd"))
 }
 
 val verifyPublishedRarModule by tasks.registering {
@@ -48,13 +49,9 @@ val verifyPublishedRarModule by tasks.registering {
                 "The RAR archive does not contain the Arkivo RAR3 standard filters"
             }
             check(archive.getEntry(
-                "org/glavo/arkivo/archive/rar/internal/Rar3PpmAllocator.class"
-            ) != null && archive.getEntry(
-                "org/glavo/arkivo/archive/rar/internal/Rar3PpmRangeDecoder.class"
-            ) != null && archive.getEntry(
-                "org/glavo/arkivo/archive/rar/internal/Rar3PpmModel.class"
+                "org/glavo/arkivo/archive/rar/internal/Rar3PPMdRangeDecoder.class"
             ) != null) {
-                "The RAR archive does not contain the Arkivo RAR3 PPMd decoder"
+                "The RAR archive does not contain the Arkivo RAR3 PPMd range decoder"
             }
             check(archive.getEntry(
                 "org/glavo/arkivo/archive/rar/internal/Rar5LzDecoder.class"
@@ -97,11 +94,15 @@ val lowHeapStorageProbe by tasks.registering(JavaExec::class) {
 }
 
 val baseJar = project(":arkivo-archive").tasks.named<Jar>("jar")
+val codecJar = project(":arkivo-codec").tasks.named<Jar>("jar")
+val ppmdJar = project(":arkivo-codec-ppmd").tasks.named<Jar>("jar")
 
 tasks.named<Test>("test") {
-    dependsOn(lowHeapStorageProbe, tasks.jar, baseJar)
+    dependsOn(lowHeapStorageProbe, tasks.jar, baseJar, codecJar, ppmdJar)
     inputs.file(tasks.jar.flatMap { it.archiveFile })
     inputs.file(baseJar.flatMap { it.archiveFile })
+    inputs.file(codecJar.flatMap { it.archiveFile })
+    inputs.file(ppmdJar.flatMap { it.archiveFile })
     doFirst {
         systemProperty(
             "arkivo.rar.jar",
@@ -110,6 +111,14 @@ tasks.named<Test>("test") {
         systemProperty(
             "arkivo.base.jar",
             baseJar.get().archiveFile.get().asFile.absolutePath
+        )
+        systemProperty(
+            "arkivo.codec.jar",
+            codecJar.get().archiveFile.get().asFile.absolutePath
+        )
+        systemProperty(
+            "arkivo.ppmd.jar",
+            ppmdJar.get().archiveFile.get().asFile.absolutePath
         )
     }
 }

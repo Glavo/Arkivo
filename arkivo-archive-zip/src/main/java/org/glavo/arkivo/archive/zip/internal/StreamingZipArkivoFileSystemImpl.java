@@ -4,8 +4,8 @@
 package org.glavo.arkivo.archive.zip.internal;
 
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.lzma.internal.LzmaOutputStream;
-import org.glavo.arkivo.codec.lzma.internal.LzmaProperties;
+import org.glavo.arkivo.codec.lzma.internal.LZMAOutputStream;
+import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
 
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
@@ -2951,7 +2951,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 this.entryOutput = StreamChannelAdapters.outputStream(entryCompressionEncoder);
             } else if (metadata.method == LZMA_METHOD) {
                 this.deflater = null;
-                this.entryOutput = new ZipLzmaOutputStream(dataOutput);
+                this.entryOutput = new ZipLZMAOutputStream(dataOutput);
             } else if (metadata.method == XZ_METHOD) {
                 this.deflater = null;
                 entryCompressionEncoder = ZipCompressionCodecs.openEncoder("xz", dataOutput);
@@ -3020,7 +3020,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                         entryCompressionEncoder.finish();
                     } else if (entryOutput instanceof DeflaterOutputStream deflatedOutput) {
                         deflatedOutput.finish();
-                    } else if (entryOutput instanceof ZipLzmaOutputStream lzmaOutput) {
+                    } else if (entryOutput instanceof ZipLZMAOutputStream lzmaOutput) {
                         lzmaOutput.finish();
                     }
                     ZipAesCrypto.EncryptingOutputStream entryAesOutput = aesOutput;
@@ -3641,14 +3641,14 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     }
 
     /// Writes a ZIP LZMA segment backed by a raw LZMA encoder.
-    private static final class ZipLzmaOutputStream extends OutputStream {
+    private static final class ZipLZMAOutputStream extends OutputStream {
         /// The raw LZMA output stream.
-        private final LzmaOutputStream output;
+        private final LZMAOutputStream output;
 
         /// Creates a ZIP LZMA output stream and writes the ZIP LZMA property header.
-        private ZipLzmaOutputStream(OutputStream output) throws IOException {
-            LzmaProperties properties = LzmaProperties.defaults(LZMA_DICTIONARY_SIZE);
-            LzmaOutputStream lzmaOutput = new LzmaOutputStream(
+        private ZipLZMAOutputStream(OutputStream output) throws IOException {
+            LZMAProperties properties = LZMAProperties.defaults(LZMA_DICTIONARY_SIZE);
+            LZMAOutputStream lzmaOutput = new LZMAOutputStream(
                     new NonClosingOutputStream(output),
                     properties,
                     true

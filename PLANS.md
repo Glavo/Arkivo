@@ -27,6 +27,7 @@ arkivo-codec-deflate64
 arkivo-codec-delta
 arkivo-codec-gzip
 arkivo-codec-lzma
+arkivo-codec-ppmd
 arkivo-codec-zlib
 arkivo-codec-xz
 arkivo-codec-zstd
@@ -232,9 +233,10 @@ ZIP channel-source updates borrow the source while indexing it, retain ownership
 
 7z compression pipelines support ordered chains of Delta and BCJ executable filters, including x86, PowerPC, IA-64, ARM, ARM-Thumb, SPARC, ARM64, and RISC-V transforms. ARM64 and RISC-V use their modern single-byte 7z method IDs. BCJ readers and writers support optional unsigned 32-bit start offsets and enforce architecture-specific alignment. BCJ2 is exposed as a sole graph filter: output is split into MAIN, CALL, JUMP, and range branches, the first three branches use the selected compression, and every physical branch is encrypted independently when data encryption is enabled. BCJ2 folders use temporary-file staging to preserve contiguous physical streams with bounded heap use.
 
-7z Deflate, Deflate64, and BZip2 coder reading and writing use the general codec context API and discover optional
-providers at runtime. Decoder contexts enforce the coder's declared unpack size. Raw LZMA and LZMA2 remain 7z-specific
-container adapters because their coder properties and framing differ from the standalone LZMA codec contract.
+7z Deflate, Deflate64, BZip2, and Zstandard coder reading and writing use the general codec context API and discover optional
+providers at runtime. PPMd7 reading uses the same optional codec discovery and passes the coder's model order, memory size,
+and exact unpack size as typed raw-stream options. Decoder contexts enforce the coder's declared unpack size. Raw LZMA and
+LZMA2 remain 7z-specific container adapters because their coder properties and framing differ from the standalone LZMA codec contract.
 
 7z entry attributes expose immutable structured coder graphs in declaration order, including raw coder properties, input and output stream ranges, bind pairs, physical packed-stream ordinals, per-output unpack sizes, and the final decoded output.
 
@@ -480,7 +482,17 @@ official 1.0.8 reference samples for exact decoding, block-size boundary encodin
 decompression outputs are checked against upstream reference bytes or sizes and SHA-256 values produced by the
 matching official CLI. Raw Deflate, zlib, gzip, and Deflate64 additionally use individually pinned Apache Commons
 Compress 1.28.0 fixtures, including gzip 1.13 concatenated members and COMPRESS-380 Deflate64 regressions, without
-storing the binary fixtures in the repository.
+storing the binary fixtures in the repository. Archive compatibility additionally pins the official libarchive 3.8.7
+source release and stages only its license and reviewed uuencoded fixtures. Runtime decoding covers AR, GNU TAR, ZIP,
+7z, RAR4, and RAR5, including long names, large numeric fields, invalid CRC handling, compressed data, directories,
+and symbolic links without committing decoded archives. ZIP optional-codec fixtures cover BZip2, LZMA, XZ, and
+Zstandard through both random-access and forward-only readers, including malformed-stream hang and leak regressions.
+Traditional PKWARE and WinZip AES-128/256 fixtures verify absent, incorrect, and correct passwords, stored and
+Deflate payloads, large multi-entry authentication, and channel ownership in both reader modes.
+The 7z set exercises Copy, LZMA1, LZMA2, BZip2, Deflate, PPMd7, Zstandard,
+Delta, BCJ, BCJ2, ARM, ARM64, RISC-V, PowerPC, and SPARC graphs, mixed and solid folders, and all supported AES header
+and data combinations. The same corpus verifies unified random-access detection over arbitrary in-memory seekable
+channels and forward-only AR, TAR, ZIP, and RAR decoding over non-seekable readable channels.
 
 Some formats may not support efficient random write operations. These formats should expose streaming or copy-on-write APIs instead of pretending to support in-place mutation.
 

@@ -55,7 +55,7 @@ final class AllAggregationTest {
         assertEquals(Set.of("7z", "ar", "rar", "tar", "zip"), archiveNames);
         assertTrue(ArkivoFormats.installed().stream().allMatch(ArkivoFileSystemFormat.class::isInstance));
         assertEquals(
-                Set.of("bzip2", "deflate", "deflate64", "gzip", "lzma", "xz", "zlib", "zstd"),
+                Set.of("bzip2", "deflate", "deflate64", "gzip", "lzma", "ppmd", "xz", "zlib", "zstd"),
                 codecNames
         );
     }

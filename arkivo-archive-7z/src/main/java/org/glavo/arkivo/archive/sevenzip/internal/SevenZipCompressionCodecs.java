@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.sevenzip.internal;
 
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecOption;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.CompressionDecoder;
@@ -19,6 +20,18 @@ import java.io.OutputStream;
 /// Connects optional compression codecs to 7z coder streams without depending on codec implementations.
 @NotNullByDefault
 final class SevenZipCompressionCodecs {
+    /// The optional PPMd codec's stable maximum-order option.
+    private static final CodecOption<Long> PPMD_MAXIMUM_ORDER =
+            CodecOption.of("ppmd.maximumOrder", Long.class);
+
+    /// The optional PPMd codec's stable model-memory option.
+    private static final CodecOption<Long> PPMD_MEMORY_SIZE =
+            CodecOption.of("ppmd.memorySize", Long.class);
+
+    /// The optional PPMd codec's stable exact-output-size option.
+    private static final CodecOption<Long> PPMD_DECODED_SIZE =
+            CodecOption.of("ppmd.decodedSize", Long.class);
+
     /// Creates no instances.
     private SevenZipCompressionCodecs() {
     }
@@ -52,6 +65,28 @@ final class SevenZipCompressionCodecs {
                 .build();
         CompressionDecoder decoder = CompressionCodecs.openDecoder(
                 codecName,
+                StreamChannelAdapters.readableChannel(source),
+                options,
+                ChannelOwnership.CLOSE
+        );
+        return StreamChannelAdapters.inputStream(decoder);
+    }
+
+    /// Opens an exactly sized PPMd7 decoder through the optional codec provider.
+    static InputStream openPpmdDecoder(
+            InputStream source,
+            int maximumOrder,
+            long memorySize,
+            long decodedSize
+    ) throws IOException {
+        CodecOptions options = CodecOptions.builder()
+                .set(PPMD_MAXIMUM_ORDER, (long) maximumOrder)
+                .set(PPMD_MEMORY_SIZE, memorySize)
+                .set(PPMD_DECODED_SIZE, decodedSize)
+                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, decodedSize)
+                .build();
+        CompressionDecoder decoder = CompressionCodecs.openDecoder(
+                "ppmd",
                 StreamChannelAdapters.readableChannel(source),
                 options,
                 ChannelOwnership.CLOSE

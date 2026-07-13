@@ -85,6 +85,10 @@ val publicationMetadata = mapOf(
         "Arkivo LZMA Codec",
         "Provides channel-first standalone LZMA compression and decompression."
     ),
+    "arkivo-codec-ppmd" to ArkivoPublicationMetadata(
+        "Arkivo PPMd Codec",
+        "Provides channel-first raw PPMd7 decompression."
+    ),
     "arkivo-codec-xz" to ArkivoPublicationMetadata(
         "Arkivo XZ Codec",
         "Provides channel-first XZ compression and decompression."
@@ -326,7 +330,10 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-archive-zip:compile:$publicationVersion"
     ),
     "arkivo-archive-ar" to setOf("org.glavo:arkivo-archive:compile:$publicationVersion"),
-    "arkivo-archive-rar" to setOf("org.glavo:arkivo-archive:compile:$publicationVersion"),
+    "arkivo-archive-rar" to setOf(
+        "org.glavo:arkivo-archive:compile:$publicationVersion",
+        "org.glavo:arkivo-codec-ppmd:compile:$publicationVersion"
+    ),
     "arkivo-archive-tar" to setOf(
         "org.glavo:arkivo-archive:compile:$publicationVersion",
         "org.glavo:arkivo-codec:compile:$publicationVersion"
@@ -351,6 +358,7 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-codec-delta:compile:$publicationVersion",
         "org.glavo:arkivo-codec-gzip:compile:$publicationVersion",
         "org.glavo:arkivo-codec-lzma:compile:$publicationVersion",
+        "org.glavo:arkivo-codec-ppmd:compile:$publicationVersion",
         "org.glavo:arkivo-codec-xz:compile:$publicationVersion",
         "org.glavo:arkivo-codec-zlib:compile:$publicationVersion",
         "org.glavo:arkivo-codec-zstd:compile:$publicationVersion"
@@ -362,6 +370,7 @@ val expectedDependencies = mapOf(
     "arkivo-codec-delta" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
     "arkivo-codec-gzip" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
     "arkivo-codec-lzma" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
+    "arkivo-codec-ppmd" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
     "arkivo-codec-xz" to setOf(
         "org.glavo:arkivo-codec:compile:$publicationVersion",
         "org.glavo:arkivo-codec-bcj:runtime:$publicationVersion",

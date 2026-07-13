@@ -15,7 +15,7 @@ import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.glavo.arkivo.codec.lzma.LZMAOptions;
-import org.glavo.arkivo.codec.lzma.internal.LzmaProperties;
+import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
 import org.glavo.arkivo.codec.xz.internal.XzChannelDecoder;
 import org.glavo.arkivo.codec.xz.internal.XzChannelEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -121,7 +121,7 @@ public final class XZCodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.compressionOptions(), "XZ compression");
-        LzmaProperties properties = LzmaProperties.fromOptions(
+        LZMAProperties properties = LZMAProperties.fromOptions(
                 options,
                 DICTIONARY_SIZE,
                 XzChannelEncoder.DEFAULT_DICTIONARY_SIZE

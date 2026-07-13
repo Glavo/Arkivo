@@ -1974,7 +1974,8 @@ public final class SevenZipArkivoFileSystemTest {
                 SevenZipCompression.lzma2(64 * 1024),
                 SevenZipCompression.bzip2(1),
                 SevenZipCompression.deflate(1),
-                SevenZipCompression.deflate64(9)
+                SevenZipCompression.deflate64(9),
+                SevenZipCompression.zstandard(3)
         );
         List<SevenZMethod> expectedMethods = List.of(
                 SevenZMethod.COPY,
@@ -1983,6 +1984,15 @@ public final class SevenZipArkivoFileSystemTest {
                 SevenZMethod.BZIP2,
                 SevenZMethod.DEFLATE,
                 SevenZMethod.DEFLATE64
+        );
+        List<SevenZipCoderMethod> expectedCoderMethods = List.of(
+                SevenZipCoderMethod.COPY,
+                SevenZipCoderMethod.LZMA,
+                SevenZipCoderMethod.LZMA2,
+                SevenZipCoderMethod.BZIP2,
+                SevenZipCoderMethod.DEFLATE,
+                SevenZipCoderMethod.DEFLATE64,
+                SevenZipCoderMethod.ZSTANDARD
         );
         byte[] content = new byte[64 * 1024];
         Arrays.fill(content, (byte) 'A');
@@ -1999,19 +2009,27 @@ public final class SevenZipArkivoFileSystemTest {
                 }
 
                 try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
-                    assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/content.bin")));
+                    Path entry = fileSystem.getPath("/content.bin");
+                    assertArrayEquals(content, Files.readAllBytes(entry));
+                    SevenZipCoderGraph graph = Objects.requireNonNull(Files.readAttributes(
+                            entry,
+                            SevenZipArkivoEntryAttributes.class
+                    ).coderGraph());
+                    assertEquals(expectedCoderMethods.get(index), graph.coders().get(0).method());
                 }
-                try (SevenZFile sevenZFile = SevenZFile.builder().setPath(archivePath).get()) {
-                    SevenZArchiveEntry entry = Objects.requireNonNull(sevenZFile.getNextEntry());
-                    assertEquals(List.of(expectedMethods.get(index)), commonsContentMethods(entry));
-                    @Nullable Object coderOptions = entry.getContentMethods().iterator().next().getOptions();
-                    if (compression.method() == SevenZipCompressionMethod.LZMA) {
-                        assertEquals(compression.parameter(), ((LZMA2Options) coderOptions).getDictSize());
-                    } else if (compression.method() == SevenZipCompressionMethod.LZMA2) {
-                        assertEquals(compression.parameter(), ((Number) coderOptions).intValue());
-                    }
-                    try (var input = sevenZFile.getInputStream(entry)) {
-                        assertArrayEquals(content, input.readAllBytes());
+                if (compression.method() != SevenZipCompressionMethod.ZSTANDARD) {
+                    try (SevenZFile sevenZFile = SevenZFile.builder().setPath(archivePath).get()) {
+                        SevenZArchiveEntry entry = Objects.requireNonNull(sevenZFile.getNextEntry());
+                        assertEquals(List.of(expectedMethods.get(index)), commonsContentMethods(entry));
+                        @Nullable Object coderOptions = entry.getContentMethods().iterator().next().getOptions();
+                        if (compression.method() == SevenZipCompressionMethod.LZMA) {
+                            assertEquals(compression.parameter(), ((LZMA2Options) coderOptions).getDictSize());
+                        } else if (compression.method() == SevenZipCompressionMethod.LZMA2) {
+                            assertEquals(compression.parameter(), ((Number) coderOptions).intValue());
+                        }
+                        try (var input = sevenZFile.getInputStream(entry)) {
+                            assertArrayEquals(content, input.readAllBytes());
+                        }
                     }
                 }
                 if (compression.method() != SevenZipCompressionMethod.COPY) {
@@ -2095,7 +2113,8 @@ public final class SevenZipArkivoFileSystemTest {
                 SevenZipCompression.lzma2(64 * 1024),
                 SevenZipCompression.bzip2(1),
                 SevenZipCompression.deflate(1),
-                SevenZipCompression.deflate64(9)
+                SevenZipCompression.deflate64(9),
+                SevenZipCompression.zstandard(3)
         );
         List<SevenZipCoderMethod> methods = List.of(
                 SevenZipCoderMethod.COPY,
@@ -2103,7 +2122,8 @@ public final class SevenZipArkivoFileSystemTest {
                 SevenZipCoderMethod.LZMA2,
                 SevenZipCoderMethod.BZIP2,
                 SevenZipCoderMethod.DEFLATE,
-                SevenZipCoderMethod.DEFLATE64
+                SevenZipCoderMethod.DEFLATE64,
+                SevenZipCoderMethod.ZSTANDARD
         );
         byte[] content = new byte[8192];
         for (int index = 0; index < content.length; index++) {

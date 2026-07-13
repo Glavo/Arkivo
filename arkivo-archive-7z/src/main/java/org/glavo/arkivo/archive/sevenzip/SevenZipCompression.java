@@ -10,7 +10,7 @@ import java.util.Objects;
 /// Configures one 7z output compression method and its method-specific parameter.
 ///
 /// `parameter` is zero for `COPY`, dictionary size in bytes for `LZMA` and `LZMA2`, BZIP2 block size from 1 through 9,
-/// or DEFLATE/Deflate64 level from 0 through 9.
+/// DEFLATE/Deflate64 level from 0 through 9, or a Zstandard level from -131072 through 22.
 ///
 /// @param method the output compression method
 /// @param parameter the validated method-specific parameter
@@ -42,6 +42,15 @@ public record SevenZipCompression(SevenZipCompressionMethod method, int paramete
 
     /// The maximum and default Deflate64 compression level.
     public static final int MAX_DEFLATE64_LEVEL = 9;
+
+    /// The minimum Zstandard compression level.
+    public static final int MIN_ZSTANDARD_LEVEL = -131_072;
+
+    /// The maximum Zstandard compression level.
+    public static final int MAX_ZSTANDARD_LEVEL = 22;
+
+    /// The default Zstandard compression level.
+    public static final int DEFAULT_ZSTANDARD_LEVEL = 3;
 
     /// Validates a 7z compression configuration.
     public SevenZipCompression {
@@ -77,6 +86,16 @@ public record SevenZipCompression(SevenZipCompressionMethod method, int paramete
                     throw new IllegalArgumentException("Deflate64 level must be between 0 and 9");
                 }
             }
+            case ZSTANDARD -> {
+                if (parameter < MIN_ZSTANDARD_LEVEL || parameter > MAX_ZSTANDARD_LEVEL) {
+                    throw new IllegalArgumentException(
+                            "Zstandard level must be between "
+                                    + MIN_ZSTANDARD_LEVEL
+                                    + " and "
+                                    + MAX_ZSTANDARD_LEVEL
+                    );
+                }
+            }
         }
     }
 
@@ -90,6 +109,7 @@ public record SevenZipCompression(SevenZipCompressionMethod method, int paramete
             case BZIP2 -> bzip2();
             case DEFLATE -> deflate();
             case DEFLATE64 -> deflate64();
+            case ZSTANDARD -> zstandard();
         };
     }
 
@@ -146,6 +166,16 @@ public record SevenZipCompression(SevenZipCompressionMethod method, int paramete
     /// Returns Deflate64 output with the requested compression level from 0 through 9.
     public static SevenZipCompression deflate64(int level) {
         return new SevenZipCompression(SevenZipCompressionMethod.DEFLATE64, level);
+    }
+
+    /// Returns Zstandard output with its default compression level.
+    public static SevenZipCompression zstandard() {
+        return zstandard(DEFAULT_ZSTANDARD_LEVEL);
+    }
+
+    /// Returns Zstandard output with the requested compression level.
+    public static SevenZipCompression zstandard(int level) {
+        return new SevenZipCompression(SevenZipCompressionMethod.ZSTANDARD, level);
     }
 
     /// Returns the stable method name and parameter.

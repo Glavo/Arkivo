@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.xz.internal;
 
-import org.glavo.arkivo.codec.lzma.internal.Lzma2OutputStream;
+import org.glavo.arkivo.codec.lzma.internal.LZMA2OutputStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -38,7 +38,7 @@ public final class XzOutputStream extends OutputStream {
     private @Nullable CountingOutputStream compressedCounter;
 
     /// The active LZMA2 block encoder after the first write.
-    private @Nullable Lzma2OutputStream blockEncoder;
+    private @Nullable LZMA2OutputStream blockEncoder;
 
     /// The block's uncompressed size.
     private long uncompressedSize;
@@ -95,7 +95,7 @@ public final class XzOutputStream extends OutputStream {
     @Override
     public void flush() throws IOException {
         ensureOpen();
-        Lzma2OutputStream encoder = blockEncoder;
+        LZMA2OutputStream encoder = blockEncoder;
         if (encoder != null) {
             encoder.flush();
         }
@@ -165,12 +165,12 @@ public final class XzOutputStream extends OutputStream {
         CountingOutputStream counter = new CountingOutputStream(output);
         blockCheck = check;
         compressedCounter = counter;
-        blockEncoder = new Lzma2OutputStream(new NonClosingOutputStream(counter), dictionarySize);
+        blockEncoder = new LZMA2OutputStream(new NonClosingOutputStream(counter), dictionarySize);
     }
 
     /// Finishes the active block, padding, and integrity check.
     private void finishBlock() throws IOException {
-        Lzma2OutputStream encoder = blockEncoder;
+        LZMA2OutputStream encoder = blockEncoder;
         if (encoder == null) {
             return;
         }

@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.xz.internal;
 
-import org.glavo.arkivo.codec.lzma.internal.LzmaProperties;
+import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -97,8 +97,8 @@ final class XzSupport {
 
     /// Returns the smallest LZMA2 dictionary property covering a dictionary size.
     static int lzma2DictionaryProperty(int dictionarySize) {
-        if (dictionarySize < LzmaProperties.MINIMUM_DICTIONARY_SIZE
-                || dictionarySize > LzmaProperties.MAXIMUM_DICTIONARY_SIZE) {
+        if (dictionarySize < LZMAProperties.MINIMUM_DICTIONARY_SIZE
+                || dictionarySize > LZMAProperties.MAXIMUM_DICTIONARY_SIZE) {
             throw new IllegalArgumentException("Unsupported XZ LZMA2 dictionary size: " + dictionarySize);
         }
         for (int property = 0; property <= 37; property++) {

@@ -4612,6 +4612,59 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies that advancing drains a directory entry and its declared data descriptor.
+    @Test
+    public void streamingReaderDrainsDirectoryDataDescriptor() throws IOException {
+        byte[] content = "after directory descriptor".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = streamingDirectoryDataDescriptorWithStoredEntry(content);
+
+        try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            assertEquals(true, reader.next());
+            ZipArkivoEntryAttributes directory = reader.readAttributes(ZipArkivoEntryAttributes.class);
+            assertEquals("directory/", directory.path());
+            assertEquals(true, directory.isDirectory());
+
+            assertEquals(true, reader.next());
+            ZipArkivoEntryAttributes file = reader.readAttributes(ZipArkivoEntryAttributes.class);
+            assertEquals("after.txt", file.path());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that a matching signed descriptor is accepted when the local header omitted its descriptor flag.
+    @Test
+    public void streamingReaderAcceptsMatchingUndeclaredDataDescriptor() throws IOException {
+        byte[] content = "undeclared descriptor".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = streamingStoredArchiveWithUndeclaredDataDescriptor(content, crc32(content));
+
+        try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            assertEquals(true, reader.next());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that an undeclared signed descriptor cannot override validated local-header metadata.
+    @Test
+    public void streamingReaderRejectsMismatchedUndeclaredDataDescriptor() throws IOException {
+        byte[] content = "bad undeclared descriptor".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = streamingStoredArchiveWithUndeclaredDataDescriptor(content, crc32(content) ^ 1L);
+
+        try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            assertEquals(true, reader.next());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(content, input.readAllBytes());
+            }
+            IOException exception = assertThrows(IOException.class, reader::next);
+            assertEquals(true, exception.getMessage().contains("Undeclared ZIP data descriptor"));
+        }
+    }
+
     /// Verifies that stored descriptor CRC failures do not consume the following entry.
     @Test
     public void streamingReaderCloseAfterStoredDataDescriptorCrcMismatchConsumesDescriptor() throws IOException {
@@ -5866,6 +5919,32 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals(true, exception.getMessage().contains(
                         "ZIP local header flags do not match central directory"
                 ));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies that the local data-descriptor bit may differ from the central directory.
+    @Test
+    public void acceptsMismatchedLocalDataDescriptorFlag() throws IOException {
+        byte[] name = "descriptor-flags.txt".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchiveContent(singleEntryZipWithRawNameAndLocalCentralMetadata(
+                name,
+                1 << 3,
+                0,
+                ZipMethod.STORED_ID,
+                ZipMethod.STORED_ID
+        ));
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                ZipArkivoEntryAttributes attributes = Files.readAttributes(
+                        fileSystem.getPath("/descriptor-flags.txt"),
+                        ZipArkivoEntryAttributes.class
+                );
+                assertEquals(0, attributes.generalPurposeFlags());
+                assertEquals(0L, attributes.size());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -8023,6 +8102,79 @@ public final class ZipArkivoFileSystemTest {
     /// Returns the ZIP data descriptor signature bytes.
     private static byte[] dataDescriptorSignature() {
         return new byte[]{0x50, 0x4b, 0x07, 0x08};
+    }
+
+    /// Returns a streaming archive containing a descriptor-backed directory followed by one stored file.
+    private static byte[] streamingDirectoryDataDescriptorWithStoredEntry(byte[] content) {
+        byte[] directoryName = "directory/".getBytes(StandardCharsets.UTF_8);
+        byte[] fileName = "after.txt".getBytes(StandardCharsets.UTF_8);
+        long fileCrc32 = crc32(content);
+        int directoryHeaderSize = 30 + directoryName.length;
+        int fileHeaderSize = 30 + fileName.length;
+
+        ByteBuffer buffer = ByteBuffer.allocate(directoryHeaderSize + 16 + fileHeaderSize + content.length)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        writeLocalHeader(buffer, directoryName, 1 << 3 | 1 << 11, ZipMethod.STORED_ID, 0, 0, 0);
+        buffer.putInt(0x08074b50);
+        buffer.putInt(0);
+        buffer.putInt(0);
+        buffer.putInt(0);
+        writeLocalHeader(
+                buffer,
+                fileName,
+                1 << 11,
+                ZipMethod.STORED_ID,
+                fileCrc32,
+                content.length,
+                content.length
+        );
+        buffer.put(content);
+        return buffer.array();
+    }
+
+    /// Returns a complete stored ZIP whose local header omits the following signed descriptor flag.
+    private static byte[] streamingStoredArchiveWithUndeclaredDataDescriptor(byte[] content, long descriptorCrc32) {
+        byte[] name = "undeclared.txt".getBytes(StandardCharsets.UTF_8);
+        long contentCrc32 = crc32(content);
+        int localHeaderSize = 30 + name.length;
+        int centralDirectoryOffset = localHeaderSize + content.length + 16;
+        int centralDirectorySize = 46 + name.length;
+
+        ByteBuffer buffer = ByteBuffer.allocate(centralDirectoryOffset + centralDirectorySize + 22)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        writeLocalHeader(
+                buffer,
+                name,
+                1 << 11,
+                ZipMethod.STORED_ID,
+                contentCrc32,
+                content.length,
+                content.length
+        );
+        buffer.put(content);
+        buffer.putInt(0x08074b50);
+        buffer.putInt((int) descriptorCrc32);
+        buffer.putInt(content.length);
+        buffer.putInt(content.length);
+        writeCentralDirectoryEntry(
+                buffer,
+                name,
+                1 << 3 | 1 << 11,
+                ZipMethod.STORED_ID,
+                0,
+                contentCrc32,
+                content.length,
+                content.length
+        );
+        buffer.putInt(0x06054b50);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 1);
+        buffer.putShort((short) 1);
+        buffer.putInt(centralDirectorySize);
+        buffer.putInt(centralDirectoryOffset);
+        buffer.putShort((short) 0);
+        return buffer.array();
     }
 
     /// Returns a minimal streaming stored ZIP archive with a raw entry name.

@@ -9,6 +9,7 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.ppmd.PPMdCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -119,7 +120,7 @@ final class CodecCloseRetryContractTest {
                 ReadFailingReadableChannel source = new ReadFailingReadableChannel();
                 @Nullable CompressionDecoder decoder = null;
                 try {
-                    decoder = codec.openDecoder(source, CodecOptions.EMPTY, ChannelOwnership.CLOSE);
+                    decoder = codec.openDecoder(source, decompressionOptions(codec), ChannelOwnership.CLOSE);
                 } catch (IOException exception) {
                     assertEquals("read failed", exception.getMessage(), codec.name());
                 } finally {
@@ -159,7 +160,7 @@ final class CodecCloseRetryContractTest {
                 ReadFailingReadableChannel source = new ReadFailingReadableChannel();
                 @Nullable CompressionDecoder decoder = null;
                 try {
-                    decoder = codec.openDecoder(source, CodecOptions.EMPTY, ChannelOwnership.RETAIN);
+                    decoder = codec.openDecoder(source, decompressionOptions(codec), ChannelOwnership.RETAIN);
                 } catch (IOException exception) {
                     assertEquals("read failed", exception.getMessage(), codec.name());
                 } finally {
@@ -171,6 +172,18 @@ final class CodecCloseRetryContractTest {
                 assertEquals(0, source.closeCount(), codec.name());
             }
         }
+    }
+
+    /// Returns the minimum valid setup options for codecs whose raw streams are not self-describing.
+    private static CodecOptions decompressionOptions(CompressionCodec codec) {
+        if (!"ppmd".equals(codec.name())) {
+            return CodecOptions.EMPTY;
+        }
+        return CodecOptions.builder()
+                .set(PPMdCodecOptions.MAXIMUM_ORDER, 4L)
+                .set(PPMdCodecOptions.MEMORY_SIZE, 1L << 20)
+                .set(PPMdCodecOptions.DECODED_SIZE, 0L)
+                .build();
     }
 
     /// Verifies OutputStream convenience adapters retry caller-stream closure without re-finalizing frames.

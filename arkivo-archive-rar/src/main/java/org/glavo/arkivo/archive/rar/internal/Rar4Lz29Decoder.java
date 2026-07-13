@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.rar.internal;
 
+import org.glavo.arkivo.codec.ppmd.internal.PPMd7Model;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -102,8 +103,11 @@ final class Rar4Lz29Decoder {
     /// Filter definitions and state retained across solid entries.
     private final Rar3FilterManager filterManager = new Rar3FilterManager();
 
+    /// The RAR-specific PPMd range decoder reset for each compressed block.
+    private final Rar3PPMdRangeDecoder ppmRangeDecoder = new Rar3PPMdRangeDecoder();
+
     /// The PPMd context model retained across reset-free RAR3 blocks.
-    private final Rar3PpmModel ppmModel = new Rar3PpmModel();
+    private final PPMd7Model ppmModel = new PPMd7Model(ppmRangeDecoder);
 
     /// Code lengths retained for delta table descriptions in solid streams.
     private final byte[] previousTable = new byte[TABLE_LENGTH_COUNT];
@@ -313,7 +317,8 @@ final class Rar4Lz29Decoder {
         if ((orderFlags & 0x40) != 0) ppmEscape = bits.readBits(8);
         int maximumOrder = (orderFlags & 0x1f) + 1;
         if (maximumOrder > 16) maximumOrder = 16 + (maximumOrder - 16) * 3;
-        ppmModel.initialize(bits, resetModel, maximumOrder, maximumMebibytes);
+        ppmRangeDecoder.initialize(bits);
+        ppmModel.initialize(resetModel, maximumOrder, (long) maximumMebibytes << 20);
         ppmMode = true;
         tablesAvailable = false;
     }

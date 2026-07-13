@@ -7,9 +7,9 @@ import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.transform.TransformingInputStream;
 import org.glavo.arkivo.codec.delta.DeltaTransform;
-import org.glavo.arkivo.codec.lzma.internal.Lzma2InputStream;
-import org.glavo.arkivo.codec.lzma.internal.LzmaInputStream;
-import org.glavo.arkivo.codec.lzma.internal.LzmaProperties;
+import org.glavo.arkivo.codec.lzma.internal.LZMA2InputStream;
+import org.glavo.arkivo.codec.lzma.internal.LZMAInputStream;
+import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -49,6 +49,12 @@ final class SevenZipLZMADecoder {
 
     /// The 7z BZip2 method ID.
     static final byte[] BZIP2_METHOD_ID = new byte[]{0x04, 0x02, 0x02};
+
+    /// The 7z Zstandard method ID.
+    static final byte[] ZSTANDARD_METHOD_ID = new byte[]{0x04, (byte) 0xf7, 0x11, 0x01};
+
+    /// The 7z PPMd7 method ID.
+    static final byte[] PPMD_METHOD_ID = new byte[]{0x03, 0x04, 0x01};
 
     /// The 7z AES-256/SHA-256 encryption method ID.
     static final byte[] AES_METHOD_ID = new byte[]{0x06, (byte) 0xf1, 0x07, 0x01};
@@ -115,6 +121,16 @@ final class SevenZipLZMADecoder {
     /// Returns whether the method ID identifies the BZip2 method.
     static boolean isBZip2(byte[] methodId) {
         return Arrays.equals(methodId, BZIP2_METHOD_ID);
+    }
+
+    /// Returns whether the method ID identifies the Zstandard method.
+    static boolean isZstandard(byte[] methodId) {
+        return Arrays.equals(methodId, ZSTANDARD_METHOD_ID);
+    }
+
+    /// Returns whether the method ID identifies the PPMd7 method.
+    static boolean isPpmd(byte[] methodId) {
+        return Arrays.equals(methodId, PPMD_METHOD_ID);
     }
 
     /// Returns whether the method ID identifies the AES-256/SHA-256 encryption filter.
@@ -192,6 +208,8 @@ final class SevenZipLZMADecoder {
                 || isDeflate(methodId)
                 || isDeflate64(methodId)
                 || isBZip2(methodId)
+                || isZstandard(methodId)
+                || isPpmd(methodId)
                 || isAes(methodId)
                 || isDelta(methodId)
                 || isBcj2Filter(methodId)
@@ -309,6 +327,12 @@ final class SevenZipLZMADecoder {
         }
         if (isBZip2(methodId)) {
             return openBZip2(input, properties, outputLimit);
+        }
+        if (isZstandard(methodId)) {
+            return openZstandard(input, properties, outputLimit);
+        }
+        if (isPpmd(methodId)) {
+            return openPpmd(input, properties, outputLimit);
         }
         if (isAes(methodId)) {
             return new SevenZipBoundedInputStream(
@@ -512,7 +536,7 @@ final class SevenZipLZMADecoder {
             throw new IOException("7z LZMA coder properties must contain five bytes");
         }
         int dictionarySize = ByteBuffer.wrap(properties, 1, 4).order(ByteOrder.LITTLE_ENDIAN).getInt();
-        return new LzmaInputStream(input, uncompressedSize, Byte.toUnsignedInt(properties[0]), dictionarySize);
+        return new LZMAInputStream(input, uncompressedSize, Byte.toUnsignedInt(properties[0]), dictionarySize);
     }
 
     /// Opens a raw LZMA2 decoder for 7z coder properties.
@@ -527,10 +551,10 @@ final class SevenZipLZMADecoder {
             throw new IOException("Unsupported 7z LZMA2 dictionary property");
         }
         int dictionarySize = (2 | (property & 1)) << ((property >>> 1) + 11);
-        if (dictionarySize > LzmaProperties.MAXIMUM_DICTIONARY_SIZE) {
+        if (dictionarySize > LZMAProperties.MAXIMUM_DICTIONARY_SIZE) {
             throw new IOException("Unsupported 7z LZMA2 dictionary size: " + dictionarySize);
         }
-        return new Lzma2InputStream(input, dictionarySize);
+        return new LZMA2InputStream(input, dictionarySize);
     }
 
     /// Opens a size-limited raw Deflate decoder for 7z coder properties.
@@ -573,6 +597,52 @@ final class SevenZipLZMADecoder {
             throw new IOException("7z BZip2 coder properties must be empty");
         }
         return SevenZipCompressionCodecs.openDecoder("bzip2", input, maximumOutputSize);
+    }
+
+    /// Opens a size-limited Zstandard decoder for 7z coder properties.
+    static InputStream openZstandard(
+            InputStream input,
+            byte[] properties,
+            long maximumOutputSize
+    ) throws IOException {
+        Objects.requireNonNull(input, "input");
+        Objects.requireNonNull(properties, "properties");
+        if (properties.length != 0
+                && properties.length != 1
+                && properties.length != 3
+                && properties.length != 5) {
+            throw new IOException("7z Zstandard coder properties must contain zero, one, three, or five bytes");
+        }
+        return SevenZipCompressionCodecs.openDecoder("zstd", input, maximumOutputSize);
+    }
+
+    /// Opens an exactly sized PPMd7 decoder for 7z coder properties.
+    static InputStream openPpmd(
+            InputStream input,
+            byte[] properties,
+            long uncompressedSize
+    ) throws IOException {
+        Objects.requireNonNull(input, "input");
+        Objects.requireNonNull(properties, "properties");
+        if (properties.length != 5) {
+            throw new IOException("7z PPMd coder properties must contain five bytes");
+        }
+        int maximumOrder = Byte.toUnsignedInt(properties[0]);
+        long memorySize = Integer.toUnsignedLong(
+                ByteBuffer.wrap(properties, 1, Integer.BYTES).order(ByteOrder.LITTLE_ENDIAN).getInt()
+        );
+        if (maximumOrder < 2 || maximumOrder > 64) {
+            throw new IOException("Unsupported 7z PPMd maximum order: " + maximumOrder);
+        }
+        if (memorySize < 1L << 11 || memorySize > 256L << 20) {
+            throw new IOException("Unsupported 7z PPMd memory size: " + memorySize);
+        }
+        return SevenZipCompressionCodecs.openPpmdDecoder(
+                input,
+                maximumOrder,
+                memorySize,
+                uncompressedSize
+        );
     }
 
     /// Opens a raw Delta filter decoder for 7z coder properties.

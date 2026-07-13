@@ -13,6 +13,7 @@ include(
     "arkivo-codec-bzip2",
     "arkivo-codec-xz",
     "arkivo-codec-lzma",
+    "arkivo-codec-ppmd",
     "arkivo-codec-zstd",
     "arkivo-archive-all",
     "arkivo-archive-ar",

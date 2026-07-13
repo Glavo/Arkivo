@@ -42,6 +42,32 @@ public final class SevenZipLZMADecoderTest {
         );
     }
 
+    /// Verifies current and legacy Zstandard coder property lengths are accepted.
+    @Test
+    public void zstandardAcceptsCompatiblePropertyLengths() throws IOException {
+        for (int propertyLength : new int[]{0, 1, 3, 5}) {
+            SevenZipLZMADecoder.openZstandard(
+                    new ByteArrayInputStream(new byte[0]),
+                    new byte[propertyLength],
+                    0
+            ).close();
+        }
+    }
+
+    /// Verifies unknown Zstandard coder property layouts are rejected.
+    @Test
+    public void zstandardRejectsUnknownPropertyLengths() {
+        IOException exception = assertThrows(
+                IOException.class,
+                () -> SevenZipLZMADecoder.openZstandard(
+                        new ByteArrayInputStream(new byte[0]),
+                        new byte[2],
+                        0
+                )
+        );
+        assertTrue(exception.getMessage().contains("zero, one, three, or five bytes"));
+    }
+
     /// Verifies that decoder setup failures are not replaced by cleanup failures.
     @Test
     public void openFolderPreservesSetupFailureWhenInputCloseFails() {

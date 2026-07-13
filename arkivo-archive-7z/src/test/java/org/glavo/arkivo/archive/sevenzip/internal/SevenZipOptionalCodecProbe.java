@@ -17,7 +17,8 @@ public final class SevenZipOptionalCodecProbe {
     private static final String @Unmodifiable [] OPTIONAL_CODEC_NAMES = {
             "bzip2",
             "deflate",
-            "deflate64"
+            "deflate64",
+            "zstd"
     };
 
     /// Creates no instances.
@@ -35,9 +36,15 @@ public final class SevenZipOptionalCodecProbe {
             requireMissingCodec(codecName, () -> SevenZipCompressionCodecs.openEncoder(
                     codecName,
                     1,
-                    new ByteArrayOutputStream()
+                new ByteArrayOutputStream()
             ));
         }
+        requireMissingCodec("ppmd", () -> SevenZipCompressionCodecs.openPpmdDecoder(
+                new ByteArrayInputStream(new byte[0]),
+                4,
+                1L << 20,
+                0L
+        ));
     }
 
     /// Requires one optional-codec operation to fail with the stable missing-codec diagnostic.

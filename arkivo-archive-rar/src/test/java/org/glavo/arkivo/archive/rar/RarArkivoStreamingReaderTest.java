@@ -2653,12 +2653,14 @@ public final class RarArkivoStreamingReaderTest {
     public void readsStoredRar4Entries() throws IOException {
         byte[] content = "rar4 stored content".getBytes(StandardCharsets.UTF_8);
         byte[] unicodeContent = "rar4 unicode content".getBytes(StandardCharsets.UTF_8);
+        byte[] linkTarget = "dir/hello.txt".getBytes(StandardCharsets.UTF_8);
         String unicodePath = "unicod\u00e9/na\u00efve.txt";
         long modificationTime = 1_700_000_010L;
         byte[] archive = rar4Archive(
                 directory("dir/", modificationTime, 040755),
                 storedFile("dir/hello.txt", modificationTime, 0100644, content, null),
-                storedFile(unicodePath, modificationTime, 0100644, unicodeContent, null)
+                storedFile(unicodePath, modificationTime, 0100644, unicodeContent, null),
+                storedFile("link", modificationTime, 0120777, linkTarget, null)
         );
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
@@ -2696,6 +2698,16 @@ public final class RarArkivoStreamingReaderTest {
                 assertArrayEquals(unicodeContent, input.readAllBytes());
             }
 
+            assertEquals(true, reader.next());
+            RarArkivoEntryAttributes link = reader.readAttributes(RarArkivoEntryAttributes.class);
+            assertEquals("link", link.path());
+            assertEquals(true, link.isSymbolicLink());
+            assertEquals("dir/hello.txt", link.linkName());
+            assertEquals(RarArkivoEntryAttributes.REDIRECTION_TYPE_UNIX_SYMLINK, link.redirectionType());
+            try (var input = reader.openInputStream()) {
+                assertArrayEquals(new byte[0], input.readAllBytes());
+            }
+
             assertEquals(false, reader.next());
         }
 
@@ -2706,6 +2718,9 @@ public final class RarArkivoStreamingReaderTest {
             assertArrayEquals(content, Files.readAllBytes(file));
             assertEquals(content.length, Files.size(file));
             assertArrayEquals(unicodeContent, Files.readAllBytes(fileSystem.getPath("/" + unicodePath)));
+            Path link = fileSystem.getPath("/link");
+            assertEquals(true, Files.isSymbolicLink(link));
+            assertEquals(fileSystem.getPath("dir/hello.txt"), Files.readSymbolicLink(link));
         }
         deleteTemporaryArchive(archivePath);
     }

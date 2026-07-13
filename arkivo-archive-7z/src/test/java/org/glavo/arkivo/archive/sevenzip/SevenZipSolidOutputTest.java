@@ -182,6 +182,34 @@ public final class SevenZipSolidOutputTest {
         }
     }
 
+    /// Verifies Zstandard output encodes and decodes multiple file substreams in one solid folder.
+    @Test
+    public void zstandardSolidFolderRoundTrip() throws IOException {
+        Path archive = temporaryDirectory.resolve("zstandard-solid.7z");
+        byte[] first = repeatedBytes(4_096, 23);
+        byte[] second = repeatedBytes(3_072, 41);
+        byte[] third = repeatedBytes(2_048, 59);
+        Map<String, Object> environment = new LinkedHashMap<>(writerEnvironment(3));
+        environment.put(SevenZipArkivoFileSystem.COMPRESSION.key(), SevenZipCompression.zstandard());
+
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archive, environment)) {
+            Files.write(fileSystem.getPath("/first.bin"), first);
+            Files.write(fileSystem.getPath("/second.bin"), second);
+            Files.write(fileSystem.getPath("/third.bin"), third);
+        }
+
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archive)) {
+            assertArrayEquals(first, Files.readAllBytes(fileSystem.getPath("/first.bin")));
+            assertArrayEquals(second, Files.readAllBytes(fileSystem.getPath("/second.bin")));
+            assertArrayEquals(third, Files.readAllBytes(fileSystem.getPath("/third.bin")));
+            SevenZipCoderGraph graph = coderGraph(fileSystem, "first.bin");
+            assertEquals(graph, coderGraph(fileSystem, "second.bin"));
+            assertEquals(graph, coderGraph(fileSystem, "third.bin"));
+            assertEquals(first.length + second.length + third.length, graph.finalUnpackSize());
+            assertEquals(SevenZipCoderMethod.ZSTANDARD, graph.coders().get(0).method());
+        }
+    }
+
     /// Verifies complete-rewrite update mode re-encodes surviving entries into solid folders.
     @Test
     public void updateModeRewritesEntriesAsSolidFolders() throws IOException {

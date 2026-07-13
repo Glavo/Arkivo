@@ -8,8 +8,8 @@ import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.delta.DeltaTransform;
-import org.glavo.arkivo.codec.lzma.internal.Lzma2ChannelEncoder;
-import org.glavo.arkivo.codec.lzma.internal.LzmaProperties;
+import org.glavo.arkivo.codec.lzma.internal.LZMA2ChannelEncoder;
+import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
 import org.glavo.arkivo.codec.transform.ByteTransform;
 import org.glavo.arkivo.codec.transform.TransformingWritableByteChannel;
 import org.glavo.arkivo.codec.xz.XZBCJFilter;
@@ -47,7 +47,7 @@ public final class XzChannelEncoder implements CompressionEncoder {
     private final XzChannelOutput output;
 
     /// The LZMA2 model properties.
-    private final LzmaProperties properties;
+    private final LZMAProperties properties;
 
     /// The stream integrity-check type.
     private final int checkType;
@@ -68,7 +68,7 @@ public final class XzChannelEncoder implements CompressionEncoder {
     private @Nullable CountingChannel compressedCounter;
 
     /// The active LZMA2 block encoder after the first write.
-    private @Nullable Lzma2ChannelEncoder blockEncoder;
+    private @Nullable LZMA2ChannelEncoder blockEncoder;
 
     /// The outermost preprocessing input, or the LZMA2 encoder when no preprocessing filter is configured.
     private @Nullable WritableByteChannel blockInput;
@@ -107,7 +107,7 @@ public final class XzChannelEncoder implements CompressionEncoder {
         this(
                 target,
                 ownership,
-                LzmaProperties.defaults(dictionarySize),
+                LZMAProperties.defaults(dictionarySize),
                 checkType,
                 XZFilterChain.EMPTY
         );
@@ -117,7 +117,7 @@ public final class XzChannelEncoder implements CompressionEncoder {
     public XzChannelEncoder(
             WritableByteChannel target,
             ChannelOwnership ownership,
-            LzmaProperties properties,
+            LZMAProperties properties,
             int checkType
     ) throws IOException {
         this(target, ownership, properties, checkType, XZFilterChain.EMPTY);
@@ -127,7 +127,7 @@ public final class XzChannelEncoder implements CompressionEncoder {
     public XzChannelEncoder(
             WritableByteChannel target,
             ChannelOwnership ownership,
-            LzmaProperties properties,
+            LZMAProperties properties,
             int checkType,
             XZFilterChain filterChain
     ) throws IOException {
@@ -138,7 +138,7 @@ public final class XzChannelEncoder implements CompressionEncoder {
     public XzChannelEncoder(
             WritableByteChannel target,
             ChannelOwnership ownership,
-            LzmaProperties properties,
+            LZMAProperties properties,
             int checkType,
             XZFilterChain filterChain,
             long maximumBlockSize
@@ -203,7 +203,7 @@ public final class XzChannelEncoder implements CompressionEncoder {
     @Override
     public void flush() throws IOException {
         ensureOpen();
-        Lzma2ChannelEncoder encoder = blockEncoder;
+        LZMA2ChannelEncoder encoder = blockEncoder;
         if (encoder != null) {
             encoder.flush();
         }
@@ -305,7 +305,7 @@ public final class XzChannelEncoder implements CompressionEncoder {
         CountingChannel counter = new CountingChannel(output);
         blockCheck = XzCheck.create(checkType);
         compressedCounter = counter;
-        Lzma2ChannelEncoder encoder = new Lzma2ChannelEncoder(
+        LZMA2ChannelEncoder encoder = new LZMA2ChannelEncoder(
                 counter,
                 ChannelOwnership.RETAIN,
                 properties
@@ -326,7 +326,7 @@ public final class XzChannelEncoder implements CompressionEncoder {
 
     /// Finishes the active block, padding, and integrity check.
     private void finishBlock() throws IOException {
-        Lzma2ChannelEncoder encoder = blockEncoder;
+        LZMA2ChannelEncoder encoder = blockEncoder;
         if (encoder == null) {
             return;
         }

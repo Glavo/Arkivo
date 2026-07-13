@@ -177,6 +177,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// The RAR4 compression method byte for the best compressed entries.
     private static final int RAR4_METHOD_BEST = 0x35;
 
+    /// The largest RAR4 Unix symbolic-link target accepted for eager metadata decoding.
+    private static final int MAXIMUM_RAR4_SYMBOLIC_LINK_TARGET_SIZE = 1 << 20;
+
     /// File flag indicating that the entry is a directory.
     private static final long FILE_FLAG_DIRECTORY = 0x0001L;
 
@@ -482,6 +485,11 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                     currentBodyOpened = false;
                     currentBodyConsumed = false;
                     prepareCurrentIntegrity();
+                    if (rarVersion == 4 && isRar4UnixSymbolicLink(attributes)) {
+                        RarEntryAttributes symbolicLinkAttributes = readRar4UnixSymbolicLink(attributes);
+                        currentAttributes = symbolicLinkAttributes;
+                        currentPartAttributes = symbolicLinkAttributes;
+                    }
                     return true;
                 }
                 case HEADER_TYPE_SERVICE -> skipBlockData(block);
@@ -571,12 +579,15 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (attributes == null) {
             throw new IOException("RAR streaming reader has not advanced to an entry");
         }
-        if (currentBodyOpened || currentBodyConsumed) {
+        if (currentBodyOpened) {
             throw new IOException("RAR entry body has already been opened");
         }
         if (attributes.isDirectory() || attributes.isSymbolicLink() || attributes.isOther()) {
             currentBodyOpened = true;
             return StreamChannelAdapters.readableChannel(InputStream.nullInputStream());
+        }
+        if (currentBodyConsumed) {
+            throw new IOException("RAR entry body has already been opened");
         }
         if (attributes.continuesFromPreviousVolume()) {
             throw new IOException("RAR entry starts in a previous volume");
@@ -1921,6 +1932,66 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             case RAR4_HOST_OS_UNIX -> (fileAttributes & 0170000L) == 0040000L;
             default -> false;
         };
+    }
+
+    /// Returns whether RAR4 Unix file attributes describe a symbolic link.
+    private static boolean isRar4UnixSymbolicLink(RarEntryAttributes attributes) {
+        return attributes.hostOs() == RarArkivoEntryAttributes.HOST_OS_UNIX
+                && (attributes.fileAttributes() & 0170000L) == 0120000L;
+    }
+
+    /// Decodes a RAR4 Unix symbolic-link target stored as the member body.
+    private RarEntryAttributes readRar4UnixSymbolicLink(RarEntryAttributes attributes) throws IOException {
+        long unpackedSize = attributes.unpackedSize();
+        if (unpackedSize <= 0L || unpackedSize > MAXIMUM_RAR4_SYMBOLIC_LINK_TARGET_SIZE) {
+            throw new IOException("RAR4 symbolic link target size is out of range");
+        }
+
+        byte[] targetBytes;
+        try (InputStream input = openInputStream()) {
+            targetBytes = input.readNBytes(Math.toIntExact(unpackedSize) + 1);
+        }
+        currentBodyOpened = false;
+        if (targetBytes.length != unpackedSize) {
+            throw new IOException("RAR4 symbolic link target size does not match its header");
+        }
+        for (byte value : targetBytes) {
+            if (value == 0) {
+                throw new IOException("RAR4 symbolic link target contains a null character");
+            }
+        }
+        String target = new String(targetBytes, StandardCharsets.UTF_8);
+        if (target.isEmpty()) {
+            throw new IOException("RAR4 symbolic link target must not be empty");
+        }
+
+        return new RarEntryAttributes(
+                attributes.path(),
+                false,
+                true,
+                false,
+                target,
+                RarArkivoEntryAttributes.REDIRECTION_TYPE_UNIX_SYMLINK,
+                0L,
+                target,
+                attributes.userName(),
+                attributes.groupName(),
+                attributes.userId(),
+                attributes.groupId(),
+                attributes.hostOs(),
+                attributes.fileAttributes(),
+                attributes.compressionMethod(),
+                attributes.packedSize(),
+                attributes.unpackedSize(),
+                attributes.dataCrc32(),
+                attributes.blake2spHash(),
+                attributes.isEncrypted(),
+                attributes.continuesFromPreviousVolume(),
+                attributes.continuesInNextVolume(),
+                attributes.lastModifiedTime(),
+                attributes.creationTime(),
+                attributes.lastAccessTime()
+        );
     }
 
     /// Parses RAR file extra area records used by this reader.

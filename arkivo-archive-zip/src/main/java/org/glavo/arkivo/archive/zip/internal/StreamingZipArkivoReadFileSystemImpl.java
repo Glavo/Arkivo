@@ -8,7 +8,7 @@ import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecodeDirective;
-import org.glavo.arkivo.codec.lzma.internal.LzmaInputStream;
+import org.glavo.arkivo.codec.lzma.internal.LZMAInputStream;
 
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
@@ -120,6 +120,9 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
 
     /// The current parsed entry exposed to streaming reader adapters, or `null` when no entry is active.
     private @Nullable LocalEntry currentStreamingEntry;
+
+    /// The completed known-size entry that may be followed by an undeclared signed data descriptor.
+    private @Nullable LocalEntry unexpectedDataDescriptorCandidate;
 
     /// Whether this file system is open.
     private boolean open = true;
@@ -277,12 +280,26 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
                 readLimits.requireWithinLimits();
                 closeCurrentEntry();
 
+                LocalEntry descriptorCandidate = unexpectedDataDescriptorCandidate;
+                unexpectedDataDescriptorCandidate = null;
                 int signature = readIntOrEnd(input);
                 if (archiveStart) {
                     archiveStart = false;
                     if (signature == DATA_DESCRIPTOR_SIGNATURE) {
                         signature = readIntOrEnd(input);
                     }
+                } else if (signature == DATA_DESCRIPTOR_SIGNATURE && descriptorCandidate != null) {
+                    if (!readAndMatchesDataDescriptorAfterSignature(
+                            input,
+                            descriptorCandidate.zip64DataDescriptor,
+                            descriptorCandidate.crc32,
+                            descriptorCandidate.compressedSize,
+                            descriptorCandidate.uncompressedSize,
+                            false
+                    )) {
+                        throw new IOException("Undeclared ZIP data descriptor does not match entry data");
+                    }
+                    signature = readIntOrEnd(input);
                 }
                 if (signature < 0
                         || signature == CENTRAL_DIRECTORY_HEADER_SIGNATURE
@@ -323,10 +340,9 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
                     compressedSize = zip64Sizes.compressedSize;
                     uncompressedSize = zip64Sizes.uncompressedSize;
                 }
-                boolean zip64DataDescriptor = hasDataDescriptor
-                        && (headerCompressedSize == UINT32_MAX
+                boolean zip64DataDescriptor = headerCompressedSize == UINT32_MAX
                         || headerUncompressedSize == UINT32_MAX
-                        || hasZip64ExtraField(extraData));
+                        || hasZip64ExtraField(extraData);
 
                 String path = decodePath(rawName, flags, extraData);
                 LocalEntry entry = new LocalEntry(
@@ -1269,7 +1285,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
                 throw new IOException("ZIP LZMA entry without EOS marker requires an uncompressed size");
             }
             long expectedUncompressedSize = usesEndMarker ? -1L : uncompressedSize;
-            return new LzmaInputStream(input, expectedUncompressedSize, properties, dictionarySize);
+            return new LZMAInputStream(input, expectedUncompressedSize, properties, dictionarySize);
         } catch (IOException | RuntimeException | Error exception) {
             try {
                 input.close();
@@ -1524,7 +1540,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         }
 
         LocalEntry entry = currentEntry;
-        if (entry != null && !entry.directory) {
+        if (entry != null) {
             if (shouldSkipRawEntryData(entry)) {
                 skipRawEntryData(entry);
             } else {
@@ -1532,9 +1548,20 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
                     ignored.transferTo(OutputStream.nullOutputStream());
                 }
             }
+            rememberUnexpectedDataDescriptorCandidate(entry);
         }
         currentEntry = null;
         currentStreamingEntry = null;
+    }
+
+    /// Remembers a completed known-size entry whose local header may have omitted its descriptor flag.
+    private void rememberUnexpectedDataDescriptorCandidate(LocalEntry entry) {
+        if ((entry.flags & DATA_DESCRIPTOR_FLAG) == 0
+                && entry.crc32 != ZipArkivoEntryAttributes.UNKNOWN_CRC32
+                && entry.compressedSize != ZipArkivoEntryAttributes.UNKNOWN_SIZE
+                && entry.uncompressedSize != ZipArkivoEntryAttributes.UNKNOWN_SIZE) {
+            unexpectedDataDescriptorCandidate = entry;
+        }
     }
 
     /// Returns whether an unsupported entry can be skipped without decoding its content.
@@ -1568,6 +1595,10 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
         lock();
         try {
             if (currentInput == inputStream) {
+                LocalEntry entry = currentEntry;
+                if (entry != null) {
+                    rememberUnexpectedDataDescriptorCandidate(entry);
+                }
                 currentInput = null;
                 currentEntry = null;
                 currentStreamingEntry = null;

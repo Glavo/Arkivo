@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.transform.TransformingInputStream;
 import org.glavo.arkivo.codec.transform.ByteTransform;
 import org.glavo.arkivo.codec.delta.DeltaTransform;
-import org.glavo.arkivo.codec.lzma.internal.Lzma2InputStream;
+import org.glavo.arkivo.codec.lzma.internal.LZMA2InputStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -443,7 +443,7 @@ public final class XzInputStream extends InputStream {
                 if (properties.length != 1) {
                     throw new IOException("XZ LZMA2 filter requires one property byte");
                 }
-                return new Lzma2InputStream(
+                return new LZMA2InputStream(
                         downstream,
                         XzSupport.lzma2DictionarySize(Byte.toUnsignedInt(properties[0]))
                 );

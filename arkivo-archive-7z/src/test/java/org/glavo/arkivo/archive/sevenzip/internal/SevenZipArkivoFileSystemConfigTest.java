@@ -119,16 +119,14 @@ public final class SevenZipArkivoFileSystemConfigTest {
                 SevenZipArkivoFileSystem.COMPRESSION.key(),
                 customCompression
         ));
+        SevenZipArkivoFileSystemConfig namedConfig = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+                SevenZipArkivoFileSystem.COMPRESSION.key(),
+                "zstd"
+        ));
 
         assertEquals(SevenZipCompression.bzip2(), methodConfig.compression());
         assertSame(customCompression, completeConfig.compression());
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
-                        SevenZipArkivoFileSystem.COMPRESSION.key(),
-                        "zstd"
-                ))
-        );
+        assertEquals(SevenZipCompression.zstandard(), namedConfig.compression());
         assertThrows(
                 IllegalArgumentException.class,
                 () -> SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(

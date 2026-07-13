@@ -30,6 +30,12 @@ public enum SevenZipCoderMethod {
     /// Decodes Deflate64-compressed bytes.
     DEFLATE64(0x04, 0x01, 0x09),
 
+    /// Decodes Zstandard-compressed bytes.
+    ZSTANDARD(0x04, 0xf7, 0x11, 0x01),
+
+    /// Decodes PPMd7-compressed bytes.
+    PPMD(0x03, 0x04, 0x01),
+
     /// Decrypts 7z AES-256/SHA-256 content.
     AES(0x06, 0xf1, 0x07, 0x01),
 

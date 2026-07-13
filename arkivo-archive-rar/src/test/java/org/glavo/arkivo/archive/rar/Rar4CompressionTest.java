@@ -37,6 +37,12 @@ public final class Rar4CompressionTest {
     /// The system property containing the Arkivo base module JAR path.
     private static final String BASE_JAR_PROPERTY = "arkivo.base.jar";
 
+    /// The system property containing the published codec-core JAR path.
+    private static final String CODEC_JAR_PROPERTY = "arkivo.codec.jar";
+
+    /// The system property containing the published PPMd-codec JAR path.
+    private static final String PPMD_JAR_PROPERTY = "arkivo.ppmd.jar";
+
     /// A RAR4 solid archive containing `file1.txt` through `file9.txt`.
     private static final byte @Unmodifiable [] SOLID_ARCHIVE = Base64.getDecoder().decode(
             "UmFyIRoHADvQcwgADQAAAAAAAACylHSAkCsAGgAAAAYAAAADBPcp4veq81AdMwkApIEAAGZpbGUxLnR4dADADQwM/hAMt2G7"
@@ -172,7 +178,9 @@ public final class Rar4CompressionTest {
     public void readsCompressedEntryFromPublishedModule() throws Exception {
         ModuleFinder finder = ModuleFinder.of(
                 requiredPathProperty(RAR_JAR_PROPERTY),
-                requiredPathProperty(BASE_JAR_PROPERTY)
+                requiredPathProperty(BASE_JAR_PROPERTY),
+                requiredPathProperty(CODEC_JAR_PROPERTY),
+                requiredPathProperty(PPMD_JAR_PROPERTY)
         );
         Configuration configuration = ModuleLayer.boot().configuration().resolve(
                 finder,

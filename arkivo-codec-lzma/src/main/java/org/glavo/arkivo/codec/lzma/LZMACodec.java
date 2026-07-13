@@ -13,9 +13,9 @@ import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
-import org.glavo.arkivo.codec.lzma.internal.LzmaChannelDecoder;
-import org.glavo.arkivo.codec.lzma.internal.LzmaChannelEncoder;
-import org.glavo.arkivo.codec.lzma.internal.LzmaProperties;
+import org.glavo.arkivo.codec.lzma.internal.LZMAChannelDecoder;
+import org.glavo.arkivo.codec.lzma.internal.LZMAChannelEncoder;
+import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -76,13 +76,13 @@ public final class LZMACodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.compressionOptions(), "LZMA compression");
-        LzmaProperties properties = LzmaProperties.fromOptions(
+        LZMAProperties properties = LZMAProperties.fromOptions(
                 options,
                 LZMAOptions.DICTIONARY_SIZE,
                 (int) DEFAULT_DICTIONARY_SIZE
         );
         long pledgedSourceSize = StandardCodecOptionSupport.pledgedSourceSize(options);
-        return new LzmaChannelEncoder(target, ownership, properties, pledgedSourceSize);
+        return new LZMAChannelEncoder(target, ownership, properties, pledgedSourceSize);
     }
 
     /// Opens a configured LZMA decoder over the source channel.
@@ -96,7 +96,7 @@ public final class LZMACodec implements CompressionCodec {
         long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
         long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
         return StandardCodecOptionSupport.limitOutput(
-                new LzmaChannelDecoder(source, ownership, maximumWindowSize),
+                new LZMAChannelDecoder(source, ownership, maximumWindowSize),
                 maximumOutputSize
         );
     }

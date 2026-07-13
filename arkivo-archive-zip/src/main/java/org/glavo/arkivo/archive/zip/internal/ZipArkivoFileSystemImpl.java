@@ -4,7 +4,7 @@
 package org.glavo.arkivo.archive.zip.internal;
 
 
-import org.glavo.arkivo.codec.lzma.internal.LzmaInputStream;
+import org.glavo.arkivo.codec.lzma.internal.LZMAInputStream;
 
 
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
@@ -1369,7 +1369,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 throw new IOException("ZIP LZMA entry without EOS marker requires an uncompressed size");
             }
             long expectedUncompressedSize = usesEndMarker ? -1L : uncompressedSize;
-            return new LzmaInputStream(input, expectedUncompressedSize, properties, dictionarySize);
+            return new LZMAInputStream(input, expectedUncompressedSize, properties, dictionarySize);
         } catch (IOException | RuntimeException | Error exception) {
             try {
                 input.close();
@@ -1622,7 +1622,9 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         int nameLength = Short.toUnsignedInt(header.getShort(ZIP_LOCAL_FILE_HEADER_NAME_LENGTH_OFFSET));
         int extraLength = Short.toUnsignedInt(header.getShort(ZIP_LOCAL_FILE_HEADER_EXTRA_LENGTH_OFFSET));
         long extraOffset = localHeaderVariableOffset(offset, nameLength, "local extra data offset");
-        if (flags != expectedFlags) {
+        int flagDifference = flags ^ expectedFlags;
+        if ((flagDifference & ~DATA_DESCRIPTOR_FLAG) != 0
+                || flagDifference != 0 && ((flags | expectedFlags) & ENCRYPTED_FLAG) != 0) {
             throw new IOException("ZIP local header flags do not match central directory");
         }
         if (method != expectedMethod) {

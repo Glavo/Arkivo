@@ -26,7 +26,10 @@ public enum SevenZipCompressionMethod {
     DEFLATE("deflate"),
 
     /// Compresses each non-empty entry with raw Deflate64.
-    DEFLATE64("deflate64");
+    DEFLATE64("deflate64"),
+
+    /// Compresses each non-empty entry with Zstandard.
+    ZSTANDARD("zstd");
 
     /// The stable environment and display name.
     private final String optionName;

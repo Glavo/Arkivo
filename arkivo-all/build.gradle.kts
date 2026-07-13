@@ -1,7 +1,10 @@
 import java.lang.module.ModuleDescriptor
 import java.lang.module.ModuleFinder
+import java.util.Properties
+import org.glavo.arkivo.gradle.DownloadVerifiedFile
 import org.gradle.api.tasks.JavaExec
 import org.gradle.api.tasks.bundling.Jar
+import org.gradle.api.file.RelativePath
 
 val benchmarkSourceSet = sourceSets.create("benchmark") {
     compileClasspath += sourceSets.main.get().output
@@ -27,6 +30,160 @@ dependencies {
     add(
         benchmarkSourceSet.annotationProcessorConfigurationName,
         "org.openjdk.jmh:jmh-generator-annprocess:1.37"
+    )
+}
+
+val libarchiveManifestFile = rootProject.file("gradle/test-data/libarchive.properties")
+val libarchiveManifest = Properties().apply {
+    libarchiveManifestFile.inputStream().use(::load)
+}
+val libarchiveVersion = libarchiveManifest.getProperty("version")
+val libarchiveRoot = libarchiveManifest.getProperty("archiveRoot")
+val libarchiveArchiveName = libarchiveManifest.getProperty("archiveName")
+val libarchiveArchiveSha256 = libarchiveManifest.getProperty("archiveSha256")
+val libarchiveArchiveSize = libarchiveManifest.getProperty("archiveSize").toLong()
+val testDataCacheDirectory = rootProject.layout.dir(rootProject.providers.provider {
+    rootProject.file(
+        rootProject.providers.gradleProperty("arkivo.testDataCacheDirectory").orNull
+            ?: ".arkivo-cache/test-data"
+    )
+})
+val libarchiveArchive = rootProject.layout.file(testDataCacheDirectory.map { directory ->
+    directory.file("downloads/sha256/$libarchiveArchiveSha256/$libarchiveArchiveName").asFile
+})
+val libarchiveTestDataDirectory = rootProject.layout.buildDirectory.dir(
+    "test-data/libarchive/$libarchiveVersion"
+)
+
+val downloadLibarchiveTestSources = tasks.register<DownloadVerifiedFile>("downloadLibarchiveTestSources") {
+    group = "verification"
+    description = "Downloads and verifies the pinned official libarchive source release."
+    sourceUrl.set(libarchiveManifest.getProperty("archiveUrl"))
+    expectedSha256.set(libarchiveArchiveSha256)
+    expectedSize.set(libarchiveArchiveSize)
+    offline.set(gradle.startParameter.isOffline)
+    cacheRoot.set(testDataCacheDirectory)
+    cacheMarker.set(testDataCacheDirectory.map { it.file(".arkivo-test-data-cache") })
+    destination.set(libarchiveArchive)
+}
+
+val libarchiveFixtureNames = listOf(
+    "test_read_format_ar.ar.uu",
+    "test_compat_gtar_1.tar.uu",
+    "test_compat_gtar_2.tar.uu",
+    "test_read_format_zip.zip.uu",
+    "test_read_format_zip_bzip2.zipx.uu",
+    "test_read_format_zip_bzip2_multi.zipx.uu",
+    "test_read_format_zip_bz2_hang.zip.uu",
+    "test_read_format_zip_lzma.zipx.uu",
+    "test_read_format_zip_lzma_alone_leak.zipx.uu",
+    "test_read_format_zip_lzma_multi.zipx.uu",
+    "test_read_format_zip_lzma_stream_end.zipx.uu",
+    "test_read_format_zip_xz_multi.zipx.uu",
+    "test_read_format_zip_zstd.zipx.uu",
+    "test_read_format_zip_zstd_multi.zipx.uu",
+    "test_read_format_zip_traditional_encryption_data.zip.uu",
+    "test_read_format_zip_winzip_aes128.zip.uu",
+    "test_read_format_zip_winzip_aes256.zip.uu",
+    "test_read_format_zip_winzip_aes256_large.zip.uu",
+    "test_read_format_zip_winzip_aes256_stored.zip.uu",
+    "test_read_format_7zip_copy.7z.uu",
+    "test_read_format_7zip_copy_2.7z.uu",
+    "test_read_format_7zip_lzma1.7z.uu",
+    "test_read_format_7zip_lzma2.7z.uu",
+    "test_read_format_7zip_lzma1_lzma2.7z.uu",
+    "test_read_format_7zip_bzip2.7z.uu",
+    "test_read_format_7zip_deflate.7z.uu",
+    "test_read_format_7zip_bcj_lzma2.7z.uu",
+    "test_read_format_7zip_bcj2_lzma2_1.7z.uu",
+    "test_read_format_7zip_delta_lzma2.7z.uu",
+    "test_read_format_7zip_delta4_lzma2.7z.uu",
+    "test_read_format_7zip_lzma2_arm.7z.uu",
+    "test_read_format_7zip_lzma2_arm64.7z.uu",
+    "test_read_format_7zip_lzma2_riscv.7z.uu",
+    "test_read_format_7zip_lzma2_powerpc.7z.uu",
+    "test_read_format_7zip_lzma2_sparc.7z.uu",
+    "test_read_format_7zip_deflate_arm64.7z.uu",
+    "test_read_format_7zip_deflate_powerpc.7z.uu",
+    "test_read_format_7zip_ppmd.7z.uu",
+    "test_read_format_7zip_zstd.7z.uu",
+    "test_read_format_7zip_solid_zstd.7z.uu",
+    "test_read_format_7zip_zstd_bcj.7z.uu",
+    "test_read_format_7zip_zstd_nobcj.7z.uu",
+    "test_read_format_7zip_zstd_arm.7z.uu",
+    "test_read_format_7zip_zstd_sparc.7z.uu",
+    "test_read_format_7zip_symbolic_name.7z.uu",
+    "test_read_format_7zip_extract_second.7z.uu",
+    "test_read_format_7zip_encryption.7z.uu",
+    "test_read_format_7zip_encryption_header.7z.uu",
+    "test_read_format_7zip_encryption_partially.7z.uu",
+    "test_read_format_rar.rar.uu",
+    "test_read_format_rar5_stored.rar.uu",
+    "test_read_format_rar5_compressed.rar.uu"
+)
+
+val prepareLibarchiveTestCorpus = tasks.register<Sync>("prepareLibarchiveTestCorpus") {
+    group = "verification"
+    description = "Extracts reviewed uuencoded archive fixtures from the pinned libarchive source release."
+    dependsOn(downloadLibarchiveTestSources)
+    inputs.property("fixtureNames", libarchiveFixtureNames)
+
+    from(downloadLibarchiveTestSources.flatMap { it.destination }.map { archive ->
+        tarTree(resources.gzip(archive.asFile))
+    }) {
+        include("$libarchiveRoot/COPYING")
+        libarchiveFixtureNames.forEach { fixtureName ->
+            include("$libarchiveRoot/libarchive/test/$fixtureName")
+        }
+        eachFile {
+            val segments = relativePath.segments
+            require(segments.isNotEmpty() && segments[0] == libarchiveRoot) {
+                "Unexpected libarchive source archive path: $relativePath"
+            }
+            relativePath = if (segments.size == 2 && segments[1] == "COPYING") {
+                RelativePath(true, "COPYING")
+            } else {
+                require(segments.size == 4
+                        && segments[1] == "libarchive"
+                        && segments[2] == "test") {
+                    "Unexpected libarchive fixture path: $relativePath"
+                }
+                RelativePath(true, "fixtures", segments[3])
+            }
+        }
+        includeEmptyDirs = false
+    }
+    from(libarchiveManifestFile) {
+        rename { "UPSTREAM.properties" }
+    }
+    into(libarchiveTestDataDirectory)
+}
+
+val realWorldTestSourceSet = sourceSets.create("realWorldTest") {
+    compileClasspath += sourceSets.main.get().output
+    runtimeClasspath += output + compileClasspath
+}
+
+configurations.named(realWorldTestSourceSet.implementationConfigurationName) {
+    extendsFrom(configurations.testImplementation.get())
+}
+configurations.named(realWorldTestSourceSet.compileOnlyConfigurationName) {
+    extendsFrom(configurations.testCompileOnly.get())
+}
+configurations.named(realWorldTestSourceSet.runtimeOnlyConfigurationName) {
+    extendsFrom(configurations.testRuntimeOnly.get())
+}
+
+tasks.register<Test>("realWorldTest") {
+    group = "verification"
+    description = "Runs archive readers against the pinned official libarchive corpus."
+    dependsOn(prepareLibarchiveTestCorpus)
+    shouldRunAfter(tasks.test)
+    testClassesDirs = realWorldTestSourceSet.output.classesDirs
+    classpath = realWorldTestSourceSet.runtimeClasspath
+    systemProperty(
+        "arkivo.libarchive.testDataDirectory",
+        libarchiveTestDataDirectory.get().asFile.absolutePath
     )
 }
 
@@ -83,6 +240,7 @@ val moduleProjectPaths = listOf(
     ":arkivo-codec-delta",
     ":arkivo-codec-gzip",
     ":arkivo-codec-lzma",
+    ":arkivo-codec-ppmd",
     ":arkivo-codec-xz",
     ":arkivo-codec-zlib",
     ":arkivo-codec-zstd"
@@ -119,6 +277,7 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.codec.delta",
             "org.glavo.arkivo.codec.gzip",
             "org.glavo.arkivo.codec.lzma",
+            "org.glavo.arkivo.codec.ppmd",
             "org.glavo.arkivo.codec.xz",
             "org.glavo.arkivo.codec.zlib",
             "org.glavo.arkivo.codec.zstd"
@@ -170,6 +329,7 @@ val verifyModuleDescriptors by tasks.registering {
                 "org.glavo.arkivo.codec.delta",
                 "org.glavo.arkivo.codec.gzip",
                 "org.glavo.arkivo.codec.lzma",
+                "org.glavo.arkivo.codec.ppmd",
                 "org.glavo.arkivo.codec.xz",
                 "org.glavo.arkivo.codec.zlib",
                 "org.glavo.arkivo.codec.zstd"
@@ -181,6 +341,7 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.codec.delta" to setOf(codecModule),
             "org.glavo.arkivo.codec.gzip" to setOf(codecModule),
             "org.glavo.arkivo.codec.lzma" to setOf(codecModule),
+            "org.glavo.arkivo.codec.ppmd" to setOf(codecModule),
             "org.glavo.arkivo.codec.xz" to setOf(codecModule),
             "org.glavo.arkivo.codec.zlib" to setOf(codecModule),
             "org.glavo.arkivo.codec.zstd" to setOf(codecModule)
@@ -218,6 +379,7 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.codec.delta" to setOf("org.glavo.arkivo.codec.delta"),
             "org.glavo.arkivo.codec.gzip" to setOf("org.glavo.arkivo.codec.gzip"),
             "org.glavo.arkivo.codec.lzma" to setOf("org.glavo.arkivo.codec.lzma"),
+            "org.glavo.arkivo.codec.ppmd" to setOf("org.glavo.arkivo.codec.ppmd"),
             "org.glavo.arkivo.codec.xz" to setOf("org.glavo.arkivo.codec.xz"),
             "org.glavo.arkivo.codec.zlib" to setOf("org.glavo.arkivo.codec.zlib"),
             "org.glavo.arkivo.codec.zstd" to setOf("org.glavo.arkivo.codec.zstd")
@@ -249,6 +411,11 @@ val verifyModuleDescriptors by tasks.registering {
                     "org.glavo.arkivo.archive.sevenzip",
                     "org.glavo.arkivo.archive.zip",
                     "org.glavo.arkivo.codec.xz"
+                )
+            ),
+            "org.glavo.arkivo.codec.ppmd" to mapOf(
+                "org.glavo.arkivo.codec.ppmd.internal" to setOf(
+                    "org.glavo.arkivo.archive.rar"
                 )
             )
         )
@@ -313,6 +480,9 @@ val verifyModuleDescriptors by tasks.registering {
             ),
             "org.glavo.arkivo.codec.lzma" to mapOf(
                 compressionCodecService to setOf("org.glavo.arkivo.codec.lzma.LZMACodec")
+            ),
+            "org.glavo.arkivo.codec.ppmd" to mapOf(
+                compressionCodecService to setOf("org.glavo.arkivo.codec.ppmd.PPMdCodec")
             ),
             "org.glavo.arkivo.codec.xz" to mapOf(
                 compressionCodecService to setOf("org.glavo.arkivo.codec.xz.XZCodec")
