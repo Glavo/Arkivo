@@ -224,6 +224,7 @@ val updatePublicApiSignatures by tasks.registering(JavaExec::class) {
 
 val moduleProjectPaths = listOf(
     ":arkivo-all",
+    ":arkivo-base",
     ":arkivo-archive",
     ":arkivo-archive-7z",
     ":arkivo-archive-all",
@@ -261,6 +262,7 @@ val verifyModuleDescriptors by tasks.registering {
     doLast {
         val expectedModules = setOf(
             "org.glavo.arkivo.all",
+            "org.glavo.arkivo.base",
             "org.glavo.arkivo.archive",
             "org.glavo.arkivo.archive.all",
             "org.glavo.arkivo.archive.ar",

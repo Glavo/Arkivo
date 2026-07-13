@@ -21,6 +21,10 @@ val publicationMetadata = mapOf(
         "Arkivo",
         "Aggregates all Arkivo archive formats and compression codecs."
     ),
+    "arkivo-base" to ArkivoPublicationMetadata(
+        "Arkivo Base",
+        "Provides internal low-level primitives shared by Arkivo modules."
+    ),
     "arkivo-archive" to ArkivoPublicationMetadata(
         "Arkivo Archive API",
         "Provides archive format discovery, NIO file system contracts, streaming APIs, and storage abstractions."
@@ -320,6 +324,7 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-archive-all:compile:$publicationVersion",
         "org.glavo:arkivo-codec-all:compile:$publicationVersion"
     ),
+    "arkivo-base" to emptySet(),
     "arkivo-archive" to emptySet(),
     "arkivo-archive-all" to setOf(
         "org.glavo:arkivo-archive:compile:$publicationVersion",

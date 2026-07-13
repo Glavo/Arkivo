@@ -1,6 +1,7 @@
 rootProject.name = "arkivo"
 
 include(
+    "arkivo-base",
     "arkivo-archive",
     "arkivo-codec",
     "arkivo-codec-all",
