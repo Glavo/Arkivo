@@ -1157,7 +1157,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     @Override
     public @Unmodifiable Iterable<FileStore> getFileStores() {
         try (Operation ignored = beginReadOperation()) {
-            return List.of(StreamingZipFileStore.WRITABLE);
+            return List.of(StreamingZipFileStore.INSTANCE);
         }
     }
 
@@ -2341,7 +2341,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         if (passwordProvider == null) {
             throw new IOException("ZIP encrypted entry requires a password: " + entryName);
         }
-        byte[] password = passwordProvider.passwordForEntry(getPath("/" + entryName));
+        byte[] password = passwordProvider.passwordForEntry("/" + entryName);
         if (password == null) {
             throw new IOException("ZIP encrypted entry requires a password: " + entryName);
         }

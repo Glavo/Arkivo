@@ -7,7 +7,6 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 
@@ -41,6 +40,6 @@ public final class ArkivoPasswordProviderTest {
     public void entryPasswordFallsBackToArchivePassword() throws Exception {
         ArkivoPasswordProvider provider = ArkivoPasswordProvider.fixed(new byte[]{1, 2, 3});
 
-        assertArrayEquals(new byte[]{1, 2, 3}, provider.passwordForEntry(Path.of("entry.txt")));
+        assertArrayEquals(new byte[]{1, 2, 3}, provider.passwordForEntry("/entry.txt"));
     }
 }

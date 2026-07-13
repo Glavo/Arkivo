@@ -15,21 +15,14 @@ import java.nio.file.attribute.FileAttributeView;
 import java.nio.file.attribute.FileStoreAttributeView;
 import java.util.Objects;
 
-/// Describes the synthetic file store exposed by streaming ZIP file systems.
+/// Describes the synthetic file store exposed by writable streaming ZIP file systems.
 @NotNullByDefault
 final class StreamingZipFileStore extends FileStore {
-    /// The shared read-only streaming ZIP file store.
-    static final StreamingZipFileStore READ_ONLY = new StreamingZipFileStore(true);
-
     /// The shared writable streaming ZIP file store.
-    static final StreamingZipFileStore WRITABLE = new StreamingZipFileStore(false);
-
-    /// Whether this file store is read-only.
-    private final boolean readOnly;
+    static final StreamingZipFileStore INSTANCE = new StreamingZipFileStore();
 
     /// Creates a streaming ZIP file store.
-    private StreamingZipFileStore(boolean readOnly) {
-        this.readOnly = readOnly;
+    private StreamingZipFileStore() {
     }
 
     /// Returns the file store name.
@@ -47,7 +40,7 @@ final class StreamingZipFileStore extends FileStore {
     /// Returns whether this file store is read-only.
     @Override
     public boolean isReadOnly() {
-        return readOnly;
+        return false;
     }
 
     /// Returns an unknown total space value.

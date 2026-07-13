@@ -16,7 +16,6 @@ import org.glavo.arkivo.archive.ArkivoVolumeOutput;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoFileSystemImpl;
-import org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoReadFileSystemImpl;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemImpl;
 import org.tukaani.xz.LZMA2Options;
@@ -42,6 +41,7 @@ import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonReadableChannelException;
 import java.nio.channels.NonWritableChannelException;
+import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
@@ -3333,19 +3333,6 @@ public final class ZipArkivoFileSystemTest {
         } finally {
             Files.deleteIfExists(targetPath);
             deleteTemporaryArchive(sourcePath);
-        }
-    }
-
-    /// Verifies that streaming ZIP read file stores expose supported attribute views.
-    @Test
-    public void streamingReadFileStoreSupportsAttributeViews() throws IOException {
-        try (StreamingZipArkivoReadFileSystemImpl fileSystem = new StreamingZipArkivoReadFileSystemImpl(
-                ZipArkivoFileSystemProvider.instance(),
-                InputStream.nullInputStream(),
-                ZipArkivoFileSystemConfig.DEFAULTS
-        )) {
-            FileStore fileStore = fileSystem.getFileStores().iterator().next();
-            assertStreamingZipFileStoreAttributeViews(fileStore, true);
         }
     }
 
@@ -9623,7 +9610,7 @@ public final class ZipArkivoFileSystemTest {
             long expectedUncompressedSize
     ) throws ReflectiveOperationException {
         Class<?> type = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoReadFileSystemImpl$KnownSizeEntryInputStream"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl$KnownSizeEntryInputStream"
         );
         Constructor<?> constructor = type.getDeclaredConstructor(InputStream.class, long.class, long.class);
         constructor.setAccessible(true);
@@ -9634,9 +9621,9 @@ public final class ZipArkivoFileSystemTest {
     private static void closeEntryAfterFailedSetup(InputStream input, Throwable failure)
             throws ReflectiveOperationException {
         Class<?> ownerType = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoReadFileSystemImpl"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl"
         );
-        Object owner = newStreamingZipReadFileSystem(ownerType);
+        Object owner = newZipStreamingReader(ownerType);
         Method method = ownerType.getDeclaredMethod("closeEntryAfterFailedSetup", InputStream.class, Throwable.class);
         method.setAccessible(true);
         method.invoke(owner, input, failure);
@@ -9645,11 +9632,11 @@ public final class ZipArkivoFileSystemTest {
     /// Creates a current streaming entry input stream through its private constructor.
     private static InputStream newCurrentEntryInputStream(InputStream input) throws ReflectiveOperationException {
         Class<?> ownerType = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoReadFileSystemImpl"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl"
         );
-        Object owner = newStreamingZipReadFileSystem(ownerType);
+        Object owner = newZipStreamingReader(ownerType);
         Class<?> type = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoReadFileSystemImpl$CurrentEntryInputStream"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl$CurrentEntryInputStream"
         );
         Constructor<?> constructor = type.getDeclaredConstructor(ownerType, InputStream.class);
         constructor.setAccessible(true);
@@ -9662,11 +9649,11 @@ public final class ZipArkivoFileSystemTest {
             boolean zip64DataDescriptor
     ) throws ReflectiveOperationException {
         Class<?> ownerType = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoReadFileSystemImpl"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl"
         );
-        Object owner = newStreamingZipReadFileSystem(ownerType);
+        Object owner = newZipStreamingReader(ownerType);
         Class<?> type = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoReadFileSystemImpl$StoredDataDescriptorInputStream"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl$StoredDataDescriptorInputStream"
         );
         Constructor<?> constructor = type.getDeclaredConstructor(ownerType, PushbackInputStream.class, boolean.class);
         constructor.setAccessible(true);
@@ -9680,12 +9667,12 @@ public final class ZipArkivoFileSystemTest {
             boolean zip64DataDescriptor
     ) throws ReflectiveOperationException {
         Class<?> ownerType = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoReadFileSystemImpl"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl"
         );
-        Object owner = newStreamingZipReadFileSystem(ownerType);
+        Object owner = newZipStreamingReader(ownerType);
         Class<?> decryptorType = Class.forName("org.glavo.arkivo.archive.zip.internal.ZipTraditionalCrypto$Decryptor");
         Class<?> type = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoReadFileSystemImpl$EncryptedStoredDataDescriptorInputStream"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl$EncryptedStoredDataDescriptorInputStream"
         );
         Constructor<?> constructor = type.getDeclaredConstructor(
                 ownerType,
@@ -9708,20 +9695,18 @@ public final class ZipArkivoFileSystemTest {
             long expectedUncompressedSize
     ) throws ReflectiveOperationException {
         Class<?> ownerType = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoReadFileSystemImpl"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl"
         );
         Constructor<?> ownerConstructor = ownerType.getConstructor(
-                ZipArkivoFileSystemProvider.class,
-                InputStream.class,
+                ReadableByteChannel.class,
                 ZipArkivoFileSystemConfig.class
         );
         Object owner = ownerConstructor.newInstance(
-                ZipArkivoFileSystemProvider.instance(),
-                InputStream.nullInputStream(),
+                Channels.newChannel(InputStream.nullInputStream()),
                 ZipArkivoFileSystemConfig.DEFAULTS
         );
         Class<?> type = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoReadFileSystemImpl$EntryInflaterInputStream"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl$EntryInflaterInputStream"
         );
         Constructor<?> constructor = type.getDeclaredConstructor(
                 ownerType,
@@ -9755,12 +9740,12 @@ public final class ZipArkivoFileSystemTest {
             boolean zip64DataDescriptor
     ) throws ReflectiveOperationException {
         Class<?> ownerType = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoReadFileSystemImpl"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl"
         );
-        Object owner = newStreamingZipReadFileSystem(ownerType);
+        Object owner = newZipStreamingReader(ownerType);
         Class<?> decryptorType = Class.forName("org.glavo.arkivo.archive.zip.internal.ZipAesCrypto$Decryptor");
         Class<?> type = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoReadFileSystemImpl$AesDataDescriptorInflaterInputStream"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl$AesDataDescriptorInflaterInputStream"
         );
         Constructor<?> constructor = type.getDeclaredConstructor(
                 ownerType,
@@ -9788,12 +9773,12 @@ public final class ZipArkivoFileSystemTest {
             boolean zip64DataDescriptor
     ) throws ReflectiveOperationException {
         Class<?> ownerType = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoReadFileSystemImpl"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl"
         );
-        Object owner = newStreamingZipReadFileSystem(ownerType);
+        Object owner = newZipStreamingReader(ownerType);
         Class<?> decryptorType = Class.forName("org.glavo.arkivo.archive.zip.internal.ZipTraditionalCrypto$Decryptor");
         Class<?> type = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoReadFileSystemImpl$EncryptedDataDescriptorInflaterInputStream"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl$EncryptedDataDescriptorInflaterInputStream"
         );
         Constructor<?> constructor = type.getDeclaredConstructor(
                 ownerType,
@@ -9810,16 +9795,14 @@ public final class ZipArkivoFileSystemTest {
         );
     }
 
-    /// Creates a streaming ZIP read file system through its public constructor.
-    private static Object newStreamingZipReadFileSystem(Class<?> ownerType) throws ReflectiveOperationException {
+    /// Creates a ZIP streaming reader through its public constructor.
+    private static Object newZipStreamingReader(Class<?> ownerType) throws ReflectiveOperationException {
         Constructor<?> ownerConstructor = ownerType.getConstructor(
-                ZipArkivoFileSystemProvider.class,
-                InputStream.class,
+                ReadableByteChannel.class,
                 ZipArkivoFileSystemConfig.class
         );
         return ownerConstructor.newInstance(
-                ZipArkivoFileSystemProvider.instance(),
-                InputStream.nullInputStream(),
+                Channels.newChannel(InputStream.nullInputStream()),
                 ZipArkivoFileSystemConfig.DEFAULTS
         );
     }

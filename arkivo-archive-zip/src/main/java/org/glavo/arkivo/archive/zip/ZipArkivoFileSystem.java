@@ -11,7 +11,6 @@ import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
-import org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoReadFileSystemImpl;
 import org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoFileSystemImpl;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemImpl;
@@ -32,7 +31,7 @@ import java.util.Objects;
 /// explicit transactional volume target and output split size for complete-rewrite mutation.
 @NotNullByDefault
 public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
-        permits StreamingZipArkivoFileSystemImpl, StreamingZipArkivoReadFileSystemImpl, ZipArkivoFileSystemImpl {
+        permits StreamingZipArkivoFileSystemImpl, ZipArkivoFileSystemImpl {
     /// The environment option for an `ArkivoPasswordProvider` value.
     public static final ArkivoFileSystemOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArkivoFileSystemOption.of("arkivo.zip", "passwordProvider", ArkivoPasswordProvider.class);

@@ -10,7 +10,6 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.Charset;
-import java.nio.file.Path;
 import java.util.Objects;
 
 /// Supplies passwords for encrypted archive data.
@@ -43,12 +42,13 @@ public interface ArkivoPasswordProvider {
     /// copy.
     byte @Nullable [] passwordForArchive() throws IOException;
 
-    /// Returns caller-owned entry-level password bytes, or `null` when no password is available.
+    /// Returns caller-owned entry-level password bytes for an absolute logical archive path, or `null` when no
+    /// password is available.
     ///
     /// Callers may clear the returned array after use. Implementations that retain credentials must return a defensive
     /// copy.
-    default byte @Nullable [] passwordForEntry(Path path) throws IOException {
-        Objects.requireNonNull(path, "path");
+    default byte @Nullable [] passwordForEntry(String entryPath) throws IOException {
+        Objects.requireNonNull(entryPath, "entryPath");
         return passwordForArchive();
     }
 }

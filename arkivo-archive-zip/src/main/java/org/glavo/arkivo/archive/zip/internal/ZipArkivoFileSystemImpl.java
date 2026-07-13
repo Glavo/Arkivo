@@ -1440,7 +1440,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         if (passwordProvider == null) {
             throw new IOException("ZIP entry requires a password: " + path);
         }
-        byte[] password = passwordProvider.passwordForEntry(path);
+        byte[] password = passwordProvider.passwordForEntry(path.toString());
         if (password == null) {
             throw new IOException("ZIP entry requires a password: " + path);
         }
