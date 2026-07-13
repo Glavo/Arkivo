@@ -471,6 +471,12 @@ time bounds. The suite covers archive detection, random-access file systems, for
 all installed bidirectional codec decoders. Corrupt input must produce checked I/O failures rather than leaking parser
 indexing, argument-validation, or native-library runtime exceptions.
 
+Opt-in real-world tests resolve immutable upstream source releases through a project-local content-addressed cache
+outside `build`, verify source size and SHA-256 before use, and extract only reviewed paths into disposable build
+outputs. The ordinary test and clean lifecycles do not access the network or delete the persistent cache. Zstandard
+pins the official 1.5.7 golden compression, decompression, malformed-frame, dictionary, and dictionary-input vectors;
+valid decompression outputs are checked against sizes and SHA-256 values produced by the matching official CLI.
+
 Some formats may not support efficient random write operations. These formats should expose streaming or copy-on-write APIs instead of pretending to support in-place mutation.
 
 Format-specific features should be represented through concrete format APIs rather than shared capability interfaces or boolean capability objects.

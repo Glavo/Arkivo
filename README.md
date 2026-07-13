@@ -141,6 +141,22 @@ example `-PbenchmarkArgs=CodecThroughputBenchmark`.
 Set `ARKIVO_7Z_EXECUTABLE` to an official 7-Zip CLI path to enable the optional generated-BCJ2 interoperability test.
 No external executable or binary archive fixture is stored in the repository.
 
+Real-world corpus tests download pinned upstream source releases into the project-local
+`.arkivo-cache/test-data/downloads/sha256` content-addressed cache, verify declared sizes and SHA-256 values, and extract
+only reviewed test directories into `build/test-data`. The normal `test`, `check`, and `clean` lifecycles neither
+download nor delete the persistent cache. Run the opt-in suite and inspect or explicitly remove its cache with:
+
+~~~shell
+./gradlew -g .gradle-user-home realWorldTest
+./gradlew -g .gradle-user-home testDataCacheReport
+./gradlew -g .gradle-user-home cleanTestDataCache
+~~~
+
+`-Parkivo.testDataCacheDirectory=<path>` overrides the project-local cache directory. `--offline` reuses an existing
+verified download and fails before extraction when the required object is absent or invalid. The Zstandard suite pins
+the official 1.5.7 release and extracts its upstream license with the golden compression, decompression, malformed
+frame, and dictionary vectors; no downloaded test data is committed.
+
 The publication verifier builds every binary, sources, and Javadoc JAR, publishes all modules to build/maven-staging, and validates their POM metadata and dependency scopes:
 
 ~~~shell

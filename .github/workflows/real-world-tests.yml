@@ -1,0 +1,44 @@
+name: Real-world tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+  pull_request:
+    paths:
+      - ".github/workflows/real-world-tests.yml"
+      - "build.gradle.kts"
+      - "buildSrc/**"
+      - "gradle/test-data/**"
+      - "arkivo-codec-zstd/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: real-world-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Official upstream corpora
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+
+      - name: Run real-world corpus tests
+        run: ./gradlew -g .gradle-user-home realWorldTest --no-daemon --stacktrace

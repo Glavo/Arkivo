@@ -1,0 +1,198 @@
+// Copyright (c) 2026 Glavo
+// SPDX-License-Identifier: MPL-2.0
+
+package org.glavo.arkivo.codec.zstd;
+
+import org.glavo.arkivo.codec.CodecOptions;
+import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.channels.Channels;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import java.util.stream.Stream;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/// Verifies Arkivo against the pinned official Zstandard 1.5.7 golden corpus.
+@NotNullByDefault
+public final class ZstdOfficialCorpusTest {
+    /// The system property containing the extracted official corpus directory.
+    private static final String TEST_DATA_DIRECTORY_PROPERTY = "arkivo.zstd.testDataDirectory";
+
+    /// Verifies an official valid frame against output length and SHA-256 values produced by the official 1.5.7 CLI.
+    @ParameterizedTest
+    @MethodSource("validGoldenFrames")
+    public void decompressesOfficialGoldenFrame(GoldenFrame frame) throws IOException {
+        byte[] decoded = decompress(corpusPath("tests/golden-decompression").resolve(frame.name()));
+
+        assertEquals(frame.size(), decoded.length, frame.name());
+        assertEquals(frame.sha256(), sha256(decoded), frame.name());
+    }
+
+    /// Verifies every official malformed golden frame is rejected through the checked channel API contract.
+    @ParameterizedTest
+    @MethodSource("invalidGoldenFrameNames")
+    public void rejectsOfficialMalformedGoldenFrame(String name) {
+        Path frame = corpusPath("tests/golden-decompression-errors").resolve(name);
+
+        assertThrows(IOException.class, () -> decompress(frame), name);
+    }
+
+    /// Verifies official compression regression inputs round-trip with default and historically sensitive parameters.
+    @ParameterizedTest
+    @MethodSource("compressionRegressionInputNames")
+    public void roundTripsOfficialCompressionRegressionInput(String name) throws IOException {
+        byte[] input = Files.readAllBytes(corpusPath("tests/golden-compression").resolve(name));
+        ZstdCodec codec = new ZstdCodec();
+
+        assertArrayEquals(input, roundTrip(codec, input, CodecOptions.EMPTY, CodecOptions.EMPTY), name + " default");
+
+        CodecOptions sensitiveOptions = CodecOptions.builder()
+                .set(StandardCodecOptions.COMPRESSION_LEVEL, 19L)
+                .set(ZstdCodec.MIN_MATCH, 7L)
+                .build();
+        assertArrayEquals(input, roundTrip(codec, input, sensitiveOptions, CodecOptions.EMPTY), name + " level 19");
+    }
+
+    /// Verifies the official dictionary missing literal symbols can encode and decode its matching HTTP sample.
+    @Test
+    public void roundTripsOfficialMissingSymbolsDictionary() throws IOException {
+        byte[] dictionaryBytes = Files.readAllBytes(
+                corpusPath("tests/golden-dictionaries/http-dict-missing-symbols")
+        );
+        byte[] input = Files.readAllBytes(corpusPath("tests/golden-compression/http"));
+        CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes);
+        CodecOptions options = CodecOptions.builder()
+                .set(StandardCodecOptions.DICTIONARY, dictionary)
+                .build();
+
+        assertArrayEquals(input, roundTrip(new ZstdCodec(), input, options, options));
+    }
+
+    /// Verifies extraction retains the upstream license and the exact download lock manifest.
+    @Test
+    public void retainsUpstreamProvenance() {
+        assertTrue(Files.isRegularFile(corpusPath("LICENSE")));
+        assertTrue(Files.isRegularFile(corpusPath("UPSTREAM.properties")));
+    }
+
+    /// Returns official valid golden frame expectations.
+    private static Stream<GoldenFrame> validGoldenFrames() {
+        return Stream.of(
+                new GoldenFrame(
+                        "block-128k.zst",
+                        131_068L,
+                        "672003418993584239ec5c79232de911699178ad820cd3ca9779abbfe7f7ba7d"
+                ),
+                new GoldenFrame(
+                        "empty-block.zst",
+                        0L,
+                        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                ),
+                new GoldenFrame(
+                        "rle-first-block.zst",
+                        1_048_576L,
+                        "30e14955ebf1352266dc2ff8067e68104607e750abb9d3b36582b8af909fcb58"
+                ),
+                new GoldenFrame(
+                        "zeroSeq_2B.zst",
+                        13L,
+                        "03ba204e50d126e4674c005e04d82e84c21366780af1f43bd54a37816b6ab340"
+                )
+        );
+    }
+
+    /// Returns official malformed golden frame file names.
+    private static Stream<String> invalidGoldenFrameNames() {
+        return Stream.of(
+                "off0.bin.zst",
+                "truncated_huff_state.zst",
+                "zeroSeq_extraneous.zst"
+        );
+    }
+
+    /// Returns official compression regression input file names.
+    private static Stream<String> compressionRegressionInputNames() {
+        return Stream.of(
+                "PR-3517-block-splitter-corruption-test",
+                "http",
+                "huffman-compressed-larger",
+                "large-literal-and-match-lengths"
+        );
+    }
+
+    /// Returns a path below the configured extracted corpus directory.
+    private static Path corpusPath(String relativePath) {
+        @Nullable String configured = System.getProperty(TEST_DATA_DIRECTORY_PROPERTY);
+        if (configured == null) {
+            throw new IllegalStateException("Missing system property: " + TEST_DATA_DIRECTORY_PROPERTY);
+        }
+        return Path.of(configured).resolve(relativePath);
+    }
+
+    /// Decompresses one complete Zstandard frame through the Arkivo channel API.
+    private static byte[] decompress(Path frame) throws IOException {
+        ByteArrayOutputStream decoded = new ByteArrayOutputStream();
+        try (var source = Files.newByteChannel(frame);
+             var target = Channels.newChannel(decoded)) {
+            new ZstdCodec().decompress(source, target);
+        }
+        return decoded.toByteArray();
+    }
+
+    /// Round-trips bytes through independently configured compression and decompression operations.
+    private static byte[] roundTrip(
+            ZstdCodec codec,
+            byte[] input,
+            CodecOptions compressionOptions,
+            CodecOptions decompressionOptions
+    ) throws IOException {
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+        codec.compress(
+                Channels.newChannel(new ByteArrayInputStream(input)),
+                Channels.newChannel(compressed),
+                compressionOptions
+        );
+
+        ByteArrayOutputStream decoded = new ByteArrayOutputStream();
+        codec.decompress(
+                Channels.newChannel(new ByteArrayInputStream(compressed.toByteArray())),
+                Channels.newChannel(decoded),
+                decompressionOptions
+        );
+        return decoded.toByteArray();
+    }
+
+    /// Returns the lowercase SHA-256 representation of bytes.
+    private static String sha256(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new AssertionError("SHA-256 is unavailable", exception);
+        }
+    }
+
+    /// Describes one official valid frame and its independently verified output.
+    ///
+    /// @param name the official frame file name
+    /// @param size the expected decompressed size
+    /// @param sha256 the expected lowercase SHA-256 of the decompressed bytes
+    @NotNullByDefault
+    private record GoldenFrame(String name, long size, String sha256) {
+    }
+}
