@@ -29,7 +29,13 @@ public enum SevenZipFilterMethod {
     BCJ_ARM_THUMB("bcj-arm-thumb"),
 
     /// Converts relative SPARC branch addresses before compression.
-    BCJ_SPARC("bcj-sparc");
+    BCJ_SPARC("bcj-sparc"),
+
+    /// Converts relative ARM64 branch addresses before compression.
+    BCJ_ARM64("bcj-arm64"),
+
+    /// Converts relative RISC-V branch addresses before compression.
+    BCJ_RISCV("bcj-riscv");
 
     /// The stable environment and display name.
     private final String optionName;

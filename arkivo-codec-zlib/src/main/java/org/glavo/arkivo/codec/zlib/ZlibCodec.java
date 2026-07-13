@@ -41,7 +41,11 @@ public final class ZlibCodec implements CompressionCodec {
                     CompressionFeature.DICTIONARY,
                     CompressionFeature.DIRECT_BYTE_BUFFER
             ),
-            Set.of(StandardCodecOptions.COMPRESSION_LEVEL, StandardCodecOptions.DICTIONARY),
+            Set.of(
+                    StandardCodecOptions.COMPRESSION_LEVEL,
+                    StandardCodecOptions.COMPRESSION_STRATEGY,
+                    StandardCodecOptions.DICTIONARY
+            ),
             Set.of(
                     StandardCodecOptions.DICTIONARY,
                     StandardCodecOptions.MAX_OUTPUT_SIZE,
@@ -116,7 +120,8 @@ public final class ZlibCodec implements CompressionCodec {
                 target,
                 ownership,
                 compressionLevel(options),
-                options.get(StandardCodecOptions.DICTIONARY)
+                options.get(StandardCodecOptions.DICTIONARY),
+                StandardCodecOptionSupport.compressionStrategy(options)
         );
     }
 

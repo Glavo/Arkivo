@@ -4,8 +4,13 @@
 package org.glavo.arkivo.codec.gzip.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecResult;
+import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
+import org.glavo.arkivo.codec.DecodeDirective;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -41,8 +46,8 @@ public final class GzipChannelDecoder implements CompressionDecoder {
     /// The compressed-data source.
     private final ReadableByteChannel source;
 
-    /// Whether this context owns the source channel.
-    private final ChannelOwnership ownership;
+    /// Tracks closure of the owned compressed-data source.
+    private final OwnedChannelCloser sourceCloser;
 
     /// The raw inflate context used for member bodies.
     private final Inflater inflater = new Inflater(true);
@@ -53,14 +58,23 @@ public final class GzipChannelDecoder implements CompressionDecoder {
     /// The direct compressed-input staging buffer.
     private final ByteBuffer inputBuffer = ByteBuffer.allocateDirect(INPUT_BUFFER_SIZE);
 
-    /// The number of compressed bytes read from the source.
+    /// The number of compressed bytes logically consumed by the member parser.
     private long inputBytes;
+
+    /// The number of compressed bytes obtained from the source.
+    private long sourceBytes;
 
     /// The number of uncompressed bytes returned to callers.
     private long outputBytes;
 
     /// The current member output size modulo 2^32.
     private long memberSize;
+
+    /// Whether the completed member boundary is awaiting the next member.
+    private boolean nextMemberPending;
+
+    /// Whether the last decode operation completed a member.
+    private boolean lastMemberFinished;
 
     /// Whether all concatenated members have completed.
     private boolean endOfStream;
@@ -74,7 +88,7 @@ public final class GzipChannelDecoder implements CompressionDecoder {
     /// @param ownership whether this context closes the source
     public GzipChannelDecoder(ReadableByteChannel source, ChannelOwnership ownership) throws IOException {
         this.source = Objects.requireNonNull(source, "source");
-        this.ownership = Objects.requireNonNull(ownership, "ownership");
+        this.sourceCloser = new OwnedChannelCloser(source, ownership);
         inputBuffer.limit(0);
         try {
             int first = readByteOrEnd();
@@ -84,6 +98,7 @@ public final class GzipChannelDecoder implements CompressionDecoder {
             readMemberHeader(first);
         } catch (IOException | RuntimeException | Error exception) {
             inflater.end();
+            sourceCloser.closeAfter(exception);
             throw exception;
         }
     }
@@ -91,10 +106,33 @@ public final class GzipChannelDecoder implements CompressionDecoder {
     /// Reads and validates decoded member content into the target buffer.
     @Override
     public int read(ByteBuffer target) throws IOException {
+        return readDecoded(target, false);
+    }
+
+    /// Decodes one increment while optionally stopping after the current member.
+    @Override
+    public CodecResult decode(ByteBuffer target, DecodeDirective directive) throws IOException {
+        Objects.requireNonNull(directive, "directive");
+        long inputBefore = inputBytes;
+        long outputBefore = outputBytes;
+        boolean stopAtFrame = directive == DecodeDirective.STOP_AT_FRAME;
+        int read = readDecoded(target, stopAtFrame);
+        CodecStatus status = stopAtFrame && lastMemberFinished
+                ? CodecStatus.FRAME_FINISHED
+                : read < 0 ? CodecStatus.END_OF_INPUT : CodecStatus.ACTIVE;
+        return new CodecResult(inputBytes - inputBefore, outputBytes - outputBefore, status);
+    }
+
+    /// Performs one decoded read with explicit member-boundary behavior.
+    private int readDecoded(ByteBuffer target, boolean stopAtFrame) throws IOException {
         Objects.requireNonNull(target, "target");
         ensureOpen();
+        lastMemberFinished = false;
         if (!target.hasRemaining()) {
             return 0;
+        }
+        if (nextMemberPending && !startNextMember()) {
+            return -1;
         }
         if (endOfStream) {
             return -1;
@@ -103,19 +141,33 @@ public final class GzipChannelDecoder implements CompressionDecoder {
         while (true) {
             int start = target.position();
             int produced;
+            int inputPosition = inputBuffer.position();
             try {
                 produced = inflater.inflate(target);
             } catch (DataFormatException exception) {
                 throw new IOException("Invalid gzip deflate data", exception);
+            } finally {
+                inputBytes += inputBuffer.position() - inputPosition;
             }
             if (produced > 0) {
                 updateOutputChecksum(target, start, target.position());
                 memberSize = (memberSize + produced) & 0xffff_ffffL;
                 outputBytes += produced;
+                if (inflater.finished()) {
+                    finishMember();
+                    nextMemberPending = true;
+                    lastMemberFinished = true;
+                }
                 return produced;
             }
             if (inflater.finished()) {
-                if (!finishMemberAndStartNext()) {
+                finishMember();
+                nextMemberPending = true;
+                lastMemberFinished = true;
+                if (stopAtFrame) {
+                    return 0;
+                }
+                if (!startNextMember()) {
                     return -1;
                 }
                 continue;
@@ -132,10 +184,22 @@ public final class GzipChannelDecoder implements CompressionDecoder {
         }
     }
 
-    /// Returns the compressed byte count read from the source.
+    /// Returns the compressed byte count logically consumed by the member parser.
     @Override
     public long inputBytes() {
         return inputBytes;
+    }
+
+    /// Returns the compressed byte count obtained from the source.
+    @Override
+    public long sourceBytes() {
+        return sourceBytes;
+    }
+
+    /// Returns a read-only view of compressed bytes not yet consumed.
+    @Override
+    public @UnmodifiableView ByteBuffer unconsumedInput() {
+        return inputBuffer.asReadOnlyBuffer();
     }
 
     /// Returns the uncompressed byte count returned to callers.
@@ -153,18 +217,15 @@ public final class GzipChannelDecoder implements CompressionDecoder {
     /// Releases native resources and closes an owned source channel.
     @Override
     public void close() throws IOException {
-        if (!open) {
-            return;
+        if (open) {
+            open = false;
+            inflater.end();
         }
-        open = false;
-        inflater.end();
-        if (ownership == ChannelOwnership.CLOSE) {
-            source.close();
-        }
+        sourceCloser.close();
     }
 
-    /// Validates a completed member trailer and starts the next member when present.
-    private boolean finishMemberAndStartNext() throws IOException {
+    /// Validates the completed member trailer.
+    private void finishMember() throws IOException {
         long expectedChecksum = readLittleEndianInt();
         long expectedSize = readLittleEndianInt();
         if (expectedChecksum != checksum.getValue()) {
@@ -173,7 +234,11 @@ public final class GzipChannelDecoder implements CompressionDecoder {
         if (expectedSize != memberSize) {
             throw new IOException("Gzip member size mismatch");
         }
+    }
 
+    /// Starts the member following a previously reported boundary.
+    private boolean startNextMember() throws IOException {
+        nextMemberPending = false;
         int first = readByteOrEnd();
         if (first < 0) {
             endOfStream = true;
@@ -281,6 +346,7 @@ public final class GzipChannelDecoder implements CompressionDecoder {
         if (!inputBuffer.hasRemaining() && !fillInputBuffer()) {
             return -1;
         }
+        inputBytes++;
         return Byte.toUnsignedInt(inputBuffer.get());
     }
 
@@ -304,7 +370,7 @@ public final class GzipChannelDecoder implements CompressionDecoder {
         if (read == 0) {
             throw new IOException("Gzip source channel made no progress");
         }
-        inputBytes += read;
+        sourceBytes += read;
         inputBuffer.flip();
         return true;
     }

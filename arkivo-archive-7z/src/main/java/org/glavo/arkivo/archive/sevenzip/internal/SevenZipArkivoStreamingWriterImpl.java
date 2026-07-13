@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributeView;
@@ -10,15 +11,16 @@ import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
+import org.glavo.arkivo.archive.sevenzip.SevenZipCoderGraph;
 import org.glavo.arkivo.archive.sevenzip.SevenZipFilter;
+import org.glavo.arkivo.archive.sevenzip.SevenZipFilterChain;
+import org.glavo.arkivo.archive.sevenzip.SevenZipPackedStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
-import java.io.Closeable;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
@@ -31,6 +33,7 @@ import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.nio.file.attribute.UserPrincipalNotFoundException;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
@@ -62,27 +65,19 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
     /// The optional state lock.
     private final @Nullable ReentrantLock lock;
 
-    /// Output owned directly by this writer, or `null` for path and transactional target output.
-    private final @Nullable Closeable ownedOutput;
-
     /// The pending entry that has not been committed, or `null` when no entry is pending.
     private @Nullable PendingEntry pendingEntry;
 
     /// The currently open file body, or `null` when no body is open.
     private @Nullable EntryBodyOutputStream currentBody;
 
-    /// Whether direct owned output has been closed.
-    private boolean ownedOutputClosed;
-
     /// Creates a streaming writer over an initialized writable file system.
     private SevenZipArkivoStreamingWriterImpl(
             SevenZipArkivoFileSystemImpl fileSystem,
-            SevenZipArkivoFileSystemConfig config,
-            @Nullable Closeable ownedOutput
+            SevenZipArkivoFileSystemConfig config
     ) {
         this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
         this.lock = config.threadSafety() == ArkivoFileSystemThreadSafety.NONE ? null : new ReentrantLock();
-        this.ownedOutput = ownedOutput;
     }
 
     /// Creates a path-backed streaming writer.
@@ -97,8 +92,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
                         null,
                         config
                 ),
-                config,
-                null
+                config
         );
     }
 
@@ -108,7 +102,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
             SevenZipArkivoFileSystemConfig config
     ) throws IOException {
         Objects.requireNonNull(output, "output");
-        return open(Channels.newChannel(output), config);
+        return open(StreamChannelAdapters.writableChannel(output), config);
     }
 
     /// Opens a streaming writer over an owned writable channel.
@@ -126,8 +120,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
                             Long.MAX_VALUE,
                             config
                     ),
-                    config,
-                    output
+                    config
             );
         } catch (IOException | RuntimeException | Error exception) {
             try {
@@ -152,8 +145,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
                         splitSize,
                         config
                 ),
-                config,
-                null
+                config
         );
     }
 
@@ -245,7 +237,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
     /// Opens a writable channel for the current pending file entry.
     @Override
     public WritableByteChannel openChannel() throws IOException {
-        return Channels.newChannel(openOutputStream());
+        return StreamChannelAdapters.writableChannel(openOutputStream());
     }
 
     /// Opens an output stream that commits the current pending file entry when closed.
@@ -302,15 +294,6 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
                 failure = appendFailure(failure, exception);
             }
 
-            Closeable output = ownedOutput;
-            if (output != null && !ownedOutputClosed) {
-                try {
-                    output.close();
-                    ownedOutputClosed = true;
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = appendFailure(failure, exception);
-                }
-            }
             throwFailure(failure);
         } finally {
             unlock();
@@ -475,11 +458,11 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
         /// The entry-specific compression, or `null` to use the writer default.
         private @Nullable SevenZipCompression compression;
 
-        /// Whether this entry overrides the writer's default filter.
-        private boolean filterConfigured;
+        /// Whether this entry overrides the writer's default filter chain.
+        private boolean filtersConfigured;
 
-        /// The entry-specific filter, or `null` to disable filtering when configured.
-        private @Nullable SevenZipFilter filter;
+        /// The entry-specific filter chain, or null when inherited.
+        private @Nullable SevenZipFilterChain filters;
 
         /// Creates a pending 7z metadata view.
         private PendingSevenZipEntryAttributeView(PendingEntry entry) {
@@ -553,27 +536,27 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
         @Override
         public void setFilter(SevenZipFilter filter) {
             Objects.requireNonNull(filter, "filter");
+            setFilters(SevenZipFilterChain.of(filter));
+        }
+
+        /// Sets the entry-specific filter-chain override.
+        @Override
+        public void setFilters(SevenZipFilterChain filters) {
+            Objects.requireNonNull(filters, "filters");
             lock();
             try {
                 entry.ensurePending();
-                this.filter = filter;
-                this.filterConfigured = true;
+                this.filters = filters;
+                this.filtersConfigured = true;
             } finally {
                 unlock();
             }
         }
 
-        /// Disables the writer's default filter for this entry.
+        /// Disables the writer's default filters for this entry.
         @Override
         public void clearFilter() {
-            lock();
-            try {
-                entry.ensurePending();
-                this.filter = null;
-                this.filterConfigured = true;
-            } finally {
-                unlock();
-            }
+            setFilters(SevenZipFilterChain.EMPTY);
         }
 
         /// Sets POSIX permissions while preserving low Windows attribute bits.
@@ -604,8 +587,8 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
                     creationTime,
                     windowsAttributes,
                     compression,
-                    filterConfigured,
-                    filter
+                    filtersConfigured,
+                    filters
             );
         }
     }
@@ -725,6 +708,64 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
             return path;
         }
 
+        /// Returns no coder graph before the pending entry has been encoded.
+        @Override
+        public @Nullable SevenZipCoderGraph coderGraph() {
+            return null;
+        }
+
+        /// Returns false before this entry has been encoded into a folder.
+        @Override
+        public boolean solid() {
+            return false;
+        }
+
+        /// Returns the no-substream sentinel before this entry has been encoded.
+        @Override
+        public int substreamIndex() {
+            return NO_SUBSTREAM_INDEX;
+        }
+
+        /// Returns zero before this entry has been encoded.
+        @Override
+        public int substreamCount() {
+            return 0;
+        }
+        /// Returns the no-data sentinel before this entry has been encoded.
+        @Override
+        public long dataOffset() {
+            return NO_DATA_OFFSET;
+        }
+
+        /// Returns zero before this entry has been encoded.
+        @Override
+        public long decodedOffset() {
+            return 0L;
+        }
+
+        /// Returns zero before this entry has been encoded.
+        @Override
+        public long packedSize() {
+            return 0L;
+        }
+
+        /// Returns the unknown CRC-32 sentinel before this entry has been encoded.
+        @Override
+        public long packedCrc32() {
+            return UNKNOWN_CRC32;
+        }
+
+        /// Returns no packed streams before this entry has been encoded.
+        @Override
+        public @Unmodifiable List<SevenZipPackedStream> packedStreams() {
+            return List.of();
+        }
+
+        /// Returns the unknown CRC-32 sentinel before this entry has been encoded.
+        @Override
+        public long crc32() {
+            return UNKNOWN_CRC32;
+        }
         /// Returns the raw Windows attributes.
         @Override
         public int windowsAttributes() {

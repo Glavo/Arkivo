@@ -3,8 +3,9 @@
 
 package org.glavo.arkivo.archive.rar;
 
+import org.glavo.arkivo.archive.ArkivoVolumeFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
-import org.glavo.arkivo.archive.ArkivoStreamingFormat;
+import org.glavo.arkivo.archive.ArkivoStreamingReaderFormat;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -13,6 +14,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -20,7 +22,7 @@ import java.util.Objects;
 
 /// Describes RAR4 and RAR5 archive support provided by Arkivo.
 @NotNullByDefault
-public final class RarArkivoFormat implements ArkivoStreamingFormat {
+public final class RarArkivoFormat implements ArkivoVolumeFileSystemFormat, ArkivoStreamingReaderFormat {
     /// The stable RAR format name.
     public static final String NAME = "rar";
 
@@ -74,18 +76,33 @@ public final class RarArkivoFormat implements ArkivoStreamingFormat {
     }
 
     /// Opens a RAR archive file system.
+    @Override
     public RarArkivoFileSystem open(Path path) throws IOException {
         return RarArkivoFileSystem.open(path);
     }
 
     /// Opens a RAR archive file system with environment options.
+    @Override
     public RarArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         return RarArkivoFileSystem.open(path, environment);
+    }
+
+    /// Opens a read-only RAR archive file system directly from one owned seekable channel.
+    @Override
+    public RarArkivoFileSystem open(SeekableByteChannel source) throws IOException {
+        return RarArkivoFileSystem.open(source);
+    }
+
+    /// Opens a read-only RAR archive file system directly from one owned seekable channel with environment options.
+    @Override
+    public RarArkivoFileSystem open(SeekableByteChannel source, Map<String, ?> environment) throws IOException {
+        return RarArkivoFileSystem.open(source, environment);
     }
 
     /// Opens a read-only RAR archive file system from a repeatable seekable channel source.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    @Override
     public RarArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
         return RarArkivoFileSystem.open(source);
     }
@@ -93,16 +110,19 @@ public final class RarArkivoFormat implements ArkivoStreamingFormat {
     /// Opens a read-only RAR archive file system from a repeatable seekable channel source with environment options.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    @Override
     public RarArkivoFileSystem open(ArkivoSeekableChannelSource source, Map<String, ?> environment) throws IOException {
         return RarArkivoFileSystem.open(source, environment);
     }
 
     /// Opens a multi-volume RAR archive file system.
+    @Override
     public RarArkivoFileSystem open(ArkivoVolumeSource volumes) throws IOException {
         return RarArkivoFileSystem.open(volumes);
     }
 
     /// Opens a multi-volume RAR archive file system with environment options.
+    @Override
     public RarArkivoFileSystem open(ArkivoVolumeSource volumes, Map<String, ?> environment) throws IOException {
         return RarArkivoFileSystem.open(volumes, environment);
     }

@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies explicitly compressed TAR streaming factories and their resource ownership.
+/// Verifies automatic and explicit TAR stream compression with resource ownership.
 @NotNullByDefault
 final class TarArkivoCompressedStreamingTest {
     /// The entry content used by streaming round trips.
@@ -59,6 +59,38 @@ final class TarArkivoCompressedStreamingTest {
             assertEntry(reader);
         }
         assertFalse(input.isOpen());
+    }
+
+    /// Verifies gzip is detected through the channel factory when no compression option is present.
+    @Test
+    void detectsGzipThroughForwardOnlyChannel() throws IOException {
+        Map<String, Object> environment = Map.of(TarArkivoFileSystem.COMPRESSION.key(), "gzip");
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive, environment)) {
+            writeEntry(writer);
+        }
+
+        ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(archive.toByteArray()));
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(source)) {
+            assertEntry(reader);
+        }
+        assertFalse(source.isOpen());
+    }
+
+    /// Verifies zlib is detected through the input-stream adapter without an explicit option.
+    @Test
+    void detectsZlibThroughForwardOnlyStream() throws IOException {
+        Map<String, Object> environment = Map.of(TarArkivoFileSystem.COMPRESSION.key(), "zlib");
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive, environment)) {
+            writeEntry(writer);
+        }
+
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive.toByteArray())
+        )) {
+            assertEntry(reader);
+        }
     }
 
     /// Verifies codec-object configuration through the TAR format facade.
@@ -119,10 +151,37 @@ final class TarArkivoCompressedStreamingTest {
         assertTrue(TarArkivoFormat.instance().matches(ByteBuffer.wrap(archiveBytes)));
 
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
-                new ByteArrayInputStream(archiveBytes),
-                Map.of()
+                new ByteArrayInputStream(archiveBytes)
         )) {
             assertEntry(reader);
+        }
+    }
+
+    /// Verifies a validated raw TAR header wins over a zlib-like filename prefix during streaming detection.
+    @Test
+    void rejectsFalsePositiveStreamingCompression() throws IOException {
+        String entryName = "x\u0001value.txt";
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive)) {
+            writer.beginFile(entryName);
+            try (OutputStream body = writer.openOutputStream()) {
+                body.write(CONTENT);
+            }
+        }
+        byte[] archiveBytes = archive.toByteArray();
+        @Nullable CompressionCodec detected = CompressionCodecs.detect(ByteBuffer.wrap(archiveBytes));
+        assertNotNull(detected);
+        assertEquals("zlib", detected.name());
+
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archiveBytes)
+        )) {
+            assertTrue(reader.next());
+            assertEquals(entryName, reader.readAttributes(TarArkivoEntryAttributes.class).path());
+            try (InputStream body = reader.openInputStream()) {
+                assertArrayEquals(CONTENT, body.readAllBytes());
+            }
+            assertFalse(reader.next());
         }
     }
 

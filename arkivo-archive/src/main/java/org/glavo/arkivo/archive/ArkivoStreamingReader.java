@@ -3,12 +3,12 @@
 
 package org.glavo.arkivo.archive;
 
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.file.attribute.BasicFileAttributes;
 
@@ -30,7 +30,7 @@ public abstract class ArkivoStreamingReader implements Closeable {
 
     /// Opens an input stream for the current file entry.
     public InputStream openInputStream() throws IOException {
-        return Channels.newInputStream(openChannel());
+        return StreamChannelAdapters.inputStream(openChannel());
     }
 
     /// Closes this streaming reader.

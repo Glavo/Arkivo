@@ -11,10 +11,12 @@ import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoVolumeOutput;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2OutputStream;
 import org.glavo.arkivo.codec.deflate64.internal.Deflate64OutputStream;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
@@ -165,8 +167,14 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// The provider that created this ZIP file system.
     private final ZipArkivoFileSystemProvider provider;
 
-    /// The archive path backing this file system, or `null` when writing to non-path output.
+    /// The archive path backing this file system, or `null` for non-path input or output.
     private final @Nullable Path archivePath;
+
+    /// The repeatable archive source used by a non-path update, or `null` otherwise.
+    private final @Nullable ArkivoSeekableChannelSource archiveSource;
+
+    /// Whether closing the repeatable archive source has completed.
+    private boolean archiveSourceClosed;
 
     /// The parsed ZIP file system configuration.
     private final ZipArkivoFileSystemConfig config;
@@ -228,6 +236,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// Whether this file system is open.
     private boolean open = true;
 
+    /// Whether closure of the current output stream has completed.
+    private boolean outputClosed;
+
     /// The action to run after this file system is closed, or `null` when no action is needed.
     private final @Nullable Runnable closeAction;
 
@@ -261,6 +272,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         super(config.threadSafety());
         this.provider = Objects.requireNonNull(provider, "provider");
         this.archivePath = Objects.requireNonNull(archivePath, "archivePath");
+        this.archiveSource = null;
+        this.archiveSourceClosed = true;
         this.config = Objects.requireNonNull(config, "config");
         this.lock = ZipLocks.create(config.threadSafety());
         this.closeAction = closeAction;
@@ -429,15 +442,139 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         return parent != null ? parent : absolutePath;
     }
 
-    /// Creates a streaming ZIP archive file system over an output stream.
+    /// Opens a complete-rewrite ZIP update over an owned repeatable single-volume source.
+    public static StreamingZipArkivoFileSystemImpl openUpdate(
+            ZipArkivoFileSystemProvider provider,
+            ArkivoSeekableChannelSource source,
+            ZipArkivoFileSystemConfig config
+    ) throws IOException {
+        Objects.requireNonNull(provider, "provider");
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(config, "config");
+        try {
+            if (!config.archiveWritable() || !config.openOptions().contains(StandardOpenOption.APPEND)) {
+                throw new UnsupportedOperationException(
+                        "ZIP channel-source updates require READ and WRITE archive options"
+                );
+            }
+            if (config.commitTarget() == null) {
+                throw new IllegalArgumentException(
+                        "ZIP channel-source update mode requires ArkivoFileSystem.COMMIT_TARGET"
+                );
+            }
+            if (config.splitSize() != ZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
+                throw new UnsupportedOperationException("ZIP channel-source updates do not support split output");
+            }
+            if (config.sourceMutationPolicy() != null) {
+                throw new UnsupportedOperationException(
+                        "ZIP channel-source update mode always performs a complete archive rewrite"
+                );
+            }
+            return new StreamingZipArkivoFileSystemImpl(provider, source, config);
+        } catch (IOException | RuntimeException | Error exception) {
+            try {
+                source.close();
+            } catch (IOException | RuntimeException | Error closeFailure) {
+                exception.addSuppressed(closeFailure);
+            }
+            throw exception;
+        }
+    }
+
+    /// Creates a complete-rewrite ZIP editor over a repeatable single-volume source.
+    private StreamingZipArkivoFileSystemImpl(
+            ZipArkivoFileSystemProvider provider,
+            ArkivoSeekableChannelSource source,
+            ZipArkivoFileSystemConfig config
+    ) throws IOException {
+        super(config.threadSafety());
+        this.provider = provider;
+        this.archivePath = null;
+        this.archiveSource = source;
+        this.archiveSourceClosed = false;
+        this.config = config;
+        this.lock = ZipLocks.create(config.threadSafety());
+        this.closeAction = null;
+        this.replaceExistingEntries = true;
+
+        ZipArkivoFileSystemImpl.CentralDirectorySnapshot snapshot =
+                ZipArkivoFileSystemImpl.readCentralDirectorySnapshot(source, config);
+        ArkivoEditStorage openedEditStorage = config.editStorage();
+        if (openedEditStorage == null) {
+            openedEditStorage = ArkivoEditStorage.temporaryFiles(defaultEditStorageDirectory());
+        }
+        @Nullable ArkivoStoredContent openedStagedRecords = null;
+        @Nullable SeekableByteChannel outputChannel = null;
+        @Nullable OutputStream outputStream = null;
+        try {
+            openedStagedRecords = openedEditStorage.createContent(
+                    STAGED_RECORDS_PATH,
+                    ArkivoEditStorage.UNKNOWN_SIZE
+            );
+            outputChannel = openedStagedRecords.openChannel(Set.of(
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE
+            ));
+            outputStream = Channels.newOutputStream(outputChannel);
+            this.output = new CountingOutputStream(outputStream, 0L);
+            outputStream = null;
+            outputChannel = null;
+        } catch (IOException | RuntimeException | Error exception) {
+            if (outputStream != null) {
+                try {
+                    outputStream.close();
+                } catch (IOException | RuntimeException | Error cleanupFailure) {
+                    exception.addSuppressed(cleanupFailure);
+                }
+            } else if (outputChannel != null) {
+                try {
+                    outputChannel.close();
+                } catch (IOException | RuntimeException | Error cleanupFailure) {
+                    exception.addSuppressed(cleanupFailure);
+                }
+            }
+            if (openedStagedRecords != null) {
+                try {
+                    openedStagedRecords.close();
+                } catch (IOException | RuntimeException | Error cleanupFailure) {
+                    exception.addSuppressed(cleanupFailure);
+                }
+            }
+            try {
+                openedEditStorage.close();
+            } catch (IOException | RuntimeException | Error cleanupFailure) {
+                exception.addSuppressed(cleanupFailure);
+            }
+            throw exception;
+        }
+
+        this.commitOutput = null;
+        this.editStorage = openedEditStorage;
+        this.stagedRecords = openedStagedRecords;
+        this.rewriteSnapshot = snapshot;
+        this.archiveComment = snapshot.archiveComment();
+        this.existingCentralDirectoryEntries = snapshot.entries();
+        this.existingEntryNames = snapshot.entryNames();
+        this.rootPath = ZipArkivoPath.root(this);
+    }
+
+    /// Returns the system temporary directory used for non-path update staging.
+    private static Path defaultEditStorageDirectory() {
+        return Path.of(System.getProperty("java.io.tmpdir", ".")).toAbsolutePath().normalize();
+    }
+
+    /// Creates a streaming ZIP archive file system over a writable channel.
     public StreamingZipArkivoFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
-            OutputStream output,
+            WritableByteChannel output,
             ZipArkivoFileSystemConfig config
     ) {
         super(config.threadSafety());
         this.provider = Objects.requireNonNull(provider, "provider");
         this.archivePath = null;
+        this.archiveSource = null;
+        this.archiveSourceClosed = true;
         this.config = Objects.requireNonNull(config, "config");
         this.lock = ZipLocks.create(config.threadSafety());
         this.closeAction = null;
@@ -450,10 +587,26 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         if (config.splitSize() != ZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
             throw new UnsupportedOperationException("ZIP split streaming writes require an archive path");
         }
-        this.output = new CountingOutputStream(Objects.requireNonNull(output, "output"), 0L);
+        this.output = new CountingOutputStream(
+                StreamChannelAdapters.outputStream(Objects.requireNonNull(output, "output")),
+                0L
+        );
         this.existingCentralDirectoryEntries = List.of();
         this.existingEntryNames = Set.of();
         this.rootPath = ZipArkivoPath.root(this);
+    }
+
+    /// Creates a streaming ZIP archive file system over an output stream.
+    public StreamingZipArkivoFileSystemImpl(
+            ZipArkivoFileSystemProvider provider,
+            OutputStream output,
+            ZipArkivoFileSystemConfig config
+    ) {
+        this(
+                provider,
+                StreamChannelAdapters.writableChannel(Objects.requireNonNull(output, "output")),
+                config
+        );
     }
 
     /// Creates a streaming ZIP archive file system over a transactional volume target.
@@ -472,6 +625,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
         this.provider = Objects.requireNonNull(provider, "provider");
         this.archivePath = null;
+        this.archiveSource = null;
+        this.archiveSourceClosed = true;
         this.config = Objects.requireNonNull(config, "config");
         this.lock = ZipLocks.create(config.threadSafety());
         this.closeAction = null;
@@ -509,6 +664,17 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             lock();
             try {
                 if (!open) {
+                    @Nullable Throwable failure = null;
+                    if (!outputClosed) {
+                        try {
+                            output.close();
+                            outputClosed = true;
+                        } catch (IOException | RuntimeException | Error exception) {
+                            failure = exception;
+                        }
+                    }
+                    failure = closeArchiveSource(failure);
+                    throwFailure(failure);
                     return;
                 }
                 open = false;
@@ -527,6 +693,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 } finally {
                     try {
                         output.close();
+                        outputClosed = true;
                     } catch (IOException | RuntimeException | Error exception) {
                         failure = appendFailure(failure, exception);
                     }
@@ -543,6 +710,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 } else {
                     failure = finishCommitOutput(failure);
                 }
+                failure = closeArchiveSource(failure);
                 Runnable action = closeAction;
                 try {
                     if (action != null) {
@@ -583,13 +751,12 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Copies the preamble and every surviving local record into the assembled archive.
     private void copySurvivingLocalRecords() throws IOException {
-        Path sourcePath = Objects.requireNonNull(archivePath, "archivePath");
         ArkivoStoredContent records = Objects.requireNonNull(stagedRecords, "stagedRecords");
         ZipArkivoFileSystemImpl.CentralDirectorySnapshot snapshot =
                 Objects.requireNonNull(rewriteSnapshot, "rewriteSnapshot");
         relocatedExistingEntryOffsets.clear();
 
-        try (SeekableByteChannel source = Files.newByteChannel(sourcePath, StandardOpenOption.READ);
+        try (SeekableByteChannel source = openExistingArchiveChannel();
              SeekableByteChannel staged = records.openChannel(Set.of(StandardOpenOption.READ))) {
             copyRange(source, 0L, snapshot.preambleSize(), output);
 
@@ -615,12 +782,22 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
     }
 
+    /// Opens the original archive used by a complete-rewrite update.
+    private SeekableByteChannel openExistingArchiveChannel() throws IOException {
+        @Nullable Path path = archivePath;
+        if (path != null) {
+            return Files.newByteChannel(path, StandardOpenOption.READ);
+        }
+        return Objects.requireNonNull(archiveSource, "archiveSource").openChannel();
+    }
+
     /// Publishes an assembled archive through the configured commit target.
     private void publishAssembledArchive(ArkivoStoredContent assembledArchive) throws IOException {
-        Path sourcePath = Objects.requireNonNull(archivePath, "archivePath");
+        @Nullable Path sourcePath = archivePath;
         ArkivoCommitTarget target = config.commitTarget();
         if (target == null) {
-            target = ArkivoCommitTarget.atomicReplace(defaultEditStorageDirectory(sourcePath));
+            Path path = Objects.requireNonNull(sourcePath, "archivePath");
+            target = ArkivoCommitTarget.atomicReplace(defaultEditStorageDirectory(path));
         }
 
         ArkivoCommitOutput openedOutput = target.openOutput(sourcePath);
@@ -680,6 +857,19 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             destination.write(buffer.array(), 0, count);
             remaining -= count;
         }
+    }
+
+    /// Closes the owned repeatable archive source and returns the accumulated failure.
+    private @Nullable Throwable closeArchiveSource(@Nullable Throwable failure) {
+        if (!archiveSourceClosed) {
+            try {
+                Objects.requireNonNull(archiveSource, "archiveSource").close();
+                archiveSourceClosed = true;
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = appendFailure(failure, exception);
+            }
+        }
+        return failure;
     }
 
     /// Closes rewrite staging resources and returns the accumulated failure.

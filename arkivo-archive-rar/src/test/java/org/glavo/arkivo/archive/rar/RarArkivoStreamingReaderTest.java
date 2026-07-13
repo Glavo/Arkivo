@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.rar;
 
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
+import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
@@ -150,6 +151,30 @@ public final class RarArkivoStreamingReaderTest {
 
     /// The small PBKDF2 iteration exponent used by fast unit-test fixtures.
     private static final int RAR5_KDF_LOG = 3;
+
+    /// Verifies a RAR file system can own one arbitrary seekable channel from its current position.
+    @Test
+    public void opensFileSystemFromSingleSeekableChannel() throws IOException {
+        byte[] content = "single channel".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = archive(storedFile("value.txt", 1_700_000_000L, 0100644, content, null));
+        int archiveOffset = 5;
+        byte[] embedded = new byte[archiveOffset + archive.length];
+        System.arraycopy(archive, 0, embedded, archiveOffset, archive.length);
+        TestByteArraySeekableChannel channel = new TestByteArraySeekableChannel(embedded);
+        channel.position(archiveOffset);
+
+        try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(channel)) {
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/value.txt")));
+        }
+        assertEquals(false, channel.isOpen());
+
+        TestByteArraySeekableChannel detectedChannel = new TestByteArraySeekableChannel(embedded);
+        detectedChannel.position(archiveOffset);
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(detectedChannel)) {
+            assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/value.txt")));
+        }
+        assertEquals(false, detectedChannel.isOpen());
+    }
 
     /// Verifies that explicit volume sources and configured cached-content storage are both owned by the file system.
     @Test

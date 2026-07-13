@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.all;
 
+import org.glavo.arkivo.archive.ArkivoFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoFormat;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.codec.CompressionCodec;
@@ -52,6 +53,7 @@ final class AllAggregationTest {
                 .collect(Collectors.toUnmodifiableSet());
 
         assertEquals(Set.of("7z", "ar", "rar", "tar", "zip"), archiveNames);
+        assertTrue(ArkivoFormats.installed().stream().allMatch(ArkivoFileSystemFormat.class::isInstance));
         assertEquals(
                 Set.of("bzip2", "deflate", "deflate64", "gzip", "lzma", "xz", "zlib", "zstd"),
                 codecNames

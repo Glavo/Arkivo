@@ -359,7 +359,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
     }
 
-    /// Opens a read-only TAR file system from a repeatable seekable channel source.
+    /// Opens a TAR file system from a repeatable seekable channel source.
     public static TarArkivoFileSystemImpl open(
             TarArkivoFileSystemProvider provider,
             ArkivoSeekableChannelSource source,
@@ -372,6 +372,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         ArkivoFileSystemThreadSafety threadSafety;
         ArkivoEditStorage editStorage;
         @Nullable CompressionCodec requestedCompression;
+        boolean updateMode;
+        @Nullable ArkivoCommitTarget commitTarget;
         try {
             threadSafety = ArkivoFileSystem.THREAD_SAFETY.readOrDefault(
                     environment,
@@ -381,7 +383,22 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     environment,
                     Set.of(StandardOpenOption.READ)
             );
-            validateArchiveReadOptions(openOptions);
+            updateMode = isArchiveUpdateOpen(openOptions);
+            if (updateMode) {
+                validateArchiveUpdateOptions(openOptions);
+                if (ArkivoFileSystem.SOURCE_MUTATION_POLICY.isPresent(environment)) {
+                    throw new UnsupportedOperationException("TAR update mode always performs a complete archive rewrite");
+                }
+                commitTarget = ArkivoFileSystem.COMMIT_TARGET.read(environment);
+                if (commitTarget == null) {
+                    throw new IllegalArgumentException(
+                            "TAR channel-source update mode requires ArkivoFileSystem.COMMIT_TARGET"
+                    );
+                }
+            } else {
+                validateArchiveReadOptions(openOptions);
+                commitTarget = null;
+            }
             requestedCompression = TarArkivoFileSystem.COMPRESSION.read(environment);
             editStorage = editStorage(environment);
         } catch (RuntimeException | Error exception) {
@@ -398,6 +415,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 }
             }
             requireDecompression(compressionCodec);
+            if (updateMode) {
+                requireCompression(compressionCodec);
+            }
             long archiveSize;
             Map<String, Node> nodes;
             try (SeekableByteChannel channel = source.openChannel()) {
@@ -418,9 +438,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     editStorage,
                     ownedContents,
                     null,
-                    true,
-                    false,
-                    null,
+                    !updateMode,
+                    updateMode,
+                    commitTarget,
                     compressionCodec,
                     () -> {
                     }
@@ -2265,8 +2285,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Publishes all surviving update nodes through a complete TAR rewrite.
     private void commitUpdate() throws IOException {
         ArkivoCommitTarget target = Objects.requireNonNull(commitTarget, "commitTarget");
-        Path sourcePath = Objects.requireNonNull(archivePath, "archivePath");
-        ArkivoCommitOutput output = target.openOutput(sourcePath);
+        ArkivoCommitOutput output = target.openOutput(archivePath);
         Throwable failure = null;
         try {
             try (SeekableByteChannel channel = output.openChannel(Set.of(

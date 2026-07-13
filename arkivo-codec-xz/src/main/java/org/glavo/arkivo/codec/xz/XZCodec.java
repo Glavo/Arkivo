@@ -14,6 +14,8 @@ import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
+import org.glavo.arkivo.codec.lzma.LZMAOptions;
+import org.glavo.arkivo.codec.lzma.internal.LzmaProperties;
 import org.glavo.arkivo.codec.xz.internal.XzChannelDecoder;
 import org.glavo.arkivo.codec.xz.internal.XzChannelEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -40,6 +42,14 @@ public final class XZCodec implements CompressionCodec {
     public static final CodecOption<XZCheckType> CHECK_TYPE =
             CodecOption.of("xz.checkType", XZCheckType.class);
 
+    /// Selects the ordered size-preserving filters applied before LZMA2.
+    public static final CodecOption<XZFilterChain> FILTER_CHAIN =
+            CodecOption.of("xz.filterChain", XZFilterChain.class);
+
+    /// Selects the maximum uncompressed bytes per XZ Block; zero keeps one unbounded Block.
+    public static final CodecOption<Long> BLOCK_SIZE =
+            CodecOption.of("xz.blockSize", Long.class);
+
     /// The supported XZ operations.
     private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(Set.of(
             CompressionFeature.COMPRESSION,
@@ -47,8 +57,18 @@ public final class XZCodec implements CompressionCodec {
             CompressionFeature.ONE_SHOT_COMPRESSION,
             CompressionFeature.ONE_SHOT_DECOMPRESSION,
             CompressionFeature.DIRECT_BYTE_BUFFER,
+            CompressionFeature.MULTI_FRAME,
             CompressionFeature.CONCATENATED_FRAMES
-    ), Set.of(DICTIONARY_SIZE, StandardCodecOptions.CHECKSUM, CHECK_TYPE), Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE, StandardCodecOptions.MAX_WINDOW_SIZE));
+    ), Set.of(
+            DICTIONARY_SIZE,
+            LZMAOptions.LITERAL_CONTEXT_BITS,
+            LZMAOptions.LITERAL_POSITION_BITS,
+            LZMAOptions.POSITION_BITS,
+            StandardCodecOptions.CHECKSUM,
+            CHECK_TYPE,
+            FILTER_CHAIN,
+            BLOCK_SIZE
+    ), Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE, StandardCodecOptions.MAX_WINDOW_SIZE));
 
     /// The XZ stream header magic bytes.
     private static final byte @Unmodifiable [] HEADER_MAGIC = {
@@ -101,13 +121,11 @@ public final class XZCodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.compressionOptions(), "XZ compression");
-        @Nullable Long requestedDictionary = options.get(DICTIONARY_SIZE);
-        long dictionarySize = requestedDictionary != null
-                ? requestedDictionary
-                : XzChannelEncoder.DEFAULT_DICTIONARY_SIZE;
-        if (dictionarySize < 0L || dictionarySize > Integer.MAX_VALUE) {
-            throw new IllegalArgumentException("Unsupported XZ LZMA2 dictionary size: " + dictionarySize);
-        }
+        LzmaProperties properties = LzmaProperties.fromOptions(
+                options,
+                DICTIONARY_SIZE,
+                XzChannelEncoder.DEFAULT_DICTIONARY_SIZE
+        );
 
         @Nullable ChecksumMode checksum = options.get(StandardCodecOptions.CHECKSUM);
         @Nullable XZCheckType requestedCheck = options.get(CHECK_TYPE);
@@ -117,7 +135,21 @@ public final class XZCodec implements CompressionCodec {
         XZCheckType checkType = requestedCheck != null
                 ? requestedCheck
                 : checksum == ChecksumMode.DISABLED ? XZCheckType.NONE : XZCheckType.CRC64;
-        return new XzChannelEncoder(target, ownership, (int) dictionarySize, checkType.flag());
+        @Nullable XZFilterChain requestedFilters = options.get(FILTER_CHAIN);
+        XZFilterChain filterChain = requestedFilters != null ? requestedFilters : XZFilterChain.EMPTY;
+        @Nullable Long requestedBlockSize = options.get(BLOCK_SIZE);
+        long blockSize = requestedBlockSize != null ? requestedBlockSize : 0L;
+        if (blockSize < 0L) {
+            throw new IllegalArgumentException("XZ Block size must not be negative: " + blockSize);
+        }
+        return new XzChannelEncoder(
+                target,
+                ownership,
+                properties,
+                checkType.flag(),
+                filterChain,
+                blockSize
+        );
     }
 
     /// Opens a configured XZ decoder over the source channel.

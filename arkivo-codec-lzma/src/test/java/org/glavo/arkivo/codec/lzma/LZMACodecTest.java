@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.lzma;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecOption;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
@@ -38,6 +39,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.Random;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -270,6 +272,130 @@ public final class LZMACodecTest {
         assertThrows(IOException.class, output::close);
     }
 
+    /// Verifies shared LZMA model options, known-size headers, and pledged-size enforcement.
+    @Test
+    public void advancedOptionsControlHeaderAndPledgedSize() throws IOException {
+        LZMACodec codec = new LZMACodec();
+        assertTrue(codec.capabilities().compressionOptions().containsAll(Set.of(
+                LZMAOptions.DICTIONARY_SIZE,
+                LZMAOptions.LITERAL_CONTEXT_BITS,
+                LZMAOptions.LITERAL_POSITION_BITS,
+                LZMAOptions.POSITION_BITS,
+                StandardCodecOptions.PLEDGED_SOURCE_SIZE
+        )));
+
+        byte[] content = patternedContent(120_321);
+        int dictionarySize = 1 << 17;
+        int literalContextBits = 2;
+        int literalPositionBits = 1;
+        int positionBits = 3;
+        CodecOptions options = CodecOptions.builder()
+                .set(LZMAOptions.DICTIONARY_SIZE, (long) dictionarySize)
+                .set(LZMAOptions.LITERAL_CONTEXT_BITS, (long) literalContextBits)
+                .set(LZMAOptions.LITERAL_POSITION_BITS, (long) literalPositionBits)
+                .set(LZMAOptions.POSITION_BITS, (long) positionBits)
+                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) content.length)
+                .build();
+
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+        codec.compress(
+                Channels.newChannel(new ByteArrayInputStream(content)),
+                Channels.newChannel(compressed),
+                options
+        );
+        byte[] encoded = compressed.toByteArray();
+        assertEquals(
+                (positionBits * 5 + literalPositionBits) * 9 + literalContextBits,
+                Byte.toUnsignedInt(encoded[0])
+        );
+        assertEquals(dictionarySize, littleEndianInt(encoded, 1));
+        assertEquals(content.length, littleEndianLong(encoded, 5));
+
+        try (org.tukaani.xz.LZMAInputStream input = new org.tukaani.xz.LZMAInputStream(
+                new ByteArrayInputStream(encoded)
+        )) {
+            assertArrayEquals(content, input.readAllBytes());
+        }
+
+        ByteArrayOutputStream emptyCompressed = new ByteArrayOutputStream();
+        codec.compress(
+                Channels.newChannel(new ByteArrayInputStream(new byte[0])),
+                Channels.newChannel(emptyCompressed),
+                CodecOptions.builder()
+                        .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, 0L)
+                        .build()
+        );
+        byte[] emptyEncoded = emptyCompressed.toByteArray();
+        assertEquals(0L, littleEndianLong(emptyEncoded, 5));
+        try (org.tukaani.xz.LZMAInputStream input = new org.tukaani.xz.LZMAInputStream(
+                new ByteArrayInputStream(emptyEncoded)
+        )) {
+            assertArrayEquals(new byte[0], input.readAllBytes());
+        }
+        assertInvalidCompressionOption(codec, LZMAOptions.DICTIONARY_SIZE, -1L);
+        assertInvalidCompressionOption(codec, LZMAOptions.LITERAL_CONTEXT_BITS, 5L);
+        assertInvalidCompressionOption(codec, LZMAOptions.LITERAL_POSITION_BITS, 5L);
+        assertInvalidCompressionOption(codec, LZMAOptions.POSITION_BITS, 5L);
+        assertInvalidCompressionOption(
+                codec,
+                StandardCodecOptions.PLEDGED_SOURCE_SIZE,
+                -1L
+        );
+
+        CodecOptions invalidCombination = CodecOptions.builder()
+                .set(LZMAOptions.LITERAL_CONTEXT_BITS, 4L)
+                .set(LZMAOptions.LITERAL_POSITION_BITS, 1L)
+                .build();
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> codec.openEncoder(
+                        Channels.newChannel(new ByteArrayOutputStream()),
+                        invalidCombination,
+                        ChannelOwnership.RETAIN
+                )
+        );
+
+        CodecOptions tooSmall = CodecOptions.builder()
+                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) content.length - 1L)
+                .build();
+        assertThrows(
+                IOException.class,
+                () -> codec.compress(
+                        Channels.newChannel(new ByteArrayInputStream(content)),
+                        Channels.newChannel(new ByteArrayOutputStream()),
+                        tooSmall
+                )
+        );
+
+        ByteArrayOutputStream incomplete = new ByteArrayOutputStream();
+        CompressionEncoder encoder = codec.openEncoder(
+                Channels.newChannel(incomplete),
+                CodecOptions.builder()
+                        .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) content.length + 1L)
+                        .build(),
+                ChannelOwnership.RETAIN
+        );
+        encoder.write(ByteBuffer.wrap(content));
+        assertThrows(IOException.class, encoder::finish);
+    }
+
+    /// Verifies an invalid numeric LZMA compression option is rejected before encoding starts.
+    private static void assertInvalidCompressionOption(
+            LZMACodec codec,
+            CodecOption<Long> option,
+            long value
+    ) {
+        CodecOptions options = CodecOptions.builder().set(option, value).build();
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> codec.openEncoder(
+                        Channels.newChannel(new ByteArrayOutputStream()),
+                        options,
+                        ChannelOwnership.RETAIN
+                )
+        );
+    }
+
     /// Verifies direct LZMA-alone channels, dictionary configuration, counters, and ownership.
     @Test
     public void directChannelsExposeDictionaryCountersAndOwnership() throws IOException {
@@ -406,6 +532,15 @@ public final class LZMACodecTest {
                 | Byte.toUnsignedInt(bytes[offset + 1]) << 8
                 | Byte.toUnsignedInt(bytes[offset + 2]) << 16
                 | Byte.toUnsignedInt(bytes[offset + 3]) << 24;
+    }
+
+    /// Reads one little-endian 64-bit value from a byte array.
+    private static long littleEndianLong(byte[] bytes, int offset) {
+        long value = 0L;
+        for (int index = 0; index < Long.BYTES; index++) {
+            value |= (long) Byte.toUnsignedInt(bytes[offset + index]) << (index * 8);
+        }
+        return value;
     }
 
     /// Compresses and decompresses the given bytes.

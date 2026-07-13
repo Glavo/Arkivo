@@ -4,9 +4,14 @@
 package org.glavo.arkivo.codec.bzip2.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecResult;
+import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecodeDirective;
+import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
+import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -18,7 +23,10 @@ import java.nio.channels.ReadableByteChannel;
 import java.util.Arrays;
 import java.util.Objects;
 
-/// Decodes a complete BZip2 stream, including legacy randomized blocks.
+/// Decodes BZip2 streams, including legacy randomized blocks.
+///
+/// Channel-based instances accept concatenated streams. The legacy input-stream constructor stops after one stream so
+/// it does not consume caller-owned trailing bytes.
 ///
 /// Each compressed block is expanded through Huffman decoding, run-length decoding, move-to-front decoding, and the
 /// inverse Burrows-Wheeler transform. The final run-length stage is produced lazily so a highly compressible block does
@@ -108,17 +116,18 @@ public final class BZip2InputStream extends InputStream implements CompressionDe
             936, 638
     };
 
-    /// The compressed source.
-    private final ReadableByteChannel source;
 
-    /// Whether closing this decoder also closes the compressed source.
-    private final ChannelOwnership ownership;
+    /// Tracks closure of the owned compressed-data source.
+    private final OwnedChannelCloser sourceCloser;
 
     /// The most-significant-bit-first reader over the compressed source.
     private final BitInput bits;
 
-    /// The maximum post-RLE block size declared by the stream header.
-    private final int blockSizeLimit;
+    /// Whether a validated stream may be followed by another BZip2 stream.
+    private final boolean concatenated;
+
+    /// The maximum post-RLE block size declared by the current stream header.
+    private int blockSizeLimit;
 
     /// The inverse-BWT block awaiting final run-length expansion.
     private byte[] blockData = new byte[0];
@@ -156,7 +165,13 @@ public final class BZip2InputStream extends InputStream implements CompressionDe
     /// Whether an inverse-BWT block is currently active.
     private boolean blockActive;
 
-    /// Whether the end marker has been consumed.
+    /// Whether a validated stream boundary awaits concatenation processing.
+    private boolean frameBoundaryPending;
+
+    /// Whether the last decode operation completed one stream.
+    private boolean lastFrameFinished;
+
+    /// Whether no further concatenated stream remains.
     private boolean endReached;
 
     /// Whether this input stream has closed.
@@ -165,40 +180,40 @@ public final class BZip2InputStream extends InputStream implements CompressionDe
     /// The number of uncompressed bytes returned through channel reads.
     private long outputBytes;
 
-    /// Creates a decoder and validates the BZip2 stream header.
+    /// Creates a single-stream decoder and validates its BZip2 header.
     public BZip2InputStream(InputStream input) throws IOException {
-        this(Channels.newChannel(Objects.requireNonNull(input, "input")), ChannelOwnership.CLOSE, 1);
+        this(Channels.newChannel(Objects.requireNonNull(input, "input")), ChannelOwnership.CLOSE, 1, false);
     }
 
-    /// Creates a decoder over a compressed channel with explicit ownership.
+    /// Creates a concatenated-stream decoder over a compressed channel with explicit ownership.
     public BZip2InputStream(ReadableByteChannel source, ChannelOwnership ownership) throws IOException {
-        this(source, ownership, 8192);
+        this(source, ownership, 8192, true);
     }
 
     /// Creates a decoder with the requested compressed-input staging size.
     private BZip2InputStream(
             ReadableByteChannel source,
             ChannelOwnership ownership,
-            int inputBufferSize
+            int inputBufferSize,
+            boolean concatenated
     ) throws IOException {
-        this.source = Objects.requireNonNull(source, "source");
-        this.ownership = Objects.requireNonNull(ownership, "ownership");
+        Objects.requireNonNull(source, "source");
+        this.sourceCloser = new OwnedChannelCloser(source, ownership);
         this.bits = new BitInput(source, inputBufferSize);
-        if (bits.readBits(8) != 'B' || bits.readBits(8) != 'Z' || bits.readBits(8) != 'h') {
-            throw new IOException("Invalid BZip2 stream header");
+        this.concatenated = concatenated;
+        try {
+            readFrameHeader(bits.readBits(8));
+        } catch (IOException | RuntimeException | Error exception) {
+            sourceCloser.closeAfter(exception);
+            throw exception;
         }
-        int blockSize = bits.readBits(8) - '0';
-        if (blockSize < 1 || blockSize > 9) {
-            throw new IOException("Invalid BZip2 block size: " + blockSize);
-        }
-        blockSizeLimit = blockSize * BLOCK_SIZE_UNIT;
     }
 
     /// Reads one decoded byte.
     @Override
     public int read() throws IOException {
         ensureOpen();
-        int value = readDecodedByte();
+        int value = readDecodedByte(false);
         if (value >= 0) {
             outputBytes++;
         }
@@ -216,15 +231,15 @@ public final class BZip2InputStream extends InputStream implements CompressionDe
 
         int count = 0;
         while (count < length) {
-            int value = readDecodedByte();
+            int value = readDecodedByte(false);
             if (value < 0) {
-                return count == 0 ? -1 : count;
+                break;
             }
             bytes[offset + count] = (byte) value;
             count++;
         }
         outputBytes += count;
-        return count;
+        return count == 0 ? -1 : count;
     }
 
     /// Reads decoded bytes directly into the destination buffer.
@@ -238,7 +253,7 @@ public final class BZip2InputStream extends InputStream implements CompressionDe
 
         int start = target.position();
         while (target.hasRemaining()) {
-            int value = readDecodedByte();
+            int value = readDecodedByte(false);
             if (value < 0) {
                 break;
             }
@@ -247,6 +262,38 @@ public final class BZip2InputStream extends InputStream implements CompressionDe
         int count = target.position() - start;
         outputBytes += count;
         return count == 0 ? -1 : count;
+    }
+
+    /// Decodes one increment while optionally stopping after the current BZip2 stream.
+    @Override
+    public CodecResult decode(ByteBuffer target, DecodeDirective directive) throws IOException {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(directive, "directive");
+        ensureOpen();
+        lastFrameFinished = false;
+        long inputBefore = bits.byteCount();
+        long outputBefore = outputBytes;
+        if (!target.hasRemaining()) {
+            return new CodecResult(0L, 0L, CodecStatus.ACTIVE);
+        }
+
+        boolean stopAtFrame = directive == DecodeDirective.STOP_AT_FRAME;
+        while (target.hasRemaining()) {
+            int value = readDecodedByte(stopAtFrame);
+            if (value < 0) {
+                break;
+            }
+            target.put((byte) value);
+            outputBytes++;
+        }
+        CodecStatus status = stopAtFrame && lastFrameFinished
+                ? CodecStatus.FRAME_FINISHED
+                : endReached ? CodecStatus.END_OF_INPUT : CodecStatus.ACTIVE;
+        return new CodecResult(
+                bits.byteCount() - inputBefore,
+                outputBytes - outputBefore,
+                status
+        );
     }
 
     /// Skips decoded bytes while preserving block CRC validation.
@@ -286,6 +333,18 @@ public final class BZip2InputStream extends InputStream implements CompressionDe
         return compressedByteCount();
     }
 
+    /// Returns the number of compressed bytes obtained from the source.
+    @Override
+    public long sourceBytes() {
+        return bits.sourceByteCount();
+    }
+
+    /// Returns a read-only view of compressed bytes not yet consumed.
+    @Override
+    public @UnmodifiableView ByteBuffer unconsumedInput() {
+        return bits.unconsumedInput();
+    }
+
     /// Returns the number of uncompressed bytes returned through channel reads.
     @Override
     public long outputBytes() {
@@ -301,26 +360,52 @@ public final class BZip2InputStream extends InputStream implements CompressionDe
     /// Closes the compressed source.
     @Override
     public void close() throws IOException {
-        if (closed) {
-            return;
-        }
         closed = true;
-        if (ownership == ChannelOwnership.CLOSE) {
-            source.close();
-        }
+        sourceCloser.close();
     }
 
-    /// Reads one fully decoded byte or returns end-of-stream.
-    private int readDecodedByte() throws IOException {
+    /// Reads and validates one BZip2 stream header.
+    private void readFrameHeader(int firstByte) throws IOException {
+        if (firstByte != 'B' || bits.readBits(8) != 'Z' || bits.readBits(8) != 'h') {
+            throw new IOException("Invalid BZip2 stream header");
+        }
+        int blockSize = bits.readBits(8) - '0';
+        if (blockSize < 1 || blockSize > 9) {
+            throw new IOException("Invalid BZip2 block size: " + blockSize);
+        }
+        blockSizeLimit = blockSize * BLOCK_SIZE_UNIT;
+        combinedCrc = 0;
+        frameBoundaryPending = false;
+    }
+
+    /// Advances from a validated stream footer to another stream or physical end-of-input.
+    private void advanceAfterFrame() throws IOException {
+        int firstByte = bits.readOptionalByte();
+        if (firstByte < 0) {
+            frameBoundaryPending = false;
+            endReached = true;
+            return;
+        }
+        readFrameHeader(firstByte);
+    }
+
+    /// Reads one fully decoded byte or returns the requested stream boundary or end-of-input.
+    private int readDecodedByte(boolean stopAtFrame) throws IOException {
         while (true) {
+            if (frameBoundaryPending) {
+                if (stopAtFrame && lastFrameFinished) {
+                    return -1;
+                }
+                advanceAfterFrame();
+            }
+            if (endReached) {
+                return -1;
+            }
             if (repeatRemaining > 0) {
                 repeatRemaining--;
                 return recordDecodedByte(runByte);
             }
             if (!blockActive) {
-                if (endReached) {
-                    return -1;
-                }
                 openNextBlock();
                 continue;
             }
@@ -361,7 +446,13 @@ public final class BZip2InputStream extends InputStream implements CompressionDe
             if (combinedCrc != expectedCombinedCrc) {
                 throw new IOException("BZip2 combined CRC mismatch");
             }
-            endReached = true;
+            bits.finishFrame();
+            lastFrameFinished = true;
+            if (concatenated) {
+                frameBoundaryPending = true;
+            } else {
+                endReached = true;
+            }
             return;
         }
         if (marker != BLOCK_MAGIC) {
@@ -604,11 +695,44 @@ public final class BZip2InputStream extends InputStream implements CompressionDe
         /// The number of source bytes consumed.
         private long byteCount;
 
+        /// The number of compressed bytes obtained from the source.
+        private long sourceByteCount;
+
         /// Creates a bit reader over the given source.
         private BitInput(ReadableByteChannel source, int inputBufferSize) {
             this.source = source;
             inputBuffer = ByteBuffer.allocateDirect(inputBufferSize);
             inputBuffer.limit(0);
+        }
+
+        /// Validates zero padding and aligns after one complete BZip2 stream.
+        private void finishFrame() throws IOException {
+            if (buffer != 0L) {
+                throw new IOException("Invalid BZip2 stream padding");
+            }
+            bitCount = 0;
+        }
+
+        /// Reads one optional byte at a stream boundary.
+        private int readOptionalByte() throws IOException {
+            if (bitCount != 0) {
+                throw new AssertionError("BZip2 stream boundary is not byte-aligned");
+            }
+            if (!inputBuffer.hasRemaining()) {
+                inputBuffer.clear();
+                int read = source.read(inputBuffer);
+                if (read < 0) {
+                    inputBuffer.limit(0);
+                    return -1;
+                }
+                if (read == 0) {
+                    throw new IOException("BZip2 source channel made no progress");
+                }
+                sourceByteCount += read;
+                inputBuffer.flip();
+            }
+            byteCount++;
+            return Byte.toUnsignedInt(inputBuffer.get());
         }
 
         /// Reads one bit as a boolean value.
@@ -631,6 +755,7 @@ public final class BZip2InputStream extends InputStream implements CompressionDe
                     if (read == 0) {
                         throw new IOException("BZip2 source channel made no progress");
                     }
+                    sourceByteCount += read;
                     inputBuffer.flip();
                 }
                 int value = Byte.toUnsignedInt(inputBuffer.get());
@@ -655,6 +780,16 @@ public final class BZip2InputStream extends InputStream implements CompressionDe
         /// Returns the exact number of source bytes consumed.
         private long byteCount() {
             return byteCount;
+        }
+
+        /// Returns the number of compressed bytes obtained from the source.
+        private long sourceByteCount() {
+            return sourceByteCount;
+        }
+
+        /// Returns a read-only view of compressed bytes not yet consumed.
+        private @UnmodifiableView ByteBuffer unconsumedInput() {
+            return inputBuffer.asReadOnlyBuffer();
         }
     }
 

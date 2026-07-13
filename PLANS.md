@@ -116,7 +116,12 @@ ArkivoPasswordProvider
 ArkivoVolumeSource
 ArkivoFileSystemOption
 ArkivoFileSystem
+ArkivoFileSystemFormat
+ArkivoVolumeFileSystemFormat
+ArkivoStreamingReaderFormat
+ArkivoStreamingWriterFormat
 ArkivoStreamingReader
+ArkivoStreamingWriter
 ArkivoEditStorage
 ArkivoStoredContent
 ArkivoCommitTarget
@@ -143,6 +148,8 @@ ByteChannel
 ```
 
 Convenience methods may support `InputStream` and `OutputStream`, but these should be adapters over the channel-based implementation.
+
+`CompressionCodecs` should open encoder and decoder contexts by stable codec name and should automatically open decoders for streams with reliable signatures. Context factories should apply explicit channel ownership consistently during lookup, detection, setup, and close. Named channel transfers should retain caller endpoints, while stream adapters should own their input or output stream.
 
 Initial compression formats:
 
@@ -173,7 +180,21 @@ ZIP-specific attributes should expose both typed common ZIP properties and raw l
 
 ZIP file systems should expose the optional preamble bytes stored before the ZIP archive body, such as self-extracting executable stubs, through channel-based APIs instead of forcing the content into memory.
 
-Streaming archive APIs may be added later for formats that cannot naturally expose an efficient `FileSystem`, such as tar.
+Streaming archive APIs use channel-first reader and writer format contracts for forward-only access. AR, TAR, and ZIP expose streaming readers and writers; 7z exposes a streaming writer backed by seekable staging, while RAR exposes a read-only streaming reader.
+
+AR, TAR, and single-volume ZIP complete-rewrite updates support both path-backed archives and arbitrary repeatable seekable channel sources. Non-path update sessions require an explicit commit target and can publish a derived archive without mutating the source; fixed path targets accept the absent source path while source-replacement targets reject it.
+
+TAR channel-source updates preserve either the explicitly selected compression codec or the codec auto-detected from a repeatable source. Update mode validates both decoder and encoder availability before exposing a writable file system, including codecs without reliable stream signatures when selected explicitly.
+
+ZIP channel-source updates borrow the source while indexing it, retain ownership through commit, preserve preamble bytes and surviving local records through exact range copies, and rebuild the central directory with relocated offsets. General multi-volume sources remain read-only; channel-source updates publish one derived archive and do not silently collapse a split source layout.
+
+7z compression pipelines support ordered chains of Delta and BCJ executable filters, including x86, PowerPC, IA-64, ARM, ARM-Thumb, SPARC, ARM64, and RISC-V transforms. ARM64 and RISC-V use their modern single-byte 7z method IDs. BCJ readers and writers support optional unsigned 32-bit start offsets and enforce architecture-specific alignment.
+
+7z entry attributes expose immutable structured coder graphs in declaration order, including raw coder properties, input and output stream ranges, bind pairs, physical packed-stream ordinals, per-output unpack sizes, and the final decoded output.
+
+7z entry attributes expose physical read layout through immutable packed-range descriptors, logical archive offsets, decoded folder offsets, substream ordinals and counts, packed and decoded CRC-32 values, exact solid-substream classification, and named 7z attributes. Copy substreams expose directly addressable slices, while compressed solid entries expose the shared folder inputs required for decoding.
+
+7z output supports configurable solid folders with an exact maximum non-empty file count. Consecutive files share one compression, filter, and optional AES pipeline only while their coder settings match; the writer emits per-file substream sizes and CRC-32 values and supports solid output through file-system creation, complete-rewrite updates, streaming writers, encrypted headers, and split publication.
 
 ZIP file system support should distinguish normal editable file system mode from append-only streaming creation mode.
 

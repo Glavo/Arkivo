@@ -1,0 +1,43 @@
+// Copyright (c) 2026 Glavo
+// SPDX-License-Identifier: MPL-2.0
+
+package org.glavo.arkivo.archive;
+
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
+import org.jetbrains.annotations.NotNullByDefault;
+
+import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.channels.WritableByteChannel;
+import java.util.Map;
+import java.util.Objects;
+
+/// Describes an archive format that can write entries to a forward-only target.
+@NotNullByDefault
+public interface ArkivoStreamingWriterFormat extends ArkivoFormat {
+    /// Opens a streaming writer and takes ownership of the output stream when successful.
+    default ArkivoStreamingWriter openStreamingWriter(OutputStream target) throws IOException {
+        return openStreamingWriter(target, Map.of());
+    }
+
+    /// Opens a streaming writer with environment options and takes ownership of the output stream when successful.
+    default ArkivoStreamingWriter openStreamingWriter(
+            OutputStream target,
+            Map<String, ?> environment
+    ) throws IOException {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(environment, "environment");
+        return openStreamingWriter(StreamChannelAdapters.writableChannel(target), environment);
+    }
+
+    /// Opens a streaming writer and takes ownership of the writable channel when successful.
+    default ArkivoStreamingWriter openStreamingWriter(WritableByteChannel target) throws IOException {
+        return openStreamingWriter(target, Map.of());
+    }
+
+    /// Opens a streaming writer with environment options and takes ownership of the channel when successful.
+    ArkivoStreamingWriter openStreamingWriter(
+            WritableByteChannel target,
+            Map<String, ?> environment
+    ) throws IOException;
+}

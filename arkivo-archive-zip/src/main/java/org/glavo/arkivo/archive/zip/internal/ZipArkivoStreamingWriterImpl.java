@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
@@ -14,9 +15,9 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -81,16 +82,34 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
 
     /// Opens a streaming ZIP writer over a writable channel.
     public static ZipArkivoStreamingWriterImpl open(WritableByteChannel output, ZipArkivoFileSystemConfig config) {
-        return open(Channels.newOutputStream(Objects.requireNonNull(output, "output")), config);
+        Objects.requireNonNull(output, "output");
+        try {
+            return new ZipArkivoStreamingWriterImpl(new StreamingZipArkivoFileSystemImpl(
+                    ZipArkivoFileSystemProvider.instance(),
+                    output,
+                    config
+            ), config);
+        } catch (RuntimeException | Error exception) {
+            closeAfterOpenFailure(output, exception);
+            throw exception;
+        }
     }
 
     /// Opens a streaming ZIP writer over an output stream.
     public static ZipArkivoStreamingWriterImpl open(OutputStream output, ZipArkivoFileSystemConfig config) {
-        return new ZipArkivoStreamingWriterImpl(new StreamingZipArkivoFileSystemImpl(
-                ZipArkivoFileSystemProvider.instance(),
-                Objects.requireNonNull(output, "output"),
-                config
-        ), config);
+        Objects.requireNonNull(output, "output");
+        return open(StreamChannelAdapters.writableChannel(output), config);
+    }
+
+    /// Closes an owned output after setup fails without hiding the primary failure.
+    private static void closeAfterOpenFailure(Closeable output, Throwable failure) {
+        try {
+            output.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            if (failure != exception) {
+                failure.addSuppressed(exception);
+            }
+        }
     }
 
     /// Opens a streaming ZIP writer over a transactional volume target.
@@ -200,7 +219,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
     /// Opens a writable channel for the current pending entry and commits its metadata.
     @Override
     public WritableByteChannel openChannel() throws IOException {
-        return Channels.newChannel(openOutputStream());
+        return StreamChannelAdapters.writableChannel(openOutputStream());
     }
 
     /// Opens an output stream for the current pending entry and commits its metadata.

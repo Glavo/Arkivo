@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.sevenzip;
 
+import org.glavo.arkivo.archive.internal.SeekableChannelSources;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemOption;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
@@ -15,7 +16,9 @@ import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Map;
 import java.util.Objects;
 
@@ -30,7 +33,8 @@ import java.util.Objects;
 /// default, while explicit volume sessions use the platform temporary directory.
 ///
 /// Updates preserve decoded entry content and stored timestamps and attributes, then re-encode every surviving entry
-/// with the configured output compression, filter, password, and header-encryption policy.
+/// with the configured output compression, filter chain, solid file-count policy, password, and header-encryption
+/// policy.
 @NotNullByDefault
 public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem permits SevenZipArkivoFileSystemImpl {
     /// The environment option for an `ArkivoPasswordProvider` value.
@@ -55,6 +59,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
                     SevenZipArkivoFileSystem::compressionOptionValue
             );
 
+
     /// The environment option for an optional `SevenZipFilter` applied before output compression.
     ///
     /// Complete-rewrite updates use this filter for surviving entries unless an entry attribute view overrides it.
@@ -67,6 +72,35 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
                     "filter",
                     SevenZipFilter.class,
                     SevenZipArkivoFileSystem::filterOptionValue
+            );
+
+
+    /// The environment option for an immutable preprocessing filter chain applied before output compression.
+    ///
+    /// Filters run in list order. Complete-rewrite updates use this chain for surviving entries unless an entry
+    /// attribute view overrides it. Values may be a SevenZipFilterChain, a list of SevenZipFilter values, or any
+    /// single value accepted by FILTER. An empty chain disables preprocessing. FILTER and FILTERS are mutually
+    /// exclusive.
+    public static final ArkivoFileSystemOption<SevenZipFilterChain> FILTERS =
+            ArkivoFileSystemOption.of(
+                    "arkivo.7z",
+                    "filters",
+                    SevenZipFilterChain.class,
+                    SevenZipArkivoFileSystem::filterChainOptionValue
+            );
+
+
+    /// The environment option for the maximum number of non-empty files encoded into one solid folder.
+    ///
+    /// A value of `1` disables solid grouping and preserves independent compression streams. Larger values let
+    /// consecutive files with equal compression and filter settings share one coder pipeline. A setting change starts
+    /// a new folder even before this limit is reached. The default is `1`.
+    public static final ArkivoFileSystemOption<Integer> SOLID_FILE_COUNT =
+            ArkivoFileSystemOption.of(
+                    "arkivo.7z",
+                    "solidFileCount",
+                    Integer.class,
+                    SevenZipArkivoFileSystem::solidFileCountOptionValue
             );
 
     /// The environment option for the maximum `Long` byte size of each numbered output volume.
@@ -82,6 +116,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
                     SevenZipArkivoFileSystem::splitSizeOptionValue
             );
 
+
     /// The environment option for whether new archives should encrypt metadata headers.
     ///
     /// Header encryption requires `PASSWORD_PROVIDER` and hides entry names and other metadata in an AES-encrypted
@@ -94,15 +129,18 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
                     SevenZipArkivoFileSystem::booleanOptionValue
             );
 
+
     /// Creates a 7z archive file system base instance.
     protected SevenZipArkivoFileSystem(ArkivoFileSystemThreadSafety threadSafety) {
         super(threadSafety);
     }
 
+
     /// Opens a 7z archive file system.
     public static SevenZipArkivoFileSystem open(Path path) throws IOException {
         return open(path, Map.of());
     }
+
 
     /// Opens a 7z archive file system with environment options.
     ///
@@ -113,12 +151,33 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
         return SevenZipArkivoFileSystemProvider.instance().newFileSystem(path, environment);
     }
 
+
+    /// Opens a read-only 7z archive file system directly from one owned seekable channel.
+    ///
+    /// The channel's current position is the logical archive start. The returned file system owns and closes the
+    /// channel.
+    public static SevenZipArkivoFileSystem open(SeekableByteChannel source) throws IOException {
+        return open(source, Map.of());
+    }
+
+
+    /// Opens a read-only 7z archive file system directly from one owned seekable channel with environment options.
+    public static SevenZipArkivoFileSystem open(
+            SeekableByteChannel source,
+            Map<String, ?> environment
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(environment, "environment");
+        return SeekableChannelSources.open(source, channelSource -> open(channelSource, environment));
+    }
+
     /// Opens a read-only 7z archive file system from a repeatable seekable channel source.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
     public static SevenZipArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
         return open(source, Map.of());
     }
+
 
     /// Opens a read-only 7z archive file system from a repeatable seekable channel source with environment options.
     ///
@@ -131,10 +190,12 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
         return open((ArkivoVolumeSource) source, environment);
     }
 
+
     /// Opens a multi-volume 7z archive file system.
     public static SevenZipArkivoFileSystem open(ArkivoVolumeSource volumes) throws IOException {
         return open(volumes, Map.of());
     }
+
 
     /// Opens a multi-volume 7z archive file system with environment options.
     public static SevenZipArkivoFileSystem open(ArkivoVolumeSource volumes, Map<String, ?> environment) throws IOException {
@@ -147,6 +208,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
         return new SevenZipArkivoFileSystemImpl(SevenZipArkivoFileSystemProvider.instance(), null, volumes, config);
     }
 
+
     /// Opens a complete-rewrite update over a multi-volume source and transactional volume target.
     ///
     /// The returned file system owns the source after this method returns successfully. Closing a changed file system
@@ -158,6 +220,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     ) throws IOException {
         return update(source, target, splitSize, Map.of());
     }
+
 
     /// Opens a complete-rewrite update over explicit multi-volume input and output with environment options.
     ///
@@ -195,6 +258,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
         );
     }
 
+
     /// Creates a forward-only 7z file system that publishes split output to a transactional volume target.
     ///
     /// The complete archive is assembled in a local seekable temporary file before volumes are published because 7z
@@ -205,6 +269,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     public static SevenZipArkivoFileSystem create(ArkivoVolumeTarget target, long splitSize) throws IOException {
         return create(target, splitSize, Map.of());
     }
+
 
     /// Creates a forward-only 7z file system over a transactional volume target with environment options.
     ///
@@ -235,6 +300,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
                 config
         );
     }
+
 
     /// Returns the major 7z format version stored in the signature header.
     public abstract int majorVersion();
@@ -267,6 +333,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
         );
     }
 
+
     /// Converts a raw compression option value.
     private static SevenZipCompression compressionOptionValue(Object value) {
         if (value instanceof SevenZipCompression compression) {
@@ -283,6 +350,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
         );
     }
 
+
     /// Converts a raw filter option value.
     private static SevenZipFilter filterOptionValue(Object value) {
         if (value instanceof SevenZipFilter filter) {
@@ -297,6 +365,51 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
         throw new IllegalArgumentException(
                 "Expected SevenZipFilter, SevenZipFilterMethod, or String for key: " + FILTER.key()
         );
+    }
+
+
+    /// Converts a raw filter-chain option value.
+    private static SevenZipFilterChain filterChainOptionValue(Object value) {
+        if (value instanceof SevenZipFilterChain chain) {
+            return chain;
+        }
+        if (value instanceof Iterable<?> values) {
+            ArrayList<SevenZipFilter> filters = new ArrayList<>();
+            for (Object item : values) {
+                if (!(item instanceof SevenZipFilter filter)) {
+                    throw new IllegalArgumentException(
+                            "Expected only SevenZipFilter values for key: " + FILTERS.key()
+                    );
+                }
+                filters.add(filter);
+            }
+            return filters.isEmpty() ? SevenZipFilterChain.EMPTY : new SevenZipFilterChain(filters);
+        }
+        return SevenZipFilterChain.of(filterOptionValue(value));
+    }
+
+
+    /// Converts and validates a raw solid file-count option value.
+    private static Integer solidFileCountOptionValue(Object value) {
+        int count;
+        if (value instanceof Byte || value instanceof Short || value instanceof Integer) {
+            count = ((Number) value).intValue();
+        } else if (value instanceof Long longValue) {
+            if (longValue < Integer.MIN_VALUE || longValue > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException("7z solid file count is outside the Integer range");
+            }
+            count = longValue.intValue();
+        } else if (value instanceof String stringValue) {
+            count = Integer.parseInt(stringValue);
+        } else {
+            throw new IllegalArgumentException(
+                    "Expected Integer, compatible integral number, or String for key: " + SOLID_FILE_COUNT.key()
+            );
+        }
+        if (count <= 0) {
+            throw new IllegalArgumentException("7z solid file count must be positive");
+        }
+        return count;
     }
 
     /// Converts a raw boolean option value.

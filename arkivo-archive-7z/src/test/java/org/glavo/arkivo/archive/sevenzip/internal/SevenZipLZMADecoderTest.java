@@ -11,10 +11,37 @@ import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Tests 7z LZMA decoder pipeline setup behavior.
 @NotNullByDefault
 public final class SevenZipLZMADecoderTest {
+    /// Verifies the official modern BCJ method IDs are recognized as supported decoders.
+    @Test
+    public void recognizesModernBcjMethodIds() {
+        assertTrue(SevenZipLZMADecoder.isSupported(new byte[]{0x0a}));
+        assertTrue(SevenZipLZMADecoder.isSupported(new byte[]{0x0b}));
+    }
+
+    /// Verifies modern BCJ properties reject start offsets that violate instruction alignment.
+    @Test
+    public void modernBcjFiltersRejectMisalignedStartOffsets() {
+        assertThrows(
+                IOException.class,
+                () -> SevenZipLZMADecoder.openARM64Filter(
+                        new ByteArrayInputStream(new byte[0]),
+                        new byte[]{0x02, 0x00, 0x00, 0x00}
+                )
+        );
+        assertThrows(
+                IOException.class,
+                () -> SevenZipLZMADecoder.openRiscVFilter(
+                        new ByteArrayInputStream(new byte[0]),
+                        new byte[]{0x01, 0x00, 0x00, 0x00}
+                )
+        );
+    }
+
     /// Verifies that decoder setup failures are not replaced by cleanup failures.
     @Test
     public void openFolderPreservesSetupFailureWhenInputCloseFails() {

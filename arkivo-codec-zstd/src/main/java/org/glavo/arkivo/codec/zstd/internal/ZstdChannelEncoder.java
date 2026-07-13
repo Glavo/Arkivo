@@ -7,7 +7,9 @@ import com.github.luben.zstd.EndDirective;
 import com.github.luben.zstd.ZstdCompressCtx;
 import com.github.luben.zstd.ZstdDirectBufferCompressingStreamNoFinalizer;
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -26,11 +28,14 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
     /// The compressed-data target.
     private final WritableByteChannel target;
 
-    /// Whether this context owns the target channel.
-    private final ChannelOwnership ownership;
+    /// Tracks closure of the owned compressed-data target.
+    private final OwnedChannelCloser targetCloser;
 
     /// The configured native Zstandard compression context.
     private final ZstdCompressCtx context;
+
+    /// The exact source size pledged independently for every frame, or the unknown sentinel.
+    private final long pledgedSourceSize;
 
     /// The direct owned input staging buffer.
     private final ByteBuffer inputBuffer = ByteBuffer.allocateDirect(INPUT_BUFFER_SIZE);
@@ -46,6 +51,9 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
     /// The number of compressed bytes written.
     private long outputBytes;
 
+    /// Whether one frame is active and will be finished on the next frame boundary.
+    private boolean frameActive = true;
+
     /// Whether this encoder remains open.
     private boolean open = true;
 
@@ -59,9 +67,28 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
             ChannelOwnership ownership,
             ZstdCompressCtx context
     ) {
+        this(target, ownership, context, CompressionCodec.UNKNOWN_SIZE);
+    }
+
+    /// Creates an encoder with an optional source-size pledge for every frame.
+    ///
+    /// @param target compressed-data target
+    /// @param ownership whether this context closes the target
+    /// @param context configured native compression context
+    /// @param pledgedSourceSize exact source size for every frame, or the unknown sentinel
+    public ZstdChannelEncoder(
+            WritableByteChannel target,
+            ChannelOwnership ownership,
+            ZstdCompressCtx context,
+            long pledgedSourceSize
+    ) {
         this.target = Objects.requireNonNull(target, "target");
-        this.ownership = Objects.requireNonNull(ownership, "ownership");
+        this.targetCloser = new OwnedChannelCloser(target, ownership);
         this.context = Objects.requireNonNull(context, "context");
+        if (pledgedSourceSize < CompressionCodec.UNKNOWN_SIZE) {
+            throw new IllegalArgumentException("pledgedSourceSize must not be less than the unknown sentinel");
+        }
+        this.pledgedSourceSize = pledgedSourceSize;
     }
 
     /// Consumes uncompressed bytes through the native streaming context.
@@ -72,6 +99,7 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
         if (!source.hasRemaining()) {
             return 0;
         }
+        startFrame();
 
         int start = source.position();
         try {
@@ -96,6 +124,9 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
     @Override
     public void flush() throws IOException {
         ensureOpen();
+        if (!frameActive) {
+            return;
+        }
         inputBuffer.clear();
         inputBuffer.limit(0);
         while (!process(EndDirective.FLUSH)) {
@@ -103,28 +134,44 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
         }
     }
 
-    /// Finishes the frame and releases the native context.
+    /// Finishes the active frame while retaining the encoder for another frame.
+    @Override
+    public void finishFrame() throws IOException {
+        ensureOpen();
+        if (!frameActive) {
+            return;
+        }
+        endFrame();
+        frameActive = false;
+    }
+
+    /// Finishes the active frame and releases the native context.
     @Override
     public void finish() throws IOException {
         if (!open) {
+            targetCloser.close();
             return;
         }
 
         @Nullable Throwable failure = null;
         try {
-            inputBuffer.clear();
-            inputBuffer.limit(0);
-            while (!process(EndDirective.END)) {
-                // Continue until the complete frame epilogue is written.
+            if (frameActive) {
+                endFrame();
             }
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
-            throw exception;
-        } finally {
-            open = false;
-            context.close();
-            closeOwnedTarget(failure);
         }
+        open = false;
+        try {
+            context.close();
+        } catch (RuntimeException | Error exception) {
+            if (failure == null) {
+                failure = exception;
+            } else {
+                failure.addSuppressed(exception);
+            }
+        }
+        closeOwnedTarget(failure);
     }
 
     /// Returns the consumed uncompressed byte count.
@@ -149,6 +196,27 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
     @Override
     public void close() throws IOException {
         finish();
+    }
+
+    /// Lazily resets the native session before accepting the next frame's input.
+    private void startFrame() {
+        if (frameActive) {
+            return;
+        }
+        context.reset();
+        if (pledgedSourceSize >= 0L) {
+            context.setPledgedSrcSize(pledgedSourceSize);
+        }
+        frameActive = true;
+    }
+
+    /// Finishes one active native frame.
+    private void endFrame() throws IOException {
+        inputBuffer.clear();
+        inputBuffer.limit(0);
+        while (!process(EndDirective.END)) {
+            // Continue until the complete frame epilogue is written.
+        }
     }
 
     /// Processes one native streaming operation and drains produced output.
@@ -177,20 +245,9 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
         inputBuffer.flip();
     }
 
-    /// Closes the target when this context owns it without hiding an earlier failure.
+    /// Closes the owned target without hiding an earlier failure.
     private void closeOwnedTarget(@Nullable Throwable failure) throws IOException {
-        if (ownership != ChannelOwnership.CLOSE) {
-            return;
-        }
-        try {
-            target.close();
-        } catch (IOException | RuntimeException | Error exception) {
-            if (failure != null) {
-                failure.addSuppressed(exception);
-                return;
-            }
-            throw exception;
-        }
+        targetCloser.closeAfter(failure);
     }
 
     /// Requires the encoder to remain open.

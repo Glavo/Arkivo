@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.ar.internal;
 
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingReader;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -12,7 +13,6 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -150,7 +150,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             throw new IOException("AR member body has already been opened");
         }
         currentBodyOpened = true;
-        return Channels.newChannel(new EntryInputStream());
+        return StreamChannelAdapters.readableChannel(new EntryInputStream());
     }
 
     /// Closes this streaming reader.

@@ -1,0 +1,137 @@
+// Copyright (c) 2026 Glavo
+// SPDX-License-Identifier: MPL-2.0
+
+package org.glavo.arkivo.archive;
+
+import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
+import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.nio.channels.WritableByteChannel;
+import java.nio.file.attribute.FileAttributeView;
+import java.util.Map;
+import java.util.Objects;
+
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/// Verifies that archive streaming writer formats are channel-first.
+@NotNullByDefault
+public final class ArkivoStreamingWriterFormatChannelTest {
+    /// Verifies the channel overload is the implementation contract and the stream overload is an adapter.
+    @Test
+    public void channelMethodDefinesImplementationContract() throws NoSuchMethodException {
+        Method channelMethod = ArkivoStreamingWriterFormat.class.getMethod(
+                "openStreamingWriter",
+                WritableByteChannel.class,
+                Map.class
+        );
+        Method streamMethod = ArkivoStreamingWriterFormat.class.getMethod(
+                "openStreamingWriter",
+                OutputStream.class,
+                Map.class
+        );
+
+        assertTrue(Modifier.isAbstract(channelMethod.getModifiers()));
+        assertFalse(channelMethod.isDefault());
+        assertTrue(streamMethod.isDefault());
+    }
+
+    /// Verifies the default stream convenience method dispatches through the channel implementation.
+    @Test
+    public void streamFactoryAdaptsToChannelImplementation() throws IOException {
+        TestStreamingWriterFormat format = new TestStreamingWriterFormat();
+        ByteArrayOutputStream target = new ByteArrayOutputStream();
+
+        ArkivoStreamingWriter writer = format.openStreamingWriter(target, Map.of());
+        WritableByteChannel openedChannel = Objects.requireNonNull(format.openedChannel);
+        assertSame(openedChannel, ((TestStreamingWriter) writer).target);
+        assertTrue(openedChannel.isOpen());
+
+        writer.close();
+        assertFalse(openedChannel.isOpen());
+    }
+
+    /// Records the channel received through the abstract writer contract.
+    @NotNullByDefault
+    private static final class TestStreamingWriterFormat implements ArkivoStreamingWriterFormat {
+        /// The channel received by the implementation.
+        private @Nullable WritableByteChannel openedChannel;
+
+        /// Returns the test format name.
+        @Override
+        public String name() {
+            return "test";
+        }
+
+        /// Opens a writer directly over the provided channel.
+        @Override
+        public ArkivoStreamingWriter openStreamingWriter(
+                WritableByteChannel target,
+                Map<String, ?> environment
+        ) {
+            openedChannel = target;
+            return new TestStreamingWriter(target);
+        }
+    }
+
+    /// Owns a channel without writing archive entries.
+    @NotNullByDefault
+    private static final class TestStreamingWriter extends ArkivoStreamingWriter {
+        /// The owned target channel.
+        private final WritableByteChannel target;
+
+        /// Creates a writer over the target channel.
+        private TestStreamingWriter(WritableByteChannel target) {
+            this.target = target;
+        }
+
+        /// Rejects file creation in the minimal test writer.
+        @Override
+        public void beginFile(String path) {
+            throw new UnsupportedOperationException("Test writer does not create entries");
+        }
+
+        /// Rejects directory creation in the minimal test writer.
+        @Override
+        public void beginDirectory(String path) {
+            throw new UnsupportedOperationException("Test writer does not create entries");
+        }
+
+        /// Rejects symbolic-link creation in the minimal test writer.
+        @Override
+        public void beginSymbolicLink(String path, String linkTarget) {
+            throw new UnsupportedOperationException("Test writer does not create entries");
+        }
+
+        /// Returns no configurable attribute view.
+        @Override
+        public <V extends FileAttributeView> @Nullable V attributeView(Class<V> type) {
+            return null;
+        }
+
+        /// Rejects entry completion in the minimal test writer.
+        @Override
+        public void endEntry() {
+            throw new IllegalStateException("No current test entry");
+        }
+
+        /// Rejects body access in the minimal test writer.
+        @Override
+        public WritableByteChannel openChannel() {
+            throw new IllegalStateException("No current test entry");
+        }
+
+        /// Closes the owned target channel.
+        @Override
+        public void close() throws IOException {
+            target.close();
+        }
+    }
+}

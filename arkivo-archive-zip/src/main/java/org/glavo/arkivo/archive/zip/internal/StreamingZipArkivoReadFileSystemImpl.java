@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import com.github.luben.zstd.ZstdDecompressCtx;
 import com.github.luben.zstd.ZstdInputStream;
 import org.glavo.arkivo.codec.lzma.internal.LzmaInputStream;
@@ -24,7 +25,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PushbackInputStream;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.ClosedFileSystemException;
@@ -85,7 +85,10 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
     /// The provider that created this ZIP file system.
     private final ZipArkivoFileSystemProvider provider;
 
-    /// The input stream that provides ZIP bytes.
+    /// The source stream whose closure is owned by this file system.
+    private final InputStream source;
+
+    /// The pushback input stream used to parse ZIP bytes.
     private final PushbackInputStream input;
 
     /// The parsed ZIP file system configuration.
@@ -96,6 +99,9 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
 
     /// The root path for this ZIP file system.
     private final ZipArkivoPath rootPath;
+
+    /// Whether closure of the streaming input has completed.
+    private boolean inputClosed;
 
     /// The current local entry, or `null` when no entry is active.
     private @Nullable LocalEntry currentEntry;
@@ -115,7 +121,13 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             ReadableByteChannel source,
             ZipArkivoFileSystemConfig config
     ) {
-        this(provider, Channels.newInputStream(Objects.requireNonNull(source, "source")), config);
+        super(config.threadSafety());
+        this.provider = Objects.requireNonNull(provider, "provider");
+        this.source = StreamChannelAdapters.inputStream(Objects.requireNonNull(source, "source"));
+        this.input = new PushbackInputStream(this.source, PUSHBACK_BUFFER_SIZE);
+        this.config = Objects.requireNonNull(config, "config");
+        this.lock = ZipLocks.create(config.threadSafety());
+        this.rootPath = ZipArkivoPath.root(this);
     }
 
     /// Creates a streaming ZIP archive file system from an input stream.
@@ -124,12 +136,11 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             InputStream source,
             ZipArkivoFileSystemConfig config
     ) {
-        super(config.threadSafety());
-        this.provider = Objects.requireNonNull(provider, "provider");
-        this.input = new PushbackInputStream(Objects.requireNonNull(source, "source"), PUSHBACK_BUFFER_SIZE);
-        this.config = Objects.requireNonNull(config, "config");
-        this.lock = ZipLocks.create(config.threadSafety());
-        this.rootPath = ZipArkivoPath.root(this);
+        this(
+                provider,
+                StreamChannelAdapters.readableChannel(Objects.requireNonNull(source, "source")),
+                config
+        );
     }
 
     /// Returns the provider that created this ZIP file system.
@@ -145,10 +156,15 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
             lock();
             try {
                 if (!open) {
+                    if (!inputClosed) {
+                        source.close();
+                        inputClosed = true;
+                    }
                     return;
                 }
                 open = false;
-                input.close();
+                source.close();
+                inputClosed = true;
             } finally {
                 unlock();
             }
@@ -328,7 +344,7 @@ public final class StreamingZipArkivoReadFileSystemImpl extends ZipArkivoFileSys
 
                 CurrentEntryInputStream entryInput = new CurrentEntryInputStream(this, entryInputStream(entry));
                 currentInput = entryInput;
-                return manageReadableChannel(Channels.newChannel(entryInput));
+                return manageReadableChannel(StreamChannelAdapters.readableChannel(entryInput));
             } finally {
                 unlock();
             }

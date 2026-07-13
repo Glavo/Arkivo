@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.zip;
 
+import org.glavo.arkivo.archive.internal.SeekableChannelSources;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemOption;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
@@ -22,6 +23,10 @@ import java.util.Map;
 import java.util.Objects;
 
 /// Opens ZIP archives as NIO file systems.
+///
+/// Single-volume channel sources support complete-rewrite updates when `READ` and `WRITE` are supplied together.
+/// Such updates require an explicit `ArkivoFileSystem.COMMIT_TARGET`, preserve preamble and surviving local-record
+/// bytes, and leave the original source unchanged. General volume sources remain read-only.
 @NotNullByDefault
 public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
         permits StreamingZipArkivoFileSystemImpl, StreamingZipArkivoReadFileSystemImpl, ZipArkivoFileSystemImpl {
@@ -68,6 +73,26 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
         return ZipArkivoFileSystemProvider.instance().newFileSystem(path, environment);
     }
 
+    /// Opens a read-only ZIP archive file system directly from one owned seekable channel.
+    ///
+    /// The channel's current position is the logical archive start. The returned file system owns and closes the
+    /// channel.
+    public static ZipArkivoFileSystem open(SeekableByteChannel source) throws IOException {
+        return open(source, Map.of());
+    }
+
+    /// Opens a ZIP archive file system directly from one owned seekable channel with environment options.
+    ///
+    /// `READ` and `WRITE` select complete-rewrite update mode and require an explicit
+    /// `ArkivoFileSystem.COMMIT_TARGET`. The returned file system owns and closes the channel in all modes.
+    public static ZipArkivoFileSystem open(
+            SeekableByteChannel source,
+            Map<String, ?> environment
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(environment, "environment");
+        return SeekableChannelSources.open(source, channelSource -> open(channelSource, environment));
+    }
     /// Opens a read-only ZIP archive file system from a repeatable seekable channel source.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
@@ -75,15 +100,25 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
         return open(source, Map.of());
     }
 
-    /// Opens a read-only ZIP archive file system from a repeatable seekable channel source with environment options.
+    /// Opens a ZIP archive file system from a repeatable seekable channel source with environment options.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    /// `READ` and `WRITE` select complete-rewrite update mode and require an explicit
+    /// `ArkivoFileSystem.COMMIT_TARGET`.
     public static ZipArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
             Map<String, ?> environment
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        return open((ArkivoVolumeSource) source, environment);
+        Objects.requireNonNull(environment, "environment");
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+        return config.archiveWritable()
+                ? StreamingZipArkivoFileSystemImpl.openUpdate(
+                        ZipArkivoFileSystemProvider.instance(),
+                        source,
+                        config
+                )
+                : new ZipArkivoFileSystemImpl(ZipArkivoFileSystemProvider.instance(), null, source, config);
     }
 
     /// Opens a split ZIP archive file system.

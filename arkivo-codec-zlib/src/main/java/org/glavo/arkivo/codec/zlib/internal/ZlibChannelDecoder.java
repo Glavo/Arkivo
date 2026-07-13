@@ -6,9 +6,11 @@ package org.glavo.arkivo.codec.zlib.internal;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.UnmodifiableView;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.EOFException;
@@ -29,8 +31,8 @@ public final class ZlibChannelDecoder implements CompressionDecoder {
     /// The compressed-data source.
     private final ReadableByteChannel source;
 
-    /// Whether this context owns the source channel.
-    private final ChannelOwnership ownership;
+    /// Tracks closure of the owned compressed-data source.
+    private final OwnedChannelCloser sourceCloser;
 
     /// The JDK zlib-wrapped inflate context.
     private final Inflater inflater;
@@ -47,8 +49,11 @@ public final class ZlibChannelDecoder implements CompressionDecoder {
     /// Whether the zlib window declaration has been validated.
     private boolean windowValidated;
 
-    /// The number of compressed bytes read from the source.
+    /// The number of compressed bytes logically consumed by the inflater.
     private long inputBytes;
+
+    /// The number of compressed bytes obtained from the source.
+    private long sourceBytes;
 
     /// The number of uncompressed bytes produced.
     private long outputBytes;
@@ -90,7 +95,7 @@ public final class ZlibChannelDecoder implements CompressionDecoder {
             @Nullable CompressionDictionary dictionary
     ) {
         this.source = Objects.requireNonNull(source, "source");
-        this.ownership = Objects.requireNonNull(ownership, "ownership");
+        this.sourceCloser = new OwnedChannelCloser(source, ownership);
         this.inflater = new Inflater(false);
         this.maximumWindowSize = maximumWindowSize;
         this.dictionary = dictionary;
@@ -112,10 +117,13 @@ public final class ZlibChannelDecoder implements CompressionDecoder {
                 return -1;
             }
             int produced;
+            int inputPosition = inputBuffer.position();
             try {
                 produced = inflater.inflate(target);
             } catch (DataFormatException exception) {
                 throw new IOException("Invalid zlib stream", exception);
+            } finally {
+                inputBytes += inputBuffer.position() - inputPosition;
             }
             if (produced > 0) {
                 outputBytes += produced;
@@ -137,10 +145,22 @@ public final class ZlibChannelDecoder implements CompressionDecoder {
         }
     }
 
-    /// Returns the compressed byte count read from the source.
+    /// Returns the compressed byte count logically consumed by the inflater.
     @Override
     public long inputBytes() {
         return inputBytes;
+    }
+
+    /// Returns the compressed byte count obtained from the source.
+    @Override
+    public long sourceBytes() {
+        return sourceBytes;
+    }
+
+    /// Returns a read-only view of compressed bytes not yet consumed.
+    @Override
+    public @UnmodifiableView ByteBuffer unconsumedInput() {
+        return inputBuffer.asReadOnlyBuffer();
     }
 
     /// Returns the produced uncompressed byte count.
@@ -158,15 +178,11 @@ public final class ZlibChannelDecoder implements CompressionDecoder {
     /// Releases the native context and closes an owned source channel.
     @Override
     public void close() throws IOException {
-        if (!open) {
-            return;
+        if (open) {
+            open = false;
+            inflater.end();
         }
-
-        open = false;
-        inflater.end();
-        if (ownership == ChannelOwnership.CLOSE) {
-            source.close();
-        }
+        sourceCloser.close();
     }
 
     /// Reads another compressed chunk and supplies it to the inflater.
@@ -187,7 +203,7 @@ public final class ZlibChannelDecoder implements CompressionDecoder {
                 throw new IOException("Zlib source channel made no progress");
             }
 
-            inputBytes += read;
+            sourceBytes += read;
             inputBuffer.flip();
             if (windowValidated || inputBuffer.remaining() >= Short.BYTES) {
                 validateWindowSize();

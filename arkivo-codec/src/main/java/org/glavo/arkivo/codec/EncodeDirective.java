@@ -14,6 +14,8 @@ public enum EncodeDirective {
     /// Consumes input and flushes pending output without ending the frame.
     FLUSH,
 
-    /// Consumes input, finishes the frame, and releases encoder resources.
+    /// Consumes input and finishes the current frame.
+    ///
+    /// Multi-frame encoders remain open; other encoders release their resources.
     END_FRAME
 }

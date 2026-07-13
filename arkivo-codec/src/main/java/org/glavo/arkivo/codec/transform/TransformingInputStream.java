@@ -44,8 +44,11 @@ public final class TransformingInputStream extends InputStream {
     /// Whether the upstream stream reached end-of-input.
     private boolean endReached;
 
-    /// Whether this stream has closed.
+    /// Whether this stream has stopped accepting reads.
     private boolean closed;
+
+    /// Whether the upstream stream has closed successfully.
+    private boolean inputClosed;
 
     /// Creates a filtering input stream over an upstream coder.
     public TransformingInputStream(InputStream input, ByteTransform transform) {
@@ -129,11 +132,12 @@ public final class TransformingInputStream extends InputStream {
     /// Closes the upstream coder stream.
     @Override
     public void close() throws IOException {
-        if (closed) {
+        closed = true;
+        if (inputClosed) {
             return;
         }
-        closed = true;
         input.close();
+        inputClosed = true;
     }
 
     /// Adds newly read bytes and transforms the largest complete prefix.

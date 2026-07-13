@@ -13,7 +13,8 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.channels.Channels;
+import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
 /// Opens compression wrappers around TAR streams and validates codec capabilities.
@@ -34,11 +35,29 @@ public final class TarCompressionStreams {
         }
         try {
             requireDecompression(compressionCodec);
-            return Channels.newInputStream(compressionCodec.openDecoder(
-                    Channels.newChannel(source),
+            return compressionCodec.decompressFrom(source);
+        } catch (IOException | RuntimeException | Error exception) {
+            closeAfterOpenFailure(source, exception);
+            throw exception;
+        }
+    }
+
+    /// Opens a decoded TAR channel and closes the source if decoder setup fails.
+    public static ReadableByteChannel openArchiveInput(
+            ReadableByteChannel source,
+            @Nullable CompressionCodec compressionCodec
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        if (compressionCodec == null) {
+            return source;
+        }
+        try {
+            requireDecompression(compressionCodec);
+            return compressionCodec.openDecoder(
+                    source,
                     CodecOptions.EMPTY,
                     ChannelOwnership.CLOSE
-            ));
+            );
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterOpenFailure(source, exception);
             throw exception;
@@ -56,11 +75,29 @@ public final class TarCompressionStreams {
         }
         try {
             requireCompression(compressionCodec);
-            return Channels.newOutputStream(compressionCodec.openEncoder(
-                    Channels.newChannel(target),
+            return compressionCodec.compressTo(target);
+        } catch (IOException | RuntimeException | Error exception) {
+            closeAfterOpenFailure(target, exception);
+            throw exception;
+        }
+    }
+
+    /// Opens an encoded TAR channel and closes the target if encoder setup fails.
+    public static WritableByteChannel openArchiveOutput(
+            WritableByteChannel target,
+            @Nullable CompressionCodec compressionCodec
+    ) throws IOException {
+        Objects.requireNonNull(target, "target");
+        if (compressionCodec == null) {
+            return target;
+        }
+        try {
+            requireCompression(compressionCodec);
+            return compressionCodec.openEncoder(
+                    target,
                     CodecOptions.EMPTY,
                     ChannelOwnership.CLOSE
-            ));
+            );
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterOpenFailure(target, exception);
             throw exception;

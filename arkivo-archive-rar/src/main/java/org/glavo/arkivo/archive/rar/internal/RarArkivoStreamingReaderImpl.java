@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.rar.internal;
 
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.rar.RarArkivoStreamingReader;
@@ -16,7 +17,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -535,19 +535,19 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         }
         if (attributes.isDirectory() || attributes.isSymbolicLink() || attributes.isOther()) {
             currentBodyOpened = true;
-            return Channels.newChannel(InputStream.nullInputStream());
+            return StreamChannelAdapters.readableChannel(InputStream.nullInputStream());
         }
         if (attributes.continuesFromPreviousVolume()) {
             throw new IOException("RAR entry starts in a previous volume");
         }
         if (attributes.compressionMethod() != 0) {
-            return Channels.newChannel(openCompressedInput(attributes));
+            return StreamChannelAdapters.readableChannel(openCompressedInput(attributes));
         }
         if (attributes.isEncrypted()) {
             return openEncryptedChannel(attributes);
         }
         currentBodyOpened = true;
-        return Channels.newChannel(new EntryInputStream());
+        return StreamChannelAdapters.readableChannel(new EntryInputStream());
     }
 
     /// Opens one supported compressed body through its format-specific stateful decoder.
@@ -888,7 +888,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (currentBlake2spActive) {
             dataBlake2sp.reset();
         }
-        return Channels.newChannel(encryptedInput);
+        return StreamChannelAdapters.readableChannel(encryptedInput);
     }
 
     /// Closes this streaming reader.

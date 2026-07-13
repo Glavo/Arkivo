@@ -11,6 +11,7 @@ import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.archive.sevenzip.SevenZipFilter;
+import org.glavo.arkivo.archive.sevenzip.SevenZipFilterChain;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -28,6 +29,9 @@ public final class SevenZipArkivoFileSystemConfig {
     /// The split size value used when split output is disabled.
     public static final long NO_SPLIT_SIZE = -1L;
 
+    /// The default maximum number of non-empty files in one 7z folder.
+    public static final int DEFAULT_SOLID_FILE_COUNT = 1;
+
     /// The default open options used by read-only 7z file systems.
     private static final @Unmodifiable Set<OpenOption> DEFAULT_READ_OPEN_OPTIONS =
             Set.of(StandardOpenOption.READ);
@@ -41,7 +45,8 @@ public final class SevenZipArkivoFileSystemConfig {
             DEFAULT_READ_OPEN_OPTIONS,
             null,
             SevenZipCompression.copy(),
-            null,
+            SevenZipFilterChain.EMPTY,
+            DEFAULT_SOLID_FILE_COUNT,
             NO_SPLIT_SIZE,
             false,
             false,
@@ -49,6 +54,7 @@ public final class SevenZipArkivoFileSystemConfig {
             null,
             null
     );
+
 
     /// The open options used to open the backing archive path.
     private final @Unmodifiable Set<OpenOption> openOptions;
@@ -59,8 +65,11 @@ public final class SevenZipArkivoFileSystemConfig {
     /// The default compression applied to non-empty output entries.
     private final SevenZipCompression compression;
 
-    /// The preprocessing filter applied before default output compression, or `null` when disabled.
-    private final @Nullable SevenZipFilter filter;
+    /// The preprocessing filters applied in order before default output compression.
+    private final SevenZipFilterChain filters;
+
+    /// The maximum number of non-empty files encoded into one solid folder.
+    private final int solidFileCount;
 
     /// The maximum size of each output volume, or `NO_SPLIT_SIZE` when split output is disabled.
     private final long splitSize;
@@ -85,7 +94,7 @@ public final class SevenZipArkivoFileSystemConfig {
             Set<? extends OpenOption> openOptions,
             @Nullable ArkivoPasswordProvider passwordProvider,
             SevenZipCompression compression,
-            @Nullable SevenZipFilter filter,
+            SevenZipFilterChain filters,
             long splitSize,
             boolean encryptHeaders,
             ArkivoFileSystemThreadSafety threadSafety
@@ -94,7 +103,8 @@ public final class SevenZipArkivoFileSystemConfig {
                 openOptions,
                 passwordProvider,
                 compression,
-                filter,
+                filters,
+                DEFAULT_SOLID_FILE_COUNT,
                 splitSize,
                 splitSize != NO_SPLIT_SIZE,
                 encryptHeaders,
@@ -104,12 +114,14 @@ public final class SevenZipArkivoFileSystemConfig {
         );
     }
 
+
     /// Creates parsed 7z file system configuration with update staging and publication settings.
     private SevenZipArkivoFileSystemConfig(
             Set<? extends OpenOption> openOptions,
             @Nullable ArkivoPasswordProvider passwordProvider,
             SevenZipCompression compression,
-            @Nullable SevenZipFilter filter,
+            SevenZipFilterChain filters,
+            int solidFileCount,
             long splitSize,
             boolean splitSizeConfigured,
             boolean encryptHeaders,
@@ -117,13 +129,17 @@ public final class SevenZipArkivoFileSystemConfig {
             @Nullable ArkivoEditStorage editStorage,
             @Nullable ArkivoCommitTarget commitTarget
     ) {
+        if (solidFileCount <= 0) {
+            throw new IllegalArgumentException("solidFileCount must be positive");
+        }
         if (splitSize != NO_SPLIT_SIZE && splitSize <= 0) {
             throw new IllegalArgumentException("splitSize must be positive or NO_SPLIT_SIZE");
         }
         this.openOptions = normalizeOpenOptions(Objects.requireNonNull(openOptions, "openOptions"));
         this.passwordProvider = passwordProvider;
         this.compression = Objects.requireNonNull(compression, "compression");
-        this.filter = filter;
+        this.filters = Objects.requireNonNull(filters, "filters");
+        this.solidFileCount = solidFileCount;
         this.splitSize = splitSize;
         this.splitSizeConfigured = splitSizeConfigured;
         this.encryptHeaders = encryptHeaders;
@@ -132,15 +148,18 @@ public final class SevenZipArkivoFileSystemConfig {
         this.commitTarget = commitTarget;
     }
 
+
     /// Parses 7z file system configuration from an environment map.
     public static SevenZipArkivoFileSystemConfig fromEnvironment(Map<String, ?> environment) {
         return fromEnvironment(environment, DEFAULT_READ_OPEN_OPTIONS);
     }
 
+
     /// Parses 7z output configuration from an environment map.
     public static SevenZipArkivoFileSystemConfig fromWriterEnvironment(Map<String, ?> environment) {
         return fromEnvironment(environment, DEFAULT_WRITE_OPEN_OPTIONS);
     }
+
 
     /// Parses 7z complete-rewrite update configuration from an environment map.
     public static SevenZipArkivoFileSystemConfig fromUpdateEnvironment(Map<String, ?> environment) {
@@ -149,6 +168,7 @@ public final class SevenZipArkivoFileSystemConfig {
                 Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
         );
     }
+
 
     /// Parses 7z configuration using the requested default archive open options.
     private static SevenZipArkivoFileSystemConfig fromEnvironment(
@@ -166,11 +186,19 @@ public final class SevenZipArkivoFileSystemConfig {
             return DEFAULTS;
         }
 
+        if (SevenZipArkivoFileSystem.FILTER.isPresent(environment)
+                && SevenZipArkivoFileSystem.FILTERS.isPresent(environment)) {
+            throw new IllegalArgumentException("7z filter and filters options are mutually exclusive");
+        }
         SevenZipArkivoFileSystemConfig config = new SevenZipArkivoFileSystemConfig(
                 ArkivoFileSystem.OPEN_OPTIONS.readOrDefault(environment, Set.copyOf(defaultOpenOptions)),
                 passwordProvider(environment),
                 SevenZipArkivoFileSystem.COMPRESSION.readOrDefault(environment, SevenZipCompression.copy()),
-                SevenZipArkivoFileSystem.FILTER.read(environment),
+                filters(environment),
+                SevenZipArkivoFileSystem.SOLID_FILE_COUNT.readOrDefault(
+                        environment,
+                        DEFAULT_SOLID_FILE_COUNT
+                ),
                 splitSize(environment),
                 SevenZipArkivoFileSystem.SPLIT_SIZE.isPresent(environment),
                 SevenZipArkivoFileSystem.ENCRYPT_HEADERS.readOrDefault(environment, false),
@@ -184,8 +212,13 @@ public final class SevenZipArkivoFileSystemConfig {
         if (!config.archiveWritable() && SevenZipArkivoFileSystem.COMPRESSION.isPresent(environment)) {
             throw new IllegalArgumentException("7z compression requires write archive options");
         }
-        if (!config.archiveWritable() && SevenZipArkivoFileSystem.FILTER.isPresent(environment)) {
-            throw new IllegalArgumentException("7z filter requires write archive options");
+        if (!config.archiveWritable()
+                && (SevenZipArkivoFileSystem.FILTER.isPresent(environment)
+                || SevenZipArkivoFileSystem.FILTERS.isPresent(environment))) {
+            throw new IllegalArgumentException("7z filters require write archive options");
+        }
+        if (!config.archiveWritable() && SevenZipArkivoFileSystem.SOLID_FILE_COUNT.isPresent(environment)) {
+            throw new IllegalArgumentException("7z solid output requires write archive options");
         }
         if (!config.archiveWritable() && SevenZipArkivoFileSystem.ENCRYPT_HEADERS.isPresent(environment)) {
             throw new IllegalArgumentException("7z encrypted headers require write archive options");
@@ -207,15 +240,18 @@ public final class SevenZipArkivoFileSystemConfig {
         return config;
     }
 
+
     /// Returns the open options used to open the backing archive path.
     public @Unmodifiable Set<OpenOption> openOptions() {
         return openOptions;
     }
 
+
     /// Returns whether the archive file should be opened for writes.
     public boolean archiveWritable() {
         return openOptions.contains(StandardOpenOption.WRITE);
     }
+
 
     /// Returns whether the archive should be opened for complete-rewrite updates.
     public boolean archiveUpdate() {
@@ -223,61 +259,90 @@ public final class SevenZipArkivoFileSystemConfig {
                 && openOptions.contains(StandardOpenOption.WRITE);
     }
 
+
     /// Returns the provider used to decrypt encrypted 7z content and metadata or encrypt newly written content.
     public @Nullable ArkivoPasswordProvider passwordProvider() {
         return passwordProvider;
     }
+
 
     /// Returns the default compression applied to non-empty output entries.
     public SevenZipCompression compression() {
         return compression;
     }
 
-    /// Returns the preprocessing filter applied before default output compression, or `null` when disabled.
-    public @Nullable SevenZipFilter filter() {
-        return filter;
+
+    /// Returns the preprocessing filters applied in order before default output compression.
+    public SevenZipFilterChain filters() {
+        return filters;
     }
+
+
+    /// Returns the maximum number of non-empty files encoded into one solid folder.
+    public int solidFileCount() {
+        return solidFileCount;
+    }
+
 
     /// Returns the maximum size of each output volume, or `NO_SPLIT_SIZE` when split output is disabled.
     public long splitSize() {
         return splitSize;
     }
 
+
     /// Returns whether the split size was explicitly configured.
     public boolean splitSizeConfigured() {
         return splitSizeConfigured;
     }
+
 
     /// Returns whether new 7z archives should encrypt metadata headers.
     public boolean encryptHeaders() {
         return encryptHeaders;
     }
 
+
     /// Returns the requested 7z file system thread-safety strategy.
     public ArkivoFileSystemThreadSafety threadSafety() {
         return threadSafety;
     }
+
 
     /// Returns the configured update entry storage, or `null` for the default temporary-file storage.
     public @Nullable ArkivoEditStorage editStorage() {
         return editStorage;
     }
 
+
     /// Returns the configured single-volume update commit target.
     public @Nullable ArkivoCommitTarget commitTarget() {
         return commitTarget;
     }
+
 
     /// Parses the password provider from an environment map.
     private static @Nullable ArkivoPasswordProvider passwordProvider(Map<String, ?> environment) {
         return SevenZipArkivoFileSystem.PASSWORD_PROVIDER.read(environment);
     }
 
+
+    /// Parses the configured default filter chain.
+    private static SevenZipFilterChain filters(Map<String, ?> environment) {
+        SevenZipFilterChain chain = SevenZipArkivoFileSystem.FILTERS.read(environment);
+        if (chain != null) {
+            return chain;
+        }
+        SevenZipFilter filter = SevenZipArkivoFileSystem.FILTER.read(environment);
+        return filter != null ? SevenZipFilterChain.of(filter) : SevenZipFilterChain.EMPTY;
+    }
+
+
     /// Parses the split size from an environment map.
     private static long splitSize(Map<String, ?> environment) {
         Long splitSize = SevenZipArkivoFileSystem.SPLIT_SIZE.read(environment);
         return splitSize != null ? splitSize : NO_SPLIT_SIZE;
     }
+
 
     /// Normalizes and validates open options.
     private static @Unmodifiable Set<OpenOption> normalizeOpenOptions(Set<? extends OpenOption> options) {

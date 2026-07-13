@@ -74,6 +74,26 @@ public final class ArIndexedStorageTest {
         }
     }
 
+    /// Verifies the format writer contract applies common environment body storage.
+    @Test
+    public void formatWriterUsesEnvironmentBodyStorage() throws IOException {
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+
+        try (ArArkivoStreamingWriter writer = ArArkivoFormat.instance().openStreamingWriter(
+                archive,
+                Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage)
+        )) {
+            writer.beginFile("file.txt");
+            try (OutputStream output = writer.openOutputStream()) {
+                output.write("environment-storage".getBytes(StandardCharsets.UTF_8));
+            }
+        }
+
+        assertEquals(1, storage.createdContentCount());
+        assertEquals(1, storage.contentCloseCount());
+        assertEquals(1, storage.closeCount());
+    }
     /// Verifies that configured storage owns and releases one indexed member body.
     @Test
     public void configuredStorageOwnsIndexedBody() throws IOException {

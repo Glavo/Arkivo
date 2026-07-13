@@ -4,8 +4,12 @@
 package org.glavo.arkivo.codec.xz.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecResult;
+import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
+import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
@@ -16,6 +20,7 @@ import org.glavo.arkivo.codec.transform.TransformingReadableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
+import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -34,8 +39,8 @@ public final class XzChannelDecoder implements CompressionDecoder {
     /// The compressed-data source.
     private final ReadableByteChannel source;
 
-    /// Whether this context owns the source.
-    private final ChannelOwnership ownership;
+    /// Tracks closure of the owned compressed-data source.
+    private final OwnedChannelCloser sourceCloser;
 
     /// The buffered XZ source.
     private final XzChannelInput input;
@@ -57,6 +62,12 @@ public final class XzChannelDecoder implements CompressionDecoder {
 
     /// The number of uncompressed bytes returned to callers.
     private long outputBytes;
+
+    /// Whether a validated stream boundary is awaiting concatenation processing.
+    private boolean streamBoundaryPending;
+
+    /// Whether the last decode operation completed one stream.
+    private boolean lastStreamFinished;
 
     /// Whether no further concatenated stream remains.
     private boolean endReached;
@@ -86,24 +97,52 @@ public final class XzChannelDecoder implements CompressionDecoder {
             long maximumWindowSize
     ) throws IOException {
         this.source = Objects.requireNonNull(source, "source");
-        this.ownership = Objects.requireNonNull(ownership, "ownership");
+        this.sourceCloser = new OwnedChannelCloser(source, ownership);
         this.concatenated = concatenated;
         this.maximumWindowSize = maximumWindowSize;
         input = new XzChannelInput(source);
-        startStream();
+        try {
+            startStream();
+        } catch (IOException | RuntimeException | Error exception) {
+            sourceCloser.closeAfter(exception);
+            throw exception;
+        }
     }
 
     /// Reads uncompressed bytes across block and stream boundaries.
     @Override
     public int read(ByteBuffer target) throws IOException {
+        return readDecoded(target, false);
+    }
+
+    /// Decodes one increment while optionally stopping after the current XZ stream.
+    @Override
+    public CodecResult decode(ByteBuffer target, DecodeDirective directive) throws IOException {
+        Objects.requireNonNull(directive, "directive");
+        long inputBefore = input.byteCount();
+        long outputBefore = outputBytes;
+        boolean stopAtFrame = directive == DecodeDirective.STOP_AT_FRAME;
+        int read = readDecoded(target, stopAtFrame);
+        CodecStatus status = stopAtFrame && lastStreamFinished
+                ? CodecStatus.FRAME_FINISHED
+                : read < 0 ? CodecStatus.END_OF_INPUT : CodecStatus.ACTIVE;
+        return new CodecResult(input.byteCount() - inputBefore, outputBytes - outputBefore, status);
+    }
+
+    /// Performs one decoded read with explicit stream-boundary behavior.
+    private int readDecoded(ByteBuffer target, boolean stopAtFrame) throws IOException {
         Objects.requireNonNull(target, "target");
         ensureOpen();
+        lastStreamFinished = false;
         if (!target.hasRemaining()) {
             return 0;
         }
 
         int start = target.position();
         while (target.hasRemaining()) {
+            if (streamBoundaryPending) {
+                advanceAfterFooter();
+            }
             if (endReached) {
                 break;
             }
@@ -112,6 +151,10 @@ public final class XzChannelDecoder implements CompressionDecoder {
                 int indicator = readRequiredByte();
                 if (indicator == 0) {
                     readIndexAndFooter();
+                    lastStreamFinished = true;
+                    if (stopAtFrame) {
+                        break;
+                    }
                     continue;
                 }
                 block = new BlockDecoder(indicator);
@@ -126,6 +169,9 @@ public final class XzChannelDecoder implements CompressionDecoder {
         }
         int count = target.position() - start;
         outputBytes += count;
+        if (stopAtFrame && lastStreamFinished) {
+            return count;
+        }
         return count == 0 && endReached ? -1 : count;
     }
 
@@ -133,6 +179,18 @@ public final class XzChannelDecoder implements CompressionDecoder {
     @Override
     public long inputBytes() {
         return input.byteCount();
+    }
+
+    /// Returns the number of bytes obtained from the source.
+    @Override
+    public long sourceBytes() {
+        return input.sourceByteCount();
+    }
+
+    /// Returns a read-only view of bytes obtained but not consumed.
+    @Override
+    public @UnmodifiableView ByteBuffer unconsumedInput() {
+        return input.unconsumedInput();
     }
 
     /// Returns the number of uncompressed bytes returned to callers.
@@ -150,13 +208,8 @@ public final class XzChannelDecoder implements CompressionDecoder {
     /// Closes this decoder and an owned source channel.
     @Override
     public void close() throws IOException {
-        if (!open) {
-            return;
-        }
         open = false;
-        if (ownership == ChannelOwnership.CLOSE) {
-            source.close();
-        }
+        sourceCloser.close();
     }
 
     /// Reads and validates one Stream Header.
@@ -195,7 +248,7 @@ public final class XzChannelDecoder implements CompressionDecoder {
         if (backwardSize != indexSize) {
             throw new IOException("XZ Stream Footer backward size does not match the Index");
         }
-        advanceAfterFooter();
+        streamBoundaryPending = true;
     }
 
     /// Reads and validates the complete Index.
@@ -218,6 +271,7 @@ public final class XzChannelDecoder implements CompressionDecoder {
 
     /// Stops after one stream or starts another stream after legal padding.
     private void advanceAfterFooter() throws IOException {
+        streamBoundaryPending = false;
         if (!concatenated) {
             endReached = true;
             return;

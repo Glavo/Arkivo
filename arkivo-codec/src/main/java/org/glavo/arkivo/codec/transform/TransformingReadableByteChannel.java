@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.transform;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -22,8 +23,8 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
     /// The upstream channel.
     private final ReadableByteChannel source;
 
-    /// Whether this channel owns the upstream source.
-    private final ChannelOwnership ownership;
+    /// Tracks closure of the owned upstream source.
+    private final OwnedChannelCloser sourceCloser;
 
     /// The stateful in-place transform.
     private final ByteTransform transform;
@@ -65,7 +66,7 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
     ) {
         this.source = Objects.requireNonNull(source, "source");
         this.transform = Objects.requireNonNull(transform, "transform");
-        this.ownership = Objects.requireNonNull(ownership, "ownership");
+        this.sourceCloser = new OwnedChannelCloser(source, ownership);
     }
 
     /// Reads transformed bytes into the target buffer.
@@ -125,13 +126,8 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
     /// Closes this channel and optionally its source.
     @Override
     public void close() throws IOException {
-        if (!open) {
-            return;
-        }
         open = false;
-        if (ownership == ChannelOwnership.CLOSE) {
-            source.close();
-        }
+        sourceCloser.close();
     }
 
     /// Adds newly read bytes and transforms the largest complete prefix.

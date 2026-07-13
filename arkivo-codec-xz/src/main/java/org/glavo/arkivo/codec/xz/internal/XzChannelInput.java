@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.xz.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -24,6 +25,9 @@ final class XzChannelInput {
 
     /// The number of logical bytes consumed, excluding pushed-back bytes.
     private long byteCount;
+
+    /// The number of bytes obtained from the source.
+    private long sourceByteCount;
 
     /// Creates a buffered XZ source.
     XzChannelInput(ReadableByteChannel source) {
@@ -107,6 +111,23 @@ final class XzChannelInput {
         return byteCount;
     }
 
+    /// Returns the number of bytes obtained from the source.
+    long sourceByteCount() {
+        return sourceByteCount;
+    }
+
+    /// Returns a read-only view of bytes obtained but not consumed.
+    @UnmodifiableView ByteBuffer unconsumedInput() {
+        if (pushedBack < 0) {
+            return buffer.asReadOnlyBuffer();
+        }
+        ByteBuffer view = ByteBuffer.allocate(1 + buffer.remaining());
+        view.put((byte) pushedBack);
+        view.put(buffer.duplicate());
+        view.flip();
+        return view.asReadOnlyBuffer();
+    }
+
     /// Refills the staging buffer and returns whether input is available.
     private boolean fill() throws IOException {
         buffer.clear();
@@ -118,6 +139,7 @@ final class XzChannelInput {
         if (read == 0) {
             throw new IOException("XZ source channel made no progress");
         }
+        sourceByteCount += read;
         buffer.flip();
         return true;
     }

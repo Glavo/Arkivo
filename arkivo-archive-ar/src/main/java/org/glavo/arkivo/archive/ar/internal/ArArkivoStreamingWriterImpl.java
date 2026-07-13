@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.ar.internal;
 
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributeView;
@@ -237,7 +238,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     /// Opens a writable channel for the current pending member and commits it when the channel is closed.
     @Override
     public WritableByteChannel openChannel() throws IOException {
-        return Channels.newChannel(openOutputStream());
+        return StreamChannelAdapters.writableChannel(openOutputStream());
     }
 
     /// Opens an output stream for the current pending member and commits it when the stream is closed.

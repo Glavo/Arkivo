@@ -4,13 +4,17 @@
 package org.glavo.arkivo.codec.spi;
 
 import org.glavo.arkivo.codec.CodecOptions;
+import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionStrategy;
+import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -21,6 +25,28 @@ import java.util.Objects;
 public final class StandardCodecOptionSupport {
     /// Creates no instances.
     private StandardCodecOptionSupport() {
+    }
+
+    /// Resolves the configured compression strategy or the default strategy when absent.
+    public static CompressionStrategy compressionStrategy(CodecOptions options) {
+        Objects.requireNonNull(options, "options");
+        @Nullable CompressionStrategy requested = options.get(StandardCodecOptions.COMPRESSION_STRATEGY);
+        return requested != null ? requested : CompressionStrategy.DEFAULT;
+    }
+
+    /// Resolves and validates the pledged uncompressed source size.
+    ///
+    /// Returns `CompressionCodec.UNKNOWN_SIZE` when no exact size is configured.
+    public static long pledgedSourceSize(CodecOptions options) {
+        Objects.requireNonNull(options, "options");
+        @Nullable Long requested = options.get(StandardCodecOptions.PLEDGED_SOURCE_SIZE);
+        if (requested == null) {
+            return CompressionCodec.UNKNOWN_SIZE;
+        }
+        if (requested < 0L) {
+            throw new IllegalArgumentException("Pledged source size must not be negative");
+        }
+        return requested;
     }
 
     /// Resolves and validates the configured maximum decompressed output size.
@@ -132,10 +158,55 @@ public final class StandardCodecOptionSupport {
             return read;
         }
 
+        /// Decodes with frame control while enforcing the caller-visible output limit.
+        @Override
+        public CodecResult decode(ByteBuffer target, DecodeDirective directive) throws IOException {
+            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(directive, "directive");
+            if (exceeded) {
+                throw limitException();
+            }
+            if (!target.hasRemaining()) {
+                return decoder.decode(target, directive);
+            }
+
+            long remaining = maximumOutputSize - outputBytes;
+            if (remaining == 0L) {
+                return probeForExcess(directive);
+            }
+
+            int start = target.position();
+            int originalLimit = target.limit();
+            if (target.remaining() > remaining) {
+                target.limit(target.position() + Math.toIntExact(remaining));
+            }
+            CodecResult result;
+            try {
+                result = decoder.decode(target, directive);
+            } finally {
+                target.limit(originalLimit);
+            }
+            int produced = target.position() - start;
+            outputBytes += produced;
+            return new CodecResult(result.inputBytes(), produced, result.status());
+        }
+
         /// Returns compressed bytes consumed by the underlying decoder.
         @Override
         public long inputBytes() {
             return decoder.inputBytes();
+        }
+
+        /// Returns compressed bytes obtained from the underlying source.
+        @Override
+        public long sourceBytes() {
+            return decoder.sourceBytes();
+        }
+
+        /// Returns the underlying decoder's read-only unconsumed-input view.
+        @Override
+        public @UnmodifiableView ByteBuffer unconsumedInput() {
+            return decoder.unconsumedInput();
         }
 
         /// Returns decoded bytes delivered before the configured limit.
@@ -162,6 +233,17 @@ public final class StandardCodecOptionSupport {
             int read = decoder.read(probe);
             if (read <= 0) {
                 return read;
+            }
+            exceeded = true;
+            throw limitException();
+        }
+
+        /// Probes one frame-aware operation for excess output after reaching the limit.
+        private CodecResult probeForExcess(DecodeDirective directive) throws IOException {
+            probe.clear();
+            CodecResult result = decoder.decode(probe, directive);
+            if (result.outputBytes() == 0L) {
+                return result;
             }
             exceeded = true;
             throw limitException();

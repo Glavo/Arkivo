@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec;
 
 import org.glavo.arkivo.codec.internal.ByteBufferCodecSupport;
+import org.glavo.arkivo.codec.internal.StreamChannelAdapters;
 import org.glavo.arkivo.codec.internal.CodecTransferSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -12,7 +13,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.List;
@@ -136,8 +136,12 @@ public interface CompressionCodec {
     /// Opens a compatibility stream that closes its target when compression finishes.
     default OutputStream compressTo(OutputStream target) throws IOException {
         Objects.requireNonNull(target, "target");
-        return Channels.newOutputStream(
-                openEncoder(Channels.newChannel(target), CodecOptions.EMPTY, ChannelOwnership.CLOSE)
+        return StreamChannelAdapters.outputStream(
+                openEncoder(
+                        StreamChannelAdapters.writableChannel(target),
+                        CodecOptions.EMPTY,
+                        ChannelOwnership.CLOSE
+                )
         );
     }
 
@@ -149,8 +153,12 @@ public interface CompressionCodec {
     /// Opens a compatibility stream that closes its source with the decoder.
     default InputStream decompressFrom(InputStream source) throws IOException {
         Objects.requireNonNull(source, "source");
-        return Channels.newInputStream(
-                openDecoder(Channels.newChannel(source), CodecOptions.EMPTY, ChannelOwnership.CLOSE)
+        return StreamChannelAdapters.inputStream(
+                openDecoder(
+                        StreamChannelAdapters.readableChannel(source),
+                        CodecOptions.EMPTY,
+                        ChannelOwnership.CLOSE
+                )
         );
     }
 
@@ -188,6 +196,70 @@ public interface CompressionCodec {
         return decompress(source, target, CodecOptions.EMPTY);
     }
 
+    /// Compresses all remaining source bytes into a newly allocated heap buffer.
+    ///
+    /// The source is advanced by the number of bytes consumed. The returned buffer has position zero and its limit
+    /// equals the compressed size.
+    default ByteBuffer compress(ByteBuffer source) throws IOException {
+        return compress(source, CodecOptions.EMPTY);
+    }
+
+    /// Compresses all remaining source bytes with options into a newly allocated heap buffer.
+    ///
+    /// The source is advanced by the number of bytes consumed. The returned buffer has position zero and its limit
+    /// equals the compressed size.
+    default ByteBuffer compress(ByteBuffer source, CodecOptions options) throws IOException {
+        return ByteBufferCodecSupport.compressAllocating(this, source, options);
+    }
+
+    /// Decompresses all remaining source bytes into a newly allocated bounded heap buffer.
+    ///
+    /// The source is advanced by the number of bytes consumed. The returned buffer has position zero and its limit
+    /// equals the decompressed size.
+    default ByteBuffer decompress(ByteBuffer source, long maximumOutputSize) throws IOException {
+        return decompress(source, maximumOutputSize, CodecOptions.EMPTY);
+    }
+
+    /// Decompresses all remaining source bytes with options into a newly allocated bounded heap buffer.
+    ///
+    /// `maximumOutputSize` must fit in a Java `ByteBuffer`. Output exceeding the limit causes a
+    /// `DecompressionLimitException`.
+    default ByteBuffer decompress(
+            ByteBuffer source,
+            long maximumOutputSize,
+            CodecOptions options
+    ) throws IOException {
+        return ByteBufferCodecSupport.decompressAllocating(
+                this,
+                source,
+                maximumOutputSize,
+                options
+        );
+    }
+
+    /// Decompresses one frame into a newly allocated bounded heap buffer.
+    ///
+    /// The source position stops after the first complete frame, preserving following frames or trailing bytes.
+    default ByteBuffer decompressFrame(ByteBuffer source, long maximumOutputSize) throws IOException {
+        return decompressFrame(source, maximumOutputSize, CodecOptions.EMPTY);
+    }
+
+    /// Decompresses one configured frame into a newly allocated bounded heap buffer.
+    ///
+    /// The source position stops after the first complete frame, preserving following frames or trailing bytes.
+    default ByteBuffer decompressFrame(
+            ByteBuffer source,
+            long maximumOutputSize,
+            CodecOptions options
+    ) throws IOException {
+        return ByteBufferCodecSupport.decompressFrameAllocating(
+                this,
+                source,
+                maximumOutputSize,
+                options
+        );
+    }
+
     /// Compresses all remaining bytes from `source` into `target`.
     ///
     /// Both buffers are advanced by the number of bytes consumed and produced.
@@ -214,5 +286,23 @@ public interface CompressionCodec {
     /// Both buffers are advanced by the number of bytes consumed and produced.
     default void decompress(ByteBuffer source, ByteBuffer target, CodecOptions options) throws IOException {
         ByteBufferCodecSupport.decompress(this, source, target, options);
+    }
+
+    /// Decompresses one frame into the target buffer.
+    ///
+    /// The source position stops after the first complete frame. The target must hold the complete decoded frame.
+    default void decompressFrame(ByteBuffer source, ByteBuffer target) throws IOException {
+        decompressFrame(source, target, CodecOptions.EMPTY);
+    }
+
+    /// Decompresses one configured frame into the target buffer.
+    ///
+    /// The source position stops after the first complete frame. The target must hold the complete decoded frame.
+    default void decompressFrame(
+            ByteBuffer source,
+            ByteBuffer target,
+            CodecOptions options
+    ) throws IOException {
+        ByteBufferCodecSupport.decompressFrame(this, source, target, options);
     }
 }

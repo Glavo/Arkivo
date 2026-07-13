@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.tar.internal;
 
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingReader;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -13,7 +14,6 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigInteger;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -206,10 +206,10 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         }
         currentBodyOpened = true;
         if (attributes.bodySize() == 0L) {
-            return Channels.newChannel(InputStream.nullInputStream());
+            return StreamChannelAdapters.readableChannel(InputStream.nullInputStream());
         }
         SparseMap sparseMap = currentSparseMap;
-        return Channels.newChannel(sparseMap != null
+        return StreamChannelAdapters.readableChannel(sparseMap != null
                 ? new SparseEntryInputStream(sparseMap)
                 : new EntryInputStream());
     }

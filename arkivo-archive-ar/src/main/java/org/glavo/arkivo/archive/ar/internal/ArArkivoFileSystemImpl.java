@@ -325,7 +325,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
     }
 
-    /// Opens a read-only AR file system from a repeatable seekable channel source.
+    /// Opens an AR file system from a repeatable seekable channel source.
     public static ArArkivoFileSystemImpl open(
             ArArkivoFileSystemProvider provider,
             ArkivoSeekableChannelSource source,
@@ -337,6 +337,8 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
 
         ArkivoFileSystemThreadSafety threadSafety;
         ArkivoEditStorage editStorage;
+        boolean updateMode;
+        @Nullable ArkivoCommitTarget commitTarget;
         try {
             threadSafety = ArkivoFileSystem.THREAD_SAFETY.readOrDefault(
                     environment,
@@ -346,7 +348,22 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     environment,
                     Set.of(StandardOpenOption.READ)
             );
-            validateArchiveReadOptions(openOptions);
+            updateMode = isArchiveUpdateOpen(openOptions);
+            if (updateMode) {
+                validateArchiveUpdateOptions(openOptions);
+                if (ArkivoFileSystem.SOURCE_MUTATION_POLICY.isPresent(environment)) {
+                    throw new UnsupportedOperationException("AR update mode always performs a complete archive rewrite");
+                }
+                commitTarget = ArkivoFileSystem.COMMIT_TARGET.read(environment);
+                if (commitTarget == null) {
+                    throw new IllegalArgumentException(
+                            "AR channel-source update mode requires ArkivoFileSystem.COMMIT_TARGET"
+                    );
+                }
+            } else {
+                validateArchiveReadOptions(openOptions);
+                commitTarget = null;
+            }
             editStorage = editStorage(environment);
         } catch (RuntimeException | Error exception) {
             closeSourceAfterOpenFailure(source, exception);
@@ -373,9 +390,9 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                     editStorage,
                     ownedContents,
                     null,
-                    true,
-                    false,
-                    null,
+                    !updateMode,
+                    updateMode,
+                    commitTarget,
                     () -> {
                     }
             );
@@ -2175,8 +2192,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     /// Publishes all surviving update nodes through a complete AR rewrite.
     private void commitUpdate() throws IOException {
         ArkivoCommitTarget target = Objects.requireNonNull(commitTarget, "commitTarget");
-        Path sourcePath = Objects.requireNonNull(archivePath, "archivePath");
-        ArkivoCommitOutput output = target.openOutput(sourcePath);
+        ArkivoCommitOutput output = target.openOutput(archivePath);
         Throwable failure = null;
         try {
             try (SeekableByteChannel channel = output.openChannel(Set.of(

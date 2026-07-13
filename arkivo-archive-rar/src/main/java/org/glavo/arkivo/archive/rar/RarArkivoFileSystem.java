@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.rar;
 
+import org.glavo.arkivo.archive.internal.SeekableChannelSources;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemOption;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
@@ -13,6 +14,7 @@ import org.glavo.arkivo.archive.rar.internal.RarArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.Objects;
@@ -58,6 +60,23 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
         return RarArkivoFileSystemProvider.instance().newFileSystem(path, environment);
     }
 
+    /// Opens a read-only RAR archive file system directly from one owned seekable channel.
+    ///
+    /// The channel's current position is the logical archive start. The returned file system owns and closes the
+    /// channel.
+    public static RarArkivoFileSystem open(SeekableByteChannel source) throws IOException {
+        return open(source, Map.of());
+    }
+
+    /// Opens a read-only RAR archive file system directly from one owned seekable channel with environment options.
+    public static RarArkivoFileSystem open(
+            SeekableByteChannel source,
+            Map<String, ?> environment
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(environment, "environment");
+        return SeekableChannelSources.open(source, channelSource -> open(channelSource, environment));
+    }
     /// Opens a read-only RAR archive file system from a repeatable seekable channel source.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.

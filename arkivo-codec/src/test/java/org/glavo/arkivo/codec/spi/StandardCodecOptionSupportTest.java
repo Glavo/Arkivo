@@ -6,6 +6,7 @@ package org.glavo.arkivo.codec.spi;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.StandardCodecOptions;
@@ -16,14 +17,70 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.util.Objects;
+import java.util.zip.Deflater;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-/// Verifies algorithm-independent standard decoder option handling.
+/// Verifies algorithm-independent standard codec option handling.
 @NotNullByDefault
 final class StandardCodecOptionSupportTest {
+    /// Verifies the standard compression strategy defaults and explicit values.
+    @Test
+    void resolvesCompressionStrategy() {
+        assertEquals(
+                CompressionStrategy.DEFAULT,
+                StandardCodecOptionSupport.compressionStrategy(CodecOptions.EMPTY)
+        );
+        for (CompressionStrategy strategy : CompressionStrategy.values()) {
+            assertEquals(
+                    strategy,
+                    StandardCodecOptionSupport.compressionStrategy(CodecOptions.builder()
+                            .set(StandardCodecOptions.COMPRESSION_STRATEGY, strategy)
+                            .build())
+            );
+        }
+    }
+
+    /// Verifies public strategies map to the corresponding JDK Deflater values.
+    @Test
+    void mapsDeflateStrategies() {
+        assertEquals(
+                Deflater.DEFAULT_STRATEGY,
+                DeflateStrategySupport.toJdkValue(CompressionStrategy.DEFAULT)
+        );
+        assertEquals(
+                Deflater.FILTERED,
+                DeflateStrategySupport.toJdkValue(CompressionStrategy.FILTERED)
+        );
+        assertEquals(
+                Deflater.HUFFMAN_ONLY,
+                DeflateStrategySupport.toJdkValue(CompressionStrategy.HUFFMAN_ONLY)
+        );
+        assertThrows(NullPointerException.class, () -> DeflateStrategySupport.toJdkValue(null));
+    }
+
+    /// Verifies absent, explicit, and invalid pledged source sizes.
+    @Test
+    void resolvesPledgedSourceSize() {
+        assertEquals(
+                CompressionCodec.UNKNOWN_SIZE,
+                StandardCodecOptionSupport.pledgedSourceSize(CodecOptions.EMPTY)
+        );
+        assertEquals(
+                0L,
+                StandardCodecOptionSupport.pledgedSourceSize(CodecOptions.builder()
+                        .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, 0L)
+                        .build())
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> StandardCodecOptionSupport.pledgedSourceSize(CodecOptions.builder()
+                        .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, -1L)
+                        .build())
+        );
+    }
     /// Verifies absent and invalid maximum output sizes are resolved before decoder creation.
     @Test
     void resolvesMaximumOutputSize() {

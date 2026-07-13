@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.sevenzip.SevenZipPackedStream;
+
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -853,6 +855,8 @@ public final class SevenZipHeaderParser {
                         false,
                         streamsInfo.unpackSize(streamIndex),
                         streamsInfo.decodedOffset(streamIndex),
+                        streamsInfo.substreamIndex(streamIndex),
+                        streamsInfo.substreamCount(streamIndex),
                         streamsInfo.packedStreams(streamIndex),
                         streamsInfo.crc32(streamIndex),
                         streamsInfo.method(streamIndex),
@@ -1181,6 +1185,18 @@ public final class SevenZipHeaderParser {
             return subStreamsInfo.stream(index).decodedOffset();
         }
 
+        /// Returns a stream's index among file-addressable substreams in its folder.
+        private int substreamIndex(int index) throws IOException {
+            requireStreamIndex(index);
+            return subStreamsInfo.substreamIndex(index);
+        }
+
+        /// Returns the number of file-addressable substreams in a stream's folder.
+        private int substreamCount(int index) throws IOException {
+            requireStreamIndex(index);
+            return subStreamsInfo.substreamCount(index);
+        }
+
         /// Returns the folder method for a stream.
         private SevenZipFolderMethod method(int index) throws IOException {
             requireStreamIndex(index);
@@ -1193,7 +1209,7 @@ public final class SevenZipHeaderParser {
             return subStreamsInfo.stream(index).crc32();
         }
 
-        /// Returns all physical packed streams consumed by the folder containing a file stream.
+        /// Returns the physical packed byte ranges used to read a file stream.
         private @Unmodifiable List<SevenZipPackedStream> packedStreams(int index) throws IOException {
             requireStreamIndex(index);
             SubStreamInfo stream = subStreamsInfo.stream(index);
@@ -1294,6 +1310,30 @@ public final class SevenZipHeaderParser {
         /// Returns one flattened substream.
         private SubStreamInfo stream(int index) {
             return streams[index];
+        }
+
+        /// Returns one flattened stream's index among substreams in its folder.
+        private int substreamIndex(int index) {
+            int folderIndex = streams[index].folderIndex();
+            int firstIndex = index;
+            while (firstIndex > 0 && streams[firstIndex - 1].folderIndex() == folderIndex) {
+                firstIndex--;
+            }
+            return index - firstIndex;
+        }
+
+        /// Returns the number of flattened substreams in one stream's folder.
+        private int substreamCount(int index) {
+            int folderIndex = streams[index].folderIndex();
+            int firstIndex = index;
+            while (firstIndex > 0 && streams[firstIndex - 1].folderIndex() == folderIndex) {
+                firstIndex--;
+            }
+            int endIndex = index + 1;
+            while (endIndex < streams.length && streams[endIndex].folderIndex() == folderIndex) {
+                endIndex++;
+            }
+            return endIndex - firstIndex;
         }
     }
 

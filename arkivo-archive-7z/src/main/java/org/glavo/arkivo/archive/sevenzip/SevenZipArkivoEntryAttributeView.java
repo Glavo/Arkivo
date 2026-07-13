@@ -36,6 +36,11 @@ public interface SevenZipArkivoEntryAttributeView extends BasicFileAttributeView
     /// The filter is applied only when the entry has a non-empty data stream.
     void setFilter(SevenZipFilter filter) throws IOException;
 
-    /// Disables the default preprocessing filter for this pending streaming or update entry.
+    /// Sets preprocessing filters for this pending streaming or update entry instead of the writer default.
+    ///
+    /// Filters run in list order and are applied only when the entry has a non-empty data stream.
+    void setFilters(SevenZipFilterChain filters) throws IOException;
+
+    /// Disables the default preprocessing filter chain for this pending streaming or update entry.
     void clearFilter() throws IOException;
 }

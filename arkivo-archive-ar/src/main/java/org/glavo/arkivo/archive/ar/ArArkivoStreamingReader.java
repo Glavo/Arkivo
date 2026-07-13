@@ -3,12 +3,12 @@
 
 package org.glavo.arkivo.archive.ar;
 
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ar.internal.ArArkivoStreamingReaderImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.InputStream;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.util.Objects;
 
@@ -22,12 +22,13 @@ public abstract sealed class ArArkivoStreamingReader extends ArkivoStreamingRead
 
     /// Opens a streaming AR reader from an input stream.
     public static ArArkivoStreamingReader open(InputStream source) {
-        return new ArArkivoStreamingReaderImpl(Objects.requireNonNull(source, "source"));
+        Objects.requireNonNull(source, "source");
+        return open(StreamChannelAdapters.readableChannel(source));
     }
 
     /// Opens a streaming AR reader from a readable channel.
     public static ArArkivoStreamingReader open(ReadableByteChannel source) {
         Objects.requireNonNull(source, "source");
-        return open(Channels.newInputStream(source));
+        return new ArArkivoStreamingReaderImpl(StreamChannelAdapters.inputStream(source));
     }
 }

@@ -4,22 +4,26 @@
 package org.glavo.arkivo.archive.sevenzip;
 
 import org.glavo.arkivo.archive.ArkivoFileSystem;
-import org.glavo.arkivo.archive.ArkivoFormat;
+import org.glavo.arkivo.archive.ArkivoVolumeFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.archive.ArkivoStreamingWriterFormat;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
+import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
 /// Describes the 7z archive format support provided by Arkivo.
 @NotNullByDefault
-public final class SevenZipArkivoFormat implements ArkivoFormat {
+public final class SevenZipArkivoFormat implements ArkivoVolumeFileSystemFormat, ArkivoStreamingWriterFormat {
     /// The stable 7z format name.
     public static final String NAME = "7z";
 
@@ -72,19 +76,64 @@ public final class SevenZipArkivoFormat implements ArkivoFormat {
                 && prefix.get(position + 5) == 0x1c;
     }
 
+    /// Opens a streaming 7z writer over an output stream.
+    @Override
+    public SevenZipArkivoStreamingWriter openStreamingWriter(OutputStream output) throws IOException {
+        return SevenZipArkivoStreamingWriter.open(output);
+    }
+
+    /// Opens a streaming 7z writer over an output stream with environment options.
+    @Override
+    public SevenZipArkivoStreamingWriter openStreamingWriter(
+            OutputStream output,
+            Map<String, ?> environment
+    ) throws IOException {
+        return SevenZipArkivoStreamingWriter.open(output, environment);
+    }
+
+    /// Opens a streaming 7z writer over a writable channel.
+    @Override
+    public SevenZipArkivoStreamingWriter openStreamingWriter(WritableByteChannel output) throws IOException {
+        return SevenZipArkivoStreamingWriter.open(output);
+    }
+
+    /// Opens a streaming 7z writer over a writable channel with environment options.
+    @Override
+    public SevenZipArkivoStreamingWriter openStreamingWriter(
+            WritableByteChannel output,
+            Map<String, ?> environment
+    ) throws IOException {
+        return SevenZipArkivoStreamingWriter.open(output, environment);
+    }
+
     /// Opens a 7z archive file system.
+    @Override
     public ArkivoFileSystem open(Path path) throws IOException {
         return SevenZipArkivoFileSystem.open(path);
     }
 
     /// Opens a 7z archive file system with environment options.
+    @Override
     public ArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         return SevenZipArkivoFileSystem.open(path, environment);
+    }
+
+    /// Opens a read-only 7z archive file system directly from one owned seekable channel.
+    @Override
+    public ArkivoFileSystem open(SeekableByteChannel source) throws IOException {
+        return SevenZipArkivoFileSystem.open(source);
+    }
+
+    /// Opens a read-only 7z archive file system directly from one owned seekable channel with environment options.
+    @Override
+    public ArkivoFileSystem open(SeekableByteChannel source, Map<String, ?> environment) throws IOException {
+        return SevenZipArkivoFileSystem.open(source, environment);
     }
 
     /// Opens a read-only 7z archive file system from a repeatable seekable channel source.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    @Override
     public ArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
         return SevenZipArkivoFileSystem.open(source);
     }
@@ -92,16 +141,19 @@ public final class SevenZipArkivoFormat implements ArkivoFormat {
     /// Opens a read-only 7z archive file system from a repeatable seekable channel source with environment options.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    @Override
     public ArkivoFileSystem open(ArkivoSeekableChannelSource source, Map<String, ?> environment) throws IOException {
         return SevenZipArkivoFileSystem.open(source, environment);
     }
 
     /// Opens a multi-volume 7z archive file system.
+    @Override
     public ArkivoFileSystem open(ArkivoVolumeSource volumes) throws IOException {
         return SevenZipArkivoFileSystem.open(volumes);
     }
 
     /// Opens a multi-volume 7z archive file system with environment options.
+    @Override
     public ArkivoFileSystem open(ArkivoVolumeSource volumes, Map<String, ?> environment) throws IOException {
         return SevenZipArkivoFileSystem.open(volumes, environment);
     }

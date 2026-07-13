@@ -30,7 +30,7 @@ public interface CompressionEncoder extends WritableByteChannel {
             flush();
             status = CodecStatus.FLUSHED;
         } else if (directive == EncodeDirective.END_FRAME) {
-            finish();
+            finishFrame();
             status = CodecStatus.FRAME_FINISHED;
         } else {
             status = CodecStatus.ACTIVE;
@@ -43,7 +43,18 @@ public interface CompressionEncoder extends WritableByteChannel {
     /// A codec that does not advertise `CompressionFeature.FLUSH` may only flush transport buffers.
     void flush() throws IOException;
 
-    /// Finishes the current frame and releases encoder resources without necessarily closing the backing channel.
+    /// Finishes the current frame.
+    ///
+    /// An encoder advertising `CompressionFeature.MULTI_FRAME` remains open and starts another frame lazily.
+    /// Other encoders finish and release their resources.
+    default void finishFrame() throws IOException {
+        finish();
+    }
+
+    /// Finishes the active frame and releases encoder resources without necessarily closing the backing channel.
+    ///
+    /// The encoder is no longer open after finalization is attempted, even when this method throws. If closing an owned
+    /// target fails, a later `finish()` or `close()` retries only target closure and does not emit the frame trailer again.
     void finish() throws IOException;
 
     /// Returns the number of uncompressed bytes accepted by this encoder.
@@ -51,4 +62,8 @@ public interface CompressionEncoder extends WritableByteChannel {
 
     /// Returns the number of compressed bytes written to the backing channel.
     long outputBytes();
+
+    /// Finishes this encoder and retries incomplete owned-target closure when necessary.
+    @Override
+    void close() throws IOException;
 }

@@ -3,9 +3,14 @@
 
 package org.glavo.arkivo.archive.ar;
 
+import org.glavo.arkivo.archive.ArkivoEditStorage;
+import org.glavo.arkivo.archive.ArkivoFileSystem;
+import org.glavo.arkivo.archive.ArkivoFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
-import org.glavo.arkivo.archive.ArkivoStreamingFormat;
+import org.glavo.arkivo.archive.ArkivoStreamingReaderFormat;
+import org.glavo.arkivo.archive.ArkivoStreamingWriterFormat;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
@@ -13,6 +18,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 import java.util.List;
@@ -21,7 +27,10 @@ import java.util.Objects;
 
 /// Describes AR archive streaming support provided by Arkivo.
 @NotNullByDefault
-public final class ArArkivoFormat implements ArkivoStreamingFormat {
+public final class ArArkivoFormat implements
+        ArkivoFileSystemFormat,
+        ArkivoStreamingReaderFormat,
+        ArkivoStreamingWriterFormat {
     /// The stable AR format name.
     public static final String NAME = "ar";
 
@@ -71,21 +80,37 @@ public final class ArArkivoFormat implements ArkivoStreamingFormat {
     }
 
     /// Opens an AR archive file system.
+    @Override
     public ArArkivoFileSystem open(Path path) throws IOException {
         return ArArkivoFileSystem.open(path);
     }
 
     /// Opens an AR archive file system with environment options.
+    @Override
     public ArArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         return ArArkivoFileSystem.open(path, environment);
     }
 
+    /// Opens a read-only AR archive file system directly from one owned seekable channel.
+    @Override
+    public ArArkivoFileSystem open(SeekableByteChannel source) throws IOException {
+        return ArArkivoFileSystem.open(source);
+    }
+
+    /// Opens an AR archive file system directly from one owned seekable channel with environment options.
+    @Override
+    public ArArkivoFileSystem open(SeekableByteChannel source, Map<String, ?> environment) throws IOException {
+        return ArArkivoFileSystem.open(source, environment);
+    }
+
     /// Opens a read-only AR archive file system from a repeatable seekable channel source.
+    @Override
     public ArArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
         return ArArkivoFileSystem.open(source);
     }
 
-    /// Opens a read-only AR archive file system from a channel source with environment options.
+    /// Opens an AR archive file system from a channel source with environment options.
+    @Override
     public ArArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
             Map<String, ?> environment
@@ -126,12 +151,42 @@ public final class ArArkivoFormat implements ArkivoStreamingFormat {
     }
 
     /// Opens a streaming AR writer over an output stream.
+    @Override
     public ArArkivoStreamingWriter openStreamingWriter(OutputStream output) {
         return ArArkivoStreamingWriter.open(output);
     }
 
+    /// Opens a streaming AR writer over an output stream with environment options.
+    @Override
+    public ArArkivoStreamingWriter openStreamingWriter(
+            OutputStream output,
+            Map<String, ?> environment
+    ) {
+        Objects.requireNonNull(output, "output");
+        Objects.requireNonNull(environment, "environment");
+        @Nullable ArkivoEditStorage bodyStorage = ArkivoFileSystem.EDIT_STORAGE.read(environment);
+        return bodyStorage == null
+                ? ArArkivoStreamingWriter.open(output)
+                : ArArkivoStreamingWriter.open(output, bodyStorage);
+    }
+
     /// Opens a streaming AR writer over a writable channel.
+    @Override
     public ArArkivoStreamingWriter openStreamingWriter(WritableByteChannel output) {
         return ArArkivoStreamingWriter.open(output);
+    }
+
+    /// Opens a streaming AR writer over a writable channel with environment options.
+    @Override
+    public ArArkivoStreamingWriter openStreamingWriter(
+            WritableByteChannel output,
+            Map<String, ?> environment
+    ) {
+        Objects.requireNonNull(output, "output");
+        Objects.requireNonNull(environment, "environment");
+        @Nullable ArkivoEditStorage bodyStorage = ArkivoFileSystem.EDIT_STORAGE.read(environment);
+        return bodyStorage == null
+                ? ArArkivoStreamingWriter.open(output)
+                : ArArkivoStreamingWriter.open(output, bodyStorage);
     }
 }

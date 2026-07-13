@@ -12,6 +12,7 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.lzma.LZMAOptions;
 import org.glavo.arkivo.codec.xz.internal.XzInputStream;
 import org.glavo.arkivo.codec.xz.internal.XzOutputStream;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -39,10 +40,12 @@ import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Random;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -161,6 +164,152 @@ public final class XZCodecTest {
         }
     }
 
+    /// Verifies XZ encoding with Delta, every standardized BCJ filter, and combined chains.
+    @Test
+    public void nativeWriterSupportsEveryFilterChain() throws IOException {
+        XZCodec codec = new XZCodec();
+        assertTrue(codec.capabilities().compressionOptions().contains(XZCodec.FILTER_CHAIN));
+        byte[] content = filterContent();
+
+        List<XZFilter> individualFilters = new ArrayList<>();
+        individualFilters.add(new XZDeltaFilter(7L));
+        for (XZBCJFilter.Architecture architecture : XZBCJFilter.Architecture.values()) {
+            assertEquals(0x04L + architecture.ordinal(), architecture.identifier());
+            individualFilters.add(new XZBCJFilter(architecture, 32L));
+        }
+        individualFilters.add(new XZBCJFilter(
+                XZBCJFilter.Architecture.X86,
+                0xffff_ffffL
+        ));
+
+        for (XZFilter filter : individualFilters) {
+            XZFilterChain chain = new XZFilterChain(List.of(filter));
+            byte[] encoded = encodeWithFilterChain(codec, content, chain);
+            assertEquals(1, Byte.toUnsignedInt(encoded[13]) & 3, filter.toString());
+            assertArrayEquals(content, readCodec(encoded), filter.toString());
+            try (org.tukaani.xz.XZInputStream input = new org.tukaani.xz.XZInputStream(
+                    new ByteArrayInputStream(encoded)
+            )) {
+                assertArrayEquals(content, input.readAllBytes(), filter.toString());
+            }
+        }
+
+        ArrayList<XZFilter> mutable = new ArrayList<>(List.of(
+                new XZDeltaFilter(4L),
+                new XZBCJFilter(XZBCJFilter.Architecture.X86, 32L),
+                new XZDeltaFilter(7L)
+        ));
+        XZFilterChain combined = new XZFilterChain(mutable);
+        mutable.clear();
+        assertEquals(3, combined.filters().size());
+
+        byte[] combinedEncoded = encodeWithFilterChain(codec, content, combined);
+        assertEquals(3, Byte.toUnsignedInt(combinedEncoded[13]) & 3);
+        assertArrayEquals(content, readCodec(combinedEncoded));
+        try (org.tukaani.xz.XZInputStream input = new org.tukaani.xz.XZInputStream(
+                new ByteArrayInputStream(combinedEncoded)
+        )) {
+            assertArrayEquals(content, input.readAllBytes());
+        }
+
+        assertThrows(IllegalArgumentException.class, () -> new XZDeltaFilter(0L));
+        assertThrows(IllegalArgumentException.class, () -> new XZDeltaFilter(257L));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new XZBCJFilter(XZBCJFilter.Architecture.IA64, 4L)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new XZBCJFilter(XZBCJFilter.Architecture.X86, 0x1_0000_0000L)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new XZFilterChain(List.of(
+                        new XZDeltaFilter(1L),
+                        new XZDeltaFilter(2L),
+                        new XZDeltaFilter(3L),
+                        new XZDeltaFilter(4L)
+                ))
+        );
+    }
+    /// Verifies configurable multi-Block output, Index records, and Block-local filter state.
+    @Test
+    public void nativeWriterSupportsConfiguredBlockSize() throws IOException {
+        XZCodec codec = new XZCodec();
+        assertTrue(codec.capabilities().compressionOptions().contains(XZCodec.BLOCK_SIZE));
+
+        byte[] content = filterContent();
+        long blockSize = 4_096L;
+        CodecOptions options = CodecOptions.builder()
+                .set(XZCodec.BLOCK_SIZE, blockSize)
+                .set(XZCodec.CHECK_TYPE, XZCheckType.SHA256)
+                .set(XZCodec.FILTER_CHAIN, new XZFilterChain(List.of(
+                        new XZDeltaFilter(4L),
+                        new XZBCJFilter(XZBCJFilter.Architecture.X86, 32L)
+                )))
+                .set(LZMAOptions.LITERAL_CONTEXT_BITS, 2L)
+                .set(LZMAOptions.LITERAL_POSITION_BITS, 1L)
+                .set(LZMAOptions.POSITION_BITS, 3L)
+                .build();
+        byte[] encoded = encode(codec, content, options);
+
+        ByteBuffer allocatingSource = ByteBuffer.allocateDirect(content.length).put(content).flip();
+        ByteBuffer allocatingEncoded = codec.compress(allocatingSource, options);
+        ByteBuffer allocatingDecoded = codec.decompress(allocatingEncoded, content.length);
+        byte[] allocatingActual = new byte[allocatingDecoded.remaining()];
+        allocatingDecoded.get(allocatingActual);
+        assertArrayEquals(content, allocatingActual);
+
+        long[] blockSizes = xzIndexUncompressedSizes(encoded);
+        assertEquals((content.length + blockSize - 1L) / blockSize, blockSizes.length);
+        long remaining = content.length;
+        for (long actual : blockSizes) {
+            long expected = Math.min(blockSize, remaining);
+            assertEquals(expected, actual);
+            remaining -= actual;
+        }
+        assertEquals(0L, remaining);
+        assertArrayEquals(content, readCodec(encoded));
+        try (org.tukaani.xz.XZInputStream input = new org.tukaani.xz.XZInputStream(
+                new ByteArrayInputStream(encoded)
+        )) {
+            assertArrayEquals(content, input.readAllBytes());
+        }
+
+        byte[] exactBoundary = Arrays.copyOf(content, 8_192);
+        byte[] exactEncoded = encode(
+                codec,
+                exactBoundary,
+                CodecOptions.builder().set(XZCodec.BLOCK_SIZE, blockSize).build()
+        );
+        assertArrayEquals(new long[]{blockSize, blockSize}, xzIndexUncompressedSizes(exactEncoded));
+
+        byte[] tiny = Arrays.copyOf(content, 17);
+        byte[] tinyEncoded = encode(
+                codec,
+                tiny,
+                CodecOptions.builder().set(XZCodec.BLOCK_SIZE, 1L).build()
+        );
+        assertEquals(tiny.length, xzIndexUncompressedSizes(tinyEncoded).length);
+        assertArrayEquals(tiny, readCodec(tinyEncoded));
+
+        byte[] unbounded = encode(
+                codec,
+                content,
+                CodecOptions.builder().set(XZCodec.BLOCK_SIZE, 0L).build()
+        );
+        assertArrayEquals(new long[]{content.length}, xzIndexUncompressedSizes(unbounded));
+
+        CodecOptions invalid = CodecOptions.builder().set(XZCodec.BLOCK_SIZE, -1L).build();
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> codec.openEncoder(
+                        Channels.newChannel(new ByteArrayOutputStream()),
+                        invalid,
+                        ChannelOwnership.RETAIN
+                )
+        );
+    }
     /// Verifies concatenated streams and four-byte stream padding.
     @Test
     public void nativeReaderSupportsConcatenatedStreams() throws IOException {
@@ -313,6 +462,61 @@ public final class XZCodecTest {
         ));
     }
 
+    /// Verifies shared LZMA model options reach XZ LZMA2 chunks and remain interoperable.
+    @Test
+    public void advancedLzmaOptionsControlXzBlocks() throws IOException {
+        XZCodec codec = new XZCodec();
+        assertTrue(codec.capabilities().compressionOptions().containsAll(Set.of(
+                XZCodec.DICTIONARY_SIZE,
+                LZMAOptions.LITERAL_CONTEXT_BITS,
+                LZMAOptions.LITERAL_POSITION_BITS,
+                LZMAOptions.POSITION_BITS
+        )));
+
+        byte[] content = patternedContent(240_321);
+        int literalContextBits = 2;
+        int literalPositionBits = 1;
+        int positionBits = 3;
+        CodecOptions options = CodecOptions.builder()
+                .set(XZCodec.DICTIONARY_SIZE, 1L << 17)
+                .set(LZMAOptions.LITERAL_CONTEXT_BITS, (long) literalContextBits)
+                .set(LZMAOptions.LITERAL_POSITION_BITS, (long) literalPositionBits)
+                .set(LZMAOptions.POSITION_BITS, (long) positionBits)
+                .build();
+
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+        codec.compress(
+                Channels.newChannel(new ByteArrayInputStream(content)),
+                Channels.newChannel(compressed),
+                options
+        );
+        byte[] encoded = compressed.toByteArray();
+        int firstChunkOffset = 24;
+        assertTrue(Byte.toUnsignedInt(encoded[firstChunkOffset]) >= 0xe0);
+        assertEquals(
+                (positionBits * 5 + literalPositionBits) * 9 + literalContextBits,
+                Byte.toUnsignedInt(encoded[firstChunkOffset + 5])
+        );
+        try (org.tukaani.xz.XZInputStream input = new org.tukaani.xz.XZInputStream(
+                new ByteArrayInputStream(encoded)
+        )) {
+            assertArrayEquals(content, input.readAllBytes());
+        }
+
+        CodecOptions invalid = CodecOptions.builder()
+                .set(LZMAOptions.LITERAL_CONTEXT_BITS, 4L)
+                .set(LZMAOptions.LITERAL_POSITION_BITS, 1L)
+                .build();
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> codec.openEncoder(
+                        Channels.newChannel(new ByteArrayOutputStream()),
+                        invalid,
+                        ChannelOwnership.RETAIN
+                )
+        );
+    }
+
     /// Verifies that the decoder enforces the LZMA2 dictionary size declared by an XZ block.
     @Test
     public void decoderEnforcesDeclaredDictionarySize() throws IOException {
@@ -373,6 +577,64 @@ public final class XZCodecTest {
         return compressed.toByteArray();
     }
 
+    /// Encodes bytes with one public XZ preprocessing-filter chain.
+    private static byte[] encodeWithFilterChain(
+            XZCodec codec,
+            byte[] content,
+            XZFilterChain filterChain
+    ) throws IOException {
+        return encode(
+                codec,
+                content,
+                CodecOptions.builder()
+                        .set(XZCodec.FILTER_CHAIN, filterChain)
+                        .build()
+        );
+    }
+
+    /// Encodes bytes with explicit XZ operation options.
+    private static byte[] encode(
+            XZCodec codec,
+            byte[] content,
+            CodecOptions options
+    ) throws IOException {
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+        codec.compress(
+                Channels.newChannel(new ByteArrayInputStream(content)),
+                Channels.newChannel(compressed),
+                options
+        );
+        return compressed.toByteArray();
+    }
+
+    /// Returns the uncompressed sizes recorded by an XZ stream's final Index.
+    private static long[] xzIndexUncompressedSizes(byte[] encoded) {
+        int footerOffset = encoded.length - 12;
+        long backwardSize = littleEndian(encoded, footerOffset + 4, Integer.BYTES);
+        int indexSize = Math.toIntExact((backwardSize + 1L) * 4L);
+        int[] cursor = {footerOffset - indexSize};
+        assertEquals(0, Byte.toUnsignedInt(encoded[cursor[0]++]));
+        int recordCount = Math.toIntExact(readVli(encoded, cursor));
+        long[] sizes = new long[recordCount];
+        for (int record = 0; record < recordCount; record++) {
+            readVli(encoded, cursor);
+            sizes[record] = readVli(encoded, cursor);
+        }
+        return sizes;
+    }
+
+    /// Reads one canonical XZ variable-length integer from test bytes.
+    private static long readVli(byte[] bytes, int[] cursor) {
+        long value = 0L;
+        for (int index = 0; index < 9; index++) {
+            int current = Byte.toUnsignedInt(bytes[cursor[0]++]);
+            value |= (long) (current & 0x7f) << (index * 7);
+            if ((current & 0x80) == 0) {
+                return value;
+            }
+        }
+        throw new AssertionError("Invalid XZ test VLI");
+    }
     /// Reads one byte array through the native concatenated-stream decoder.
     private static byte[] readNative(byte[] compressed) throws IOException {
         try (XzInputStream input = new XzInputStream(new ByteArrayInputStream(compressed))) {

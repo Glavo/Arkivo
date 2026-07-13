@@ -6,7 +6,7 @@ package org.glavo.arkivo.archive.sevenzip.internal;
 import org.glavo.arkivo.archive.ArkivoVolumeOutput;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
-import org.glavo.arkivo.archive.sevenzip.SevenZipFilter;
+import org.glavo.arkivo.archive.sevenzip.SevenZipFilterChain;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -65,10 +65,12 @@ final class SevenZipSplitArchiveOutput {
             long splitSize,
             byte @Nullable [] password,
             SevenZipCompression compression,
-            @Nullable SevenZipFilter filter
+            SevenZipFilterChain filters,
+            int solidFileCount
     ) throws IOException {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(compression, "compression");
+        Objects.requireNonNull(filters, "filters");
         if (splitSize <= 0) {
             throw new IllegalArgumentException("splitSize must be positive");
         }
@@ -80,7 +82,13 @@ final class SevenZipSplitArchiveOutput {
                     temporaryArchivePath,
                     Set.of(StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)
             );
-            SevenZipArchiveWriter writer = new SevenZipArchiveWriter(channel, password, compression, filter);
+            SevenZipArchiveWriter writer = new SevenZipArchiveWriter(
+                    channel,
+                    password,
+                    compression,
+                    filters,
+                    solidFileCount
+            );
             channel = null;
             return new SevenZipSplitArchiveOutput(writer, temporaryArchivePath, target, splitSize);
         } catch (IOException | RuntimeException | Error exception) {
@@ -100,6 +108,7 @@ final class SevenZipSplitArchiveOutput {
         }
     }
 
+
     /// Creates a split archive output over an already opened temporary writer.
     private SevenZipSplitArchiveOutput(
             SevenZipArchiveWriter writer,
@@ -113,10 +122,12 @@ final class SevenZipSplitArchiveOutput {
         this.splitSize = splitSize;
     }
 
+
     /// Returns the seekable writer used to assemble the complete archive.
     SevenZipArchiveWriter writer() {
         return writer;
     }
+
 
     /// Replaces the completed temporary archive's plain next header with an encrypted encoded header.
     void encryptHeader(SevenZipHeaderEncryption encryption) throws IOException {
@@ -126,6 +137,7 @@ final class SevenZipSplitArchiveOutput {
         }
         encryption.applyTo(temporaryArchivePath);
     }
+
 
     /// Publishes the completed temporary archive as split volumes.
     void commit() throws IOException {
@@ -152,6 +164,7 @@ final class SevenZipSplitArchiveOutput {
         throwFailure(failure);
     }
 
+
     /// Abandons unpublished output and removes the temporary archive.
     void rollback() throws IOException {
         if (cleanupComplete) {
@@ -162,11 +175,13 @@ final class SevenZipSplitArchiveOutput {
         throwFailure(failure);
     }
 
+
     /// Retries cleanup after an earlier publication or rollback failure.
     private void finishCleanup() throws IOException {
         @Nullable Throwable failure = cleanupResources(null);
         throwFailure(failure);
     }
+
 
     /// Writes every split volume and returns the final zero-based volume index.
     private long writeVolumes(ArkivoVolumeOutput output) throws IOException {
@@ -194,6 +209,7 @@ final class SevenZipSplitArchiveOutput {
             }
         }
     }
+
 
     /// Copies exactly the requested number of bytes between channels.
     private static void copyExactly(
@@ -237,6 +253,7 @@ final class SevenZipSplitArchiveOutput {
         }
     }
 
+
     /// Cleans the opened volume output and temporary archive while preserving failure order.
     private @Nullable Throwable cleanupResources(@Nullable Throwable failure) {
         boolean cleanupFailed = false;
@@ -272,6 +289,7 @@ final class SevenZipSplitArchiveOutput {
         return failure;
     }
 
+
     /// Adds a secondary failure as suppressed when a primary failure already exists.
     private static Throwable appendFailure(@Nullable Throwable failure, Throwable exception) {
         if (failure == null) {
@@ -282,6 +300,7 @@ final class SevenZipSplitArchiveOutput {
         }
         return failure;
     }
+
 
     /// Throws an accumulated failure with its original category.
     private static void throwFailure(@Nullable Throwable failure) throws IOException {

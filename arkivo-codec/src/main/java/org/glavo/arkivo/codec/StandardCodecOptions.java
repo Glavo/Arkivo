@@ -12,11 +12,17 @@ public final class StandardCodecOptions {
     public static final CodecOption<Long> COMPRESSION_LEVEL =
             CodecOption.of("compression.level", Long.class);
 
+    /// Selects how a compressor searches for repeated input.
+    public static final CodecOption<CompressionStrategy> COMPRESSION_STRATEGY =
+            CodecOption.of("compression.strategy", CompressionStrategy.class);
+
     /// Supplies raw dictionary content for compression or decompression.
     public static final CodecOption<CompressionDictionary> DICTIONARY =
             CodecOption.of("compression.dictionary", CompressionDictionary.class);
 
     /// Declares the exact uncompressed source size before compression starts.
+    ///
+    /// A multi-frame encoder applies the pledge independently to every frame.
     public static final CodecOption<Long> PLEDGED_SOURCE_SIZE =
             CodecOption.of("compression.pledgedSourceSize", Long.class);
 

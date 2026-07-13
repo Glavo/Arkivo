@@ -3,13 +3,13 @@
 
 package org.glavo.arkivo.archive;
 
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.attribute.FileAttributeView;
 
@@ -40,7 +40,7 @@ public abstract class ArkivoStreamingWriter implements Closeable {
 
     /// Opens an output stream for the current pending entry and commits its metadata.
     public OutputStream openOutputStream() throws IOException {
-        return Channels.newOutputStream(openChannel());
+        return StreamChannelAdapters.outputStream(openChannel());
     }
 
     /// Closes this streaming writer and finishes the archive stream.

@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.tar.internal;
 
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributeView;
@@ -311,7 +312,7 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     /// Opens a writable channel for the current pending file entry and commits it when the channel is closed.
     @Override
     public WritableByteChannel openChannel() throws IOException {
-        return Channels.newChannel(openOutputStream());
+        return StreamChannelAdapters.writableChannel(openOutputStream());
     }
 
     /// Opens an output stream for the current pending file entry and commits it when the stream is closed.

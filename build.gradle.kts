@@ -30,6 +30,14 @@ subprojects {
         options.release = 17
     }
 
+    tasks.withType<Javadoc>().configureEach {
+        options.encoding = "UTF-8"
+        (options as org.gradle.external.javadoc.StandardJavadocDocletOptions).apply {
+            addBooleanOption("Xdoclint:all,-missing", true)
+            addBooleanOption("Werror", true)
+        }
+    }
+
     tasks.withType<Test>().configureEach {
         useJUnitPlatform()
     }

@@ -4,12 +4,16 @@
 package org.glavo.arkivo.codec.zstd;
 
 import com.github.luben.zstd.Zstd;
+import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecOption;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.ChecksumMode;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
+import org.glavo.arkivo.codec.EncodeDirective;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.WorkerCount;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -17,6 +21,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -26,11 +31,13 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Tests Zstandard codec behavior.
 @NotNullByDefault
@@ -234,6 +241,266 @@ public final class ZstdCodecTest {
         assertEquals(true, codec.minimumCompressionLevel() <= -2);
         assertEquals(true, codec.maximumCompressionLevel() >= -2);
         assertEquals(Zstd.defaultCompressionLevel(), codec.defaultCompressionLevel());
+    }
+
+    /// Verifies multiple pledged frames reuse one encoder and decode as one concatenated stream.
+    @Test
+    public void pledgedMultiFrameRoundTrip() throws IOException {
+        byte[] frame = (
+                "pledged Zstandard frame 0123456789abcdef;"
+        ).repeat(256).getBytes(StandardCharsets.UTF_8);
+        CodecOptions options = CodecOptions.builder()
+                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) frame.length)
+                .build();
+        ZstdCodec codec = new ZstdCodec();
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+
+        CompressionEncoder encoder = codec.openEncoder(
+                Channels.newChannel(compressed),
+                options,
+                ChannelOwnership.RETAIN
+        );
+        encoder.encode(ByteBuffer.wrap(frame), EncodeDirective.END_FRAME);
+        int firstFrameSize = compressed.size();
+        assertTrue(encoder.isOpen());
+        encoder.encode(ByteBuffer.wrap(frame), EncodeDirective.END_FRAME);
+        int completeSize = compressed.size();
+        assertTrue(completeSize > firstFrameSize);
+        encoder.finish();
+        assertEquals(completeSize, compressed.size());
+
+        ByteArrayOutputStream decoded = new ByteArrayOutputStream();
+        codec.decompress(
+                Channels.newChannel(new ByteArrayInputStream(compressed.toByteArray())),
+                Channels.newChannel(decoded)
+        );
+        ByteArrayOutputStream expected = new ByteArrayOutputStream();
+        expected.writeBytes(frame);
+        expected.writeBytes(frame);
+        assertArrayEquals(expected.toByteArray(), decoded.toByteArray());
+    }
+
+    /// Verifies standard and skippable frame inspection without changing buffer state.
+    @Test
+    public void frameInspection() throws IOException {
+        ZstdCodec codec = new ZstdCodec();
+        byte[] content = (
+                "inspectable Zstandard frame 0123456789abcdef;"
+        ).repeat(128).getBytes(StandardCharsets.UTF_8);
+        CodecOptions options = CodecOptions.builder()
+                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) content.length)
+                .set(StandardCodecOptions.CHECKSUM, ChecksumMode.ENABLED)
+                .build();
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+        codec.compress(
+                Channels.newChannel(new ByteArrayInputStream(content)),
+                Channels.newChannel(encoded),
+                options
+        );
+
+        byte[] frame = encoded.toByteArray();
+        ByteBuffer source = ByteBuffer.allocate(2 + frame.length * 2);
+        source.position(2);
+        source.put(frame);
+        source.put(frame);
+        source.flip();
+        source.position(2);
+        int initialPosition = source.position();
+
+        ZstdFrameInfo parsed = codec.frameInfo(source);
+        assertTrue(parsed instanceof ZstdStandardFrameInfo);
+        ZstdStandardFrameInfo standard = (ZstdStandardFrameInfo) parsed;
+        assertEquals(content.length, standard.contentSize());
+        assertTrue(standard.windowSize() > 0L);
+        assertEquals(CompressionDictionary.UNKNOWN_ID, standard.dictionaryId());
+        assertTrue(standard.checksum());
+        assertEquals(frame.length, codec.frameCompressedSize(source));
+        assertEquals(initialPosition, source.position());
+
+        CodecOptions noContentSize = CodecOptions.builder()
+                .set(ZstdCodec.CONTENT_SIZE, false)
+                .build();
+        ByteArrayOutputStream noContentEncoded = new ByteArrayOutputStream();
+        codec.compress(
+                Channels.newChannel(new ByteArrayInputStream(content)),
+                Channels.newChannel(noContentEncoded),
+                noContentSize
+        );
+        ZstdStandardFrameInfo noContentInfo = (ZstdStandardFrameInfo) codec.frameInfo(
+                ByteBuffer.wrap(noContentEncoded.toByteArray())
+        );
+        assertEquals(CompressionCodec.UNKNOWN_SIZE, noContentInfo.contentSize());
+        assertTrue(noContentInfo.windowSize() > 0L);
+
+        ByteBuffer dictionaryHeader = ByteBuffer.wrap(new byte[]{
+                0x28, (byte) 0xb5, 0x2f, (byte) 0xfd,
+                0x23,
+                0x12, 0x34, 0x56, 0x78,
+                0x05
+        });
+        ZstdStandardFrameInfo dictionaryInfo =
+                (ZstdStandardFrameInfo) codec.frameInfo(dictionaryHeader);
+        assertEquals(10, dictionaryInfo.headerSize());
+        assertEquals(5L, dictionaryInfo.contentSize());
+        assertEquals(5L, dictionaryInfo.windowSize());
+        assertEquals(0x7856_3412L, dictionaryInfo.dictionaryId());
+        assertEquals(false, dictionaryInfo.checksum());
+
+        byte[] overflowHeader = new byte[13];
+        overflowHeader[0] = 0x28;
+        overflowHeader[1] = (byte) 0xb5;
+        overflowHeader[2] = 0x2f;
+        overflowHeader[3] = (byte) 0xfd;
+        overflowHeader[4] = (byte) 0xe0;
+        java.util.Arrays.fill(overflowHeader, 5, overflowHeader.length, (byte) 0xff);
+        ZstdStandardFrameInfo overflowInfo =
+                (ZstdStandardFrameInfo) codec.frameInfo(ByteBuffer.wrap(overflowHeader));
+        assertEquals(ZstdStandardFrameInfo.CONTENT_SIZE_OVERFLOW, overflowInfo.contentSize());
+        assertEquals(Long.MAX_VALUE, overflowInfo.windowSize());
+
+        ByteBuffer skippable = ByteBuffer.wrap(new byte[]{
+                0x57, 0x2a, 0x4d, 0x18,
+                0x03, 0x00, 0x00, 0x00,
+                1, 2, 3
+        });
+        ZstdFrameInfo skippableParsed = codec.frameInfo(skippable);
+        assertTrue(skippableParsed instanceof ZstdSkippableFrameInfo);
+        ZstdSkippableFrameInfo skippableInfo = (ZstdSkippableFrameInfo) skippableParsed;
+        assertEquals(7, skippableInfo.id());
+        assertEquals(3L, skippableInfo.payloadSize());
+        assertEquals(11L, codec.frameCompressedSize(skippable));
+
+        ByteArrayOutputStream skippableAndFrame = new ByteArrayOutputStream();
+        skippableAndFrame.writeBytes(skippable.array());
+        skippableAndFrame.writeBytes(frame);
+        ByteArrayOutputStream decodedAfterSkippable = new ByteArrayOutputStream();
+        codec.decompress(
+                Channels.newChannel(new ByteArrayInputStream(skippableAndFrame.toByteArray())),
+                Channels.newChannel(decodedAfterSkippable)
+        );
+        assertArrayEquals(content, decodedAfterSkippable.toByteArray());
+
+        assertThrows(
+                EOFException.class,
+                () -> codec.frameInfo(ByteBuffer.wrap(new byte[]{0x28, (byte) 0xb5}))
+        );
+        assertThrows(
+                EOFException.class,
+                () -> codec.frameCompressedSize(ByteBuffer.wrap(new byte[]{
+                        0x50, 0x2a, 0x4d, 0x18,
+                        0x02, 0x00, 0x00, 0x00,
+                        1
+                }))
+        );
+        assertThrows(
+                IOException.class,
+                () -> codec.frameInfo(ByteBuffer.wrap(new byte[]{1, 2, 3, 4, 5}))
+        );
+        assertThrows(
+                IOException.class,
+                () -> codec.frameCompressedSize(ByteBuffer.wrap(new byte[]{
+                        0x28, (byte) 0xb5, 0x2f, (byte) 0xfd,
+                        0x20, 0x00,
+                        0x07, 0x00, 0x00
+                }))
+        );
+    }
+
+    /// Verifies advanced Zstandard context parameters, dynamic bounds, and every native strategy.
+    @Test
+    public void advancedCompressionOptions() throws IOException {
+        ZstdCodec codec = new ZstdCodec();
+        assertTrue(codec.minimumWindowLog() <= codec.maximumWindowLog());
+        assertTrue(codec.minimumHashLog() <= codec.maximumHashLog());
+        assertTrue(codec.minimumChainLog() <= codec.maximumChainLog());
+        assertTrue(codec.minimumSearchLog() <= codec.maximumSearchLog());
+        assertTrue(codec.minimumMatchLength() <= codec.maximumMatchLength());
+
+        assertTrue(codec.capabilities().compressionOptions().containsAll(Set.of(
+                ZstdCodec.WINDOW_LOG,
+                ZstdCodec.HASH_LOG,
+                ZstdCodec.CHAIN_LOG,
+                ZstdCodec.SEARCH_LOG,
+                ZstdCodec.MIN_MATCH,
+                ZstdCodec.TARGET_LENGTH,
+                ZstdCodec.STRATEGY,
+                ZstdCodec.JOB_SIZE,
+                ZstdCodec.OVERLAP_LOG,
+                ZstdCodec.CONTENT_SIZE,
+                ZstdCodec.DICTIONARY_ID,
+                ZstdCodec.LONG_DISTANCE_MATCHING
+        )));
+
+        byte[] input = (
+                "advanced Zstandard compression parameters 0123456789abcdef;"
+        ).repeat(1_024).getBytes(StandardCharsets.UTF_8);
+        CodecOptions combined = CodecOptions.builder()
+                .set(ZstdCodec.WINDOW_LOG, codec.minimumWindowLog())
+                .set(ZstdCodec.HASH_LOG, codec.minimumHashLog())
+                .set(ZstdCodec.CHAIN_LOG, codec.minimumChainLog())
+                .set(ZstdCodec.SEARCH_LOG, codec.minimumSearchLog())
+                .set(ZstdCodec.MIN_MATCH, codec.minimumMatchLength())
+                .set(ZstdCodec.TARGET_LENGTH, 0L)
+                .set(ZstdCodec.STRATEGY, ZstdStrategy.BT_OPT)
+                .set(ZstdCodec.JOB_SIZE, 0L)
+                .set(ZstdCodec.OVERLAP_LOG, 0L)
+                .set(ZstdCodec.CONTENT_SIZE, false)
+                .set(ZstdCodec.DICTIONARY_ID, false)
+                .set(ZstdCodec.LONG_DISTANCE_MATCHING, false)
+                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) input.length)
+                .build();
+        assertArrayEquals(input, transferRoundTrip(codec, input, combined));
+
+        for (ZstdStrategy strategy : ZstdStrategy.values()) {
+            CodecOptions options = CodecOptions.builder()
+                    .set(ZstdCodec.STRATEGY, strategy)
+                    .build();
+            assertArrayEquals(input, transferRoundTrip(codec, input, options), strategy.name());
+        }
+
+        assertInvalidCompressionOption(codec, ZstdCodec.WINDOW_LOG, codec.minimumWindowLog() - 1L);
+        assertInvalidCompressionOption(codec, ZstdCodec.HASH_LOG, codec.maximumHashLog() + 1L);
+        assertInvalidCompressionOption(codec, ZstdCodec.TARGET_LENGTH, -1L);
+        assertInvalidCompressionOption(codec, ZstdCodec.JOB_SIZE, (long) Integer.MAX_VALUE + 1L);
+        assertInvalidCompressionOption(codec, ZstdCodec.OVERLAP_LOG, 10L);
+    }
+
+    /// Verifies an invalid numeric compression option is rejected before an encoder is returned.
+    private static void assertInvalidCompressionOption(
+            ZstdCodec codec,
+            CodecOption<Long> option,
+            long value
+    ) {
+        CodecOptions options = CodecOptions.builder().set(option, value).build();
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> codec.openEncoder(
+                        Channels.newChannel(new ByteArrayOutputStream()),
+                        options,
+                        ChannelOwnership.RETAIN
+                )
+        );
+    }
+
+    /// Round-trips bytes through channel transfer with configured compression options.
+    private static byte[] transferRoundTrip(
+            ZstdCodec codec,
+            byte[] input,
+            CodecOptions compressionOptions
+    ) throws IOException {
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+        codec.compress(
+                Channels.newChannel(new ByteArrayInputStream(input)),
+                Channels.newChannel(compressed),
+                compressionOptions
+        );
+
+        ByteArrayOutputStream decoded = new ByteArrayOutputStream();
+        codec.decompress(
+                Channels.newChannel(new ByteArrayInputStream(compressed.toByteArray())),
+                Channels.newChannel(decoded)
+        );
+        return decoded.toByteArray();
     }
 
     /// Compresses and decompresses the given bytes.

@@ -3,12 +3,12 @@
 
 package org.glavo.arkivo.archive.rar;
 
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.rar.internal.RarArkivoStreamingReaderImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.InputStream;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.util.Map;
 import java.util.Objects;
@@ -64,6 +64,9 @@ public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingRea
     ) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(environment, "environment");
-        return open(Channels.newInputStream(source), environment);
+        return new RarArkivoStreamingReaderImpl(
+                StreamChannelAdapters.inputStream(source),
+                RarArkivoFileSystem.PASSWORD_PROVIDER.read(environment)
+        );
     }
 }

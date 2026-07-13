@@ -10,7 +10,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
-import java.io.InputStream;
+
 import java.nio.channels.ReadableByteChannel;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFileAttributes;
@@ -32,6 +32,12 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     /// Whether this reader is open.
     private boolean open = true;
 
+    /// Whether cleanup of the current streaming entry has been attempted.
+    private boolean currentEntryCloseAttempted;
+
+    /// Whether closure of the internal file system has completed.
+    private boolean fileSystemClosed;
+
     /// Creates a ZIP streaming reader.
     public ZipArkivoStreamingReaderImpl(ReadableByteChannel source, ZipArkivoFileSystemConfig config) {
         Objects.requireNonNull(config, "config");
@@ -43,16 +49,6 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         this.lock = ZipLocks.create(config.threadSafety());
     }
 
-    /// Creates a ZIP streaming reader.
-    public ZipArkivoStreamingReaderImpl(InputStream source, ZipArkivoFileSystemConfig config) {
-        Objects.requireNonNull(config, "config");
-        this.fileSystem = new StreamingZipArkivoReadFileSystemImpl(
-                ZipArkivoFileSystemProvider.instance(),
-                Objects.requireNonNull(source, "source"),
-                config
-        );
-        this.lock = ZipLocks.create(config.threadSafety());
-    }
 
     /// Advances to the next ZIP entry and returns whether an entry is available.
     @Override
@@ -113,29 +109,33 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         }
     }
 
-    /// Closes this streaming reader.
+    /// Closes this streaming reader and retries any resource cleanup that previously failed.
     @Override
     public void close() throws IOException {
         lock();
         try {
-            if (!open) {
-                return;
-            }
             open = false;
             currentAttributes = null;
             Throwable failure = null;
-            try {
-                fileSystem.closeCurrentStreamingEntry();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = exception;
-            }
-            try {
-                fileSystem.close();
-            } catch (IOException | RuntimeException | Error exception) {
-                if (failure != null) {
-                    failure.addSuppressed(exception);
-                } else {
+            if (!currentEntryCloseAttempted) {
+                try {
+                    fileSystem.closeCurrentStreamingEntry();
+                } catch (IOException | RuntimeException | Error exception) {
                     failure = exception;
+                } finally {
+                    currentEntryCloseAttempted = true;
+                }
+            }
+            if (!fileSystemClosed) {
+                try {
+                    fileSystem.close();
+                    fileSystemClosed = true;
+                } catch (IOException | RuntimeException | Error exception) {
+                    if (failure != null) {
+                        failure.addSuppressed(exception);
+                    } else {
+                        failure = exception;
+                    }
                 }
             }
             if (failure instanceof IOException exception) {

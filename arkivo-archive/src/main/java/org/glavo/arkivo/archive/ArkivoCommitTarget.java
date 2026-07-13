@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive;
 
 import org.glavo.arkivo.archive.internal.ArkivoCommitTargetSupport;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -28,5 +29,9 @@ public interface ArkivoCommitTarget {
     }
 
     /// Opens output storage for a commit that will replace or derive from the given source archive path.
-    ArkivoCommitOutput openOutput(Path sourcePath) throws IOException;
+    ///
+    /// `sourcePath` is `null` when the edited archive was opened from a non-path source. Targets that publish to a
+    /// destination independent of the source, such as `writeTo(Path)`, accept a missing source path. Targets that must
+    /// replace the source reject that case.
+    ArkivoCommitOutput openOutput(@Nullable Path sourcePath) throws IOException;
 }

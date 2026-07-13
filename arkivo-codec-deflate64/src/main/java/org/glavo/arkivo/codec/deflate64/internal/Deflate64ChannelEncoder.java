@@ -5,6 +5,7 @@ package org.glavo.arkivo.codec.deflate64.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -59,8 +60,8 @@ public final class Deflate64ChannelEncoder implements CompressionEncoder {
     /// The target receiving the raw Deflate64 stream.
     private final WritableByteChannel target;
 
-    /// Whether this context owns the target.
-    private final ChannelOwnership ownership;
+    /// Tracks closure of the owned compressed-data target.
+    private final OwnedChannelCloser targetCloser;
 
     /// The maximum hash-chain candidates examined for each position.
     private final int searchLimit;
@@ -99,7 +100,7 @@ public final class Deflate64ChannelEncoder implements CompressionEncoder {
             int compressionLevel
     ) {
         this.target = Objects.requireNonNull(target, "target");
-        this.ownership = Objects.requireNonNull(ownership, "ownership");
+        this.targetCloser = new OwnedChannelCloser(target, ownership);
         if (compressionLevel < 0 || compressionLevel > 9) {
             throw new IllegalArgumentException("Deflate64 compression level must be between 0 and 9");
         }
@@ -140,6 +141,7 @@ public final class Deflate64ChannelEncoder implements CompressionEncoder {
     @Override
     public void finish() throws IOException {
         if (!open) {
+            targetCloser.close();
             return;
         }
         @Nullable Throwable failure = null;
@@ -150,18 +152,8 @@ public final class Deflate64ChannelEncoder implements CompressionEncoder {
             failure = exception;
         }
         open = false;
-        if (ownership == ChannelOwnership.CLOSE) {
-            try {
-                target.close();
-            } catch (IOException | RuntimeException | Error exception) {
-                if (failure == null) {
-                    failure = exception;
-                } else {
-                    failure.addSuppressed(exception);
-                }
-            }
-        }
-        rethrow(failure);
+        targetCloser.closeAfter(failure);
+
     }
 
     /// Returns the number of uncompressed bytes accepted.
@@ -372,20 +364,6 @@ public final class Deflate64ChannelEncoder implements CompressionEncoder {
         if (!open) {
             throw new ClosedChannelException();
         }
-    }
-
-    /// Rethrows a captured failure with its original type.
-    private static void rethrow(@Nullable Throwable failure) throws IOException {
-        if (failure == null) {
-            return;
-        }
-        if (failure instanceof IOException exception) {
-            throw exception;
-        }
-        if (failure instanceof RuntimeException exception) {
-            throw exception;
-        }
-        throw (Error) failure;
     }
 
     /// Describes one selected LZ77 match.

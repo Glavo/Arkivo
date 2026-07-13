@@ -8,6 +8,7 @@ import org.glavo.arkivo.codec.lzma.internal.LzmaInputStream;
 import org.glavo.arkivo.codec.xz.internal.XzInputStream;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2InputStream;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.codec.deflate64.internal.Deflate64InputStream;
 import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
@@ -939,7 +940,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         }
     }
 
-    /// Reads the current central directory bytes and entry names for ZIP append mode.
+    /// Reads the current central directory metadata from one path-backed ZIP archive.
     static CentralDirectorySnapshot readCentralDirectorySnapshot(
             Path archivePath,
             ZipArkivoFileSystemConfig config
@@ -950,7 +951,36 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             throw new UnsupportedOperationException("ZIP append mode does not support split archives");
         }
 
-        ZipArkivoFileSystemConfig readConfig = new ZipArkivoFileSystemConfig(
+        try (ZipArkivoFileSystemImpl fileSystem = new ZipArkivoFileSystemImpl(
+                ZipArkivoFileSystemProvider.instance(),
+                archivePath,
+                null,
+                snapshotReadConfig(config)
+        )) {
+            return readCentralDirectorySnapshot(fileSystem, config);
+        }
+    }
+
+    /// Reads current central directory metadata without taking ownership of a repeatable single-volume source.
+    static CentralDirectorySnapshot readCentralDirectorySnapshot(
+            ArkivoSeekableChannelSource source,
+            ZipArkivoFileSystemConfig config
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(config, "config");
+        try (ZipArkivoFileSystemImpl fileSystem = new ZipArkivoFileSystemImpl(
+                ZipArkivoFileSystemProvider.instance(),
+                null,
+                new BorrowedVolumeSource(source),
+                snapshotReadConfig(config)
+        )) {
+            return readCentralDirectorySnapshot(fileSystem, config);
+        }
+    }
+
+    /// Returns a read-only configuration used while indexing an archive for an update.
+    private static ZipArkivoFileSystemConfig snapshotReadConfig(ZipArkivoFileSystemConfig config) {
+        return new ZipArkivoFileSystemConfig(
                 Set.of(StandardOpenOption.READ),
                 config.passwordProvider(),
                 config.defaultEncryption(),
@@ -961,32 +991,32 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 null,
                 null
         );
-        try (ZipArkivoFileSystemImpl fileSystem = new ZipArkivoFileSystemImpl(
-                ZipArkivoFileSystemProvider.instance(),
-                archivePath,
-                null,
-                readConfig
-        )) {
-            ZipIndex index = fileSystem.index();
-            try (ArchiveChannel channel = fileSystem.openArchiveChannel()) {
-                ZipEndRecord endRecord = readEndRecord(channel);
-                ByteBuffer centralDirectory =
-                        ByteBuffer.allocate(centralDirectoryIndexSize(endRecord.centralDirectorySize));
-                readFully(channel, endRecord.actualCentralDirectoryOffset, centralDirectory);
-                centralDirectory.flip();
-                return new CentralDirectorySnapshot(
-                        index.storageEntries.size(),
-                        index.entries.keySet(),
-                        centralDirectoryEntrySnapshots(
-                                centralDirectory,
-                                config.entryNameEncoding(),
-                                index,
-                                channel
-                        ),
-                        fileSystem.preambleSize(),
-                        endRecord.archiveComment
-                );
-            }
+    }
+
+    /// Reads central directory metadata through an already opened read-only ZIP file system.
+    private static CentralDirectorySnapshot readCentralDirectorySnapshot(
+            ZipArkivoFileSystemImpl fileSystem,
+            ZipArkivoFileSystemConfig config
+    ) throws IOException {
+        ZipIndex index = fileSystem.index();
+        try (ArchiveChannel channel = fileSystem.openArchiveChannel()) {
+            ZipEndRecord endRecord = readEndRecord(channel);
+            ByteBuffer centralDirectory =
+                    ByteBuffer.allocate(centralDirectoryIndexSize(endRecord.centralDirectorySize));
+            readFully(channel, endRecord.actualCentralDirectoryOffset, centralDirectory);
+            centralDirectory.flip();
+            return new CentralDirectorySnapshot(
+                    index.storageEntries.size(),
+                    index.entries.keySet(),
+                    centralDirectoryEntrySnapshots(
+                            centralDirectory,
+                            config.entryNameEncoding(),
+                            index,
+                            channel
+                    ),
+                    fileSystem.preambleSize(),
+                    endRecord.archiveComment
+            );
         }
     }
 
@@ -2401,6 +2431,26 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             if (channel.read(destination) < 0) {
                 throw new IOException("Unexpected end of ZIP storage");
             }
+        }
+    }
+
+    /// Exposes a source to a temporary reader without transferring source ownership.
+    @NotNullByDefault
+    private record BorrowedVolumeSource(ArkivoSeekableChannelSource delegate) implements ArkivoVolumeSource {
+        /// Creates a borrowed single-volume source.
+        private BorrowedVolumeSource {
+            Objects.requireNonNull(delegate, "delegate");
+        }
+
+        /// Opens the requested source volume.
+        @Override
+        public @Nullable SeekableByteChannel openVolume(long index) throws IOException {
+            return delegate.openVolume(index);
+        }
+
+        /// Leaves source ownership with the caller.
+        @Override
+        public void close() {
         }
     }
 

@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.lzma.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -21,6 +22,9 @@ final class LzmaChannelInput {
 
     /// The number of logical compressed bytes consumed.
     private long byteCount;
+
+    /// The number of compressed bytes obtained from the source.
+    private long sourceByteCount;
 
     /// Creates a buffered byte source.
     LzmaChannelInput(ReadableByteChannel source, int bufferSize) {
@@ -43,6 +47,7 @@ final class LzmaChannelInput {
             if (read == 0) {
                 throw new IOException("LZMA source channel made no progress");
             }
+            sourceByteCount += read;
             buffer.flip();
         }
         byteCount++;
@@ -78,5 +83,15 @@ final class LzmaChannelInput {
     /// Returns the number of logical compressed bytes consumed.
     long byteCount() {
         return byteCount;
+    }
+
+    /// Returns the number of compressed bytes obtained from the source.
+    long sourceByteCount() {
+        return sourceByteCount;
+    }
+
+    /// Returns a read-only view of bytes obtained but not consumed.
+    @UnmodifiableView ByteBuffer unconsumedInput() {
+        return buffer.asReadOnlyBuffer();
     }
 }

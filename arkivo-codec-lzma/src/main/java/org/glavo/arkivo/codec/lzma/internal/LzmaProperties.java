@@ -3,7 +3,11 @@
 
 package org.glavo.arkivo.codec.lzma.internal;
 
+import org.glavo.arkivo.codec.CodecOption;
+import org.glavo.arkivo.codec.CodecOptions;
+import org.glavo.arkivo.codec.lzma.LZMAOptions;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 /// Stores validated LZMA literal, position, and dictionary properties.
 ///
@@ -63,6 +67,52 @@ public record LzmaProperties(
         );
     }
 
+    /// Resolves shared LZMA model options with the requested default dictionary size.
+    public static LzmaProperties fromOptions(
+            CodecOptions options,
+            CodecOption<Long> dictionaryOption,
+            int defaultDictionarySize
+    ) {
+        int dictionarySize = intOption(
+                options,
+                dictionaryOption,
+                defaultDictionarySize,
+                0,
+                MAXIMUM_DICTIONARY_SIZE,
+                "LZMA dictionary size"
+        );
+        int literalContextBits = intOption(
+                options,
+                LZMAOptions.LITERAL_CONTEXT_BITS,
+                DEFAULT_LITERAL_CONTEXT_BITS,
+                0,
+                4,
+                "LZMA literal context bits"
+        );
+        int literalPositionBits = intOption(
+                options,
+                LZMAOptions.LITERAL_POSITION_BITS,
+                DEFAULT_LITERAL_POSITION_BITS,
+                0,
+                4,
+                "LZMA literal position bits"
+        );
+        int positionBits = intOption(
+                options,
+                LZMAOptions.POSITION_BITS,
+                DEFAULT_POSITION_BITS,
+                0,
+                4,
+                "LZMA position bits"
+        );
+        return new LzmaProperties(
+                literalContextBits,
+                literalPositionBits,
+                positionBits,
+                dictionarySize
+        );
+    }
+
     /// Parses one packed LZMA property byte and dictionary size.
     public static LzmaProperties decode(int property, int dictionarySize) {
         if (property < 0 || property >= 9 * 5 * 5) {
@@ -89,5 +139,24 @@ public record LzmaProperties(
     /// Returns the actual minimum-sized dictionary allocation.
     int allocatedDictionarySize() {
         return Math.max(dictionarySize, MINIMUM_DICTIONARY_SIZE);
+    }
+
+    /// Resolves and validates one integer-valued LZMA option.
+    private static int intOption(
+            CodecOptions options,
+            CodecOption<Long> option,
+            int defaultValue,
+            int minimum,
+            int maximum,
+            String description
+    ) {
+        @Nullable Long requested = options.get(option);
+        long value = requested != null ? requested : defaultValue;
+        if (value < minimum || value > maximum) {
+            throw new IllegalArgumentException(
+                    description + " must be between " + minimum + " and " + maximum + ": " + value
+            );
+        }
+        return (int) value;
     }
 }

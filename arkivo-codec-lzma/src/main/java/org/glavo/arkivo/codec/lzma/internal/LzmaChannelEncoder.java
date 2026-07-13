@@ -4,7 +4,9 @@
 package org.glavo.arkivo.codec.lzma.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -20,8 +22,8 @@ public final class LzmaChannelEncoder implements CompressionEncoder {
     /// The compressed-data target.
     private final WritableByteChannel target;
 
-    /// Whether this context owns the target.
-    private final ChannelOwnership ownership;
+    /// Tracks closure of the owned compressed-data target.
+    private final OwnedChannelCloser targetCloser;
 
     /// The buffered compressed-byte target.
     private final LzmaChannelOutput output;
@@ -29,24 +31,50 @@ public final class LzmaChannelEncoder implements CompressionEncoder {
     /// The raw LZMA encoder engine.
     private final LzmaEncoderEngine encoder;
 
+    /// The exact expected input size, or `CompressionCodec.UNKNOWN_SIZE` when not pledged.
+    private final long expectedSize;
+
     /// The reusable input transfer buffer.
     private final byte[] transferBuffer = new byte[8192];
 
     /// Whether this encoder remains open.
     private boolean open = true;
 
-    /// Creates an LZMA-alone encoder with the requested dictionary size.
+    /// Creates an EOS-terminated LZMA-alone encoder with the requested dictionary size.
     public LzmaChannelEncoder(
             WritableByteChannel target,
             ChannelOwnership ownership,
             int dictionarySize
     ) throws IOException {
+        this(
+                target,
+                ownership,
+                LzmaProperties.defaults(dictionarySize),
+                CompressionCodec.UNKNOWN_SIZE
+        );
+    }
+
+    /// Creates an LZMA-alone encoder with complete model properties and an optional exact input size.
+    public LzmaChannelEncoder(
+            WritableByteChannel target,
+            ChannelOwnership ownership,
+            LzmaProperties properties,
+            long expectedSize
+    ) throws IOException {
+        if (expectedSize < CompressionCodec.UNKNOWN_SIZE) {
+            throw new IllegalArgumentException("LZMA expected size must be nonnegative or -1");
+        }
         this.target = Objects.requireNonNull(target, "target");
-        this.ownership = Objects.requireNonNull(ownership, "ownership");
-        LzmaProperties properties = LzmaProperties.defaults(dictionarySize);
+        this.targetCloser = new OwnedChannelCloser(target, ownership);
+        this.expectedSize = expectedSize;
         output = new LzmaChannelOutput(target);
-        writeHeader(properties);
-        encoder = new LzmaEncoderEngine(output, properties);
+        try {
+            writeHeader(Objects.requireNonNull(properties, "properties"), expectedSize);
+            encoder = new LzmaEncoderEngine(output, properties);
+        } catch (IOException | RuntimeException | Error exception) {
+            targetCloser.closeAfter(exception);
+            throw exception;
+        }
     }
 
     /// Consumes uncompressed bytes from the source buffer.
@@ -54,6 +82,9 @@ public final class LzmaChannelEncoder implements CompressionEncoder {
     public int write(ByteBuffer source) throws IOException {
         Objects.requireNonNull(source, "source");
         ensureOpen();
+        if (expectedSize >= 0L && source.remaining() > expectedSize - encoder.inputSize()) {
+            throw new IOException("LZMA input exceeds the pledged source size");
+        }
         int start = source.position();
         while (source.hasRemaining()) {
             int count = Math.min(source.remaining(), transferBuffer.length);
@@ -74,28 +105,22 @@ public final class LzmaChannelEncoder implements CompressionEncoder {
     @Override
     public void finish() throws IOException {
         if (!open) {
+            targetCloser.close();
             return;
         }
         @Nullable Throwable failure = null;
         try {
-            encoder.finish(true);
+            if (expectedSize >= 0L && encoder.inputSize() != expectedSize) {
+                throw new IOException("LZMA input does not match the pledged source size");
+            }
+            encoder.finish(expectedSize < 0L);
             output.flush();
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
         }
         open = false;
-        if (ownership == ChannelOwnership.CLOSE) {
-            try {
-                target.close();
-            } catch (IOException | RuntimeException | Error exception) {
-                if (failure == null) {
-                    failure = exception;
-                } else {
-                    failure.addSuppressed(exception);
-                }
-            }
-        }
-        throwFailure(failure);
+        targetCloser.closeAfter(failure);
+
     }
 
     /// Returns the number of uncompressed bytes accepted by the encoder.
@@ -122,11 +147,11 @@ public final class LzmaChannelEncoder implements CompressionEncoder {
         finish();
     }
 
-    /// Writes the 13-byte LZMA-alone header with an unknown uncompressed size.
-    private void writeHeader(LzmaProperties properties) throws IOException {
+    /// Writes the 13-byte LZMA-alone header with the configured uncompressed size.
+    private void writeHeader(LzmaProperties properties, long uncompressedSize) throws IOException {
         output.write(properties.propertyByte());
         writeLittleEndian(properties.dictionarySize(), Integer.BYTES);
-        writeLittleEndian(-1L, Long.BYTES);
+        writeLittleEndian(uncompressedSize, Long.BYTES);
     }
 
     /// Writes a fixed-width little-endian integer.
@@ -143,17 +168,4 @@ public final class LzmaChannelEncoder implements CompressionEncoder {
         }
     }
 
-    /// Rethrows a close-time failure with its original type.
-    private static void throwFailure(@Nullable Throwable failure) throws IOException {
-        if (failure == null) {
-            return;
-        }
-        if (failure instanceof IOException exception) {
-            throw exception;
-        }
-        if (failure instanceof RuntimeException exception) {
-            throw exception;
-        }
-        throw (Error) failure;
-    }
 }

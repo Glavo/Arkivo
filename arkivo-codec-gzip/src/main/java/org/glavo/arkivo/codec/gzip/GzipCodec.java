@@ -41,9 +41,10 @@ public final class GzipCodec implements CompressionCodec {
                     CompressionFeature.ONE_SHOT_DECOMPRESSION,
                     CompressionFeature.FLUSH,
                     CompressionFeature.DIRECT_BYTE_BUFFER,
+                    CompressionFeature.MULTI_FRAME,
                     CompressionFeature.CONCATENATED_FRAMES
             ),
-            Set.of(StandardCodecOptions.COMPRESSION_LEVEL),
+            Set.of(StandardCodecOptions.COMPRESSION_LEVEL, StandardCodecOptions.COMPRESSION_STRATEGY),
             Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE, StandardCodecOptions.MAX_WINDOW_SIZE)
     );
 
@@ -113,7 +114,12 @@ public final class GzipCodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.compressionOptions(), "gzip compression");
-        return new GzipChannelEncoder(target, ownership, compressionLevel(options));
+        return new GzipChannelEncoder(
+                target,
+                ownership,
+                compressionLevel(options),
+                StandardCodecOptionSupport.compressionStrategy(options)
+        );
     }
 
     /// Opens a configured gzip decoder over the source channel.

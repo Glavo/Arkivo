@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.tar;
 
+import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.codec.CompressionCodec;
@@ -81,6 +82,80 @@ final class TarArkivoCompressionTest {
             assertTrue(source.closed());
         } finally {
             Files.deleteIfExists(archivePath);
+        }
+    }
+
+    /// Verifies that an auto-detected compressed channel source keeps its codec in a derived update.
+    @Test
+    void updatesAutoDetectedGzipChannelSourceWithoutChangingSource() throws IOException {
+        Path sourcePath = Files.createTempFile("arkivo-tar-gzip-channel-source-", ".tar.gz");
+        Path targetPath = Files.createTempFile("arkivo-tar-gzip-channel-derived-", ".tar.gz");
+        Files.delete(targetPath);
+        CountingSource source = new CountingSource(sourcePath);
+        try {
+            createCompressedArchive(sourcePath, "gzip");
+            byte[] original = Files.readAllBytes(sourcePath);
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.COMMIT_TARGET.key(),
+                    ArkivoCommitTarget.writeTo(targetPath)
+            );
+
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(source, environment)) {
+                Files.writeString(fileSystem.getPath("/value.txt"), "updated", StandardCharsets.UTF_8);
+            }
+
+            assertArrayEquals(original, Files.readAllBytes(sourcePath));
+            assertEquals(2, source.openCount());
+            assertTrue(source.closed());
+            @Nullable CompressionCodec detected = CompressionCodecs.detect(targetPath);
+            assertNotNull(detected);
+            assertEquals("gzip", detected.name());
+            try (TarArkivoFileSystem derived = TarArkivoFileSystem.open(targetPath)) {
+                assertEquals("updated", Files.readString(derived.getPath("/value.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            Files.deleteIfExists(targetPath);
+            Files.deleteIfExists(sourcePath);
+        }
+    }
+
+    /// Verifies channel-source updates with an explicit codec that has no reliable stream signature.
+    @Test
+    void updatesChannelSourceWithExplicitRawDeflateCompression() throws IOException {
+        Path sourcePath = Files.createTempFile("arkivo-tar-deflate-channel-source-", ".tar.deflate");
+        Path targetPath = Files.createTempFile("arkivo-tar-deflate-channel-derived-", ".tar.deflate");
+        Files.delete(targetPath);
+        CountingSource source = new CountingSource(sourcePath);
+        try {
+            createCompressedArchive(sourcePath, "deflate");
+            byte[] original = Files.readAllBytes(sourcePath);
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.COMMIT_TARGET.key(),
+                    ArkivoCommitTarget.writeTo(targetPath),
+                    TarArkivoFileSystem.COMPRESSION.key(),
+                    "deflate"
+            );
+
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(source, environment)) {
+                Files.writeString(fileSystem.getPath("/value.txt"), "updated", StandardCharsets.UTF_8);
+            }
+
+            assertArrayEquals(original, Files.readAllBytes(sourcePath));
+            assertEquals(1, source.openCount());
+            assertTrue(source.closed());
+            try (TarArkivoFileSystem derived = TarArkivoFileSystem.open(
+                    targetPath,
+                    Map.of(TarArkivoFileSystem.COMPRESSION.key(), "deflate")
+            )) {
+                assertEquals("updated", Files.readString(derived.getPath("/value.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            Files.deleteIfExists(targetPath);
+            Files.deleteIfExists(sourcePath);
         }
     }
 

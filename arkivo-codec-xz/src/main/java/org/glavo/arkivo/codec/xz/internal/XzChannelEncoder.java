@@ -5,7 +5,17 @@ package org.glavo.arkivo.codec.xz.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
+import org.glavo.arkivo.codec.bcj.BCJTransforms;
+import org.glavo.arkivo.codec.delta.DeltaTransform;
 import org.glavo.arkivo.codec.lzma.internal.Lzma2ChannelEncoder;
+import org.glavo.arkivo.codec.lzma.internal.LzmaProperties;
+import org.glavo.arkivo.codec.transform.ByteTransform;
+import org.glavo.arkivo.codec.transform.TransformingWritableByteChannel;
+import org.glavo.arkivo.codec.xz.XZBCJFilter;
+import org.glavo.arkivo.codec.xz.XZDeltaFilter;
+import org.glavo.arkivo.codec.xz.XZFilter;
+import org.glavo.arkivo.codec.xz.XZFilterChain;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -14,28 +24,39 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.WritableByteChannel;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 
-/// Encodes a standards-compliant single-block XZ stream directly to a channel.
+/// Encodes standards-compliant multi-Block and concatenated XZ streams directly to a channel.
 @NotNullByDefault
 public final class XzChannelEncoder implements CompressionEncoder {
     /// The default LZMA2 dictionary size.
     public static final int DEFAULT_DICTIONARY_SIZE = 8 * 1024 * 1024;
 
+    /// The initial number of Block records retained for the final Index.
+    private static final int INITIAL_INDEX_CAPACITY = 8;
+
     /// The compressed-data target.
     private final WritableByteChannel target;
 
-    /// Whether this context owns the target.
-    private final ChannelOwnership ownership;
+    /// Tracks closure of the owned compressed-data target.
+    private final OwnedChannelCloser targetCloser;
 
     /// The buffered XZ byte target.
     private final XzChannelOutput output;
 
-    /// The LZMA2 dictionary size.
-    private final int dictionarySize;
+    /// The LZMA2 model properties.
+    private final LzmaProperties properties;
 
     /// The stream integrity-check type.
     private final int checkType;
+
+    /// The ordered preprocessing filters placed before LZMA2.
+    private final XZFilterChain filterChain;
+
+    /// The maximum uncompressed bytes per Block, or zero for one unbounded Block.
+    private final long maximumBlockSize;
 
     /// The reusable uncompressed transfer buffer.
     private final byte[] transferBuffer = new byte[8192];
@@ -49,11 +70,29 @@ public final class XzChannelEncoder implements CompressionEncoder {
     /// The active LZMA2 block encoder after the first write.
     private @Nullable Lzma2ChannelEncoder blockEncoder;
 
-    /// The block's uncompressed size.
-    private long uncompressedSize;
+    /// The outermost preprocessing input, or the LZMA2 encoder when no preprocessing filter is configured.
+    private @Nullable WritableByteChannel blockInput;
 
-    /// The block's unpadded size after it has finished.
-    private long unpaddedSize;
+    /// The serialized Block Header size.
+    private long blockHeaderSize;
+
+    /// The total number of uncompressed bytes accepted.
+    private long inputBytes;
+
+    /// The active Block's uncompressed size.
+    private long blockUncompressedSize;
+
+    /// The unpadded size of every completed Block.
+    private long[] blockUnpaddedSizes = new long[INITIAL_INDEX_CAPACITY];
+
+    /// The uncompressed size of every completed Block.
+    private long[] blockUncompressedSizes = new long[INITIAL_INDEX_CAPACITY];
+
+    /// The number of completed Block records.
+    private int blockCount;
+
+    /// Whether an XZ Stream Header has been emitted and awaits a matching footer.
+    private boolean streamActive = true;
 
     /// Whether this encoder remains open.
     private boolean open = true;
@@ -65,17 +104,66 @@ public final class XzChannelEncoder implements CompressionEncoder {
             int dictionarySize,
             int checkType
     ) throws IOException {
-        this.target = Objects.requireNonNull(target, "target");
-        this.ownership = Objects.requireNonNull(ownership, "ownership");
-        XzSupport.lzma2DictionaryProperty(dictionarySize);
-        XzCheck.create(checkType);
-        this.dictionarySize = dictionarySize;
-        this.checkType = checkType;
-        output = new XzChannelOutput(target);
-        writeStreamHeader();
+        this(
+                target,
+                ownership,
+                LzmaProperties.defaults(dictionarySize),
+                checkType,
+                XZFilterChain.EMPTY
+        );
     }
 
-    /// Consumes uncompressed bytes for the single XZ block.
+    /// Creates an XZ encoder with complete LZMA2 model and integrity-check settings.
+    public XzChannelEncoder(
+            WritableByteChannel target,
+            ChannelOwnership ownership,
+            LzmaProperties properties,
+            int checkType
+    ) throws IOException {
+        this(target, ownership, properties, checkType, XZFilterChain.EMPTY);
+    }
+
+    /// Creates an XZ encoder with complete LZMA2, integrity-check, and preprocessing settings.
+    public XzChannelEncoder(
+            WritableByteChannel target,
+            ChannelOwnership ownership,
+            LzmaProperties properties,
+            int checkType,
+            XZFilterChain filterChain
+    ) throws IOException {
+        this(target, ownership, properties, checkType, filterChain, 0L);
+    }
+
+    /// Creates an XZ encoder with complete filter and Block-layout settings.
+    public XzChannelEncoder(
+            WritableByteChannel target,
+            ChannelOwnership ownership,
+            LzmaProperties properties,
+            int checkType,
+            XZFilterChain filterChain,
+            long maximumBlockSize
+    ) throws IOException {
+        if (maximumBlockSize < 0L) {
+            throw new IllegalArgumentException("XZ maximum Block size must not be negative");
+        }
+        this.target = Objects.requireNonNull(target, "target");
+        this.targetCloser = new OwnedChannelCloser(target, ownership);
+        this.properties = Objects.requireNonNull(properties, "properties");
+        XzSupport.lzma2DictionaryProperty(properties.dictionarySize());
+        XzCheck.create(checkType);
+        this.checkType = checkType;
+        this.filterChain = Objects.requireNonNull(filterChain, "filterChain");
+        this.maximumBlockSize = maximumBlockSize;
+        output = new XzChannelOutput(target);
+        try {
+            writeStreamHeader();
+        } catch (IOException | RuntimeException | Error exception) {
+            targetCloser.closeAfter(exception);
+            throw exception;
+        }
+    }
+
+    /// Consumes uncompressed bytes and rotates Blocks at the configured boundary.
     @Override
     public int write(ByteBuffer source) throws IOException {
         Objects.requireNonNull(source, "source");
@@ -83,22 +171,32 @@ public final class XzChannelEncoder implements CompressionEncoder {
         if (!source.hasRemaining()) {
             return 0;
         }
-        startBlock();
+        startStream();
         int start = source.position();
-        Lzma2ChannelEncoder encoder = Objects.requireNonNull(blockEncoder);
-        XzCheck check = Objects.requireNonNull(blockCheck);
         while (source.hasRemaining()) {
-            int count = Math.min(source.remaining(), transferBuffer.length);
+            startBlock();
+            long remainingInBlock = maximumBlockSize == 0L
+                    ? Long.MAX_VALUE
+                    : maximumBlockSize - blockUncompressedSize;
+            int count = (int) Math.min(
+                    Math.min(source.remaining(), transferBuffer.length),
+                    remainingInBlock
+            );
+            if (inputBytes > Long.MAX_VALUE - count) {
+                throw new IOException("XZ uncompressed input size overflow");
+            }
+
             source.get(transferBuffer, 0, count);
-            check.update(transferBuffer, 0, count);
-            encoder.write(ByteBuffer.wrap(transferBuffer, 0, count));
+            Objects.requireNonNull(blockCheck).update(transferBuffer, 0, count);
+            Objects.requireNonNull(blockInput).write(ByteBuffer.wrap(transferBuffer, 0, count));
+            inputBytes += count;
+            blockUncompressedSize += count;
+
+            if (maximumBlockSize != 0L && blockUncompressedSize == maximumBlockSize) {
+                finishBlock();
+            }
         }
-        int count = source.position() - start;
-        if (uncompressedSize > Long.MAX_VALUE - count) {
-            throw new IOException("XZ block uncompressed size overflow");
-        }
-        uncompressedSize += count;
-        return count;
+        return source.position() - start;
     }
 
     /// Flushes bytes already emitted by the active LZMA2 encoder.
@@ -112,37 +210,39 @@ public final class XzChannelEncoder implements CompressionEncoder {
         output.flush();
     }
 
-    /// Finishes the block, Index, Stream Footer, and encoder context.
+    /// Finishes the active XZ Stream while retaining the encoder for another stream.
+    @Override
+    public void finishFrame() throws IOException {
+        ensureOpen();
+        if (!streamActive) {
+            return;
+        }
+        finishStream();
+    }
+
+    /// Finishes the active XZ Stream and releases the encoder context.
     @Override
     public void finish() throws IOException {
         if (!open) {
+            targetCloser.close();
             return;
         }
         @Nullable Throwable failure = null;
         try {
-            finishBlock();
-            byte[] index = createIndex();
-            output.write(index);
-            writeStreamFooter(index.length);
-            output.flush();
+            if (streamActive) {
+                finishStream();
+            }
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
         }
         open = false;
-        if (ownership == ChannelOwnership.CLOSE) {
-            try {
-                target.close();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = appendFailure(failure, exception);
-            }
-        }
-        rethrow(failure);
+        targetCloser.closeAfter(failure);
     }
 
     /// Returns the number of uncompressed bytes accepted.
     @Override
     public long inputBytes() {
-        return uncompressedSize;
+        return inputBytes;
     }
 
     /// Returns the number of XZ bytes written to the target.
@@ -163,6 +263,26 @@ public final class XzChannelEncoder implements CompressionEncoder {
         finish();
     }
 
+    /// Lazily starts another XZ Stream after an explicit frame boundary.
+    private void startStream() throws IOException {
+        if (streamActive) {
+            return;
+        }
+        writeStreamHeader();
+        streamActive = true;
+    }
+
+    /// Finishes one active Stream and resets its Block Index state.
+    private void finishStream() throws IOException {
+        finishBlock();
+        byte[] index = createIndex();
+        output.write(index);
+        writeStreamFooter(index.length);
+        output.flush();
+        blockCount = 0;
+        streamActive = false;
+    }
+
     /// Writes the fixed Stream Header and its CRC-32.
     private void writeStreamHeader() throws IOException {
         byte[] header = new byte[12];
@@ -173,24 +293,35 @@ public final class XzChannelEncoder implements CompressionEncoder {
         output.write(header);
     }
 
-    /// Lazily writes the Block Header and opens its LZMA2 encoder.
+    /// Lazily writes the Block Header and opens its preprocessing and LZMA2 encoders.
     private void startBlock() throws IOException {
         if (blockEncoder != null) {
             return;
         }
-        byte[] header = new byte[12];
-        header[0] = 2;
-        header[1] = 0;
-        header[2] = (byte) XzSupport.FILTER_LZMA2;
-        header[3] = 1;
-        header[4] = (byte) XzSupport.lzma2DictionaryProperty(dictionarySize);
-        XzSupport.putLittleEndian(header, 8, XzSupport.crc32(header, 0, 8), Integer.BYTES);
+        byte[] header = createBlockHeader();
         output.write(header);
+        blockHeaderSize = header.length;
 
         CountingChannel counter = new CountingChannel(output);
         blockCheck = XzCheck.create(checkType);
         compressedCounter = counter;
-        blockEncoder = new Lzma2ChannelEncoder(counter, ChannelOwnership.RETAIN, dictionarySize);
+        Lzma2ChannelEncoder encoder = new Lzma2ChannelEncoder(
+                counter,
+                ChannelOwnership.RETAIN,
+                properties
+        );
+        blockEncoder = encoder;
+
+        WritableByteChannel input = encoder;
+        List<XZFilter> filters = filterChain.filters();
+        for (int index = filters.size() - 1; index >= 0; index--) {
+            input = new TransformingWritableByteChannel(
+                    input,
+                    createEncodingTransform(filters.get(index)),
+                    ChannelOwnership.CLOSE
+            );
+        }
+        blockInput = input;
     }
 
     /// Finishes the active block, padding, and integrity check.
@@ -199,27 +330,145 @@ public final class XzChannelEncoder implements CompressionEncoder {
         if (encoder == null) {
             return;
         }
-        encoder.finish();
+        WritableByteChannel input = Objects.requireNonNull(blockInput);
+        if (input == encoder) {
+            encoder.finish();
+        } else {
+            input.close();
+        }
         long compressedSize = Objects.requireNonNull(compressedCounter).count();
         for (long padded = compressedSize; (padded & 3L) != 0L; padded++) {
             output.write(0);
         }
         byte[] check = Objects.requireNonNull(blockCheck).finish();
         output.write(check);
-        unpaddedSize = 12L + compressedSize + check.length;
+        if (compressedSize > Long.MAX_VALUE - blockHeaderSize - check.length) {
+            throw new IOException("XZ Block unpadded size overflow");
+        }
+        addBlockRecord(
+                blockHeaderSize + compressedSize + check.length,
+                blockUncompressedSize
+        );
+        blockHeaderSize = 0L;
+        blockUncompressedSize = 0L;
+        blockCheck = null;
+        compressedCounter = null;
+        blockInput = null;
         blockEncoder = null;
+    }
+
+    /// Creates a Block Header describing every preprocessing filter and terminal LZMA2.
+    private byte[] createBlockHeader() throws IOException {
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        body.write(0);
+        body.write(filterChain.filters().size());
+        for (XZFilter filter : filterChain.filters()) {
+            writeFilterDescriptor(body, filter);
+        }
+        writeFilterDescriptor(
+                body,
+                XzSupport.FILTER_LZMA2,
+                new byte[]{(byte) XzSupport.lzma2DictionaryProperty(properties.dictionarySize())}
+        );
+        while ((body.size() + Integer.BYTES & 3) != 0) {
+            body.write(0);
+        }
+
+        byte[] bodyBytes = body.toByteArray();
+        byte[] header = Arrays.copyOf(bodyBytes, bodyBytes.length + Integer.BYTES);
+        header[0] = (byte) (header.length / 4 - 1);
+        XzSupport.putLittleEndian(
+                header,
+                bodyBytes.length,
+                XzSupport.crc32(header, 0, bodyBytes.length),
+                Integer.BYTES
+        );
+        return header;
+    }
+
+    /// Writes one public preprocessing-filter descriptor.
+    private static void writeFilterDescriptor(ByteArrayOutputStream output, XZFilter filter)
+            throws IOException {
+        if (filter instanceof XZDeltaFilter delta) {
+            writeFilterDescriptor(
+                    output,
+                    XzSupport.FILTER_DELTA,
+                    new byte[]{(byte) (delta.distance() - 1L)}
+            );
+            return;
+        }
+        if (filter instanceof XZBCJFilter bcj) {
+            byte[] properties;
+            if (bcj.startOffset() == 0L) {
+                properties = new byte[0];
+            } else {
+                properties = new byte[Integer.BYTES];
+                XzSupport.putLittleEndian(properties, 0, bcj.startOffset(), Integer.BYTES);
+            }
+            writeFilterDescriptor(output, bcj.architecture().identifier(), properties);
+            return;
+        }
+        throw new AssertionError(filter);
+    }
+
+    /// Writes one raw filter identifier and property sequence.
+    private static void writeFilterDescriptor(
+            ByteArrayOutputStream output,
+            long identifier,
+            byte[] properties
+    ) throws IOException {
+        XzSupport.writeVli(output, identifier);
+        XzSupport.writeVli(output, properties.length);
+        output.write(properties);
+    }
+
+    /// Creates the stateful encoding transform for one public filter.
+    private static ByteTransform createEncodingTransform(XZFilter filter) {
+        if (filter instanceof XZDeltaFilter delta) {
+            return new DeltaTransform(true, (int) delta.distance());
+        }
+        if (filter instanceof XZBCJFilter bcj) {
+            int startOffset = (int) bcj.startOffset();
+            return switch (bcj.architecture()) {
+                case X86 -> BCJTransforms.x86(true, startOffset);
+                case POWER_PC -> BCJTransforms.powerPc(true, startOffset);
+                case IA64 -> BCJTransforms.ia64(true, startOffset);
+                case ARM -> BCJTransforms.arm(true, startOffset);
+                case ARM_THUMB -> BCJTransforms.armThumb(true, startOffset);
+                case SPARC -> BCJTransforms.sparc(true, startOffset);
+                case ARM64 -> BCJTransforms.arm64(true, startOffset);
+                case RISCV -> BCJTransforms.riscV(true, startOffset);
+            };
+        }
+        throw new AssertionError(filter);
+    }
+
+    /// Appends one completed Block record to compact primitive Index storage.
+    private void addBlockRecord(long unpaddedSize, long uncompressedSize) throws IOException {
+        if (blockCount == Integer.MAX_VALUE) {
+            throw new IOException("XZ Block count exceeds the supported Index capacity");
+        }
+        if (blockCount == blockUnpaddedSizes.length) {
+            int capacity = Math.min(
+                    Integer.MAX_VALUE,
+                    Math.max(blockCount + 1, blockCount + (blockCount >>> 1))
+            );
+            blockUnpaddedSizes = Arrays.copyOf(blockUnpaddedSizes, capacity);
+            blockUncompressedSizes = Arrays.copyOf(blockUncompressedSizes, capacity);
+        }
+        blockUnpaddedSizes[blockCount] = unpaddedSize;
+        blockUncompressedSizes[blockCount] = uncompressedSize;
+        blockCount++;
     }
 
     /// Creates the complete Index field and its CRC-32.
     private byte[] createIndex() throws IOException {
         ByteArrayOutputStream index = new ByteArrayOutputStream();
         index.write(0);
-        if (unpaddedSize == 0L) {
-            XzSupport.writeVli(index, 0L);
-        } else {
-            XzSupport.writeVli(index, 1L);
-            XzSupport.writeVli(index, unpaddedSize);
-            XzSupport.writeVli(index, uncompressedSize);
+        XzSupport.writeVli(index, blockCount);
+        for (int block = 0; block < blockCount; block++) {
+            XzSupport.writeVli(index, blockUnpaddedSizes[block]);
+            XzSupport.writeVli(index, blockUncompressedSizes[block]);
         }
         while ((index.size() & 3) != 0) {
             index.write(0);
@@ -246,29 +495,6 @@ public final class XzChannelEncoder implements CompressionEncoder {
         if (!open) {
             throw new ClosedChannelException();
         }
-    }
-
-    /// Appends one close-time failure.
-    private static Throwable appendFailure(@Nullable Throwable failure, Throwable next) {
-        if (failure == null) {
-            return next;
-        }
-        failure.addSuppressed(next);
-        return failure;
-    }
-
-    /// Rethrows a captured close-time failure with its original type.
-    private static void rethrow(@Nullable Throwable failure) throws IOException {
-        if (failure == null) {
-            return;
-        }
-        if (failure instanceof IOException exception) {
-            throw exception;
-        }
-        if (failure instanceof RuntimeException exception) {
-            throw exception;
-        }
-        throw (Error) failure;
     }
 
     /// Counts compressed block bytes forwarded to the XZ output.

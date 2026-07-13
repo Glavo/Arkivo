@@ -5,6 +5,7 @@ package org.glavo.arkivo.codec.bzip2.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -20,7 +21,7 @@ import java.util.Comparator;
 import java.util.Objects;
 import java.util.PriorityQueue;
 
-/// Encodes a BZip2 stream with configurable block sizes from 100 through 900 KiB.
+/// Encodes concatenated BZip2 streams with configurable block sizes from 100 through 900 KiB.
 ///
 /// The encoder performs the two BZip2 run-length stages, a cyclic Burrows-Wheeler transform, move-to-front coding,
 /// and canonical length-limited Huffman coding without delegating any format stage to an external library.
@@ -56,8 +57,8 @@ public final class BZip2OutputStream extends OutputStream implements Compression
     /// The compressed target.
     private final WritableByteChannel target;
 
-    /// Whether closing this encoder also closes the compressed target.
-    private final ChannelOwnership ownership;
+    /// Tracks closure of the owned compressed-data target.
+    private final OwnedChannelCloser targetCloser;
 
     /// Whether finishing also closes the channel-oriented encoder context.
     private final boolean finishClosesContext;
@@ -83,7 +84,10 @@ public final class BZip2OutputStream extends OutputStream implements Compression
     /// The number of original bytes in the pending first-stage run.
     private int pendingRunLength;
 
-    /// Whether the complete BZip2 stream trailer has been written.
+    /// Whether a BZip2 stream header has been emitted and awaits its trailer.
+    private boolean frameActive;
+
+    /// Whether terminal finalization has been requested.
     private boolean finished;
 
     /// Whether this output stream has closed.
@@ -124,23 +128,26 @@ public final class BZip2OutputStream extends OutputStream implements Compression
             boolean finishClosesContext
     ) throws IOException {
         this.target = Objects.requireNonNull(target, "target");
-        this.ownership = Objects.requireNonNull(ownership, "ownership");
+        this.targetCloser = new OwnedChannelCloser(target, ownership);
         this.finishClosesContext = finishClosesContext;
         if (blockSize < 1 || blockSize > 9) {
             throw new IllegalArgumentException("BZip2 block size must be between 1 and 9");
         }
         block = new byte[blockSize * BLOCK_SIZE_UNIT];
         bits = new BitOutput(target);
-        bits.writeBits(8, 'B');
-        bits.writeBits(8, 'Z');
-        bits.writeBits(8, 'h');
-        bits.writeBits(8, '0' + blockSize);
+        try {
+            startFrame();
+        } catch (IOException | RuntimeException | Error exception) {
+            targetCloser.closeAfter(exception);
+            throw exception;
+        }
     }
 
     /// Adds one original byte to the compressed stream.
     @Override
     public void write(int value) throws IOException {
         ensureWritable();
+        startFrame();
         addByte(value & 0xff);
         inputBytes++;
     }
@@ -150,6 +157,10 @@ public final class BZip2OutputStream extends OutputStream implements Compression
     public void write(byte[] bytes, int offset, int length) throws IOException {
         Objects.checkFromIndexSize(offset, length, bytes.length);
         ensureWritable();
+        if (length == 0) {
+            return;
+        }
+        startFrame();
         for (int index = 0; index < length; index++) {
             addByte(Byte.toUnsignedInt(bytes[offset + index]));
         }
@@ -161,6 +172,10 @@ public final class BZip2OutputStream extends OutputStream implements Compression
     public int write(ByteBuffer source) throws IOException {
         Objects.requireNonNull(source, "source");
         ensureWritable();
+        if (!source.hasRemaining()) {
+            return 0;
+        }
+        startFrame();
         int start = source.position();
         while (source.hasRemaining()) {
             addByte(Byte.toUnsignedInt(source.get()));
@@ -177,30 +192,51 @@ public final class BZip2OutputStream extends OutputStream implements Compression
         bits.flush();
     }
 
-    /// Writes all pending data and the BZip2 stream trailer without closing the wrapped target.
+    /// Finishes the active BZip2 stream while retaining the encoder for another stream.
+    @Override
+    public void finishFrame() throws IOException {
+        ensureWritable();
+        if (!frameActive) {
+            return;
+        }
+        finishActiveFrame();
+    }
+
+    /// Finalizes BZip2 encoding and applies the configured channel-context lifecycle.
+    @Override
     public void finish() throws IOException {
-        ensureOpen();
+        if (closed) {
+            targetCloser.close();
+            return;
+        }
         if (finished) {
             return;
         }
-        flushPendingRun();
-        writeBlock();
-        bits.writeBits(48, END_MAGIC);
-        bits.writeBits(32, Integer.toUnsignedLong(combinedCrc));
-        bits.finish();
-        finished = true;
+        @Nullable Throwable failure = null;
+        try {
+            if (frameActive) {
+                finishActiveFrame();
+            }
+            finished = true;
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = exception;
+        }
         if (finishClosesContext) {
             closed = true;
-            if (ownership == ChannelOwnership.CLOSE) {
-                target.close();
-            }
+            targetCloser.closeAfter(failure);
         }
+        throwFailure(failure);
     }
 
     /// Finishes this BZip2 stream and closes the wrapped target.
     @Override
     public void close() throws IOException {
         if (closed) {
+            targetCloser.close();
+            return;
+        }
+        if (finishClosesContext) {
+            finish();
             return;
         }
         @Nullable Throwable failure = null;
@@ -210,18 +246,7 @@ public final class BZip2OutputStream extends OutputStream implements Compression
             failure = exception;
         }
         closed = true;
-        try {
-            if (ownership == ChannelOwnership.CLOSE) {
-                target.close();
-            }
-        } catch (IOException | RuntimeException | Error exception) {
-            if (failure == null) {
-                failure = exception;
-            } else {
-                failure.addSuppressed(exception);
-            }
-        }
-        throwFailure(failure);
+        targetCloser.closeAfter(failure);
     }
 
     /// Returns the number of uncompressed bytes accepted through channel writes.
@@ -240,6 +265,29 @@ public final class BZip2OutputStream extends OutputStream implements Compression
     @Override
     public boolean isOpen() {
         return !closed && !finished;
+    }
+
+    /// Lazily starts another BZip2 stream after an explicit frame boundary.
+    private void startFrame() throws IOException {
+        if (frameActive) {
+            return;
+        }
+        bits.writeBits(8, 'B');
+        bits.writeBits(8, 'Z');
+        bits.writeBits(8, 'h');
+        bits.writeBits(8, '0' + block.length / BLOCK_SIZE_UNIT);
+        combinedCrc = 0;
+        frameActive = true;
+    }
+
+    /// Finishes one active BZip2 stream and resets its stream-level state.
+    private void finishActiveFrame() throws IOException {
+        flushPendingRun();
+        writeBlock();
+        bits.writeBits(48, END_MAGIC);
+        bits.writeBits(32, Integer.toUnsignedLong(combinedCrc));
+        bits.finish();
+        frameActive = false;
     }
 
     /// Adds one byte to the pending first-stage run.
@@ -583,11 +631,11 @@ public final class BZip2OutputStream extends OutputStream implements Compression
         return codes;
     }
 
-    /// Requires this stream to remain open and unfinished.
+    /// Requires this stream to remain open and not terminally finalized.
     private void ensureWritable() throws IOException {
         ensureOpen();
         if (finished) {
-            throw new IOException("BZip2 stream has already finished");
+            throw new IOException("BZip2 encoder has already finished");
         }
     }
 

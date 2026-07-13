@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.transform;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -22,8 +23,8 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
     /// The downstream channel.
     private final WritableByteChannel target;
 
-    /// Whether this channel owns the downstream target.
-    private final ChannelOwnership ownership;
+    /// Tracks closure of the owned downstream target.
+    private final OwnedChannelCloser targetCloser;
 
     /// The stateful in-place transform.
     private final ByteTransform transform;
@@ -59,7 +60,7 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
     ) {
         this.target = Objects.requireNonNull(target, "target");
         this.transform = Objects.requireNonNull(transform, "transform");
-        this.ownership = Objects.requireNonNull(ownership, "ownership");
+        this.targetCloser = new OwnedChannelCloser(target, ownership);
     }
 
     /// Consumes untransformed bytes from the source buffer.
@@ -112,28 +113,16 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
     /// Finishes this transform and optionally closes its target.
     @Override
     public void close() throws IOException {
-        if (!open) {
-            return;
-        }
         @Nullable Throwable closeFailure = null;
-        try {
-            finish();
-        } catch (IOException | RuntimeException | Error exception) {
-            closeFailure = exception;
-        }
-        open = false;
-        if (ownership == ChannelOwnership.CLOSE) {
+        if (open) {
             try {
-                target.close();
+                finish();
             } catch (IOException | RuntimeException | Error exception) {
-                if (closeFailure == null) {
-                    closeFailure = exception;
-                } else {
-                    closeFailure.addSuppressed(exception);
-                }
+                closeFailure = exception;
             }
+            open = false;
         }
-        rethrow(closeFailure);
+        targetCloser.closeAfter(closeFailure);
     }
 
     /// Transforms and forwards the largest complete prefix.
@@ -186,17 +175,4 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
         }
     }
 
-    /// Rethrows a close-time failure with its original type.
-    private static void rethrow(@Nullable Throwable throwable) throws IOException {
-        if (throwable == null) {
-            return;
-        }
-        if (throwable instanceof IOException exception) {
-            throw exception;
-        }
-        if (throwable instanceof RuntimeException exception) {
-            throw exception;
-        }
-        throw (Error) throwable;
-    }
 }

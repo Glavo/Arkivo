@@ -3,6 +3,10 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.sevenzip.SevenZipPackedStream;
+
+import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
+import org.glavo.arkivo.archive.sevenzip.SevenZipCoderGraph;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -15,10 +19,10 @@ import java.util.Objects;
 @NotNullByDefault
 public final class SevenZipEntryMetadata {
     /// The data offset value used when an entry has no stored body.
-    public static final long NO_DATA_OFFSET = -1L;
+    public static final long NO_DATA_OFFSET = SevenZipArkivoEntryAttributes.NO_DATA_OFFSET;
 
     /// The CRC-32 value used when an entry does not declare an expected digest.
-    public static final long UNKNOWN_CRC32 = -1L;
+    public static final long UNKNOWN_CRC32 = SevenZipPackedStream.UNKNOWN_CRC32;
 
     /// The decoded entry path.
     private final String path;
@@ -35,13 +39,19 @@ public final class SevenZipEntryMetadata {
     /// The decoded stream offset inside the folder output.
     private final long decodedOffset;
 
+    /// This entry's index among file-addressable folder substreams, or `NO_SUBSTREAM_INDEX`.
+    private final int substreamIndex;
+
+    /// The number of file-addressable substreams in this entry's folder.
+    private final int substreamCount;
+
     /// The packed entry size.
     private final long packedSize;
 
     /// The expected packed stream CRC-32, or `UNKNOWN_CRC32` when not present or not entry-addressable.
     private final long packedCrc32;
 
-    /// The physical packed streams consumed to decode this entry's folder.
+    /// The physical packed byte ranges used to read this entry.
     private final @Unmodifiable List<SevenZipPackedStream> packedStreams;
 
     /// The expected uncompressed entry CRC-32, or `UNKNOWN_CRC32` when not present.
@@ -178,6 +188,8 @@ public final class SevenZipEntryMetadata {
                 directory,
                 size,
                 decodedOffset,
+                dataOffset == NO_DATA_OFFSET ? SevenZipArkivoEntryAttributes.NO_SUBSTREAM_INDEX : 0,
+                dataOffset == NO_DATA_OFFSET ? 0 : 1,
                 packedStreams(dataOffset, packedSize, packedCrc32),
                 crc32,
                 method,
@@ -188,12 +200,14 @@ public final class SevenZipEntryMetadata {
         );
     }
 
-    /// Creates parsed 7z entry metadata backed by all physical folder inputs.
+    /// Creates parsed 7z entry metadata backed by physical packed ranges.
     SevenZipEntryMetadata(
             String path,
             boolean directory,
             long size,
             long decodedOffset,
+            int substreamIndex,
+            int substreamCount,
             List<SevenZipPackedStream> packedStreams,
             long crc32,
             SevenZipFolderMethod method,
@@ -208,6 +222,17 @@ public final class SevenZipEntryMetadata {
         if (decodedOffset < 0) {
             throw new IllegalArgumentException("decodedOffset must be non-negative");
         }
+        if (substreamIndex < SevenZipArkivoEntryAttributes.NO_SUBSTREAM_INDEX) {
+            throw new IllegalArgumentException("substreamIndex must be non-negative or NO_SUBSTREAM_INDEX");
+        }
+        if (substreamCount < 0) {
+            throw new IllegalArgumentException("substreamCount must be non-negative");
+        }
+        if (substreamCount == 0
+                ? substreamIndex != SevenZipArkivoEntryAttributes.NO_SUBSTREAM_INDEX
+                : substreamIndex < 0 || substreamIndex >= substreamCount) {
+            throw new IllegalArgumentException("substreamIndex and substreamCount are inconsistent");
+        }
         if (crc32 < UNKNOWN_CRC32 || crc32 > 0xffff_ffffL) {
             throw new IllegalArgumentException("crc32 must be an unsigned 32-bit value or UNKNOWN_CRC32");
         }
@@ -215,7 +240,12 @@ public final class SevenZipEntryMetadata {
         this.directory = directory;
         this.size = size;
         this.decodedOffset = decodedOffset;
+        this.substreamIndex = substreamIndex;
+        this.substreamCount = substreamCount;
         this.packedStreams = List.copyOf(packedStreams);
+        if (this.packedStreams.isEmpty() != (substreamCount == 0)) {
+            throw new IllegalArgumentException("packedStreams and substreamCount are inconsistent");
+        }
         if (this.packedStreams.isEmpty()) {
             this.dataOffset = NO_DATA_OFFSET;
             this.packedSize = 0L;
@@ -298,14 +328,34 @@ public final class SevenZipEntryMetadata {
         return method.firstProperties();
     }
 
+    /// Returns an immutable coder graph snapshot, or null when this entry has no packed stream.
+    @Nullable SevenZipCoderGraph coderGraph() {
+        return packedStreams.isEmpty() ? null : method.coderGraph();
+    }
+
+    /// Returns whether this entry shares its folder with another file-addressable substream.
+    public boolean solid() {
+        return substreamCount > 1;
+    }
+
+    /// Returns this entry's index among file-addressable folder substreams.
+    public int substreamIndex() {
+        return substreamIndex;
+    }
+
+    /// Returns the number of file-addressable substreams in this entry's folder.
+    public int substreamCount() {
+        return substreamCount;
+    }
+
     /// Returns the 7z folder method used to store this entry.
     SevenZipFolderMethod method() {
         return method;
     }
 
-    /// Returns the physical packed streams consumed by this entry's folder.
+    /// Returns the physical packed byte ranges used to read this entry.
     @Unmodifiable
-    List<SevenZipPackedStream> packedStreams() {
+    public List<SevenZipPackedStream> packedStreams() {
         return packedStreams;
     }
 

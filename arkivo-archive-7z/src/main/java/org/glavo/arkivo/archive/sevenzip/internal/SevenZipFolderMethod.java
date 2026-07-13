@@ -3,10 +3,15 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.sevenzip.SevenZipCoder;
+import org.glavo.arkivo.archive.sevenzip.SevenZipCoderGraph;
+import org.glavo.arkivo.archive.sevenzip.SevenZipCoderMethod;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 
 /// Stores the complete coder graph for one 7z folder.
@@ -315,6 +320,32 @@ final class SevenZipFolderMethod {
         return false;
     }
 
+    /// Returns an immutable public snapshot of this coder graph.
+    SevenZipCoderGraph coderGraph() {
+        ArrayList<SevenZipCoder> coders = new ArrayList<>(methodIds.length);
+        for (int coderIndex = 0; coderIndex < methodIds.length; coderIndex++) {
+            coders.add(new SevenZipCoder(
+                    SevenZipCoderMethod.fromMethodId(methodIds[coderIndex]),
+                    properties[coderIndex],
+                    inputStreamCounts[coderIndex],
+                    outputStreamCounts[coderIndex],
+                    firstInputStreamIndexes[coderIndex],
+                    firstOutputStreamIndexes[coderIndex]
+            ));
+        }
+        int[] packedStreamOrdinalByInput = new int[boundOutputByInput.length];
+        Arrays.fill(packedStreamOrdinalByInput, -1);
+        for (int ordinal = 0; ordinal < packedInputStreamIndexes.length; ordinal++) {
+            packedStreamOrdinalByInput[packedInputStreamIndexes[ordinal]] = ordinal;
+        }
+        return new SevenZipCoderGraph(
+                List.copyOf(coders),
+                boundOutputByInput,
+                packedStreamOrdinalByInput,
+                unpackSizes,
+                finalOutputStreamIndex
+        );
+    }
     /// Validates that every coder and packed input contributes to the final output without cycles.
     private void validateConnectedAcyclicGraph() {
         byte[] coderStates = new byte[methodIds.length];

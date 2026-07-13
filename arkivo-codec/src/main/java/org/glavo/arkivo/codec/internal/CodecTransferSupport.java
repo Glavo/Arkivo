@@ -59,9 +59,19 @@ public final class CodecTransferSupport {
         Objects.requireNonNull(options, "options");
 
         try (CompressionDecoder decoder = codec.openDecoder(source, options, ChannelOwnership.RETAIN)) {
-            long outputBytes = transferFromDecoder(decoder, target);
-            return new CodecTransferResult(decoder.inputBytes(), outputBytes);
+            return decompress(decoder, target);
         }
+    }
+
+    /// Transfers every decoded byte without closing the decoder or target channel.
+    public static CodecTransferResult decompress(
+            CompressionDecoder decoder,
+            WritableByteChannel target
+    ) throws IOException {
+        Objects.requireNonNull(decoder, "decoder");
+        Objects.requireNonNull(target, "target");
+        long outputBytes = transferFromDecoder(decoder, target);
+        return new CodecTransferResult(decoder.inputBytes(), outputBytes);
     }
 
     /// Copies all source bytes into an encoder with deterministic progress checks.

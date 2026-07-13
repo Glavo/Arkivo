@@ -37,7 +37,9 @@ public final class BZip2Codec implements CompressionCodec {
             CompressionFeature.DECOMPRESSION,
             CompressionFeature.ONE_SHOT_COMPRESSION,
             CompressionFeature.ONE_SHOT_DECOMPRESSION,
-            CompressionFeature.DIRECT_BYTE_BUFFER
+            CompressionFeature.DIRECT_BYTE_BUFFER,
+            CompressionFeature.MULTI_FRAME,
+            CompressionFeature.CONCATENATED_FRAMES
     ), Set.of(StandardCodecOptions.COMPRESSION_LEVEL), Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE));
 
     /// Creates a BZip2 codec.

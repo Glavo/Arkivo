@@ -6,7 +6,9 @@ package org.glavo.arkivo.codec.spi;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.internal.StreamChannelAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.FilterInputStream;
 import java.io.FilterOutputStream;
@@ -14,7 +16,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
@@ -37,13 +38,22 @@ public final class StreamCodecAdapters {
         Objects.requireNonNull(ownership, "ownership");
         Objects.requireNonNull(factory, "factory");
 
-        OutputStream channelOutput = Channels.newOutputStream(target);
-        OutputStream ownedOutput = ownership == ChannelOwnership.CLOSE
-                ? channelOutput
-                : new RetainedOutputStream(channelOutput);
-        CountingOutputStream countingOutput = new CountingOutputStream(ownedOutput);
-        OutputStream codecOutput = factory.open(countingOutput);
-        return new StreamCompressionEncoder(codecOutput, countingOutput);
+        OwnedChannelCloser targetCloser = new OwnedChannelCloser(target, ownership);
+        OutputStream channelOutput = StreamChannelAdapters.outputStream(target);
+        CountingOutputStream countingOutput = new CountingOutputStream(
+                new RetainedOutputStream(channelOutput)
+        );
+        try {
+            OutputStream codecOutput = factory.open(countingOutput);
+            return new StreamCompressionEncoder(
+                    codecOutput,
+                    countingOutput,
+                    targetCloser
+            );
+        } catch (IOException | RuntimeException | Error failure) {
+            targetCloser.closeAfter(failure);
+            throw failure;
+        }
     }
 
     /// Opens a decoder around a stream-based codec implementation.
@@ -56,13 +66,22 @@ public final class StreamCodecAdapters {
         Objects.requireNonNull(ownership, "ownership");
         Objects.requireNonNull(factory, "factory");
 
-        InputStream channelInput = Channels.newInputStream(source);
-        InputStream ownedInput = ownership == ChannelOwnership.CLOSE
-                ? channelInput
-                : new RetainedInputStream(channelInput);
-        CountingInputStream countingInput = new CountingInputStream(ownedInput);
-        InputStream codecInput = factory.open(countingInput);
-        return new StreamCompressionDecoder(codecInput, countingInput);
+        OwnedChannelCloser sourceCloser = new OwnedChannelCloser(source, ownership);
+        InputStream channelInput = StreamChannelAdapters.inputStream(source);
+        CountingInputStream countingInput = new CountingInputStream(
+                new RetainedInputStream(channelInput)
+        );
+        try {
+            InputStream codecInput = factory.open(countingInput);
+            return new StreamCompressionDecoder(
+                    codecInput,
+                    countingInput,
+                    sourceCloser
+            );
+        } catch (IOException | RuntimeException | Error failure) {
+            sourceCloser.closeAfter(failure);
+            throw failure;
+        }
     }
 
     /// Creates a stream encoder over a channel-backed output stream.
@@ -90,6 +109,9 @@ public final class StreamCodecAdapters {
         /// The compressed-output counter.
         private final CountingOutputStream counter;
 
+        /// Tracks closure of the owned compressed-data target.
+        private final OwnedChannelCloser targetCloser;
+
         /// The number of accepted uncompressed bytes.
         private long inputBytes;
 
@@ -97,9 +119,14 @@ public final class StreamCodecAdapters {
         private boolean open = true;
 
         /// Creates an encoder context.
-        private StreamCompressionEncoder(OutputStream output, CountingOutputStream counter) {
+        private StreamCompressionEncoder(
+                OutputStream output,
+                CountingOutputStream counter,
+                OwnedChannelCloser targetCloser
+        ) {
             this.output = Objects.requireNonNull(output, "output");
             this.counter = Objects.requireNonNull(counter, "counter");
+            this.targetCloser = Objects.requireNonNull(targetCloser, "targetCloser");
         }
 
         /// Writes uncompressed bytes into the codec stream.
@@ -144,11 +171,16 @@ public final class StreamCodecAdapters {
         /// Finishes the encoded frame and releases codec resources.
         @Override
         public void finish() throws IOException {
-            if (!open) {
-                return;
+            @Nullable Throwable failure = null;
+            if (open) {
+                open = false;
+                try {
+                    output.close();
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = exception;
+                }
             }
-            open = false;
-            output.close();
+            targetCloser.closeAfter(failure);
         }
 
         /// Returns the accepted uncompressed byte count.
@@ -192,19 +224,33 @@ public final class StreamCodecAdapters {
         /// The compressed-input counter.
         private final CountingInputStream counter;
 
+        /// Tracks closure of the owned compressed-data source.
+        private final OwnedChannelCloser sourceCloser;
+
         /// The number of decoded bytes returned to callers.
         private long outputBytes;
 
+        /// Whether this decoder remains open.
+        private boolean open = true;
+
         /// Creates a decoder context.
-        private StreamCompressionDecoder(InputStream input, CountingInputStream counter) {
-            this.channel = Channels.newChannel(Objects.requireNonNull(input, "input"));
+        private StreamCompressionDecoder(
+                InputStream input,
+                CountingInputStream counter,
+                OwnedChannelCloser sourceCloser
+        ) {
+            this.channel = StreamChannelAdapters.readableChannel(Objects.requireNonNull(input, "input"));
             this.counter = Objects.requireNonNull(counter, "counter");
+            this.sourceCloser = Objects.requireNonNull(sourceCloser, "sourceCloser");
         }
 
         /// Reads decoded bytes from the codec stream.
         @Override
         public int read(ByteBuffer target) throws IOException {
             Objects.requireNonNull(target, "target");
+            if (!open) {
+                throw new ClosedChannelException();
+            }
             int read = channel.read(target);
             if (read > 0) {
                 outputBytes += read;
@@ -227,13 +273,22 @@ public final class StreamCodecAdapters {
         /// Returns whether the decoder remains open.
         @Override
         public boolean isOpen() {
-            return channel.isOpen();
+            return open;
         }
 
         /// Closes the decoder and releases codec resources.
         @Override
         public void close() throws IOException {
-            channel.close();
+            @Nullable Throwable failure = null;
+            if (open) {
+                open = false;
+                try {
+                    channel.close();
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = exception;
+                }
+            }
+            sourceCloser.closeAfter(failure);
         }
     }
 

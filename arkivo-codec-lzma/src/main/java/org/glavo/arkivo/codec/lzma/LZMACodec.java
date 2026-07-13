@@ -17,7 +17,6 @@ import org.glavo.arkivo.codec.lzma.internal.LzmaChannelDecoder;
 import org.glavo.arkivo.codec.lzma.internal.LzmaChannelEncoder;
 import org.glavo.arkivo.codec.lzma.internal.LzmaProperties;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.channels.ReadableByteChannel;
@@ -30,10 +29,10 @@ public final class LZMACodec implements CompressionCodec {
     /// The stable LZMA codec name.
     public static final String NAME = "lzma";
 
-    /// The supported LZMA operations.
     /// Selects the LZMA dictionary size in bytes.
-    public static final CodecOption<Long> DICTIONARY_SIZE =
-            CodecOption.of("lzma.dictionarySize", Long.class);
+    ///
+    /// This alias identifies the same option as `LZMAOptions.DICTIONARY_SIZE`.
+    public static final CodecOption<Long> DICTIONARY_SIZE = LZMAOptions.DICTIONARY_SIZE;
 
     /// The default LZMA dictionary size used by this codec.
     public static final long DEFAULT_DICTIONARY_SIZE = 1L << 20;
@@ -45,7 +44,13 @@ public final class LZMACodec implements CompressionCodec {
             CompressionFeature.ONE_SHOT_COMPRESSION,
             CompressionFeature.ONE_SHOT_DECOMPRESSION,
             CompressionFeature.DIRECT_BYTE_BUFFER
-    ), Set.of(DICTIONARY_SIZE), Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE, StandardCodecOptions.MAX_WINDOW_SIZE));
+    ), Set.of(
+            LZMAOptions.DICTIONARY_SIZE,
+            LZMAOptions.LITERAL_CONTEXT_BITS,
+            LZMAOptions.LITERAL_POSITION_BITS,
+            LZMAOptions.POSITION_BITS,
+            StandardCodecOptions.PLEDGED_SOURCE_SIZE
+    ), Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE, StandardCodecOptions.MAX_WINDOW_SIZE));
 
     /// Creates an LZMA codec.
     public LZMACodec() {
@@ -71,12 +76,13 @@ public final class LZMACodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.compressionOptions(), "LZMA compression");
-        @Nullable Long requested = options.get(DICTIONARY_SIZE);
-        long dictionarySize = requested != null ? requested : DEFAULT_DICTIONARY_SIZE;
-        if (dictionarySize < 0L || dictionarySize > LzmaProperties.MAXIMUM_DICTIONARY_SIZE) {
-            throw new IllegalArgumentException("Unsupported LZMA dictionary size: " + dictionarySize);
-        }
-        return new LzmaChannelEncoder(target, ownership, (int) dictionarySize);
+        LzmaProperties properties = LzmaProperties.fromOptions(
+                options,
+                LZMAOptions.DICTIONARY_SIZE,
+                (int) DEFAULT_DICTIONARY_SIZE
+        );
+        long pledgedSourceSize = StandardCodecOptionSupport.pledgedSourceSize(options);
+        return new LzmaChannelEncoder(target, ownership, properties, pledgedSourceSize);
     }
 
     /// Opens a configured LZMA decoder over the source channel.

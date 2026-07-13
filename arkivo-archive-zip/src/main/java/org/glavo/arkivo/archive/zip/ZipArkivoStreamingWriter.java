@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.zip;
 
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingWriterImpl;
@@ -49,8 +50,7 @@ public abstract sealed class ZipArkivoStreamingWriter extends ArkivoStreamingWri
     public static ZipArkivoStreamingWriter open(OutputStream output, Map<String, ?> environment) {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(environment, "environment");
-        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
-        return ZipArkivoStreamingWriterImpl.open(output, config);
+        return open(StreamChannelAdapters.writableChannel(output), environment);
     }
 
     /// Opens a streaming ZIP writer over a writable channel.

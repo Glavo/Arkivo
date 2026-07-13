@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.sevenzip;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemConfig;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoStreamingWriterImpl;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -56,10 +57,7 @@ public abstract sealed class SevenZipArkivoStreamingWriter extends ArkivoStreami
     ) throws IOException {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(environment, "environment");
-        return SevenZipArkivoStreamingWriterImpl.open(
-                output,
-                directOutputConfig(environment)
-        );
+        return open(StreamChannelAdapters.writableChannel(output), environment);
     }
 
     /// Opens a streaming 7z writer over an owned writable channel.

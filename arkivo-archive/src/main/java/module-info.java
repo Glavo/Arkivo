@@ -7,6 +7,7 @@ module org.glavo.arkivo.archive {
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.archive;
+    exports org.glavo.arkivo.archive.spi;
     exports org.glavo.arkivo.archive.internal to
             org.glavo.arkivo.archive.ar,
             org.glavo.arkivo.archive.rar,
@@ -15,4 +16,5 @@ module org.glavo.arkivo.archive {
             org.glavo.arkivo.archive.zip;
 
     uses org.glavo.arkivo.archive.ArkivoFormat;
+    uses org.glavo.arkivo.archive.spi.ArkivoStreamingSourceProvider;
 }

@@ -21,6 +21,7 @@ import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemConfig;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemImpl;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipHeaderReader;
+import org.glavo.arkivo.archive.sevenzip.internal.SevenZipHeaderParser;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipSignatureHeader;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -94,6 +95,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Tests basic 7z Arkivo file system behavior.
 @NotNullByDefault
@@ -546,7 +548,11 @@ public final class SevenZipArkivoFileSystemTest {
                 sevenZipView.setTimes(modifiedTime, accessTime, creationTime);
                 sevenZipView.setWindowsAttributes(0x20);
                 sevenZipView.setCompression(SevenZipCompression.lzma2(SevenZipCompression.MIN_DICTIONARY_SIZE));
-                sevenZipView.setFilter(SevenZipFilter.delta());
+                Files.setAttribute(
+                        keep,
+                        "7z:filters",
+                        SevenZipFilterChain.of(SevenZipFilter.bcjX86(0x1000), SevenZipFilter.delta())
+                );
                 Objects.requireNonNull(Files.getFileAttributeView(keep, PosixFileAttributeView.class))
                         .setPermissions(permissions);
 
@@ -1247,6 +1253,16 @@ public final class SevenZipArkivoFileSystemTest {
                 assertEquals("meta/payload.bin", pendingAttributes.path());
                 assertEquals(lastModifiedTime, pendingAttributes.lastModifiedTime());
                 assertEquals(0100640, pendingAttributes.unixMode());
+                assertNull(pendingAttributes.coderGraph());
+                assertEquals(false, pendingAttributes.solid());
+                assertEquals(SevenZipArkivoEntryAttributes.NO_SUBSTREAM_INDEX, pendingAttributes.substreamIndex());
+                assertEquals(0, pendingAttributes.substreamCount());
+                assertEquals(SevenZipArkivoEntryAttributes.NO_DATA_OFFSET, pendingAttributes.dataOffset());
+                assertEquals(0L, pendingAttributes.decodedOffset());
+                assertEquals(0L, pendingAttributes.packedSize());
+                assertEquals(SevenZipArkivoEntryAttributes.UNKNOWN_CRC32, pendingAttributes.packedCrc32());
+                assertEquals(List.of(), pendingAttributes.packedStreams());
+                assertEquals(SevenZipArkivoEntryAttributes.UNKNOWN_CRC32, pendingAttributes.crc32());
                 try (OutputStream output = writer.openOutputStream()) {
                     output.write(content);
                 }
@@ -1273,12 +1289,22 @@ public final class SevenZipArkivoFileSystemTest {
                 assertEquals(lastAccessTime, fileAttributes.lastAccessTime());
                 assertEquals(creationTime, fileAttributes.creationTime());
                 assertEquals(0100640, fileAttributes.unixMode());
-                assertEquals(0x20, fileAttributes.windowsAttributes() & 0xffff);
+                assertEquals(0x20, fileAttributes.windowsAttributes() & 0xffff);                assertEquals(
+                        List.of(SevenZipCoderMethod.COPY),
+                        Objects.requireNonNull(fileAttributes.coderGraph())
+                                .coders()
+                                .stream()
+                                .map(SevenZipCoder::method)
+                                .toList()
+                );
                 assertEquals(filePermissions, Files.readAttributes(file, PosixFileAttributes.class).permissions());
                 assertEquals(true, Files.readAttributes(link, BasicFileAttributes.class).isSymbolicLink());
                 assertEquals(linkPermissions, Files.readAttributes(link, PosixFileAttributes.class).permissions());
                 assertEquals(fileSystem.getPath("payload.bin"), Files.readSymbolicLink(link));
-                assertArrayEquals(new byte[0], Files.readAllBytes(fileSystem.getPath("/empty.txt")));
+                Path empty = fileSystem.getPath("/empty.txt");
+                assertArrayEquals(new byte[0], Files.readAllBytes(empty));
+                assertNull(Files.readAttributes(empty, SevenZipArkivoEntryAttributes.class).coderGraph());
+                assertNull(Files.readAttributes(directory, SevenZipArkivoEntryAttributes.class).coderGraph());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -1902,6 +1928,65 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies modern ARM64 and RISC-V filters use the official method IDs and round-trip through Arkivo.
+    @Test
+    public void createsArchivesWithModernBcjFilters() throws IOException {
+        List<SevenZipFilter> filters = List.of(
+                SevenZipFilter.bcjArm64(0x1000),
+                SevenZipFilter.bcjRiscV(0x2000)
+        );
+        List<byte[]> methodIds = List.of(
+                new byte[]{0x0a},
+                new byte[]{0x0b}
+        );
+        List<byte[]> patterns = List.of(
+                new byte[]{0x00, 0x00, 0x00, (byte) 0x94},
+                new byte[]{(byte) 0xef, 0x00, 0x00, 0x00, 0x13, 0x00, 0x00, 0x00}
+        );
+
+        for (int index = 0; index < filters.size(); index++) {
+            SevenZipFilter filter = filters.get(index);
+            byte[] pattern = patterns.get(index);
+            byte[] content = new byte[16 * 1024];
+            for (int offset = 0; offset < content.length; offset += pattern.length) {
+                System.arraycopy(pattern, 0, content, offset, pattern.length);
+            }
+
+            Path archivePath = createTemporaryArchivePath("modern-" + filter.method().optionName() + "-");
+            try {
+                try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
+                        archivePath,
+                        Map.of(
+                                SevenZipArkivoFileSystem.COMPRESSION.key(),
+                                SevenZipCompression.lzma2(64 * 1024),
+                                SevenZipArkivoFileSystem.FILTER.key(),
+                                filter
+                        )
+                )) {
+                    writeStreamingContent(writer, content);
+                }
+
+                try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                    assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/content.bin")));
+                }
+
+                byte[] archive = Files.readAllBytes(archivePath);
+                ByteBuffer signature = ByteBuffer.wrap(archive).order(ByteOrder.LITTLE_ENDIAN);
+                long nextHeaderOffset = signature.getLong(12);
+                long nextHeaderSize = signature.getLong(20);
+                int headerStart = Math.toIntExact(SevenZipSignatureHeader.SIZE + nextHeaderOffset);
+                int headerEnd = Math.toIntExact(headerStart + nextHeaderSize);
+                byte[] nextHeader = Arrays.copyOfRange(archive, headerStart, headerEnd);
+                assertTrue(
+                        SevenZipHeaderParser.parseEntries(nextHeader).get(0).hasMethod(methodIds.get(index)),
+                        filter.method().optionName()
+                );
+            } finally {
+                deleteTemporaryArchive(archivePath);
+            }
+        }
+    }
+
     /// Verifies an output-stream writer applies its configured default filter and compression.
     @Test
     public void createsFilteredCompressedArchiveInOutputStream() throws IOException {
@@ -1997,9 +2082,9 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
-    /// Verifies streaming entries can inherit, override, or clear the writer's default filter.
+    /// Verifies streaming entries can inherit, override, or clear the writer's default filter chain.
     @Test
-    public void overridesAndClearsFilterPerStreamingEntry() throws IOException {
+    public void overridesAndClearsFilterChainPerStreamingEntry() throws IOException {
         byte[] content = "entry filter override ".repeat(128).getBytes(StandardCharsets.UTF_8);
         TrackingOutputStream archiveOutput = new TrackingOutputStream();
         WritableByteChannel archiveChannel = Channels.newChannel(archiveOutput);
@@ -2009,8 +2094,11 @@ public final class SevenZipArkivoFileSystemTest {
                 Map.of(
                         SevenZipArkivoFileSystem.COMPRESSION.key(),
                         SevenZipCompression.lzma2(64 * 1024),
-                        SevenZipArkivoFileSystem.FILTER.key(),
-                        SevenZipFilter.delta(3)
+                        SevenZipArkivoFileSystem.FILTERS.key(),
+                        SevenZipFilterChain.of(
+                                SevenZipFilter.delta(3),
+                                SevenZipFilter.bcjX86(0x1000)
+                        )
                 )
         )) {
             writer.beginFile("inherited.bin");
@@ -2026,7 +2114,10 @@ public final class SevenZipArkivoFileSystemTest {
 
             writer.beginFile("overridden.bin");
             Objects.requireNonNull(writer.attributeView(SevenZipArkivoEntryAttributeView.class))
-                    .setFilter(SevenZipFilter.bcjX86());
+                    .setFilters(SevenZipFilterChain.of(
+                            SevenZipFilter.bcjX86(0x2000),
+                            SevenZipFilter.delta(5)
+                    ));
             try (OutputStream output = writer.openOutputStream()) {
                 output.write(content);
             }
@@ -2048,12 +2139,63 @@ public final class SevenZipArkivoFileSystemTest {
             assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/cleared.bin")));
             assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/overridden.bin")));
             assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/compressed.bin")));
+            SevenZipCoderGraph inheritedGraph = Objects.requireNonNull(
+                    Files.readAttributes(
+                            fileSystem.getPath("/inherited.bin"),
+                            SevenZipArkivoEntryAttributes.class
+                    ).coderGraph()
+            );
+            assertEquals(
+                    List.of(
+                            SevenZipCoderMethod.LZMA2,
+                            SevenZipCoderMethod.BCJ_X86,
+                            SevenZipCoderMethod.DELTA
+                    ),
+                    inheritedGraph.coders().stream().map(SevenZipCoder::method).toList()
+            );
+            SevenZipCoderGraph namedGraph = (SevenZipCoderGraph) Files.readAttributes(
+                    fileSystem.getPath("/inherited.bin"),
+                    "7z:coderGraph"
+            ).get("coderGraph");
+            assertEquals(
+                    inheritedGraph.coders(),
+                    Objects.requireNonNull(namedGraph).coders()
+            );
+            assertEquals(
+                    List.of(SevenZipCoderMethod.LZMA2),
+                    Objects.requireNonNull(Files.readAttributes(
+                            fileSystem.getPath("/cleared.bin"),
+                            SevenZipArkivoEntryAttributes.class
+                    ).coderGraph()).coders().stream().map(SevenZipCoder::method).toList()
+            );
+            assertEquals(
+                    List.of(
+                            SevenZipCoderMethod.LZMA2,
+                            SevenZipCoderMethod.DELTA,
+                            SevenZipCoderMethod.BCJ_X86
+                    ),
+                    Objects.requireNonNull(Files.readAttributes(
+                            fileSystem.getPath("/overridden.bin"),
+                            SevenZipArkivoEntryAttributes.class
+                    ).coderGraph()).coders().stream().map(SevenZipCoder::method).toList()
+            );
+            assertEquals(
+                    List.of(
+                            SevenZipCoderMethod.DEFLATE,
+                            SevenZipCoderMethod.BCJ_X86,
+                            SevenZipCoderMethod.DELTA
+                    ),
+                    Objects.requireNonNull(Files.readAttributes(
+                            fileSystem.getPath("/compressed.bin"),
+                            SevenZipArkivoEntryAttributes.class
+                    ).coderGraph()).coders().stream().map(SevenZipCoder::method).toList()
+            );
         }
         try (SevenZFile sevenZFile = SevenZFile.builder()
                 .setSeekableByteChannel(new MemorySeekableByteChannel(archive, false))
                 .get()) {
             assertEquals(
-                    List.of(SevenZMethod.DELTA_FILTER, SevenZMethod.LZMA2),
+                    List.of(SevenZMethod.DELTA_FILTER, SevenZMethod.BCJ_X86_FILTER, SevenZMethod.LZMA2),
                     commonsContentMethods(Objects.requireNonNull(sevenZFile.getNextEntry()))
             );
             assertEquals(
@@ -2061,11 +2203,11 @@ public final class SevenZipArkivoFileSystemTest {
                     commonsContentMethods(Objects.requireNonNull(sevenZFile.getNextEntry()))
             );
             assertEquals(
-                    List.of(SevenZMethod.BCJ_X86_FILTER, SevenZMethod.LZMA2),
+                    List.of(SevenZMethod.BCJ_X86_FILTER, SevenZMethod.DELTA_FILTER, SevenZMethod.LZMA2),
                     commonsContentMethods(Objects.requireNonNull(sevenZFile.getNextEntry()))
             );
             assertEquals(
-                    List.of(SevenZMethod.DELTA_FILTER, SevenZMethod.DEFLATE),
+                    List.of(SevenZMethod.DELTA_FILTER, SevenZMethod.BCJ_X86_FILTER, SevenZMethod.DEFLATE),
                     commonsContentMethods(Objects.requireNonNull(sevenZFile.getNextEntry()))
             );
         }
@@ -2089,8 +2231,11 @@ public final class SevenZipArkivoFileSystemTest {
                     Map.of(
                             SevenZipArkivoFileSystem.COMPRESSION.key(),
                             SevenZipCompression.lzma2(64 * 1024),
-                            SevenZipArkivoFileSystem.FILTER.key(),
-                            SevenZipFilter.bcjArm(),
+                            SevenZipArkivoFileSystem.FILTERS.key(),
+                            SevenZipFilterChain.of(
+                                    SevenZipFilter.bcjArm(),
+                                    SevenZipFilter.delta(4)
+                            ),
                             SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                             ArkivoPasswordProvider.fixed(password)
                     )
@@ -2101,6 +2246,29 @@ public final class SevenZipArkivoFileSystemTest {
             byte[][] volumes = target.committedVolumes();
             assertEquals(true, volumes.length > 1);
             assertEncryptedContent(volumes, password, content);
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                    new SplitVolumeSource(volumes),
+                    Map.of(
+                            SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                            ArkivoPasswordProvider.fixed(password)
+                    )
+            )) {
+                SevenZipCoderGraph graph = Objects.requireNonNull(
+                        Files.readAttributes(
+                                fileSystem.getPath("/content.bin"),
+                                SevenZipArkivoEntryAttributes.class
+                        ).coderGraph()
+                );
+                assertEquals(
+                        List.of(
+                                SevenZipCoderMethod.AES,
+                                SevenZipCoderMethod.LZMA2,
+                                SevenZipCoderMethod.DELTA,
+                                SevenZipCoderMethod.BCJ_ARM
+                        ),
+                        graph.coders().stream().map(SevenZipCoder::method).toList()
+                );
+            }
 
             try (SevenZFile sevenZFile = SevenZFile.builder()
                     .setSeekableByteChannel(new MemorySeekableByteChannel(concatenateAll(volumes), false))
@@ -2516,6 +2684,40 @@ public final class SevenZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies explicit parser metadata identifies a zero-length file as part of a solid Copy folder.
+    @Test
+    public void zeroLengthCopySubstreamRemainsSolid() throws IOException {
+        byte[] content = "only first".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("zero-copy-substream-");
+        Files.write(archivePath, archiveWithCopySubStreams(content, content.length));
+
+        try {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath)) {
+                SevenZipArkivoEntryAttributes first =
+                        Files.readAttributes(fileSystem.getPath("/one.txt"), SevenZipArkivoEntryAttributes.class);
+                SevenZipArkivoEntryAttributes second =
+                        Files.readAttributes(fileSystem.getPath("/two.txt"), SevenZipArkivoEntryAttributes.class);
+
+                assertEquals(true, first.solid());
+                assertEquals(true, second.solid());
+                assertEquals(0, first.substreamIndex());
+                assertEquals(1, second.substreamIndex());
+                assertEquals(2, first.substreamCount());
+                assertEquals(2, second.substreamCount());
+                assertEquals(0L, first.decodedOffset());
+                assertEquals(content.length, second.decodedOffset());
+                assertEquals(content.length, first.packedSize());
+                assertEquals(0L, second.packedSize());
+                assertEquals(first.dataOffset() + content.length, second.dataOffset());
+                assertEquals(content.length, first.packedStreams().get(0).size());
+                assertEquals(0L, second.packedStreams().get(0).size());
+                assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/one.txt")));
+                assertArrayEquals(new byte[0], Files.readAllBytes(fileSystem.getPath("/two.txt")));
+            }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
     /// Verifies that a declared substream CRC-32 mismatch is rejected while reading entry data.
     @Test
     public void rejectsMismatchedSubStreamCrc() throws IOException {
@@ -2993,6 +3195,10 @@ public final class SevenZipArkivoFileSystemTest {
                         ReadOnlyFileSystemException.class,
                         () -> sevenZipView.setFilter(SevenZipFilter.bcjX86())
                 );
+                assertThrows(
+                        ReadOnlyFileSystemException.class,
+                        () -> sevenZipView.setFilters(SevenZipFilterChain.of(SevenZipFilter.delta()))
+                );
                 assertThrows(ReadOnlyFileSystemException.class, sevenZipView::clearFilter);
                 assertEquals(
                         true,
@@ -3273,6 +3479,53 @@ public final class SevenZipArkivoFileSystemTest {
                 BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
 
                 assertEquals(content.length, attributes.size());
+                SevenZipArkivoEntryAttributes sevenZipAttributes =
+                        Files.readAttributes(file, SevenZipArkivoEntryAttributes.class);
+                SevenZipCoderGraph graph = Objects.requireNonNull(sevenZipAttributes.coderGraph());
+                assertEquals(
+                        List.of(
+                                SevenZipCoderMethod.COPY,
+                                SevenZipCoderMethod.COPY,
+                                SevenZipCoderMethod.COPY,
+                                SevenZipCoderMethod.COPY,
+                                SevenZipCoderMethod.BCJ2
+                        ),
+                        graph.coders().stream().map(SevenZipCoder::method).toList()
+                );
+                assertEquals(8, graph.inputStreamCount());
+                assertEquals(5, graph.outputStreamCount());
+                assertEquals(4, graph.packedStreamCount());
+                assertEquals(4, graph.finalOutputStreamIndex());
+                assertEquals(content.length, graph.finalUnpackSize());
+                assertEquals(false, sevenZipAttributes.solid());
+                assertEquals(0, sevenZipAttributes.substreamIndex());
+                assertEquals(1, sevenZipAttributes.substreamCount());
+                assertEquals(0L, sevenZipAttributes.decodedOffset());
+                assertEquals(4, sevenZipAttributes.packedStreams().size());
+                assertEquals(
+                        sevenZipAttributes.packedSize(),
+                        sevenZipAttributes.packedStreams().stream().mapToLong(SevenZipPackedStream::size).sum()
+                );
+                assertEquals(
+                        sevenZipAttributes.dataOffset(),
+                        sevenZipAttributes.packedStreams().get(0).offset()
+                );
+                assertEquals(
+                        SevenZipArkivoEntryAttributes.UNKNOWN_CRC32,
+                        sevenZipAttributes.packedCrc32()
+                );
+                for (int index = 1; index < sevenZipAttributes.packedStreams().size(); index++) {
+                    SevenZipPackedStream previous = sevenZipAttributes.packedStreams().get(index - 1);
+                    SevenZipPackedStream current = sevenZipAttributes.packedStreams().get(index);
+                    assertEquals(previous.offset() + previous.size(), current.offset());
+                }
+                int[] packedOrdinals = {1, 3, 2, 0};
+                for (int inputIndex = 0; inputIndex < 4; inputIndex++) {
+                    assertEquals(-1, graph.boundOutputStreamIndex(inputIndex));
+                    assertEquals(packedOrdinals[inputIndex], graph.packedStreamOrdinal(inputIndex));
+                    assertEquals(inputIndex, graph.boundOutputStreamIndex(inputIndex + 4));
+                    assertEquals(-1, graph.packedStreamOrdinal(inputIndex + 4));
+                }
                 assertArrayEquals(content, Files.readAllBytes(file));
                 try (SeekableByteChannel channel = Files.newByteChannel(file)) {
                     ByteBuffer buffer = ByteBuffer.allocate(content.length);

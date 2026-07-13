@@ -52,6 +52,26 @@ public final class TarIndexedStorageTest {
         }
     }
 
+    /// Verifies the common environment option configures streaming-writer body storage.
+    @Test
+    public void streamingWriterUsesEnvironmentBodyStorage() throws IOException {
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(
+                archive,
+                Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage)
+        )) {
+            writer.beginFile("file.txt");
+            try (OutputStream output = writer.openOutputStream()) {
+                output.write("environment-storage".getBytes(StandardCharsets.UTF_8));
+            }
+        }
+
+        assertEquals(1, storage.createdContentCount());
+        assertEquals(1, storage.contentCloseCount());
+        assertEquals(1, storage.closeCount());
+    }
     /// Verifies that a regular file and its hard link share one owned stored body.
     @Test
     public void hardLinksShareOneStoredBody() throws IOException {

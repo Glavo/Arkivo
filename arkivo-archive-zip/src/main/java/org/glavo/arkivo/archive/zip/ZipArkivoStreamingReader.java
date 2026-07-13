@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.zip;
 
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -30,8 +31,7 @@ public abstract sealed class ZipArkivoStreamingReader extends ArkivoStreamingRea
     public static ZipArkivoStreamingReader open(InputStream source, Map<String, ?> environment) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(environment, "environment");
-        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
-        return new ZipArkivoStreamingReaderImpl(source, config);
+        return open(StreamChannelAdapters.readableChannel(source), environment);
     }
 
     /// Opens a streaming ZIP reader from a readable channel.

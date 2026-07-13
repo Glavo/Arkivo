@@ -92,6 +92,37 @@ public final class ArkivoFileSystemEditStrategyTest {
         }
     }
 
+    /// Verifies that fixed targets support archive sources without a source path.
+    @Test
+    public void fixedCommitTargetWithoutSourcePath() throws IOException {
+        Path directory = Files.createTempDirectory(Path.of("build", "tmp"), "arkivo-fs-channel-target-");
+        Path targetPath = directory.resolve("target.ar");
+        byte[] content = "ar".getBytes(StandardCharsets.UTF_8);
+
+        try {
+            try (ArkivoCommitOutput output = ArkivoCommitTarget.writeTo(targetPath).openOutput(null)) {
+                try (SeekableByteChannel channel = output.openChannel(Set.of(
+                        StandardOpenOption.CREATE,
+                        StandardOpenOption.TRUNCATE_EXISTING,
+                        StandardOpenOption.WRITE
+                ))) {
+                    assertEquals(content.length, channel.write(ByteBuffer.wrap(content)));
+                }
+                output.commit();
+            }
+
+            assertArrayEquals(content, Files.readAllBytes(targetPath));
+            assertThrows(IllegalArgumentException.class, () -> ArkivoCommitTarget.replaceOriginal().openOutput(null));
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> ArkivoCommitTarget.atomicReplace(directory).openOutput(null)
+            );
+        } finally {
+            Files.deleteIfExists(targetPath);
+            Files.deleteIfExists(directory);
+        }
+    }
+
     /// Verifies that temporary stored content can retry cleanup after a failed delete.
     @Test
     public void temporaryStoredContentCloseCanRetryCleanup() throws Exception {

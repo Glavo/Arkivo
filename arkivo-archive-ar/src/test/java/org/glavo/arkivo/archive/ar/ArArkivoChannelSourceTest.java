@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.ar;
 
+import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.jetbrains.annotations.Nullable;
@@ -24,6 +25,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -57,9 +59,9 @@ final class ArArkivoChannelSourceTest {
         }
     }
 
-    /// Verifies that write options are rejected before a source channel is opened and the source is cleaned up.
+    /// Verifies that channel-source updates require an explicit publication target before opening a source channel.
     @Test
-    void rejectsWriteOptionsAndClosesSource() throws IOException {
+    void updateRequiresCommitTargetAndClosesSource() throws IOException {
         Path archivePath = Files.createTempFile("arkivo-ar-source-options-", ".a");
         TrackingSource source = new TrackingSource(archivePath, false);
         try {
@@ -69,11 +71,154 @@ final class ArArkivoChannelSourceTest {
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
             );
 
-            assertThrows(UnsupportedOperationException.class, () -> ArArkivoFileSystem.open(source, environment));
+            assertThrows(IllegalArgumentException.class, () -> ArArkivoFileSystem.open(source, environment));
             assertEquals(0, source.openCount());
             assertEquals(1, source.closeCount());
         } finally {
             Files.deleteIfExists(archivePath);
+        }
+    }
+
+    /// Verifies complete-rewrite updates from a repeatable source into a derived archive.
+    @Test
+    void updatesChannelSourceIntoDerivedArchive() throws IOException {
+        Path sourcePath = Files.createTempFile("arkivo-ar-source-update-", ".a");
+        Path targetPath = Files.createTempFile("arkivo-ar-source-derived-", ".a");
+        Files.delete(targetPath);
+        byte[] original = archiveBytes();
+        TrackingSource source = new TrackingSource(sourcePath, false);
+        try {
+            Files.write(sourcePath, original);
+            ArkivoCommitTarget target = (@Nullable Path sourceArchivePath) -> {
+                assertNull(sourceArchivePath);
+                return ArkivoCommitTarget.writeTo(targetPath).openOutput(sourceArchivePath);
+            };
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.COMMIT_TARGET.key(),
+                    target
+            );
+
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(source, environment)) {
+                assertFalse(fileSystem.isReadOnly());
+                Files.writeString(fileSystem.getPath("/value.txt"), "updated", StandardCharsets.UTF_8);
+                Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
+            }
+
+            assertArrayEquals(original, Files.readAllBytes(sourcePath));
+            assertEquals(1, source.openCount());
+            assertEquals(1, source.closeCount());
+            assertTrue(source.closed());
+            try (ArArkivoFileSystem derived = ArArkivoFileSystem.open(targetPath)) {
+                assertEquals("updated", Files.readString(derived.getPath("/value.txt"), StandardCharsets.UTF_8));
+                assertEquals("added", Files.readString(derived.getPath("/added.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            Files.deleteIfExists(targetPath);
+            Files.deleteIfExists(sourcePath);
+        }
+    }
+
+    /// Verifies complete-rewrite updates from one owned seekable channel.
+    @Test
+    void updatesOwnedSeekableChannelIntoDerivedArchive() throws IOException {
+        Path sourcePath = Files.createTempFile("arkivo-ar-channel-update-", ".a");
+        Path targetPath = Files.createTempFile("arkivo-ar-channel-derived-", ".a");
+        Files.delete(targetPath);
+        byte[] original = archiveBytes();
+        SeekableByteChannel channel = null;
+        try {
+            Files.write(sourcePath, original);
+            channel = Files.newByteChannel(sourcePath, StandardOpenOption.READ);
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.COMMIT_TARGET.key(),
+                    ArkivoCommitTarget.writeTo(targetPath)
+            );
+
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(channel, environment)) {
+                Files.delete(fileSystem.getPath("/value.txt"));
+                Files.writeString(fileSystem.getPath("/replacement.txt"), "replacement", StandardCharsets.UTF_8);
+            }
+
+            assertFalse(channel.isOpen());
+            assertArrayEquals(original, Files.readAllBytes(sourcePath));
+            try (ArArkivoFileSystem derived = ArArkivoFileSystem.open(targetPath)) {
+                assertFalse(Files.exists(derived.getPath("/value.txt")));
+                assertEquals(
+                        "replacement",
+                        Files.readString(derived.getPath("/replacement.txt"), StandardCharsets.UTF_8)
+                );
+            }
+        } finally {
+            if (channel != null) {
+                channel.close();
+            }
+            Files.deleteIfExists(targetPath);
+            Files.deleteIfExists(sourcePath);
+        }
+    }
+
+    /// Verifies cleanup and source preservation when channel-source publication setup fails.
+    @Test
+    void failedChannelSourceCommitPreservesSourceAndClosesOwnership() throws IOException {
+        Path sourcePath = Files.createTempFile("arkivo-ar-source-failed-commit-", ".a");
+        byte[] original = archiveBytes();
+        TrackingSource source = new TrackingSource(sourcePath, false);
+        try {
+            Files.write(sourcePath, original);
+            ArkivoCommitTarget failingTarget = (@Nullable Path sourceArchivePath) -> {
+                assertNull(sourceArchivePath);
+                throw new IOException("channel commit target failed");
+            };
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.COMMIT_TARGET.key(),
+                    failingTarget
+            );
+
+            ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(source, environment);
+            Files.writeString(fileSystem.getPath("/value.txt"), "changed", StandardCharsets.UTF_8);
+            IOException exception = assertThrows(IOException.class, fileSystem::close);
+
+            assertEquals("channel commit target failed", exception.getMessage());
+            assertArrayEquals(original, Files.readAllBytes(sourcePath));
+            assertFalse(fileSystem.isOpen());
+            assertEquals(1, source.closeCount());
+            assertTrue(source.closed());
+        } finally {
+            Files.deleteIfExists(sourcePath);
+        }
+    }
+
+    /// Verifies that an unchanged channel-source update does not open its commit target.
+    @Test
+    void unchangedChannelSourceUpdateDoesNotPublish() throws IOException {
+        Path sourcePath = Files.createTempFile("arkivo-ar-source-unchanged-", ".a");
+        Path targetPath = Files.createTempFile("arkivo-ar-source-unpublished-", ".a");
+        Files.delete(targetPath);
+        TrackingSource source = new TrackingSource(sourcePath, false);
+        try {
+            Files.write(sourcePath, archiveBytes());
+            Map<String, Object> environment = Map.of(
+                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                    ArkivoFileSystem.COMMIT_TARGET.key(),
+                    ArkivoCommitTarget.writeTo(targetPath)
+            );
+
+            try (ArArkivoFileSystem ignored = ArArkivoFileSystem.open(source, environment)) {
+            }
+
+            assertFalse(Files.exists(targetPath));
+            assertEquals(1, source.closeCount());
+            assertTrue(source.closed());
+        } finally {
+            Files.deleteIfExists(targetPath);
+            Files.deleteIfExists(sourcePath);
         }
     }
 

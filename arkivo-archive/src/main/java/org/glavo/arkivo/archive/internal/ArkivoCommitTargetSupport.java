@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.internal;
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.channels.SeekableByteChannel;
@@ -49,8 +50,11 @@ public final class ArkivoCommitTargetSupport {
 
         /// Opens output over the source archive path.
         @Override
-        public ArkivoCommitOutput openOutput(Path sourcePath) {
-            return new PathCommitOutput(Objects.requireNonNull(sourcePath, "sourcePath"), null);
+        public ArkivoCommitOutput openOutput(@Nullable Path sourcePath) {
+            if (sourcePath == null) {
+                throw new IllegalArgumentException("Replacing the original archive requires a path-backed source");
+            }
+            return new PathCommitOutput(sourcePath, null);
         }
     }
 
@@ -67,8 +71,12 @@ public final class ArkivoCommitTargetSupport {
 
         /// Opens temporary output for the given source archive path.
         @Override
-        public ArkivoCommitOutput openOutput(Path sourcePath) throws IOException {
-            Objects.requireNonNull(sourcePath, "sourcePath");
+        public ArkivoCommitOutput openOutput(@Nullable Path sourcePath) throws IOException {
+            if (sourcePath == null) {
+                throw new IllegalArgumentException(
+                        "Atomically replacing the original archive requires a path-backed source"
+                );
+            }
             Files.createDirectories(directory);
             Path temporaryPath = Files.createTempFile(directory, "arkivo-zip-archive-", ".tmp");
             return new PathCommitOutput(temporaryPath, sourcePath);
@@ -88,8 +96,7 @@ public final class ArkivoCommitTargetSupport {
 
         /// Opens output over the fixed target path.
         @Override
-        public ArkivoCommitOutput openOutput(Path sourcePath) {
-            Objects.requireNonNull(sourcePath, "sourcePath");
+        public ArkivoCommitOutput openOutput(@Nullable Path sourcePath) {
             return new PathCommitOutput(path, null);
         }
     }

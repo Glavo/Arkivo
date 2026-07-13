@@ -4,15 +4,18 @@
 package org.glavo.arkivo.archive.tar;
 
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
-import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.archive.tar.internal.TarCompressionStreams;
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.tar.internal.TarArkivoStreamingReaderImpl;
+import org.glavo.arkivo.archive.tar.internal.TarCompressionStreams;
+import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionProbeResult;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.util.Map;
 import java.util.Objects;
@@ -29,41 +32,55 @@ public abstract sealed class TarArkivoStreamingReader extends ArkivoStreamingRea
     protected TarArkivoStreamingReader() {
     }
 
-    /// Opens a streaming TAR reader from an input stream.
-    public static TarArkivoStreamingReader open(InputStream source) {
-        return new TarArkivoStreamingReaderImpl(Objects.requireNonNull(source, "source"));
+    /// Opens a streaming TAR reader from an input stream with automatic compression detection.
+    public static TarArkivoStreamingReader open(InputStream source) throws IOException {
+        Objects.requireNonNull(source, "source");
+        return open(StreamChannelAdapters.readableChannel(source), Map.of());
     }
 
     /// Opens a streaming TAR reader from an input stream with environment options.
     ///
-    /// `TarArkivoFileSystem.COMPRESSION` explicitly selects a compression wrapper. When the option is absent, the
-    /// source is read as an uncompressed TAR stream because a forward-only source cannot reliably undo a false
-    /// compression match.
+    /// `TarArkivoFileSystem.COMPRESSION` explicitly selects a compression wrapper. When the option is absent, installed
+    /// codecs with reliable signatures are detected without discarding bytes from the forward-only source.
     public static TarArkivoStreamingReader open(
             InputStream source,
             Map<String, ?> environment
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(environment, "environment");
-        @Nullable CompressionCodec compressionCodec = TarArkivoFileSystem.COMPRESSION.read(environment);
-        return new TarArkivoStreamingReaderImpl(
-                TarCompressionStreams.openArchiveInput(source, compressionCodec)
-        );
+        return open(StreamChannelAdapters.readableChannel(source), environment);
     }
 
-    /// Opens a streaming TAR reader from a readable channel.
-    public static TarArkivoStreamingReader open(ReadableByteChannel source) {
-        Objects.requireNonNull(source, "source");
-        return open(Channels.newInputStream(source));
+    /// Opens a streaming TAR reader from a readable channel with automatic compression detection.
+    public static TarArkivoStreamingReader open(ReadableByteChannel source) throws IOException {
+        return open(source, Map.of());
     }
 
     /// Opens a streaming TAR reader from a readable channel with environment options.
+    ///
+    /// After environment validation, this method takes ownership of the source and closes it if probing or decoder
+    /// setup fails.
     public static TarArkivoStreamingReader open(
             ReadableByteChannel source,
             Map<String, ?> environment
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(environment, "environment");
-        return open(Channels.newInputStream(source), environment);
+        @Nullable CompressionCodec compressionCodec = TarArkivoFileSystem.COMPRESSION.read(environment);
+        ReadableByteChannel archiveSource = source;
+        if (compressionCodec == null) {
+            CompressionProbeResult probe = CompressionCodecs.probe(
+                    source,
+                    TarArkivoFormat.instance().probeSize(),
+                    ChannelOwnership.CLOSE
+            );
+            compressionCodec = TarArkivoFormat.instance().matches(probe.prefix())
+                    ? null
+                    : probe.codec();
+            archiveSource = probe.channel();
+        }
+        return new TarArkivoStreamingReaderImpl(StreamChannelAdapters.inputStream(
+                TarCompressionStreams.openArchiveInput(archiveSource, compressionCodec)
+        ));
     }
 }

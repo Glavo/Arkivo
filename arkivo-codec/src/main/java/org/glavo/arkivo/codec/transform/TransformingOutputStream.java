@@ -41,8 +41,11 @@ public final class TransformingOutputStream extends OutputStream {
     /// Whether all pending filter bytes have been forwarded.
     private boolean finished;
 
-    /// Whether this stream has closed.
+    /// Whether this stream has stopped accepting writes.
     private boolean closed;
+
+    /// Whether the downstream stream has closed successfully.
+    private boolean outputClosed;
 
     /// Creates a filtering output stream over a downstream coder.
     public TransformingOutputStream(OutputStream output, ByteTransform transform) {
@@ -111,23 +114,25 @@ public final class TransformingOutputStream extends OutputStream {
     /// Finishes the filter and closes the downstream compression stream.
     @Override
     public void close() throws IOException {
-        if (closed) {
-            return;
-        }
         @Nullable Throwable closeFailure = null;
-        try {
-            finish();
-        } catch (IOException | RuntimeException | Error exception) {
-            closeFailure = exception;
-        }
-        closed = true;
-        try {
-            output.close();
-        } catch (IOException | RuntimeException | Error exception) {
-            if (closeFailure == null) {
+        if (!closed) {
+            try {
+                finish();
+            } catch (IOException | RuntimeException | Error exception) {
                 closeFailure = exception;
-            } else {
-                closeFailure.addSuppressed(exception);
+            }
+            closed = true;
+        }
+        if (!outputClosed) {
+            try {
+                output.close();
+                outputClosed = true;
+            } catch (IOException | RuntimeException | Error exception) {
+                if (closeFailure == null) {
+                    closeFailure = exception;
+                } else {
+                    closeFailure.addSuppressed(exception);
+                }
             }
         }
         rethrow(closeFailure);

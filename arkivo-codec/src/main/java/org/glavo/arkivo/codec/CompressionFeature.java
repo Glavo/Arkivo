@@ -32,9 +32,6 @@ public enum CompressionFeature {
     /// One encoder context can emit multiple independent frames.
     MULTI_FRAME,
 
-    /// The decoder accepts concatenated frames.
-    CONCATENATED_FRAMES,
-
-    /// The codec can reuse an operation context after reset.
-    CONTEXT_REUSE
+    /// The decoder accepts concatenated frames and exposes validated boundaries to incremental callers.
+    CONCATENATED_FRAMES
 }

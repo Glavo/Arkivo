@@ -5,9 +5,11 @@ package org.glavo.arkivo.codec.deflate64.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
+import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -88,8 +90,8 @@ public final class Deflate64InputStream extends InputStream implements Compressi
     /// The raw Deflate64 source.
     private final ReadableByteChannel source;
 
-    /// Whether closing this decoder also closes the source.
-    private final ChannelOwnership ownership;
+    /// Tracks closure of the owned compressed-data source.
+    private final OwnedChannelCloser sourceCloser;
 
     /// The little-endian bit reader over the source.
     private final BitInput bits;
@@ -150,7 +152,7 @@ public final class Deflate64InputStream extends InputStream implements Compressi
             int inputBufferSize
     ) {
         this.source = Objects.requireNonNull(source, "source");
-        this.ownership = Objects.requireNonNull(ownership, "ownership");
+        this.sourceCloser = new OwnedChannelCloser(source, ownership);
         this.bits = new BitInput(source, inputBufferSize);
     }
 
@@ -242,6 +244,18 @@ public final class Deflate64InputStream extends InputStream implements Compressi
         return bits.byteCount();
     }
 
+    /// Returns the number of compressed bytes obtained from the source.
+    @Override
+    public long sourceBytes() {
+        return bits.sourceByteCount();
+    }
+
+    /// Returns a read-only view of compressed bytes not yet consumed.
+    @Override
+    public @UnmodifiableView ByteBuffer unconsumedInput() {
+        return bits.unconsumedInput();
+    }
+
     /// Returns the number of decoded bytes returned through read operations.
     @Override
     public long outputBytes() {
@@ -257,13 +271,8 @@ public final class Deflate64InputStream extends InputStream implements Compressi
     /// Closes the compressed source.
     @Override
     public void close() throws IOException {
-        if (closed) {
-            return;
-        }
         closed = true;
-        if (ownership == ChannelOwnership.CLOSE) {
-            source.close();
-        }
+        sourceCloser.close();
     }
 
     /// Decodes one byte or returns end-of-stream.
@@ -500,6 +509,9 @@ public final class Deflate64InputStream extends InputStream implements Compressi
         /// The number of logical compressed bytes consumed.
         private long byteCount;
 
+        /// The number of compressed bytes obtained from the source.
+        private long sourceByteCount;
+
         /// Buffered packed bits, with the next bit in bit zero.
         private long buffer;
 
@@ -540,6 +552,7 @@ public final class Deflate64InputStream extends InputStream implements Compressi
                 if (read == 0) {
                     throw new IOException("Deflate64 source channel made no progress");
                 }
+                sourceByteCount += read;
                 inputBuffer.flip();
             }
             byteCount++;
@@ -549,6 +562,16 @@ public final class Deflate64InputStream extends InputStream implements Compressi
         /// Returns the number of logical compressed bytes consumed.
         private long byteCount() {
             return byteCount;
+        }
+
+        /// Returns the number of compressed bytes obtained from the source.
+        private long sourceByteCount() {
+            return sourceByteCount;
+        }
+
+        /// Returns a read-only view of compressed bytes not yet consumed.
+        private @UnmodifiableView ByteBuffer unconsumedInput() {
+            return inputBuffer.asReadOnlyBuffer();
         }
 
         /// Discards padding through the next byte boundary.

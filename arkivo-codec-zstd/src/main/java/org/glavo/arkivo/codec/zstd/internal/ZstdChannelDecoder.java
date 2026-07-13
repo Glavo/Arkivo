@@ -6,10 +6,16 @@ package org.glavo.arkivo.codec.zstd.internal;
 import com.github.luben.zstd.ZstdDecompressCtx;
 import com.github.luben.zstd.ZstdDirectBufferDecompressingStreamNoFinalizer;
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecResult;
+import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
+import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -27,8 +33,8 @@ public final class ZstdChannelDecoder implements CompressionDecoder {
     /// The compressed-data source.
     private final ReadableByteChannel source;
 
-    /// Whether this context owns the source channel.
-    private final ChannelOwnership ownership;
+    /// Tracks closure of the owned compressed-data source.
+    private final OwnedChannelCloser sourceCloser;
 
     /// The configured native Zstandard decompression context.
     private final ZstdDecompressCtx context;
@@ -44,17 +50,23 @@ public final class ZstdChannelDecoder implements CompressionDecoder {
     /// The maximum permitted frame window size, or the unknown sentinel.
     private final long maximumWindowSize;
 
-    /// Whether the leading frame window has been validated.
+    /// Whether the current frame window has been validated.
     private boolean windowValidated;
 
-    /// The number of compressed bytes read from the source.
+    /// The number of compressed bytes logically consumed by the native decoder.
     private long inputBytes;
+
+    /// The number of compressed bytes obtained from the source.
+    private long sourceBytes;
 
     /// The number of uncompressed bytes returned to callers.
     private long outputBytes;
 
     /// Whether the current frame has completed.
     private boolean frameFinished;
+
+    /// Whether the last decode operation delivered a complete frame.
+    private boolean lastFrameFinished;
 
     /// Whether this decoder remains open.
     private boolean open = true;
@@ -80,7 +92,7 @@ public final class ZstdChannelDecoder implements CompressionDecoder {
             long maximumWindowSize
     ) {
         this.source = Objects.requireNonNull(source, "source");
-        this.ownership = Objects.requireNonNull(ownership, "ownership");
+        this.sourceCloser = new OwnedChannelCloser(source, ownership);
         this.context = Objects.requireNonNull(context, "context");
         this.maximumWindowSize = maximumWindowSize;
         windowValidated = maximumWindowSize < 0L;
@@ -91,32 +103,65 @@ public final class ZstdChannelDecoder implements CompressionDecoder {
     /// Reads decoded bytes into the caller's target buffer.
     @Override
     public int read(ByteBuffer target) throws IOException {
+        return readDecoded(target, false);
+    }
+
+    /// Decodes one increment while optionally stopping after the current frame.
+    @Override
+    public CodecResult decode(ByteBuffer target, DecodeDirective directive) throws IOException {
+        Objects.requireNonNull(directive, "directive");
+        long inputBefore = inputBytes;
+        long outputBefore = outputBytes;
+        boolean stopAtFrame = directive == DecodeDirective.STOP_AT_FRAME;
+        int read = readDecoded(target, stopAtFrame);
+        CodecStatus status = stopAtFrame && lastFrameFinished
+                ? CodecStatus.FRAME_FINISHED
+                : read < 0 ? CodecStatus.END_OF_INPUT : CodecStatus.ACTIVE;
+        return new CodecResult(inputBytes - inputBefore, outputBytes - outputBefore, status);
+    }
+
+    /// Performs one decoded read with explicit frame-boundary behavior.
+    private int readDecoded(ByteBuffer target, boolean stopAtFrame) throws IOException {
         Objects.requireNonNull(target, "target");
         ensureOpen();
+        lastFrameFinished = false;
         if (!target.hasRemaining()) {
             return 0;
         }
         if (outputBuffer.hasRemaining()) {
-            return copyOutput(target);
+            int copied = copyOutput(target);
+            if (stopAtFrame && frameFinished && !outputBuffer.hasRemaining()) {
+                lastFrameFinished = true;
+            }
+            return copied;
         }
-        if (frameFinished) {
-            return -1;
-        }
-
         while (true) {
+            if (frameFinished && !startNextFrame()) {
+                return -1;
+            }
             if (!inputBuffer.hasRemaining() && !readCompressedInput()) {
                 throw new EOFException("Unexpected end of Zstandard frame");
             }
+            validateFrameWindow();
 
             outputBuffer.clear();
             int inputPosition = inputBuffer.position();
             frameFinished = context.decompressDirectByteBufferStream(outputBuffer, inputBuffer);
+            inputBytes += inputBuffer.position() - inputPosition;
             outputBuffer.flip();
             if (outputBuffer.hasRemaining()) {
-                return copyOutput(target);
+                int copied = copyOutput(target);
+                if (stopAtFrame && frameFinished && !outputBuffer.hasRemaining()) {
+                    lastFrameFinished = true;
+                }
+                return copied;
             }
             if (frameFinished) {
-                return -1;
+                if (stopAtFrame) {
+                    lastFrameFinished = true;
+                    return 0;
+                }
+                continue;
             }
             if (inputBuffer.position() == inputPosition) {
                 throw new IOException("Zstandard decoder made no progress");
@@ -124,10 +169,22 @@ public final class ZstdChannelDecoder implements CompressionDecoder {
         }
     }
 
-    /// Returns the compressed byte count read from the source.
+    /// Returns the compressed byte count logically consumed by the native decoder.
     @Override
     public long inputBytes() {
         return inputBytes;
+    }
+
+    /// Returns the compressed byte count obtained from the source.
+    @Override
+    public long sourceBytes() {
+        return sourceBytes;
+    }
+
+    /// Returns a read-only view of compressed bytes not yet consumed.
+    @Override
+    public @UnmodifiableView ByteBuffer unconsumedInput() {
+        return inputBuffer.asReadOnlyBuffer();
     }
 
     /// Returns the uncompressed byte count returned to callers.
@@ -145,14 +202,16 @@ public final class ZstdChannelDecoder implements CompressionDecoder {
     /// Releases the native context and closes an owned source channel.
     @Override
     public void close() throws IOException {
-        if (!open) {
-            return;
+        @Nullable Throwable failure = null;
+        if (open) {
+            open = false;
+            try {
+                context.close();
+            } catch (RuntimeException | Error exception) {
+                failure = exception;
+            }
         }
-        open = false;
-        context.close();
-        if (ownership == ChannelOwnership.CLOSE) {
-            source.close();
-        }
+        sourceCloser.closeAfter(failure);
     }
 
     /// Copies pending direct output into the caller's target buffer.
@@ -169,35 +228,56 @@ public final class ZstdChannelDecoder implements CompressionDecoder {
     /// Reads another compressed chunk into the owned direct input buffer.
     private boolean readCompressedInput() throws IOException {
         inputBuffer.clear();
-        while (true) {
-            int read = source.read(inputBuffer);
-            if (read < 0) {
-                inputBuffer.flip();
-                if (!inputBuffer.hasRemaining()) {
-                    return false;
-                }
-                windowValidated = true;
-                return true;
-            }
-            if (read == 0) {
-                throw new IOException("Zstandard source channel made no progress");
-            }
-            inputBytes += read;
+        int read = source.read(inputBuffer);
+        if (read < 0) {
             inputBuffer.flip();
-            if (windowValidated) {
-                return true;
-            }
+            return false;
+        }
+        if (read == 0) {
+            throw new IOException("Zstandard source channel made no progress");
+        }
+        sourceBytes += read;
+        inputBuffer.flip();
+        return true;
+    }
 
+    /// Resets the native session when another frame begins.
+    private boolean startNextFrame() throws IOException {
+        if (!inputBuffer.hasRemaining() && !readCompressedInput()) {
+            return false;
+        }
+        context.reset();
+        frameFinished = false;
+        windowValidated = maximumWindowSize < 0L;
+        return true;
+    }
+
+    /// Reads and validates the current frame's declared decoding window.
+    private void validateFrameWindow() throws IOException {
+        if (windowValidated) {
+            return;
+        }
+        while (true) {
             long requiredWindowSize = ZstdFrameHeader.requiredWindowSize(inputBuffer);
             if (requiredWindowSize != ZstdFrameHeader.NEED_MORE_INPUT) {
                 StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, requiredWindowSize);
                 windowValidated = true;
-                return true;
+                return;
             }
             inputBuffer.compact();
             if (!inputBuffer.hasRemaining()) {
                 throw new IOException("Zstandard frame header exceeds the input buffer");
             }
+            int read = source.read(inputBuffer);
+            if (read < 0) {
+                inputBuffer.flip();
+                throw new EOFException("Unexpected end of Zstandard frame header");
+            }
+            if (read == 0) {
+                throw new IOException("Zstandard source channel made no progress");
+            }
+            sourceBytes += read;
+            inputBuffer.flip();
         }
     }
 

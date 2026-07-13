@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive;
 
+import org.glavo.arkivo.archive.internal.SharedSeekableChannelSource;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -16,6 +17,15 @@ import java.nio.channels.SeekableByteChannel;
 @FunctionalInterface
 @NotNullByDefault
 public interface ArkivoSeekableChannelSource extends ArkivoVolumeSource {
+    /// Returns an owning source that exposes independent logical views over one seekable channel.
+    ///
+    /// The channel's current position becomes logical archive offset zero, and its current remaining extent becomes the
+    /// fixed archive size. The returned source serializes physical positioning and reads so its logical channels can be
+    /// consumed concurrently.
+    static ArkivoSeekableChannelSource of(SeekableByteChannel channel) throws IOException {
+        return SharedSeekableChannelSource.open(channel);
+    }
+
     /// Opens a new readable channel for the archive.
     SeekableByteChannel openChannel() throws IOException;
 

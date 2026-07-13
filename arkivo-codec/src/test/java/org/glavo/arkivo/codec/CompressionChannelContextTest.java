@@ -88,6 +88,38 @@ final class CompressionChannelContextTest {
         assertFalse(source.isOpen());
     }
 
+    /// Verifies stream adapters retry owned endpoint closure without repeating codec closure.
+    @Test
+    void retriesOwnedStreamAdapterEndpoints() throws IOException {
+        FailingCloseWritableChannel target = new FailingCloseWritableChannel();
+        CompressionEncoder encoder = CODEC.openEncoder(
+                target,
+                CodecOptions.EMPTY,
+                ChannelOwnership.CLOSE
+        );
+        encoder.write(ByteBuffer.wrap(new byte[]{1, 2, 3}));
+        assertThrows(IOException.class, encoder::finish);
+        assertFalse(encoder.isOpen());
+        assertEquals(1, target.closeCount());
+        encoder.close();
+        encoder.close();
+        assertEquals(2, target.closeCount());
+        assertArrayEquals(new byte[]{1, 2, 3}, target.bytes());
+
+        FailingCloseReadableChannel source = new FailingCloseReadableChannel(new byte[]{4, 5, 6});
+        CompressionDecoder decoder = CODEC.openDecoder(
+                source,
+                CodecOptions.EMPTY,
+                ChannelOwnership.CLOSE
+        );
+        assertThrows(IOException.class, decoder::close);
+        assertFalse(decoder.isOpen());
+        assertEquals(1, source.closeCount());
+        decoder.close();
+        decoder.close();
+        assertEquals(2, source.closeCount());
+    }
+
     /// Verifies blocking channel transfers report counts and retain both endpoints.
     @Test
     void transfersBetweenChannelsWithoutTakingOwnership() throws IOException {
@@ -130,6 +162,93 @@ final class CompressionChannelContextTest {
         assertThrows(UnsupportedOperationException.class, CODEC::maximumCompressionLevel);
         assertThrows(UnsupportedOperationException.class, CODEC::defaultCompressionLevel);
         assertTrue(target.isOpen());
+    }
+
+    /// Implements a writable byte-array channel that fails its first close attempt.
+    @NotNullByDefault
+    private static final class FailingCloseWritableChannel implements WritableByteChannel {
+        /// Collected bytes.
+        private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+
+        /// Writable delegate.
+        private final WritableByteChannel delegate = Channels.newChannel(bytes);
+
+        /// Number of close attempts.
+        private int closeCount;
+
+        /// Writes bytes to the delegate.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            return delegate.write(source);
+        }
+
+        /// Returns whether the delegate remains open.
+        @Override
+        public boolean isOpen() {
+            return delegate.isOpen();
+        }
+
+        /// Fails once and then closes the delegate.
+        @Override
+        public void close() throws IOException {
+            closeCount++;
+            if (closeCount == 1) {
+                throw new IOException("close failed");
+            }
+            delegate.close();
+        }
+
+        /// Returns the close-attempt count.
+        private int closeCount() {
+            return closeCount;
+        }
+
+        /// Returns collected bytes.
+        private byte[] bytes() {
+            return bytes.toByteArray();
+        }
+    }
+
+    /// Implements a readable byte-array channel that fails its first close attempt.
+    @NotNullByDefault
+    private static final class FailingCloseReadableChannel implements ReadableByteChannel {
+        /// Readable delegate.
+        private final ReadableByteChannel delegate;
+
+        /// Number of close attempts.
+        private int closeCount;
+
+        /// Creates a channel over bytes.
+        private FailingCloseReadableChannel(byte[] bytes) {
+            delegate = Channels.newChannel(new ByteArrayInputStream(bytes));
+        }
+
+        /// Reads bytes from the delegate.
+        @Override
+        public int read(ByteBuffer target) throws IOException {
+            return delegate.read(target);
+        }
+
+        /// Returns whether the delegate remains open.
+        @Override
+        public boolean isOpen() {
+            return delegate.isOpen();
+        }
+
+        /// Fails once and then closes the delegate.
+        @Override
+        public void close() throws IOException {
+            closeCount++;
+            if (closeCount == 1) {
+                throw new IOException("close failed");
+            }
+            delegate.close();
+        }
+
+        /// Returns the close-attempt count.
+        private int closeCount() {
+            return closeCount;
+        }
     }
 
     /// Implements identity coding through the stream-provider compatibility SPI.

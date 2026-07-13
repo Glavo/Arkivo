@@ -14,7 +14,7 @@ public enum CodecStatus {
     /// Pending output was flushed and the current frame remains active.
     FLUSHED,
 
-    /// The current encoded frame was completed.
+    /// The current encoded or decoded frame was completed.
     FRAME_FINISHED,
 
     /// The decoder reached the end of its compressed input.

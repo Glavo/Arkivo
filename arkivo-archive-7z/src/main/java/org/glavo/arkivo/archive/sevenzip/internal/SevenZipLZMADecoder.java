@@ -14,6 +14,7 @@ import org.glavo.arkivo.codec.lzma.internal.LzmaInputStream;
 import org.glavo.arkivo.codec.lzma.internal.LzmaProperties;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -76,6 +77,12 @@ final class SevenZipLZMADecoder {
 
     /// The 7z SPARC BCJ filter method ID.
     static final byte[] SPARC_FILTER_METHOD_ID = new byte[]{0x03, 0x03, 0x08, 0x05};
+
+    /// The 7z ARM64 BCJ filter method ID.
+    private static final byte @Unmodifiable [] ARM64_FILTER_METHOD_ID = new byte[]{0x0a};
+
+    /// The 7z RISC-V BCJ filter method ID.
+    private static final byte @Unmodifiable [] RISCV_FILTER_METHOD_ID = new byte[]{0x0b};
 
     /// Creates no instances.
     private SevenZipLZMADecoder() {
@@ -156,6 +163,16 @@ final class SevenZipLZMADecoder {
         return Arrays.equals(methodId, SPARC_FILTER_METHOD_ID);
     }
 
+    /// Returns whether the method ID identifies the ARM64 BCJ filter.
+    static boolean isARM64Filter(byte[] methodId) {
+        return Arrays.equals(methodId, ARM64_FILTER_METHOD_ID);
+    }
+
+    /// Returns whether the method ID identifies the RISC-V BCJ filter.
+    static boolean isRiscVFilter(byte[] methodId) {
+        return Arrays.equals(methodId, RISCV_FILTER_METHOD_ID);
+    }
+
     /// Returns whether the method ID identifies a supported BCJ filter.
     static boolean isBcjFilter(byte[] methodId) {
         return isX86Filter(methodId)
@@ -163,7 +180,9 @@ final class SevenZipLZMADecoder {
                 || isIA64Filter(methodId)
                 || isARMFilter(methodId)
                 || isARMThumbFilter(methodId)
-                || isSPARCFilter(methodId);
+                || isSPARCFilter(methodId)
+                || isARM64Filter(methodId)
+                || isRiscVFilter(methodId);
     }
 
     /// Returns whether the method ID identifies a supported decoder.
@@ -528,53 +547,77 @@ final class SevenZipLZMADecoder {
         if (isSPARCFilter(methodId)) {
             return openSPARCFilter(input, properties);
         }
+        if (isARM64Filter(methodId)) {
+            return openARM64Filter(input, properties);
+        }
+        if (isRiscVFilter(methodId)) {
+            return openRiscVFilter(input, properties);
+        }
         throw new UnsupportedOperationException("Unsupported 7z coder method: " + Arrays.toString(methodId));
     }
 
     /// Opens a raw x86 BCJ filter decoder for 7z coder properties.
     static InputStream openX86Filter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        int startOffset = bcjStartOffset(properties, "7z x86 BCJ coder");
+        int startOffset = bcjStartOffset(properties, "7z x86 BCJ coder", 1);
         return new TransformingInputStream(input, BCJTransforms.x86(false, startOffset));
     }
 
     /// Opens a raw PowerPC BCJ filter decoder for 7z coder properties.
     static InputStream openPowerPCFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        int startOffset = bcjStartOffset(properties, "7z PowerPC BCJ coder");
+        int startOffset = bcjStartOffset(properties, "7z PowerPC BCJ coder", 4);
         return new TransformingInputStream(input, BCJTransforms.powerPc(false, startOffset));
     }
 
     /// Opens a raw IA-64 BCJ filter decoder for 7z coder properties.
     static InputStream openIA64Filter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        int startOffset = bcjStartOffset(properties, "7z IA-64 BCJ coder");
+        int startOffset = bcjStartOffset(properties, "7z IA-64 BCJ coder", 16);
         return new TransformingInputStream(input, BCJTransforms.ia64(false, startOffset));
     }
 
     /// Opens a raw ARM BCJ filter decoder for 7z coder properties.
     static InputStream openARMFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        int startOffset = bcjStartOffset(properties, "7z ARM BCJ coder");
+        int startOffset = bcjStartOffset(properties, "7z ARM BCJ coder", 4);
         return new TransformingInputStream(input, BCJTransforms.arm(false, startOffset));
     }
 
     /// Opens a raw ARM-Thumb BCJ filter decoder for 7z coder properties.
     static InputStream openARMThumbFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        int startOffset = bcjStartOffset(properties, "7z ARM-Thumb BCJ coder");
+        int startOffset = bcjStartOffset(properties, "7z ARM-Thumb BCJ coder", 2);
         return new TransformingInputStream(input, BCJTransforms.armThumb(false, startOffset));
     }
 
     /// Opens a raw SPARC BCJ filter decoder for 7z coder properties.
     static InputStream openSPARCFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        int startOffset = bcjStartOffset(properties, "7z SPARC BCJ coder");
+        int startOffset = bcjStartOffset(properties, "7z SPARC BCJ coder", 4);
         return new TransformingInputStream(input, BCJTransforms.sparc(false, startOffset));
     }
 
+    /// Opens a raw ARM64 BCJ filter decoder for 7z coder properties.
+    static InputStream openARM64Filter(InputStream input, byte[] properties) throws IOException {
+        Objects.requireNonNull(input, "input");
+        int startOffset = bcjStartOffset(properties, "7z ARM64 BCJ coder", 4);
+        return new TransformingInputStream(input, BCJTransforms.arm64(false, startOffset));
+    }
+
+    /// Opens a raw RISC-V BCJ filter decoder for 7z coder properties.
+    static InputStream openRiscVFilter(InputStream input, byte[] properties) throws IOException {
+        Objects.requireNonNull(input, "input");
+        int startOffset = bcjStartOffset(properties, "7z RISC-V BCJ coder", 2);
+        return new TransformingInputStream(input, BCJTransforms.riscV(false, startOffset));
+    }
+
     /// Reads BCJ filter properties as an optional little-endian start offset.
-    private static int bcjStartOffset(byte[] properties, String description) throws IOException {
+    private static int bcjStartOffset(
+            byte[] properties,
+            String description,
+            int alignment
+    ) throws IOException {
         Objects.requireNonNull(properties, "properties");
         if (properties.length == 0) {
             return 0;
@@ -582,7 +625,11 @@ final class SevenZipLZMADecoder {
         if (properties.length != 4) {
             throw new IOException(description + " properties must contain zero or four bytes");
         }
-        return ByteBuffer.wrap(properties).order(ByteOrder.LITTLE_ENDIAN).getInt();
+        int startOffset = ByteBuffer.wrap(properties).order(ByteOrder.LITTLE_ENDIAN).getInt();
+        if ((startOffset & (alignment - 1)) != 0) {
+            throw new IOException(description + " start offset must be aligned to " + alignment);
+        }
+        return startOffset;
     }
 
     /// Inflates raw Deflate input and releases the backing inflater.

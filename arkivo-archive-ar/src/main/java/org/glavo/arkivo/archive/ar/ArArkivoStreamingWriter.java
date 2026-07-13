@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.ar;
 
+import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.glavo.arkivo.archive.ar.internal.ArArkivoStreamingWriterImpl;
@@ -10,7 +11,6 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -44,26 +44,29 @@ public abstract sealed class ArArkivoStreamingWriter extends ArkivoStreamingWrit
 
     /// Opens a streaming AR writer over an output stream.
     public static ArArkivoStreamingWriter open(OutputStream output) {
-        return new ArArkivoStreamingWriterImpl(Objects.requireNonNull(output, "output"));
+        Objects.requireNonNull(output, "output");
+        return open(StreamChannelAdapters.writableChannel(output));
     }
 
     /// Opens a streaming AR writer over an output stream and owns the given body storage.
     public static ArArkivoStreamingWriter open(OutputStream output, ArkivoEditStorage bodyStorage) {
-        return new ArArkivoStreamingWriterImpl(
-                Objects.requireNonNull(output, "output"),
-                Objects.requireNonNull(bodyStorage, "bodyStorage")
-        );
+        Objects.requireNonNull(output, "output");
+        Objects.requireNonNull(bodyStorage, "bodyStorage");
+        return open(StreamChannelAdapters.writableChannel(output), bodyStorage);
     }
 
     /// Opens a streaming AR writer over a writable channel.
     public static ArArkivoStreamingWriter open(WritableByteChannel output) {
         Objects.requireNonNull(output, "output");
-        return open(Channels.newOutputStream(output));
+        return new ArArkivoStreamingWriterImpl(StreamChannelAdapters.outputStream(output));
     }
 
     /// Opens a streaming AR writer over a writable channel and owns the given body storage.
     public static ArArkivoStreamingWriter open(WritableByteChannel output, ArkivoEditStorage bodyStorage) {
         Objects.requireNonNull(output, "output");
-        return open(Channels.newOutputStream(output), bodyStorage);
+        return new ArArkivoStreamingWriterImpl(
+                StreamChannelAdapters.outputStream(output),
+                Objects.requireNonNull(bodyStorage, "bodyStorage")
+        );
     }
 }

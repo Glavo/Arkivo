@@ -4,6 +4,8 @@
 package org.glavo.arkivo.archive.sevenzip.internal;
 
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
+import org.glavo.arkivo.archive.sevenzip.SevenZipCoderGraph;
+import org.glavo.arkivo.archive.sevenzip.SevenZipPackedStream;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -13,6 +15,7 @@ import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFileAttributes;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
+import java.util.List;
 import java.util.Set;
 
 /// Provides basic attributes for a parsed 7z entry.
@@ -38,6 +41,64 @@ final class SevenZipEntryAttributes implements SevenZipArkivoEntryAttributes, Po
         return metadata.path();
     }
 
+    /// Returns the complete coder graph, or null when the entry has no packed stream.
+    @Override
+    public @Nullable SevenZipCoderGraph coderGraph() {
+        return metadata.coderGraph();
+    }
+
+    /// Returns whether this entry shares its folder with another file-addressable substream.
+    @Override
+    public boolean solid() {
+        return metadata.solid();
+    }
+
+    /// Returns this entry's index among file-addressable folder substreams.
+    @Override
+    public int substreamIndex() {
+        return metadata.substreamIndex();
+    }
+
+    /// Returns the number of file-addressable substreams in this entry's folder.
+    @Override
+    public int substreamCount() {
+        return metadata.substreamCount();
+    }
+    /// Returns the absolute logical archive offset of the first packed stream, or `NO_DATA_OFFSET`.
+    @Override
+    public long dataOffset() {
+        return metadata.dataOffset();
+    }
+
+    /// Returns the decoded byte offset of this entry within the folder output.
+    @Override
+    public long decodedOffset() {
+        return metadata.decodedOffset();
+    }
+
+    /// Returns the total byte size of the packed ranges used to read this entry.
+    @Override
+    public long packedSize() {
+        return metadata.packedSize();
+    }
+
+    /// Returns the packed stream CRC-32 when the folder has one packed stream, or `UNKNOWN_CRC32`.
+    @Override
+    public long packedCrc32() {
+        return metadata.packedCrc32();
+    }
+
+    /// Returns the immutable physical packed ranges used to read this entry.
+    @Override
+    public @Unmodifiable List<SevenZipPackedStream> packedStreams() {
+        return metadata.packedStreams();
+    }
+
+    /// Returns the decoded entry CRC-32, or `UNKNOWN_CRC32` when absent.
+    @Override
+    public long crc32() {
+        return metadata.crc32();
+    }
     /// Returns the Windows file attributes, or `UNKNOWN_WINDOWS_ATTRIBUTES` when not present.
     @Override
     public int windowsAttributes() {

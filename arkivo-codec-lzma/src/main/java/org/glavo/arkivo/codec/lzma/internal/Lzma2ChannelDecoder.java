@@ -5,7 +5,9 @@ package org.glavo.arkivo.codec.lzma.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.UnmodifiableView;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.ByteArrayInputStream;
@@ -26,8 +28,8 @@ public final class Lzma2ChannelDecoder implements CompressionDecoder {
     /// The compressed-data source.
     private final ReadableByteChannel source;
 
-    /// Whether this context owns the source.
-    private final ChannelOwnership ownership;
+    /// Tracks closure of the owned compressed-data source.
+    private final OwnedChannelCloser sourceCloser;
 
     /// The buffered compressed-byte source.
     private final LzmaChannelInput input;
@@ -76,7 +78,7 @@ public final class Lzma2ChannelDecoder implements CompressionDecoder {
             int inputBufferSize
     ) {
         this.source = Objects.requireNonNull(source, "source");
-        this.ownership = Objects.requireNonNull(ownership, "ownership");
+        this.sourceCloser = new OwnedChannelCloser(source, ownership);
         input = new LzmaChannelInput(source, inputBufferSize);
         decoder = new LzmaDecoderEngine(dictionarySize);
     }
@@ -128,6 +130,18 @@ public final class Lzma2ChannelDecoder implements CompressionDecoder {
         return input.byteCount();
     }
 
+    /// Returns the number of compressed bytes obtained from the source.
+    @Override
+    public long sourceBytes() {
+        return input.sourceByteCount();
+    }
+
+    /// Returns a read-only view of compressed bytes not yet consumed.
+    @Override
+    public @UnmodifiableView ByteBuffer unconsumedInput() {
+        return input.unconsumedInput();
+    }
+
     /// Returns the number of uncompressed bytes returned to callers.
     @Override
     public long outputBytes() {
@@ -143,13 +157,8 @@ public final class Lzma2ChannelDecoder implements CompressionDecoder {
     /// Closes this decoder and an owned source channel.
     @Override
     public void close() throws IOException {
-        if (!open) {
-            return;
-        }
         open = false;
-        if (ownership == ChannelOwnership.CLOSE) {
-            source.close();
-        }
+        sourceCloser.close();
     }
 
     /// Parses and applies the next LZMA2 chunk header.

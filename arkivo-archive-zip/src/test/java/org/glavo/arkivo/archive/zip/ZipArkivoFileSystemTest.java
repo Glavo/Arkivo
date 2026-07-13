@@ -2414,9 +2414,9 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
-    /// Verifies that streaming writer channels remain closed after entry close validation fails.
+    /// Verifies that streaming writer channels commit wrapper closure after retrying entry validation failure.
     @Test
-    public void streamingWriterChannelCloseFailureMarksWrapperClosed() throws IOException {
+    public void streamingWriterChannelCloseFailureAllowsWrapperRetry() throws IOException {
         Path archivePath = createTemporaryArchivePath("stream-write-channel-close-failure-");
         byte[] content = "bad size".getBytes(StandardCharsets.UTF_8);
 
@@ -2431,9 +2431,10 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals(content.length, channel.write(ByteBuffer.wrap(content)));
                 IOException exception = assertThrows(IOException.class, channel::close);
                 assertEquals(true, exception.getMessage().contains("configured size"));
+                assertEquals(true, channel.isOpen());
+                channel.close();
                 assertEquals(false, channel.isOpen());
                 assertThrows(ClosedChannelException.class, () -> channel.write(ByteBuffer.allocate(1)));
-                channel.close();
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -2505,7 +2506,8 @@ public final class ZipArkivoFileSystemTest {
         assertEquals(true, closeActionRan[0]);
         assertEquals(1, exception.getSuppressed().length);
         assertEquals("close action failed", exception.getSuppressed()[0].getMessage());
-        fileSystem.close();
+        IllegalStateException retryFailure = assertThrows(IllegalStateException.class, fileSystem::close);
+        assertEquals("close failed", retryFailure.getMessage());
     }
 
     /// Verifies that close action failures are preserved after runtime entry close failures.
@@ -4623,7 +4625,8 @@ public final class ZipArkivoFileSystemTest {
             }
 
             byte[] tampered = tamperLastDataDescriptorCrc(Files.readAllBytes(archivePath));
-            ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new CloseFailingInputStream(tampered));
+            CloseFailingOnceInputStream source = new CloseFailingOnceInputStream(tampered);
+            ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(source);
             try {
                 assertEquals(true, reader.next());
                 var input = reader.openInputStream();
@@ -4634,8 +4637,13 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals("close failed", exception.getSuppressed()[0].getMessage());
                 assertThrows(IOException.class, input::read);
                 reader.close();
-            } finally {
                 reader.close();
+                assertEquals(2, source.closeCount());
+                assertEquals(true, source.closed());
+            } finally {
+                if (!source.closed()) {
+                    reader.close();
+                }
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -5137,28 +5145,179 @@ public final class ZipArkivoFileSystemTest {
         assertEquals(1, source.closeCount());
     }
 
-    /// Verifies that seekable channel sources reject writable ZIP file system configuration before taking ownership.
+    /// Verifies channel and source cleanup when a channel-source update cannot parse its ZIP index.
     @Test
-    public void seekableChannelSourceRejectsWritableConfiguration() throws IOException {
+    public void failedSeekableChannelSourceUpdateOpenClosesOwnership() throws IOException {
+        TestSeekableChannelSource source = new TestSeekableChannelSource(new byte[0]);
+        Path targetPath = createTemporaryArchivePath("failed-channel-update-");
+        Files.deleteIfExists(targetPath);
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                ArkivoFileSystem.COMMIT_TARGET.key(),
+                ArkivoCommitTarget.writeTo(targetPath)
+        );
+
+        try {
+            assertThrows(IOException.class, () -> ZipArkivoFileSystem.open(source, environment));
+            assertEquals(true, source.openCount() > 0);
+            assertEquals(true, source.allOpenedChannelsClosed());
+            assertEquals(1, source.closeCount());
+            assertEquals(false, Files.exists(targetPath));
+        } finally {
+            Files.deleteIfExists(targetPath);
+            Files.deleteIfExists(targetPath.getParent());
+        }
+    }
+
+    /// Verifies that channel-source update mode requires a commit target before opening source channels.
+    @Test
+    public void seekableChannelSourceUpdateRequiresCommitTarget() throws IOException {
         TestSeekableChannelSource source = new TestSeekableChannelSource(emptyZipWithPreamble(new byte[0]));
         Map<String, Object> environment = Map.of(
                 ArkivoFileSystem.OPEN_OPTIONS.key(),
-                Set.of(
-                        StandardOpenOption.CREATE,
-                        StandardOpenOption.TRUNCATE_EXISTING,
-                        StandardOpenOption.WRITE
-                )
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
         );
 
         assertThrows(
-                UnsupportedOperationException.class,
+                IllegalArgumentException.class,
                 () -> ZipArkivoFileSystem.open(source, environment)
         );
         assertEquals(0, source.openCount());
-        assertEquals(0, source.closeCount());
-
-        source.close();
         assertEquals(1, source.closeCount());
+    }
+
+    /// Verifies complete-rewrite mutation and preamble preservation from a repeatable single-volume source.
+    @Test
+    public void updatesSeekableChannelSourceIntoDerivedArchive() throws IOException {
+        byte[] preamble = new byte[]{9, 7, 5, 3};
+        byte[] original = updateSourceZip(preamble);
+        TestSeekableChannelSource source = new TestSeekableChannelSource(original);
+        Path targetPath = createTemporaryArchivePath("channel-update-derived-");
+        Files.deleteIfExists(targetPath);
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                ArkivoFileSystem.COMMIT_TARGET.key(),
+                ArkivoCommitTarget.writeTo(targetPath)
+        );
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(source, environment)) {
+                assertEquals(false, fileSystem.isReadOnly());
+                Files.writeString(fileSystem.getPath("/replace.txt"), "new", StandardCharsets.UTF_8);
+                Files.delete(fileSystem.getPath("/remove.txt"));
+                Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
+            }
+
+            assertEquals(true, source.openCount() > 1);
+            assertEquals(true, source.allOpenedChannelsClosed());
+            assertEquals(1, source.closeCount());
+            try (ZipArkivoFileSystem derived = ZipArkivoFileSystem.open(targetPath)) {
+                assertEquals(preamble.length, derived.preambleSize());
+                assertPreambleContent(preamble, derived);
+                assertEquals("keep", Files.readString(derived.getPath("/keep.txt"), StandardCharsets.UTF_8));
+                assertEquals("new", Files.readString(derived.getPath("/replace.txt"), StandardCharsets.UTF_8));
+                assertEquals(false, Files.exists(derived.getPath("/remove.txt")));
+                assertEquals("added", Files.readString(derived.getPath("/added.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            Files.deleteIfExists(targetPath);
+            Files.deleteIfExists(targetPath.getParent());
+        }
+    }
+
+    /// Verifies complete-rewrite updates from one owned seekable channel.
+    @Test
+    public void updatesOwnedSeekableChannelIntoDerivedArchive() throws IOException {
+        TestByteArraySeekableChannel channel =
+                new TestByteArraySeekableChannel(updateSourceZip(new byte[0]));
+        Path targetPath = createTemporaryArchivePath("owned-channel-update-derived-");
+        Files.deleteIfExists(targetPath);
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                ArkivoFileSystem.COMMIT_TARGET.key(),
+                ArkivoCommitTarget.writeTo(targetPath)
+        );
+
+        try {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(channel, environment)) {
+                Files.delete(fileSystem.getPath("/remove.txt"));
+                Files.writeString(fileSystem.getPath("/added.txt"), "owned", StandardCharsets.UTF_8);
+            }
+
+            assertEquals(false, channel.isOpen());
+            try (ZipArkivoFileSystem derived = ZipArkivoFileSystem.open(targetPath)) {
+                assertEquals(false, Files.exists(derived.getPath("/remove.txt")));
+                assertEquals("owned", Files.readString(derived.getPath("/added.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            channel.close();
+            Files.deleteIfExists(targetPath);
+            Files.deleteIfExists(targetPath.getParent());
+        }
+    }
+
+    /// Verifies source cleanup when channel-source commit setup fails.
+    @Test
+    public void failedSeekableChannelSourceCommitClosesSource() throws IOException {
+        byte[] original = updateSourceZip(new byte[0]);
+        TestSeekableChannelSource source = new TestSeekableChannelSource(original);
+        ArkivoCommitTarget failingTarget = (@Nullable Path sourcePath) -> {
+            assertNull(sourcePath);
+            throw new IOException("channel commit target failed");
+        };
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                ArkivoFileSystem.COMMIT_TARGET.key(),
+                failingTarget
+        );
+
+        ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(source, environment);
+        Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
+        IOException exception = assertThrows(IOException.class, fileSystem::close);
+
+        assertEquals("channel commit target failed", exception.getMessage());
+        assertEquals(false, fileSystem.isOpen());
+        assertEquals(true, source.allOpenedChannelsClosed());
+        assertEquals(1, source.closeCount());
+    }
+
+    /// Verifies that a failed source close can be retried after a successful derived commit.
+    @Test
+    public void seekableChannelSourceCloseCanRetryAfterUpdate() throws IOException {
+        TestSeekableChannelSource source =
+                new TestSeekableChannelSource(updateSourceZip(new byte[0]), true);
+        Path targetPath = createTemporaryArchivePath("channel-update-close-retry-");
+        Files.deleteIfExists(targetPath);
+        Map<String, Object> environment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                ArkivoFileSystem.COMMIT_TARGET.key(),
+                ArkivoCommitTarget.writeTo(targetPath)
+        );
+
+        try {
+            ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(source, environment);
+            Files.writeString(fileSystem.getPath("/added.txt"), "retry", StandardCharsets.UTF_8);
+
+            IOException exception = assertThrows(IOException.class, fileSystem::close);
+            assertEquals("source close failed", exception.getMessage());
+            assertEquals(false, fileSystem.isOpen());
+            assertEquals(1, source.closeCount());
+
+            fileSystem.close();
+            fileSystem.close();
+            assertEquals(2, source.closeCount());
+            try (ZipArkivoFileSystem derived = ZipArkivoFileSystem.open(targetPath)) {
+                assertEquals("retry", Files.readString(derived.getPath("/added.txt"), StandardCharsets.UTF_8));
+            }
+        } finally {
+            Files.deleteIfExists(targetPath);
+            Files.deleteIfExists(targetPath.getParent());
+        }
     }
 
     /// Verifies that preamble detection handles ZIP offsets that already include the preamble size.
@@ -7032,6 +7191,20 @@ public final class ZipArkivoFileSystemTest {
         field.setAccessible(true);
         Map<?, ?> fileSystems = (Map<?, ?>) field.get(provider);
         return fileSystems.size();
+    }
+
+    /// Returns a ZIP update fixture with a preamble and three regular entries.
+    private static byte[] updateSourceZip(byte[] preamble) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(Objects.requireNonNull(preamble, "preamble"));
+        try (ZipOutputStream zip = new ZipOutputStream(output, StandardCharsets.UTF_8)) {
+            for (String name : List.of("keep.txt", "replace.txt", "remove.txt")) {
+                zip.putNextEntry(new ZipEntry(name));
+                zip.write(name.substring(0, name.indexOf('.')).getBytes(StandardCharsets.UTF_8));
+                zip.closeEntry();
+            }
+        }
+        return output.toByteArray();
     }
 
     /// Returns a minimal empty ZIP archive with the given preamble bytes.
@@ -10462,12 +10635,21 @@ public final class ZipArkivoFileSystemTest {
         /// The channels opened from this source.
         private final ArrayList<TestByteArraySeekableChannel> openedChannels = new ArrayList<>();
 
+        /// Whether the first close attempt should fail.
+        private final boolean failFirstClose;
+
         /// The number of times this source has been closed.
         private int closeCount;
 
         /// Creates a repeatable source over the given archive bytes.
         private TestSeekableChannelSource(byte[] content) {
+            this(content, false);
+        }
+
+        /// Creates a repeatable source with an optional first-close failure.
+        private TestSeekableChannelSource(byte[] content, boolean failFirstClose) {
             this.content = Objects.requireNonNull(content, "content").clone();
+            this.failFirstClose = failFirstClose;
         }
 
         /// Opens an independent channel over the archive bytes.
@@ -10483,8 +10665,11 @@ public final class ZipArkivoFileSystemTest {
 
         /// Records that this source has been closed.
         @Override
-        public void close() {
+        public void close() throws IOException {
             closeCount++;
+            if (failFirstClose && closeCount == 1) {
+                throw new IOException("source close failed");
+            }
         }
 
         /// Returns the number of channels opened from this source.

@@ -3,8 +3,14 @@
 
 package org.glavo.arkivo.codec.gzip;
 
+import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressionStrategy;
+import org.glavo.arkivo.codec.EncodeDirective;
+import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -14,6 +20,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.zip.CRC32;
@@ -22,7 +29,9 @@ import java.util.zip.GZIPOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Tests gzip codec behavior.
 @NotNullByDefault
@@ -94,6 +103,45 @@ public final class GzipCodecTest {
                     "first membersecond member".getBytes(StandardCharsets.UTF_8),
                     input.readAllBytes()
             );
+        }
+    }
+
+    /// Verifies one encoder emits multiple members while preserving its configured strategy.
+    @Test
+    public void multiMemberEncoder() throws IOException {
+        byte[] first = "first Arkivo gzip member".getBytes(StandardCharsets.UTF_8);
+        byte[] second = "second Arkivo gzip member".getBytes(StandardCharsets.UTF_8);
+        CodecOptions options = CodecOptions.builder()
+                .set(StandardCodecOptions.COMPRESSION_STRATEGY, CompressionStrategy.HUFFMAN_ONLY)
+                .build();
+        GzipCodec codec = new GzipCodec();
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+
+        CompressionEncoder encoder = codec.openEncoder(
+                Channels.newChannel(compressed),
+                options,
+                ChannelOwnership.RETAIN
+        );
+        encoder.encode(ByteBuffer.wrap(first), EncodeDirective.END_FRAME);
+        int firstMemberSize = compressed.size();
+        assertTrue(encoder.isOpen());
+        encoder.flush();
+        assertEquals(firstMemberSize, compressed.size());
+
+        encoder.encode(ByteBuffer.wrap(second), EncodeDirective.END_FRAME);
+        int completeSize = compressed.size();
+        assertTrue(completeSize > firstMemberSize);
+        encoder.finish();
+        assertFalse(encoder.isOpen());
+        assertEquals(completeSize, compressed.size());
+
+        ByteArrayOutputStream expected = new ByteArrayOutputStream();
+        expected.writeBytes(first);
+        expected.writeBytes(second);
+        try (GZIPInputStream input = new GZIPInputStream(
+                new ByteArrayInputStream(compressed.toByteArray())
+        )) {
+            assertArrayEquals(expected.toByteArray(), input.readAllBytes());
         }
     }
 

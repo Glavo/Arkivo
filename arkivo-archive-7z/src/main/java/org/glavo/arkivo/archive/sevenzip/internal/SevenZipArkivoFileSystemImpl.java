@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.sevenzip.SevenZipPackedStream;
+
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
@@ -16,6 +18,7 @@ import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.archive.sevenzip.SevenZipFilter;
+import org.glavo.arkivo.archive.sevenzip.SevenZipFilterChain;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -1445,6 +1448,36 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         if (all || requestedAttributes.contains("path")) {
             values.put("path", metadata.path());
         }
+        if (all || requestedAttributes.contains("coderGraph")) {
+            values.put("coderGraph", metadata.coderGraph());
+        }
+        if (all || requestedAttributes.contains("solid")) {
+            values.put("solid", metadata.solid());
+        }
+        if (all || requestedAttributes.contains("substreamIndex")) {
+            values.put("substreamIndex", metadata.substreamIndex());
+        }
+        if (all || requestedAttributes.contains("substreamCount")) {
+            values.put("substreamCount", metadata.substreamCount());
+        }
+        if (all || requestedAttributes.contains("dataOffset")) {
+            values.put("dataOffset", metadata.dataOffset());
+        }
+        if (all || requestedAttributes.contains("decodedOffset")) {
+            values.put("decodedOffset", metadata.decodedOffset());
+        }
+        if (all || requestedAttributes.contains("packedSize")) {
+            values.put("packedSize", metadata.packedSize());
+        }
+        if (all || requestedAttributes.contains("packedCrc32")) {
+            values.put("packedCrc32", metadata.packedCrc32());
+        }
+        if (all || requestedAttributes.contains("packedStreams")) {
+            values.put("packedStreams", metadata.packedStreams());
+        }
+        if (all || requestedAttributes.contains("crc32")) {
+            values.put("crc32", metadata.crc32());
+        }
         if (all || requestedAttributes.contains("windowsAttributes")) {
             values.put("windowsAttributes", metadata.windowsAttributes());
         }
@@ -1548,7 +1581,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     splitSize,
                     password,
                     config.compression(),
-                    config.filter()
+                    config.filters(),
+                    config.solidFileCount()
             );
             return new WriterResources(splitOutput.writer(), splitOutput);
         }
@@ -1560,7 +1594,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     channel,
                     password,
                     config.compression(),
-                    config.filter()
+                    config.filters(),
+                    config.solidFileCount()
             );
             return new WriterResources(writer, null);
         } catch (IOException | RuntimeException | Error exception) {
@@ -1609,7 +1644,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                          channel,
                          password.bytes(),
                          config.compression(),
-                         config.filter()
+                         config.filters(),
+                         config.solidFileCount()
                  )) {
                 writeUpdatedArchive(archiveWriter);
             }
@@ -1669,7 +1705,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     updateSplitSize,
                     password.bytes(),
                     config.compression(),
-                    config.filter()
+                    config.filters(),
+                    config.solidFileCount()
             );
             SevenZipArchiveWriter archiveWriter = output.writer();
             @Nullable Throwable writerFailure = null;
@@ -1720,8 +1757,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                     metadata.creationTime(),
                     metadata.windowsAttributes(),
                     settings.compression(),
-                    settings.filterConfigured(),
-                    settings.filter()
+                    settings.filtersConfigured(),
+                    settings.filters()
             );
 
             archiveWriter.putArchiveEntry(
@@ -2304,6 +2341,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 metadata.directory(),
                 size,
                 metadata.decodedOffset(),
+                metadata.substreamIndex(),
+                metadata.substreamCount(),
                 metadata.packedStreams(),
                 metadata.crc32(),
                 metadata.method(),
@@ -2390,6 +2429,12 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 } else {
                     throw new IllegalArgumentException("7z filter value must be SevenZipFilter or null");
                 }
+            }
+            case "filters" -> {
+                if (!(value instanceof SevenZipFilterChain filters)) {
+                    throw new IllegalArgumentException("7z filters value must be SevenZipFilterChain");
+                }
+                setFilters(path, filters);
             }
             default -> throw new UnsupportedOperationException("Unsupported writable 7z attribute: " + name);
         }
@@ -2485,28 +2530,30 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         Objects.requireNonNull(compression, "compression");
         mutateOutputSettings(path, settings -> new UpdateOutputSettings(
                 compression,
-                settings.filterConfigured(),
-                settings.filter()
+                settings.filtersConfigured(),
+                settings.filters()
         ));
     }
 
     /// Sets an entry-specific preprocessing filter.
     private void setFilter(Path path, SevenZipFilter filter) throws IOException {
         Objects.requireNonNull(filter, "filter");
+        setFilters(path, SevenZipFilterChain.of(filter));
+    }
+
+    /// Sets entry-specific preprocessing filters.
+    private void setFilters(Path path, SevenZipFilterChain filters) throws IOException {
+        Objects.requireNonNull(filters, "filters");
         mutateOutputSettings(path, settings -> new UpdateOutputSettings(
                 settings.compression(),
                 true,
-                filter
+                filters
         ));
     }
 
     /// Disables preprocessing for one updated entry.
     private void clearFilter(Path path) throws IOException {
-        mutateOutputSettings(path, settings -> new UpdateOutputSettings(
-                settings.compression(),
-                true,
-                null
-        ));
+        setFilters(path, SevenZipFilterChain.EMPTY);
     }
 
     /// Replaces one entry's parsed metadata through an update function.
@@ -2557,6 +2604,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 metadata.directory(),
                 metadata.size(),
                 metadata.decodedOffset(),
+                metadata.substreamIndex(),
+                metadata.substreamCount(),
                 metadata.packedStreams(),
                 metadata.crc32(),
                 metadata.method(),
@@ -2585,15 +2634,25 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
 
     /// Stores per-entry output method overrides for update rewriting.
     ///
-    /// @param compression      the entry compression override, or `null` for the archive default
-    /// @param filterConfigured whether the filter setting overrides the archive default
-    /// @param filter           the filter override, or `null` to disable filtering
+    /// @param compression       the entry compression override, or null for the archive default
+    /// @param filtersConfigured whether the filter chain overrides the archive default
+    /// @param filters           the filter-chain override, or null when inherited
     @NotNullByDefault
     private record UpdateOutputSettings(
             @Nullable SevenZipCompression compression,
-            boolean filterConfigured,
-            @Nullable SevenZipFilter filter
+            boolean filtersConfigured,
+            @Nullable SevenZipFilterChain filters
     ) {
+        /// Validates one per-entry output override.
+        private UpdateOutputSettings {
+            if (filtersConfigured && filters == null) {
+                throw new IllegalArgumentException("Configured update filters must not be null");
+            }
+            if (!filtersConfigured && filters != null) {
+                throw new IllegalArgumentException("Inherited update filters must be null");
+            }
+        }
+
         /// The default settings that inherit archive output methods.
         private static final UpdateOutputSettings DEFAULTS =
                 new UpdateOutputSettings(null, false, null);
@@ -3580,6 +3639,12 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         @Override
         public void setFilter(SevenZipFilter filter) throws IOException {
             SevenZipArkivoFileSystemImpl.this.setFilter(path, filter);
+        }
+
+        /// Sets an entry-specific filter chain in update mode.
+        @Override
+        public void setFilters(SevenZipFilterChain filters) throws IOException {
+            SevenZipArkivoFileSystemImpl.this.setFilters(path, filters);
         }
 
         /// Disables filtering for this entry in update mode.

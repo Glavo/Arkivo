@@ -3,8 +3,10 @@
 
 package org.glavo.arkivo.archive.tar;
 
+import org.glavo.arkivo.archive.ArkivoFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
-import org.glavo.arkivo.archive.ArkivoStreamingFormat;
+import org.glavo.arkivo.archive.ArkivoStreamingReaderFormat;
+import org.glavo.arkivo.archive.ArkivoStreamingWriterFormat;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -13,6 +15,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 import java.util.List;
@@ -20,7 +23,10 @@ import java.util.Map;
 
 /// Describes TAR archive streaming support provided by Arkivo.
 @NotNullByDefault
-public final class TarArkivoFormat implements ArkivoStreamingFormat {
+public final class TarArkivoFormat implements
+        ArkivoFileSystemFormat,
+        ArkivoStreamingReaderFormat,
+        ArkivoStreamingWriterFormat {
     /// The size of one TAR header or padding block.
     private static final int BLOCK_SIZE = 512;
 
@@ -98,21 +104,37 @@ public final class TarArkivoFormat implements ArkivoStreamingFormat {
     }
 
     /// Opens a TAR archive as a file system.
+    @Override
     public TarArkivoFileSystem open(Path path) throws IOException {
         return TarArkivoFileSystem.open(path);
     }
 
     /// Opens a TAR archive as a file system with provider environment options.
+    @Override
     public TarArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         return TarArkivoFileSystem.open(path, environment);
     }
 
+    /// Opens a read-only TAR archive file system directly from one owned seekable channel.
+    @Override
+    public TarArkivoFileSystem open(SeekableByteChannel source) throws IOException {
+        return TarArkivoFileSystem.open(source);
+    }
+
+    /// Opens a TAR archive file system directly from one owned seekable channel with environment options.
+    @Override
+    public TarArkivoFileSystem open(SeekableByteChannel source, Map<String, ?> environment) throws IOException {
+        return TarArkivoFileSystem.open(source, environment);
+    }
+
     /// Opens a read-only TAR archive file system from a repeatable seekable channel source.
+    @Override
     public TarArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
         return TarArkivoFileSystem.open(source);
     }
 
-    /// Opens a read-only TAR archive file system from a channel source with environment options.
+    /// Opens a TAR archive file system from a channel source with environment options.
+    @Override
     public TarArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
             Map<String, ?> environment
@@ -122,7 +144,7 @@ public final class TarArkivoFormat implements ArkivoStreamingFormat {
 
     /// Opens a streaming TAR reader from an input stream.
     @Override
-    public TarArkivoStreamingReader openStreamingReader(InputStream source) {
+    public TarArkivoStreamingReader openStreamingReader(InputStream source) throws IOException {
         return TarArkivoStreamingReader.open(source);
     }
 
@@ -137,7 +159,7 @@ public final class TarArkivoFormat implements ArkivoStreamingFormat {
 
     /// Opens a streaming TAR reader from a readable channel.
     @Override
-    public TarArkivoStreamingReader openStreamingReader(ReadableByteChannel source) {
+    public TarArkivoStreamingReader openStreamingReader(ReadableByteChannel source) throws IOException {
         return TarArkivoStreamingReader.open(source);
     }
 
@@ -151,11 +173,13 @@ public final class TarArkivoFormat implements ArkivoStreamingFormat {
     }
 
     /// Opens a streaming TAR writer over an output stream.
+    @Override
     public TarArkivoStreamingWriter openStreamingWriter(OutputStream output) {
         return TarArkivoStreamingWriter.open(output);
     }
 
     /// Opens a streaming TAR writer over an output stream with environment options.
+    @Override
     public TarArkivoStreamingWriter openStreamingWriter(
             OutputStream output,
             Map<String, ?> environment
@@ -164,11 +188,13 @@ public final class TarArkivoFormat implements ArkivoStreamingFormat {
     }
 
     /// Opens a streaming TAR writer over a writable channel.
+    @Override
     public TarArkivoStreamingWriter openStreamingWriter(WritableByteChannel output) {
         return TarArkivoStreamingWriter.open(output);
     }
 
     /// Opens a streaming TAR writer over a writable channel with environment options.
+    @Override
     public TarArkivoStreamingWriter openStreamingWriter(
             WritableByteChannel output,
             Map<String, ?> environment

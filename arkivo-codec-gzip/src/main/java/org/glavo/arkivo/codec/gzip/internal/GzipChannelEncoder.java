@@ -5,6 +5,9 @@ package org.glavo.arkivo.codec.gzip.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
+import org.glavo.arkivo.codec.CompressionStrategy;
+import org.glavo.arkivo.codec.spi.DeflateStrategySupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -29,8 +32,17 @@ public final class GzipChannelEncoder implements CompressionEncoder {
     /// The compressed-data target.
     private final WritableByteChannel target;
 
-    /// Whether this context owns the target channel.
-    private final ChannelOwnership ownership;
+    /// Tracks closure of the owned compressed-data target.
+    private final OwnedChannelCloser targetCloser;
+
+    /// The configured JDK compression level reused by every member.
+    private final int compressionLevel;
+
+    /// The configured compression strategy reused by every member.
+    private final CompressionStrategy strategy;
+
+    /// Whether the next deflate call must apply a delayed strategy update.
+    private boolean strategyUpdatePending;
 
     /// The raw deflate context used for the member body.
     private final Deflater deflater;
@@ -53,6 +65,9 @@ public final class GzipChannelEncoder implements CompressionEncoder {
     /// The member input size modulo 2^32.
     private long memberSize;
 
+    /// Whether one member is active and will be finished on the next frame boundary.
+    private boolean memberActive = true;
+
     /// Whether this encoder remains open.
     private boolean open = true;
 
@@ -61,21 +76,45 @@ public final class GzipChannelEncoder implements CompressionEncoder {
     /// @param target compressed-data target
     /// @param ownership whether this context closes the target
     /// @param compressionLevel JDK deflate compression level
+    /// @throws IOException if the fixed member header cannot be written
     public GzipChannelEncoder(
             WritableByteChannel target,
             ChannelOwnership ownership,
             int compressionLevel
     ) throws IOException {
+        this(target, ownership, compressionLevel, CompressionStrategy.DEFAULT);
+    }
+
+    /// Creates a gzip encoder with an explicit compression strategy and writes its fixed member header.
+    ///
+    /// @param target compressed-data target
+    /// @param ownership whether this context closes the target
+    /// @param compressionLevel JDK deflate compression level
+    /// @param strategy compression strategy
+    /// @throws IOException if the fixed member header cannot be written
+    public GzipChannelEncoder(
+            WritableByteChannel target,
+            ChannelOwnership ownership,
+            int compressionLevel,
+            CompressionStrategy strategy
+    ) throws IOException {
         this.target = Objects.requireNonNull(target, "target");
-        this.ownership = Objects.requireNonNull(ownership, "ownership");
+        this.targetCloser = new OwnedChannelCloser(target, ownership);
+        this.compressionLevel = compressionLevel;
+        CompressionStrategy selectedStrategy = Objects.requireNonNull(strategy, "strategy");
+        this.strategy = selectedStrategy;
         this.deflater = new Deflater(compressionLevel, true);
         try {
+            deflater.setStrategy(DeflateStrategySupport.toJdkValue(selectedStrategy));
             writeHeader(compressionLevel);
         } catch (IOException | RuntimeException | Error exception) {
             deflater.end();
+            targetCloser.closeAfter(exception);
             throw exception;
         }
+        strategyUpdatePending = selectedStrategy != CompressionStrategy.DEFAULT;
     }
+
 
     /// Consumes uncompressed bytes and updates the member checksum and size.
     @Override
@@ -85,6 +124,7 @@ public final class GzipChannelEncoder implements CompressionEncoder {
         if (!source.hasRemaining()) {
             return 0;
         }
+        startMember();
 
         int start = source.position();
         try {
@@ -97,8 +137,11 @@ public final class GzipChannelEncoder implements CompressionEncoder {
                 deflater.setInput(inputBuffer);
                 do {
                     int inputPosition = inputBuffer.position();
+                    boolean applyingStrategy = strategyUpdatePending;
                     int produced = deflate(Deflater.NO_FLUSH);
-                    if (produced == 0 && inputBuffer.position() == inputPosition) {
+                    if (produced == 0
+                            && inputBuffer.position() == inputPosition
+                            && !applyingStrategy) {
                         throw new IOException("Gzip encoder made no progress");
                     }
                 } while (inputBuffer.hasRemaining());
@@ -113,27 +156,46 @@ public final class GzipChannelEncoder implements CompressionEncoder {
     @Override
     public void flush() throws IOException {
         ensureOpen();
-        while (deflate(Deflater.SYNC_FLUSH) == outputBuffer.capacity()) {
-            // Continue until the deflater no longer fills the complete staging buffer.
+        if (!memberActive) {
+            return;
+        }
+        while (true) {
+            boolean applyingStrategy = strategyUpdatePending;
+            int produced = deflate(Deflater.SYNC_FLUSH);
+            if (produced == outputBuffer.capacity()) {
+                continue;
+            }
+            if (produced == 0 && applyingStrategy) {
+                continue;
+            }
+            return;
         }
     }
 
-    /// Finishes the member, writes its trailer, and releases native resources.
+    /// Finishes the active member while retaining the encoder for another member.
+    @Override
+    public void finishFrame() throws IOException {
+        ensureOpen();
+        if (!memberActive) {
+            return;
+        }
+        finishMember();
+        memberActive = false;
+    }
+
+    /// Finishes the active member and releases native resources.
     @Override
     public void finish() throws IOException {
         if (!open) {
+            targetCloser.close();
             return;
         }
 
         @Nullable Throwable failure = null;
         try {
-            deflater.finish();
-            while (!deflater.finished()) {
-                if (deflate(Deflater.NO_FLUSH) == 0 && !deflater.finished()) {
-                    throw new IOException("Gzip encoder could not finish the member");
-                }
+            if (memberActive) {
+                finishMember();
             }
-            writeTrailer();
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
             throw exception;
@@ -168,6 +230,34 @@ public final class GzipChannelEncoder implements CompressionEncoder {
         finish();
     }
 
+    /// Lazily resets native state and writes the next member header.
+    private void startMember() throws IOException {
+        if (memberActive) {
+            return;
+        }
+        deflater.reset();
+        deflater.setLevel(compressionLevel);
+        deflater.setStrategy(DeflateStrategySupport.toJdkValue(strategy));
+        strategyUpdatePending = strategy != CompressionStrategy.DEFAULT;
+        checksum.reset();
+        memberSize = 0L;
+        writeHeader(compressionLevel);
+        memberActive = true;
+    }
+
+    /// Finishes one active member and writes its trailer.
+    private void finishMember() throws IOException {
+        deflater.finish();
+        while (!deflater.finished()) {
+            boolean applyingStrategy = strategyUpdatePending;
+            if (deflate(Deflater.NO_FLUSH) == 0
+                    && !deflater.finished()
+                    && !applyingStrategy) {
+                throw new IOException("Gzip encoder could not finish the member");
+            }
+        }
+        writeTrailer();
+    }
     /// Writes the standard fixed gzip member header.
     private void writeHeader(int compressionLevel) throws IOException {
         int extraFlags = compressionLevel == Deflater.BEST_COMPRESSION
@@ -194,6 +284,7 @@ public final class GzipChannelEncoder implements CompressionEncoder {
     private int deflate(int flushMode) throws IOException {
         outputBuffer.clear();
         int produced = deflater.deflate(outputBuffer, flushMode);
+        strategyUpdatePending = false;
         outputBuffer.flip();
         writeFully(outputBuffer);
         return produced;
@@ -221,20 +312,9 @@ public final class GzipChannelEncoder implements CompressionEncoder {
         }
     }
 
-    /// Closes the target when this context owns it without hiding an earlier failure.
+    /// Closes the owned target without hiding an earlier failure.
     private void closeOwnedTarget(@Nullable Throwable failure) throws IOException {
-        if (ownership != ChannelOwnership.CLOSE) {
-            return;
-        }
-        try {
-            target.close();
-        } catch (IOException | RuntimeException | Error exception) {
-            if (failure != null) {
-                failure.addSuppressed(exception);
-                return;
-            }
-            throw exception;
-        }
+        targetCloser.closeAfter(failure);
     }
 
     /// Requires the encoder to remain open.

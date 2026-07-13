@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.tar;
 
+import org.glavo.arkivo.archive.internal.SeekableChannelSources;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemOption;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
@@ -14,6 +15,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
+import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.Objects;
@@ -25,6 +27,8 @@ import java.util.Objects;
 /// select another publication policy.
 /// Indexed read and update sessions stage entry bodies through `ArkivoFileSystem.EDIT_STORAGE`, using temporary files
 /// under the system temporary directory by default. The file system owns and closes the selected edit storage.
+/// Channel-source update sessions require an explicit `ArkivoFileSystem.COMMIT_TARGET` because they have no source
+/// path to replace. The detected or explicitly selected compression codec is preserved when publishing the derivative.
 /// GNU sparse entries are staged as expanded logical files; an update commit normalizes old GNU `S` entries to regular
 /// TAR entries while preserving their expanded content and metadata.
 @NotNullByDefault
@@ -62,6 +66,26 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
         return TarArkivoFileSystemProvider.instance().newFileSystem(path, environment);
     }
 
+    /// Opens a read-only TAR archive file system directly from one owned seekable channel.
+    ///
+    /// The channel's current position is the logical archive start. The returned file system owns and closes the
+    /// channel.
+    public static TarArkivoFileSystem open(SeekableByteChannel source) throws IOException {
+        return open(source, Map.of());
+    }
+
+    /// Opens a TAR archive file system directly from one owned seekable channel with environment options.
+    ///
+    /// `READ` and `WRITE` select complete-rewrite update mode and require an explicit
+    /// `ArkivoFileSystem.COMMIT_TARGET`. The returned file system owns and closes the channel in all modes.
+    public static TarArkivoFileSystem open(
+            SeekableByteChannel source,
+            Map<String, ?> environment
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(environment, "environment");
+        return SeekableChannelSources.open(source, channelSource -> open(channelSource, environment));
+    }
     /// Opens a read-only TAR archive file system from a repeatable seekable channel source.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
@@ -69,10 +93,11 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
         return open(source, Map.of());
     }
 
-    /// Opens a read-only TAR archive file system from a repeatable seekable channel source with environment options.
+    /// Opens a TAR archive file system from a repeatable seekable channel source with environment options.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
-    /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for indexed entry bodies.
+    /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for indexed entry bodies. `READ` and `WRITE` select
+    /// complete-rewrite update mode and require an explicit `ArkivoFileSystem.COMMIT_TARGET`.
     public static TarArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
             Map<String, ?> environment

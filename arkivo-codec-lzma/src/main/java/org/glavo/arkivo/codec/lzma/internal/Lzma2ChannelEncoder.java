@@ -5,6 +5,7 @@ package org.glavo.arkivo.codec.lzma.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -24,8 +25,8 @@ public final class Lzma2ChannelEncoder implements CompressionEncoder {
     /// The compressed-data target.
     private final WritableByteChannel target;
 
-    /// Whether this context owns the target.
-    private final ChannelOwnership ownership;
+    /// Tracks closure of the owned compressed-data target.
+    private final OwnedChannelCloser targetCloser;
 
     /// The buffered compressed-byte target.
     private final LzmaChannelOutput output;
@@ -51,10 +52,19 @@ public final class Lzma2ChannelEncoder implements CompressionEncoder {
             ChannelOwnership ownership,
             int dictionarySize
     ) {
+        this(target, ownership, LzmaProperties.defaults(dictionarySize));
+    }
+
+    /// Creates a raw LZMA2 encoder with complete model properties.
+    public Lzma2ChannelEncoder(
+            WritableByteChannel target,
+            ChannelOwnership ownership,
+            LzmaProperties properties
+    ) {
         this.target = Objects.requireNonNull(target, "target");
-        this.ownership = Objects.requireNonNull(ownership, "ownership");
+        this.targetCloser = new OwnedChannelCloser(target, ownership);
         output = new LzmaChannelOutput(target);
-        properties = LzmaProperties.defaults(dictionarySize);
+        this.properties = Objects.requireNonNull(properties, "properties");
     }
 
     /// Buffers uncompressed bytes and emits complete LZMA2 chunks.
@@ -87,6 +97,7 @@ public final class Lzma2ChannelEncoder implements CompressionEncoder {
     @Override
     public void finish() throws IOException {
         if (!open) {
+            targetCloser.close();
             return;
         }
         @Nullable Throwable failure = null;
@@ -98,18 +109,8 @@ public final class Lzma2ChannelEncoder implements CompressionEncoder {
             failure = exception;
         }
         open = false;
-        if (ownership == ChannelOwnership.CLOSE) {
-            try {
-                target.close();
-            } catch (IOException | RuntimeException | Error exception) {
-                if (failure == null) {
-                    failure = exception;
-                } else {
-                    failure.addSuppressed(exception);
-                }
-            }
-        }
-        throwFailure(failure);
+        targetCloser.closeAfter(failure);
+
     }
 
     /// Returns the number of uncompressed bytes accepted.
@@ -195,17 +196,4 @@ public final class Lzma2ChannelEncoder implements CompressionEncoder {
         }
     }
 
-    /// Rethrows a close-time failure with its original type.
-    private static void throwFailure(@Nullable Throwable failure) throws IOException {
-        if (failure == null) {
-            return;
-        }
-        if (failure instanceof IOException exception) {
-            throw exception;
-        }
-        if (failure instanceof RuntimeException exception) {
-            throw exception;
-        }
-        throw (Error) failure;
-    }
 }
