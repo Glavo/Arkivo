@@ -10,6 +10,9 @@ on:
       - "build.gradle.kts"
       - "buildSrc/**"
       - "gradle/test-data/**"
+      - "arkivo-codec-bzip2/**"
+      - "arkivo-codec-lzma/**"
+      - "arkivo-codec-xz/**"
       - "arkivo-codec-zstd/**"
 
 permissions:

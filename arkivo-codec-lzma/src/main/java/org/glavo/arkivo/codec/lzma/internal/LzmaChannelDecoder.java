@@ -75,7 +75,7 @@ public final class LzmaChannelDecoder implements CompressionDecoder {
             decoder = new LzmaDecoderEngine(properties.dictionarySize());
             decoder.configure(properties.propertyByte());
             decoder.resetDictionary();
-            decoder.startChunk(input, expectedSize, expectedSize < 0L);
+            decoder.startChunk(input, expectedSize, true);
         } catch (IOException | RuntimeException | Error exception) {
             sourceCloser.closeAfter(exception);
             throw exception;

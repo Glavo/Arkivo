@@ -42,6 +42,17 @@ public final class LzmaInputStream extends InputStream {
             int propertyByte,
             int dictionarySize
     ) throws IOException {
+        this(input, expectedSize, propertyByte, dictionarySize, expectedSize < 0L);
+    }
+
+    /// Creates a raw LZMA decoder with explicit control over optional end-marker acceptance.
+    private LzmaInputStream(
+            InputStream input,
+            long expectedSize,
+            int propertyByte,
+            int dictionarySize,
+            boolean allowEndMarker
+    ) throws IOException {
         this.input = Objects.requireNonNull(input, "input");
         channelInput = new LzmaChannelInput(Channels.newChannel(input), 1);
         LzmaProperties properties;
@@ -53,12 +64,12 @@ public final class LzmaInputStream extends InputStream {
         decoder = new LzmaDecoderEngine(properties.dictionarySize());
         decoder.configure(properties.propertyByte());
         decoder.resetDictionary();
-        decoder.startChunk(channelInput, expectedSize, expectedSize < 0L);
+        decoder.startChunk(channelInput, expectedSize, allowEndMarker);
     }
 
     /// Creates an LZMA-alone decoder from its parsed header.
     private LzmaInputStream(InputStream input, Header header) throws IOException {
-        this(input, header.expectedSize(), header.propertyByte(), header.dictionarySize());
+        this(input, header.expectedSize(), header.propertyByte(), header.dictionarySize(), true);
     }
 
     /// Reads one decoded byte.

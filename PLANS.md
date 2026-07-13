@@ -475,7 +475,10 @@ Opt-in real-world tests resolve immutable upstream source releases through a pro
 outside `build`, verify source size and SHA-256 before use, and extract only reviewed paths into disposable build
 outputs. The ordinary test and clean lifecycles do not access the network or delete the persistent cache. Zstandard
 pins the official 1.5.7 golden compression, decompression, malformed-frame, dictionary, and dictionary-input vectors;
-valid decompression outputs are checked against sizes and SHA-256 values produced by the matching official CLI.
+XZ pins the XZ Utils 5.8.3 valid, malformed, and unsupported XZ and LZMA_Alone decoder vectors; and BZip2 pins the
+official 1.0.8 reference samples for exact decoding, block-size boundary encoding, and concatenated streams. Valid
+decompression outputs are checked against upstream reference bytes or sizes and SHA-256 values produced by the
+matching official CLI.
 
 Some formats may not support efficient random write operations. These formats should expose streaming or copy-on-write APIs instead of pretending to support in-place mutation.
 

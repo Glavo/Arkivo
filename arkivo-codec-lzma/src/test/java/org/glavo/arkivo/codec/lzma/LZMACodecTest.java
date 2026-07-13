@@ -126,6 +126,42 @@ public final class LZMACodecTest {
         }
     }
 
+    /// Verifies an exact-size stream may contain EOPM but cannot encode additional output past its header size.
+    @Test
+    public void validatesIndependentKnownSizeStreamTermination() throws IOException {
+        byte[] content = patternedContent(1_013);
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+        LZMA2Options options = new LZMA2Options(4);
+        options.setDictSize(1 << 16);
+        try (LZMAOutputStream output = new LZMAOutputStream(compressed, options, -1L)) {
+            output.write(content);
+        }
+
+        byte[] knownSizeWithEndMarker = compressed.toByteArray();
+        writeLittleEndian(knownSizeWithEndMarker, 5, content.length);
+        try (LzmaInputStream input = new LzmaInputStream(new ByteArrayInputStream(knownSizeWithEndMarker))) {
+            assertArrayEquals(content, input.readAllBytes());
+        }
+
+        byte[] undersized = knownSizeWithEndMarker.clone();
+        writeLittleEndian(undersized, 5, content.length - 1L);
+        assertThrows(
+                IOException.class,
+                () -> new LZMACodec().decompress(
+                        Channels.newChannel(new ByteArrayInputStream(undersized)),
+                        Channels.newChannel(new ByteArrayOutputStream())
+                )
+        );
+        assertThrows(
+                IOException.class,
+                () -> {
+                    try (LzmaInputStream input = new LzmaInputStream(new ByteArrayInputStream(undersized))) {
+                        input.readAllBytes();
+                    }
+                }
+        );
+    }
+
     /// Verifies Arkivo's raw decoder against ZIP-style end-marked LZMA output.
     @Test
     public void nativeDecoderReadsIndependentRawStream() throws IOException {
@@ -562,6 +598,13 @@ public final class LZMACodecTest {
             value |= (long) Byte.toUnsignedInt(bytes[offset + index]) << (index * 8);
         }
         return value;
+    }
+
+    /// Writes one little-endian 64-bit value into a byte array.
+    private static void writeLittleEndian(byte[] bytes, int offset, long value) {
+        for (int index = 0; index < Long.BYTES; index++) {
+            bytes[offset + index] = (byte) (value >>> (index * 8));
+        }
     }
 
     /// Compresses and decompresses the given bytes.

@@ -155,7 +155,11 @@ download nor delete the persistent cache. Run the opt-in suite and inspect or ex
 `-Parkivo.testDataCacheDirectory=<path>` overrides the project-local cache directory. `--offline` reuses an existing
 verified download and fails before extraction when the required object is absent or invalid. The Zstandard suite pins
 the official 1.5.7 release and extracts its upstream license with the golden compression, decompression, malformed
-frame, and dictionary vectors; no downloaded test data is committed.
+frame, and dictionary vectors. The XZ suite pins XZ Utils 5.8.3 and exercises every official valid, malformed, and
+unsupported `.xz` vector plus every valid and malformed LZMA_Alone vector; successful outputs are checked against
+sizes and SHA-256 values produced by the matching official CLI. The BZip2 suite pins the official 1.0.8 reference
+samples and verifies exact decoding, minimum and maximum block-size encoding, and concatenated streams. No downloaded
+test data is committed.
 
 The publication verifier builds every binary, sources, and Javadoc JAR, publishes all modules to build/maven-staging, and validates their POM metadata and dependency scopes:
 

@@ -76,14 +76,18 @@ public abstract class DownloadVerifiedFile extends DefaultTask {
     @TaskAction
     public final void download() throws IOException {
         validateInputs();
-        ensureCacheMarker();
+        Path root = getCacheRoot().get().getAsFile().toPath().toAbsolutePath().normalize();
         Path target = getDestination().get().getAsFile().toPath().toAbsolutePath().normalize();
-        Path downloadRoot = getCacheRoot().get().getAsFile().toPath().toAbsolutePath().normalize()
-                .resolve("downloads")
-                .resolve("sha256");
+        Path downloadRoot = root.resolve("downloads").resolve("sha256");
         if (!target.startsWith(downloadRoot)) {
             throw new GradleException("Test data destination is outside the content-addressed cache: " + target);
         }
+        Path relativeTarget = downloadRoot.relativize(target);
+        if (relativeTarget.getNameCount() != 2
+                || !relativeTarget.getName(0).toString().equalsIgnoreCase(getExpectedSha256().get())) {
+            throw new GradleException("Test data destination does not match its declared SHA-256: " + target);
+        }
+        ensureCacheMarker(root);
         if (verify(target, true)) {
             return;
         }
@@ -175,13 +179,13 @@ public abstract class DownloadVerifiedFile extends DefaultTask {
     /// Returns whether the configured cache marker has the exact expected content.
     private boolean hasValidCacheMarker() throws IOException {
         Path marker = getCacheMarker().get().getAsFile().toPath();
-        return Files.isRegularFile(marker)
+        return !Files.isSymbolicLink(marker)
+                && Files.isRegularFile(marker)
                 && CACHE_MARKER_CONTENT.equals(Files.readString(marker));
     }
 
-    /// Initializes an empty cache or validates the marker of an existing cache.
-    private void ensureCacheMarker() throws IOException {
-        Path root = getCacheRoot().get().getAsFile().toPath().toAbsolutePath().normalize();
+    /// Initializes an empty or Gradle-prepared cache root, or validates the marker of an existing cache.
+    private void ensureCacheMarker(Path root) throws IOException {
         Path marker = getCacheMarker().get().getAsFile().toPath().toAbsolutePath().normalize();
         if (Files.isSymbolicLink(root)) {
             throw new GradleException("Refusing to use a symbolic-link test data cache directory: " + root);
@@ -197,17 +201,43 @@ public abstract class DownloadVerifiedFile extends DefaultTask {
         }
 
         if (Files.exists(root)) {
-            try (var entries = Files.list(root)) {
-                if (entries.findAny().isPresent()) {
-                    throw new GradleException(
-                            "Refusing to initialize a non-empty test data cache without a marker: " + root
-                    );
-                }
+            if (!containsOnlyPreparedCacheDirectories(root)) {
+                throw new GradleException(
+                        "Refusing to initialize a non-empty test data cache without a marker: " + root
+                );
             }
         } else {
             Files.createDirectories(root);
         }
         Files.writeString(marker, CACHE_MARKER_CONTENT, StandardOpenOption.CREATE_NEW);
+    }
+
+    /// Returns whether a markerless root contains only empty content-addressed directories prepared by Gradle.
+    private boolean containsOnlyPreparedCacheDirectories(Path root) throws IOException {
+        try (var paths = Files.walk(root)) {
+            return paths.allMatch(path -> {
+                if (path.equals(root)) {
+                    return true;
+                }
+                if (Files.isSymbolicLink(path) || !Files.isDirectory(path)) {
+                    return false;
+                }
+
+                Path relative = root.relativize(path);
+                int count = relative.getNameCount();
+                if (count == 1) {
+                    return relative.getName(0).toString().equals("downloads");
+                }
+                if (count == 2) {
+                    return relative.getName(0).toString().equals("downloads")
+                            && relative.getName(1).toString().equals("sha256");
+                }
+                return count == 3
+                        && relative.getName(0).toString().equals("downloads")
+                        && relative.getName(1).toString().equals("sha256")
+                        && relative.getName(2).toString().matches("[0-9a-fA-F]{64}");
+            });
+        }
     }
 
     /// Returns whether a file matches the declared byte size and SHA-256.

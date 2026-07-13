@@ -202,11 +202,7 @@ final class LzmaDecoderEngine {
             return -1;
         }
         if (chunkRemaining == 0L) {
-            if (pendingLength != 0) {
-                throw new IOException("LZMA match exceeds the expected output size");
-            }
-            chunkEnded = true;
-            return -1;
+            return finishSizedChunk();
         }
         if (pendingLength > 0) {
             return copyPendingByte();
@@ -279,6 +275,9 @@ final class LzmaDecoderEngine {
                         if (!endMarkerAllowed || chunkRemaining >= 0L) {
                             throw new IOException("Unexpected LZMA end marker");
                         }
+                        if (!range.finished()) {
+                            throw new IOException("Invalid LZMA range coder final state");
+                        }
                         chunkEnded = true;
                         return -1;
                     }
@@ -291,6 +290,30 @@ final class LzmaDecoderEngine {
         pendingLength = matchLength;
         validatePendingMatch();
         return copyPendingByte();
+    }
+
+    /// Finishes an exact-size chunk, accepting only a canonical range state or an allowed optional end marker.
+    private int finishSizedChunk() throws IOException {
+        if (pendingLength != 0) {
+            throw new IOException("LZMA match exceeds the expected output size");
+        }
+        if (rangeFinished()) {
+            chunkEnded = true;
+            return -1;
+        }
+        if (!endMarkerAllowed) {
+            throw new IOException("Invalid LZMA range coder final state");
+        }
+
+        chunkRemaining = -1L;
+        int extra = readByte();
+        if (extra >= 0) {
+            throw new IOException("LZMA stream exceeds the expected output size");
+        }
+        if (!rangeFinished()) {
+            throw new IOException("Invalid LZMA range coder final state");
+        }
+        return -1;
     }
 
     /// Adds one uncompressed LZMA2 byte directly to the shared dictionary.

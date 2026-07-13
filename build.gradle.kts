@@ -104,5 +104,9 @@ tasks.register("testDataCacheReport") {
 tasks.register("realWorldTest") {
     group = "verification"
     description = "Runs opt-in real-world test corpus verification across supported modules."
-    dependsOn(":arkivo-codec-zstd:realWorldTest")
+    dependsOn(
+        ":arkivo-codec-bzip2:realWorldTest",
+        ":arkivo-codec-xz:realWorldTest",
+        ":arkivo-codec-zstd:realWorldTest"
+    )
 }
