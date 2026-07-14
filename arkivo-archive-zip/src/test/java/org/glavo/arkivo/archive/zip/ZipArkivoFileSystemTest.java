@@ -5,7 +5,6 @@ package org.glavo.arkivo.archive.zip;
 
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
 import org.apache.commons.compress.compressors.xz.XZCompressorOutputStream;
-import org.apache.commons.compress.compressors.zstandard.ZstdCompressorOutputStream;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
@@ -18,6 +17,8 @@ import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoFileSystemImpl;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemImpl;
+import org.glavo.arkivo.codec.CodecOptions;
+import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.tukaani.xz.LZMA2Options;
 import org.tukaani.xz.LZMAOutputStream;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -9176,11 +9177,10 @@ public final class ZipArkivoFileSystemTest {
 
     /// Returns Zstandard-compressed bytes for a ZIP Zstandard entry.
     private static byte[] zstandard(byte[] content) throws IOException {
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        try (ZstdCompressorOutputStream zstandard = new ZstdCompressorOutputStream(output)) {
-            zstandard.write(content);
-        }
-        return output.toByteArray();
+        ByteBuffer compressed = new ZstdCodec().compress(ByteBuffer.wrap(content), CodecOptions.EMPTY);
+        byte[] result = new byte[compressed.remaining()];
+        compressed.get(result);
+        return result;
     }
 
     /// Returns XZ-compressed bytes for a ZIP XZ entry.
