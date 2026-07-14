@@ -91,6 +91,116 @@ final class ZstdEntropy {
         return new FseParseResult(FseTable.fromNormalized(normalized, symbol, tableLog), bytesRead);
     }
 
+    /// Encodes one normalized FSE distribution in forward bit order.
+    static byte[] encodeFseTableDescription(
+            int[] normalized,
+            int symbolCount,
+            int tableLog
+    ) {
+        if (symbolCount <= 0 || symbolCount > normalized.length || tableLog < 5 || tableLog > 15) {
+            throw new IllegalArgumentException("Invalid normalized Zstandard FSE distribution");
+        }
+        ForwardBitWriter bits = new ForwardBitWriter();
+        bits.writeBits(tableLog - 5, 4);
+
+        int remaining = (1 << tableLog) + 1;
+        int threshold = 1 << tableLog;
+        int numberOfBits = tableLog + 1;
+        boolean previousZero = false;
+        int symbol = 0;
+        while (remaining > 1 && symbol < symbolCount) {
+            if (previousZero) {
+                int start = symbol;
+                while (symbol < symbolCount && normalized[symbol] == 0) {
+                    symbol++;
+                }
+                int zeroRun = symbol - start;
+                while (zeroRun >= 24) {
+                    bits.writeBits(0xffff, 16);
+                    zeroRun -= 24;
+                }
+                while (zeroRun >= 3) {
+                    bits.writeBits(3, 2);
+                    zeroRun -= 3;
+                }
+                bits.writeBits(zeroRun, 2);
+            }
+
+            int count = normalized[symbol++];
+            int maximum = (threshold << 1) - 1 - remaining;
+            remaining -= Math.abs(count);
+            int encoded = count + 1;
+            if (encoded >= threshold) {
+                encoded += maximum;
+            }
+            bits.writeBits(encoded, numberOfBits - (encoded < maximum ? 1 : 0));
+            previousZero = count == 0;
+            while (remaining < threshold) {
+                numberOfBits--;
+                threshold >>>= 1;
+            }
+        }
+        if (remaining != 1) {
+            throw new IllegalArgumentException("Invalid normalized Zstandard FSE distribution");
+        }
+        return bits.finish();
+    }
+
+    /// Encodes one normalized FSE distribution in forward bit order.
+    static byte[] encodeFseTableDescription(
+            int[] normalized,
+            int symbolCount,
+            int tableLog
+    ) {
+        if (symbolCount <= 0 || symbolCount > normalized.length || tableLog < 5 || tableLog > 15) {
+            throw new IllegalArgumentException("Invalid normalized Zstandard FSE distribution");
+        }
+        ForwardBitWriter bits = new ForwardBitWriter();
+        bits.writeBits(tableLog - 5, 4);
+
+        int remaining = (1 << tableLog) + 1;
+        int threshold = 1 << tableLog;
+        int numberOfBits = tableLog + 1;
+        boolean previousZero = false;
+        int symbol = 0;
+        while (remaining > 1 && symbol < symbolCount) {
+            if (previousZero) {
+                int start = symbol;
+                while (symbol < symbolCount && normalized[symbol] == 0) {
+                    symbol++;
+                }
+                int zeroRun = symbol - start;
+                while (zeroRun >= 24) {
+                    bits.writeBits(0xffff, 16);
+                    zeroRun -= 24;
+                }
+                while (zeroRun >= 3) {
+                    bits.writeBits(3, 2);
+                    zeroRun -= 3;
+                }
+                bits.writeBits(zeroRun, 2);
+            }
+
+            int count = normalized[symbol++];
+            int maximum = (threshold << 1) - 1 - remaining;
+            remaining -= Math.abs(count);
+            int encoded = count + 1;
+            if (encoded >= threshold) {
+                encoded += maximum;
+            }
+            bits.writeBits(encoded, numberOfBits - (encoded < maximum ? 1 : 0));
+            previousZero = count == 0;
+            while (remaining < threshold) {
+                numberOfBits--;
+                threshold >>>= 1;
+            }
+        }
+        if (remaining != 1) {
+            throw new IllegalArgumentException("Invalid normalized Zstandard FSE distribution");
+        }
+        return bits.finish();
+    }
+
     /// Reads a Huffman table description and returns the table and encoded byte count.
     static HuffmanParseResult readHuffmanTable(byte[] source, int offset, int limit) throws IOException {
         if (offset >= limit) {
@@ -279,6 +389,43 @@ final class ZstdEntropy {
                 value |= (long) Byte.toUnsignedInt(source[byteIndex + index]) << (index * 8);
             }
             return (int) ((value >>> shift) & ((1L << count) - 1L));
+        }
+    }
+
+    /// Packs little-endian fields into a forward-readable bitstream.
+    @NotNullByDefault
+    private static final class ForwardBitWriter {
+        /// Packed bytes.
+        private byte[] bytes = new byte[16];
+
+        /// Number of bits written.
+        private int bitCount;
+
+        /// Appends a low-order bit field.
+        private void writeBits(int value, int count) {
+            if (count < 0 || count > 31 || (count != 31 && value >>> count != 0)) {
+                throw new IllegalArgumentException("Invalid Zstandard forward bit field");
+            }
+            ensureCapacity(bitCount + count);
+            for (int bit = 0; bit < count; bit++) {
+                if ((value & 1 << bit) != 0) {
+                    bytes[(bitCount + bit) >>> 3] |= (byte) (1 << ((bitCount + bit) & 7));
+                }
+            }
+            bitCount += count;
+        }
+
+        /// Returns the complete byte-aligned representation.
+        private byte[] finish() {
+            return Arrays.copyOf(bytes, (bitCount + 7) >>> 3);
+        }
+
+        /// Grows the packed storage to hold the requested bit count.
+        private void ensureCapacity(int requiredBits) {
+            int requiredBytes = (requiredBits + 7) >>> 3;
+            if (requiredBytes > bytes.length) {
+                bytes = Arrays.copyOf(bytes, Math.max(requiredBytes, bytes.length * 2));
+            }
         }
     }
 
@@ -492,6 +639,129 @@ final class ZstdEntropy {
             }
             return baselines[state] + bits.readBits(numbersOfBits[state]);
         }
+    }
+
+    /// Maps FSE symbols and following decoder states to inverse encoding transitions.
+    @NotNullByDefault
+    static final class FseEncoderTable {
+        /// Number of bits used to flush a state.
+        private final int tableLog;
+
+        /// Number of decoder states.
+        private final int tableSize;
+
+        /// Decoder state selected for each symbol and following state.
+        private final int @Unmodifiable [] states;
+
+        /// Transition value emitted for each symbol and following state.
+        private final int @Unmodifiable [] values;
+
+        /// Transition bit count emitted for each symbol and following state.
+        private final int @Unmodifiable [] bitCounts;
+
+        /// One decoder state representing each symbol before any transition is needed.
+        private final int @Unmodifiable [] initialStates;
+
+        /// Creates one immutable inverse table.
+        private FseEncoderTable(
+                int tableLog,
+                int tableSize,
+                int[] states,
+                int[] values,
+                int[] bitCounts,
+                int[] initialStates
+        ) {
+            this.tableLog = tableLog;
+            this.tableSize = tableSize;
+            this.states = states;
+            this.values = values;
+            this.bitCounts = bitCounts;
+            this.initialStates = initialStates;
+        }
+
+        /// Builds inverse transitions from a decoding table.
+        static FseEncoderTable fromDecoder(FseTable decoder, int symbolCount) throws IOException {
+            int tableLog = decoder.tableLog();
+            int tableSize = 1 << tableLog;
+            int[] states = new int[symbolCount * tableSize];
+            int[] values = new int[states.length];
+            int[] bitCounts = new int[states.length];
+            int[] initialStates = new int[symbolCount];
+            Arrays.fill(states, -1);
+            Arrays.fill(initialStates, -1);
+
+            for (int state = 0; state < tableSize; state++) {
+                int symbol = decoder.symbol(state);
+                int bitCount = decoder.numberOfBits(state);
+                int baseline = decoder.baseline(state);
+                if (initialStates[symbol] < 0) {
+                    initialStates[symbol] = state;
+                }
+                for (int value = 0; value < 1 << bitCount; value++) {
+                    int nextState = baseline + value;
+                    int index = symbol * tableSize + nextState;
+                    if (states[index] >= 0) {
+                        throw new IOException("Ambiguous Zstandard FSE encoding transition");
+                    }
+                    states[index] = state;
+                    values[index] = value;
+                    bitCounts[index] = bitCount;
+                }
+            }
+
+            for (int symbol = 0; symbol < symbolCount; symbol++) {
+                if (initialStates[symbol] < 0) {
+                    continue;
+                }
+                for (int nextState = 0; nextState < tableSize; nextState++) {
+                    if (states[symbol * tableSize + nextState] < 0) {
+                        throw new IOException("Incomplete Zstandard FSE encoding transition");
+                    }
+                }
+            }
+            return new FseEncoderTable(tableLog, tableSize, states, values, bitCounts, initialStates);
+        }
+
+        /// Returns the number of bits used to flush a state.
+        int tableLog() {
+            return tableLog;
+        }
+
+        /// Returns whether this table can encode the given symbol.
+        boolean canEncode(int symbol) {
+            return symbol >= 0
+                    && symbol < initialStates.length
+                    && initialStates[symbol] >= 0;
+        }
+
+        /// Returns one decoder state that represents the given final symbol.
+        int initialState(int symbol) {
+            if (!canEncode(symbol)) {
+                throw new IllegalArgumentException("Invalid Zstandard FSE symbol");
+            }
+            return initialStates[symbol];
+        }
+
+        /// Returns the inverse transition encoding a symbol before the given following state.
+        FseTransition transition(int symbol, int nextState) {
+            if (symbol < 0 || symbol >= initialStates.length
+                    || nextState < 0 || nextState >= tableSize) {
+                throw new IllegalArgumentException("Invalid Zstandard FSE encoding transition");
+            }
+            int index = symbol * tableSize + nextState;
+            if (states[index] < 0) {
+                throw new IllegalArgumentException("Unencodable Zstandard FSE symbol");
+            }
+            return new FseTransition(states[index], values[index], bitCounts[index]);
+        }
+    }
+
+    /// Describes one inverse FSE state transition.
+    ///
+    /// @param state decoder state representing the encoded symbol
+    /// @param value transition bits that advance to the following state
+    /// @param bitCount number of transition bits
+    record FseTransition(int state, int value, int bitCount) {
     }
 
     /// An immutable canonical Huffman decoding trie.

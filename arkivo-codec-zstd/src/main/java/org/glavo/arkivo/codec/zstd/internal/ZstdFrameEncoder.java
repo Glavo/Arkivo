@@ -5,14 +5,17 @@ package org.glavo.arkivo.codec.zstd.internal;
 
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.ByteArrayOutputStream;
+import java.util.ArrayList;
+import java.util.List;
 
 /// Encodes Zstandard frame headers, block framing, and optional checksum trailers.
 @NotNullByDefault
 final class ZstdFrameEncoder {
     /// Standard Zstandard frame magic in little-endian byte order.
-    private static final byte[] FRAME_MAGIC = {0x28, (byte) 0xb5, 0x2f, (byte) 0xfd};
+    private static final byte @Unmodifiable [] FRAME_MAGIC = {0x28, (byte) 0xb5, 0x2f, (byte) 0xfd};
 
     /// Encodes a frame header for the configured source pledge and dictionary.
     static byte[] header(ZstdEncoderParameters parameters) {
@@ -40,14 +43,33 @@ final class ZstdFrameEncoder {
         return output.toByteArray();
     }
 
-    /// Encodes one block including its block header.
-    static byte[] block(
-            byte[] source,
-            int length,
-            boolean last,
+    /// Encodes one independently scheduled multi-block job.
+    static JobEncoding job(
+            @Unmodifiable List<BlockInput> blocks,
+            byte @Unmodifiable [] prefix,
+            long frameOffset,
+            boolean lastJob,
             ZstdEncoderParameters parameters
     ) {
-        return ZstdBlockEncoder.encode(source, length, last, parameters);
+        if (blocks.isEmpty()) {
+            throw new IllegalArgumentException("A Zstandard compression job requires a block");
+        }
+
+        ZstdBlockEncoder encoder = new ZstdBlockEncoder();
+        encoder.resetJob(parameters, prefix, frameOffset);
+        ArrayList<byte @Unmodifiable []> encoded = new ArrayList<>(blocks.size());
+        for (int index = 0; index < blocks.size(); index++) {
+            BlockInput block = blocks.get(index);
+            boolean lastBlock = lastJob && index + 1 == blocks.size();
+            encoded.add(encoder.encode(
+                    block.bytes(),
+                    block.bytes().length,
+                    lastBlock,
+                    parameters,
+                    block.longDistanceMatches()
+            ));
+        }
+        return new JobEncoding(List.copyOf(encoded));
     }
 
     /// Encodes the low 32 bits of an XXH64 frame checksum.
@@ -137,6 +159,22 @@ final class ZstdFrameEncoder {
         for (int index = 0; index < bytes; index++) {
             output.write((int) (value >>> (index * 8)));
         }
+    }
+
+    /// Holds one immutable uncompressed block and its preplanned long-distance matches.
+    ///
+    /// @param bytes uncompressed block bytes
+    /// @param longDistanceMatches verified frame-history matches for the block
+    record BlockInput(
+            byte @Unmodifiable [] bytes,
+            @Unmodifiable List<ZstdLongDistanceMatcher.Match> longDistanceMatches
+    ) {
+    }
+
+    /// Holds the ordered encoded blocks produced by one parallel job.
+    ///
+    /// @param blocks encoded blocks including their block headers
+    record JobEncoding(@Unmodifiable List<byte @Unmodifiable []> blocks) {
     }
 
     /// Creates no instances.

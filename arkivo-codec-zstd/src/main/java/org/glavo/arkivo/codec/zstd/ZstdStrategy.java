@@ -8,13 +8,13 @@ import org.jetbrains.annotations.NotNullByDefault;
 /// Selects a Zstandard match-finding strategy from fastest to strongest.
 @NotNullByDefault
 public enum ZstdStrategy {
-    /// Uses a single hash-table lookup per position.
+    /// Uses one primary hash-table candidate per position.
     FAST,
 
-    /// Uses a double hash-table lookup.
+    /// Chooses between primary four-byte and secondary eight-byte hash candidates.
     DFAST,
 
-    /// Selects the first locally best match.
+    /// Selects the locally best bounded hash-chain match immediately.
     GREEDY,
 
     /// Delays match selection by one position.
@@ -23,15 +23,15 @@ public enum ZstdStrategy {
     /// Performs two-step lazy match selection.
     LAZY2,
 
-    /// Uses a binary tree with two-step lazy selection.
+    /// Uses bounded binary-tree candidate search with two-step lazy selection.
     BT_LAZY2,
 
-    /// Uses binary-tree optimal parsing.
+    /// Uses binary-tree candidates and dynamic programming to minimize an approximate block bit cost.
     BT_OPT,
 
-    /// Uses deeper binary-tree optimal parsing.
+    /// Adds shortened-match alternatives to binary-tree dynamic-programming parsing.
     BT_ULTRA,
 
-    /// Uses the strongest binary-tree optimal parser.
+    /// Uses the strongest candidate-ending search over binary-tree matches.
     BT_ULTRA2
 }

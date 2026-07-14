@@ -4,12 +4,13 @@
 package org.glavo.arkivo.codec.zstd.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
-import java.util.Arrays;
+import java.util.ArrayList;
 
-/// Provides the predefined Zstandard sequence tables and their inverse encoding transitions.
+/// Builds and selects predefined, RLE, compressed, and repeat Zstandard sequence tables.
 @NotNullByDefault
 final class ZstdSequenceEntropy {
     /// Number of literal-length symbols in the predefined table.
@@ -18,8 +19,11 @@ final class ZstdSequenceEntropy {
     /// Number of match-length symbols in the predefined table.
     private static final int MATCH_LENGTH_SYMBOLS = 53;
 
-    /// Number of offset symbols in the predefined table.
-    private static final int OFFSET_SYMBOLS = 29;
+    /// Number of offset symbols accepted by the format.
+    private static final int OFFSET_SYMBOLS = 32;
+
+    /// Number of offset symbols represented by the predefined table.
+    private static final int PREDEFINED_OFFSET_SYMBOLS = 29;
 
     /// Predefined literal-length normalized probabilities.
     private static final int @Unmodifiable [] LITERAL_LENGTH_PROBABILITIES = {
@@ -52,13 +56,13 @@ final class ZstdSequenceEntropy {
     static final ZstdEntropy.FseTable OFFSET_DECODER;
 
     /// Inverse transitions for predefined literal-length encoding.
-    static final EncoderTable LITERAL_LENGTH_ENCODER;
+    static final ZstdEntropy.FseEncoderTable LITERAL_LENGTH_ENCODER;
 
     /// Inverse transitions for predefined match-length encoding.
-    static final EncoderTable MATCH_LENGTH_ENCODER;
+    static final ZstdEntropy.FseEncoderTable MATCH_LENGTH_ENCODER;
 
     /// Inverse transitions for predefined offset-code encoding.
-    static final EncoderTable OFFSET_ENCODER;
+    static final ZstdEntropy.FseEncoderTable OFFSET_ENCODER;
 
     static {
         try {
@@ -74,134 +78,277 @@ final class ZstdSequenceEntropy {
             );
             OFFSET_DECODER = ZstdEntropy.FseTable.fromNormalized(
                     OFFSET_PROBABILITIES,
-                    OFFSET_SYMBOLS,
+                    PREDEFINED_OFFSET_SYMBOLS,
                     5
             );
-            LITERAL_LENGTH_ENCODER = EncoderTable.fromDecoder(LITERAL_LENGTH_DECODER, LITERAL_LENGTH_SYMBOLS);
-            MATCH_LENGTH_ENCODER = EncoderTable.fromDecoder(MATCH_LENGTH_DECODER, MATCH_LENGTH_SYMBOLS);
-            OFFSET_ENCODER = EncoderTable.fromDecoder(OFFSET_DECODER, OFFSET_SYMBOLS);
+            LITERAL_LENGTH_ENCODER = ZstdEntropy.FseEncoderTable.fromDecoder(
+                    LITERAL_LENGTH_DECODER, LITERAL_LENGTH_SYMBOLS
+            );
+            MATCH_LENGTH_ENCODER = ZstdEntropy.FseEncoderTable.fromDecoder(
+                    MATCH_LENGTH_DECODER, MATCH_LENGTH_SYMBOLS
+            );
+            OFFSET_ENCODER = ZstdEntropy.FseEncoderTable.fromDecoder(
+                    OFFSET_DECODER, PREDEFINED_OFFSET_SYMBOLS
+            );
         } catch (IOException exception) {
             throw new ExceptionInInitializerError(exception);
         }
     }
 
+    /// Selects an encoding table for literal-length symbols.
+    static TableEncoding selectLiteralLengths(
+            int[] symbols,
+            @Nullable ZstdEntropy.FseEncoderTable previous
+    ) {
+        return select(
+                symbols,
+                LITERAL_LENGTH_SYMBOLS,
+                9,
+                LITERAL_LENGTH_ENCODER,
+                previous
+        );
+    }
+
+    /// Selects an encoding table for offset symbols.
+    static TableEncoding selectOffsets(
+            int[] symbols,
+            @Nullable ZstdEntropy.FseEncoderTable previous
+    ) {
+        return select(symbols, OFFSET_SYMBOLS, 8, OFFSET_ENCODER, previous);
+    }
+
+    /// Selects an encoding table for match-length symbols.
+    static TableEncoding selectMatchLengths(
+            int[] symbols,
+            @Nullable ZstdEntropy.FseEncoderTable previous
+    ) {
+        return select(symbols, MATCH_LENGTH_SYMBOLS, 9, MATCH_LENGTH_ENCODER, previous);
+    }
+
+    /// Inverts a dictionary literal-length table for repeat-mode encoding.
+    static @Nullable ZstdEntropy.FseEncoderTable invertLiteralLengths(
+            @Nullable ZstdEntropy.FseTable decoder
+    ) {
+        return invert(decoder, LITERAL_LENGTH_SYMBOLS);
+    }
+
+    /// Inverts a dictionary offset table for repeat-mode encoding.
+    static @Nullable ZstdEntropy.FseEncoderTable invertOffsets(
+            @Nullable ZstdEntropy.FseTable decoder
+    ) {
+        return invert(decoder, OFFSET_SYMBOLS);
+    }
+
+    /// Inverts a dictionary match-length table for repeat-mode encoding.
+    static @Nullable ZstdEntropy.FseEncoderTable invertMatchLengths(
+            @Nullable ZstdEntropy.FseTable decoder
+    ) {
+        return invert(decoder, MATCH_LENGTH_SYMBOLS);
+    }
+
+    /// Selects the cheapest compatible representation for one sequence-code stream.
+    private static TableEncoding select(
+            int[] symbols,
+            int symbolCount,
+            int maximumTableLog,
+            ZstdEntropy.FseEncoderTable predefined,
+            @Nullable ZstdEntropy.FseEncoderTable previous
+    ) {
+        if (symbols.length == 0) {
+            throw new IllegalArgumentException("A Zstandard sequence table requires symbols");
+        }
+
+        ArrayList<TableEncoding> candidates = new ArrayList<>(maximumTableLog + 1);
+        if (covers(predefined, symbols)) {
+            candidates.add(new TableEncoding(0, new byte[0], predefined));
+        }
+        if (previous != null && covers(previous, symbols)) {
+            candidates.add(new TableEncoding(3, new byte[0], previous));
+        }
+
+        int[] frequencies = new int[symbolCount];
+        int maximumSymbol = 0;
+        int distinctSymbols = 0;
+        for (int symbol : symbols) {
+            if (symbol < 0 || symbol >= symbolCount) {
+                throw new IllegalArgumentException("Invalid Zstandard sequence symbol");
+            }
+            if (frequencies[symbol]++ == 0) {
+                distinctSymbols++;
+                maximumSymbol = Math.max(maximumSymbol, symbol);
+            }
+        }
+
+        if (distinctSymbols == 1) {
+            ZstdEntropy.FseEncoderTable rle = invertRequired(
+                    ZstdEntropy.FseTable.rle(maximumSymbol),
+                    maximumSymbol + 1
+            );
+            candidates.add(new TableEncoding(
+                    1,
+                    new byte[]{(byte) maximumSymbol},
+                    rle
+            ));
+        } else {
+            int minimumTableLog = Math.max(
+                    5,
+                    32 - Integer.numberOfLeadingZeros(distinctSymbols - 1)
+            );
+            for (int tableLog = minimumTableLog; tableLog <= maximumTableLog; tableLog++) {
+                int[] normalized = normalize(
+                        frequencies,
+                        maximumSymbol + 1,
+                        symbols.length,
+                        tableLog
+                );
+                byte[] description = ZstdEntropy.encodeFseTableDescription(
+                        normalized,
+                        maximumSymbol + 1,
+                        tableLog
+                );
+                try {
+                    ZstdEntropy.FseTable decoder = ZstdEntropy.FseTable.fromNormalized(
+                            normalized,
+                            maximumSymbol + 1,
+                            tableLog
+                    );
+                    candidates.add(new TableEncoding(
+                            2,
+                            description,
+                            ZstdEntropy.FseEncoderTable.fromDecoder(
+                                    decoder,
+                                    maximumSymbol + 1
+                            )
+                    ));
+                } catch (IOException exception) {
+                    throw new IllegalStateException(
+                            "Cannot build Zstandard sequence FSE table",
+                            exception
+                    );
+                }
+            }
+        }
+
+        TableEncoding selected = candidates.get(0);
+        long selectedCost = encodedCost(selected, symbols);
+        for (int index = 1; index < candidates.size(); index++) {
+            TableEncoding candidate = candidates.get(index);
+            long cost = encodedCost(candidate, symbols);
+            if (cost < selectedCost) {
+                selected = candidate;
+                selectedCost = cost;
+            }
+        }
+        return selected;
+    }
+
+    /// Returns whether a table covers every symbol in a stream.
+    private static boolean covers(ZstdEntropy.FseEncoderTable table, int[] symbols) {
+        for (int symbol : symbols) {
+            if (!table.canEncode(symbol)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// Returns description and state-transition cost in bits.
+    private static long encodedCost(TableEncoding encoding, int[] symbols) {
+        ZstdEntropy.FseEncoderTable table = encoding.table();
+        long cost = (long) encoding.description().length * 8L + table.tableLog();
+        int state = table.initialState(symbols[symbols.length - 1]);
+        for (int index = symbols.length - 2; index >= 0; index--) {
+            ZstdEntropy.FseTransition transition = table.transition(symbols[index], state);
+            cost += transition.bitCount();
+            state = transition.state();
+        }
+        return cost;
+    }
+
+    /// Normalizes observed frequencies to one complete power-of-two FSE distribution.
+    private static int[] normalize(
+            int[] frequencies,
+            int symbolCount,
+            int total,
+            int tableLog
+    ) {
+        int tableSize = 1 << tableLog;
+        int distinctSymbols = 0;
+        int[] normalized = new int[symbolCount];
+        for (int symbol = 0; symbol < symbolCount; symbol++) {
+            if (frequencies[symbol] != 0) {
+                normalized[symbol] = 1;
+                distinctSymbols++;
+            }
+        }
+        int distributable = tableSize - distinctSymbols;
+        int assigned = 0;
+        long[] remainders = new long[symbolCount];
+        for (int symbol = 0; symbol < symbolCount; symbol++) {
+            if (frequencies[symbol] == 0) {
+                remainders[symbol] = -1L;
+                continue;
+            }
+            long scaled = (long) frequencies[symbol] * distributable;
+            int addition = (int) (scaled / total);
+            normalized[symbol] += addition;
+            assigned += addition;
+            remainders[symbol] = scaled % total;
+        }
+
+        int remaining = distributable - assigned;
+        while (remaining-- > 0) {
+            int best = -1;
+            for (int symbol = 0; symbol < symbolCount; symbol++) {
+                if (best < 0
+                        || remainders[symbol] > remainders[best]
+                        || remainders[symbol] == remainders[best]
+                        && frequencies[symbol] > frequencies[best]) {
+                    best = symbol;
+                }
+            }
+            if (best < 0 || remainders[best] < 0L) {
+                throw new IllegalStateException("Cannot normalize Zstandard sequence frequencies");
+            }
+            normalized[best]++;
+            remainders[best] = -1L;
+        }
+        return normalized;
+    }
+
+    /// Inverts a decoder table while preserving an absent dictionary table.
+    private static @Nullable ZstdEntropy.FseEncoderTable invert(
+            @Nullable ZstdEntropy.FseTable decoder,
+            int symbolCount
+    ) {
+        return decoder == null ? null : invertRequired(decoder, symbolCount);
+    }
+
+    /// Inverts one required decoder table.
+    private static ZstdEntropy.FseEncoderTable invertRequired(
+            ZstdEntropy.FseTable decoder,
+            int symbolCount
+    ) {
+        try {
+            return ZstdEntropy.FseEncoderTable.fromDecoder(decoder, symbolCount);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Cannot invert Zstandard sequence FSE table", exception);
+        }
+    }
+
+    /// Holds one selected sequence-code table representation.
+    ///
+    /// @param mode sequence table mode
+    /// @param description byte-aligned mode payload
+    /// @param table inverse FSE transitions used by the sequence bitstream
+    record TableEncoding(
+            int mode,
+            byte @Unmodifiable [] description,
+            ZstdEntropy.FseEncoderTable table
+    ) {
+    }
+
     /// Creates no instances.
     private ZstdSequenceEntropy() {
-    }
-
-    /// Maps symbols and following decoder states to inverse FSE encoding transitions.
-    @NotNullByDefault
-    static final class EncoderTable {
-        /// Number of bits used to flush a state.
-        private final int tableLog;
-
-        /// Number of decoder states.
-        private final int tableSize;
-
-        /// Decoder state selected for each symbol and following state.
-        private final int @Unmodifiable [] states;
-
-        /// Transition value emitted for each symbol and following state.
-        private final int @Unmodifiable [] values;
-
-        /// Transition bit count emitted for each symbol and following state.
-        private final int @Unmodifiable [] bitCounts;
-
-        /// One decoder state representing each symbol before any transition is needed.
-        private final int @Unmodifiable [] initialStates;
-
-        /// Creates one immutable inverse table.
-        private EncoderTable(
-                int tableLog,
-                int tableSize,
-                int[] states,
-                int[] values,
-                int[] bitCounts,
-                int[] initialStates
-        ) {
-            this.tableLog = tableLog;
-            this.tableSize = tableSize;
-            this.states = states;
-            this.values = values;
-            this.bitCounts = bitCounts;
-            this.initialStates = initialStates;
-        }
-
-        /// Builds inverse transitions from a decoding table.
-        private static EncoderTable fromDecoder(
-                ZstdEntropy.FseTable decoder,
-                int symbolCount
-        ) throws IOException {
-            int tableLog = decoder.tableLog();
-            int tableSize = 1 << tableLog;
-            int[] states = new int[symbolCount * tableSize];
-            int[] values = new int[states.length];
-            int[] bitCounts = new int[states.length];
-            int[] initialStates = new int[symbolCount];
-            Arrays.fill(states, -1);
-            Arrays.fill(initialStates, -1);
-
-            for (int state = 0; state < tableSize; state++) {
-                int symbol = decoder.symbol(state);
-                int bitCount = decoder.numberOfBits(state);
-                int baseline = decoder.baseline(state);
-                if (initialStates[symbol] < 0) {
-                    initialStates[symbol] = state;
-                }
-                for (int value = 0; value < 1 << bitCount; value++) {
-                    int nextState = baseline + value;
-                    int index = symbol * tableSize + nextState;
-                    if (states[index] >= 0) {
-                        throw new IOException("Ambiguous Zstandard FSE encoding transition");
-                    }
-                    states[index] = state;
-                    values[index] = value;
-                    bitCounts[index] = bitCount;
-                }
-            }
-
-            for (int symbol = 0; symbol < symbolCount; symbol++) {
-                if (initialStates[symbol] < 0) {
-                    throw new IOException("Missing Zstandard FSE encoding symbol");
-                }
-                for (int nextState = 0; nextState < tableSize; nextState++) {
-                    if (states[symbol * tableSize + nextState] < 0) {
-                        throw new IOException("Incomplete Zstandard FSE encoding transition");
-                    }
-                }
-            }
-            return new EncoderTable(tableLog, tableSize, states, values, bitCounts, initialStates);
-        }
-
-        /// Returns the number of bits used to flush a state.
-        int tableLog() {
-            return tableLog;
-        }
-
-        /// Returns one decoder state that represents the given final symbol.
-        int initialState(int symbol) {
-            if (symbol < 0 || symbol >= initialStates.length) {
-                throw new IllegalArgumentException("Invalid Zstandard FSE symbol");
-            }
-            return initialStates[symbol];
-        }
-
-        /// Returns the inverse transition encoding a symbol before the given following state.
-        Transition transition(int symbol, int nextState) {
-            if (symbol < 0 || symbol >= initialStates.length
-                    || nextState < 0 || nextState >= tableSize) {
-                throw new IllegalArgumentException("Invalid Zstandard FSE encoding transition");
-            }
-            int index = symbol * tableSize + nextState;
-            return new Transition(states[index], values[index], bitCounts[index]);
-        }
-    }
-
-    /// Describes one inverse FSE state transition.
-    ///
-    /// @param state decoder state representing the encoded symbol
-    /// @param value transition bits that advance to the following state
-    /// @param bitCount number of transition bits
-    record Transition(int state, int value, int bitCount) {
     }
 }

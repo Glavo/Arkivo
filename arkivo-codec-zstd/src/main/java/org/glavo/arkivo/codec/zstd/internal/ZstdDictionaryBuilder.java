@@ -303,51 +303,11 @@ public final class ZstdDictionaryBuilder {
 
     /// Writes one normalized FSE distribution in forward bit order.
     private static void writeFseTable(ByteArrayOutputStream output, FseDistribution distribution) {
-        int[] normalized = distribution.normalized();
-        ForwardBitWriter bits = new ForwardBitWriter();
-        bits.write(distribution.tableLog() - 5, 4);
-
-        int remaining = (1 << distribution.tableLog()) + 1;
-        int threshold = 1 << distribution.tableLog();
-        int numberOfBits = distribution.tableLog() + 1;
-        boolean previousZero = false;
-        int symbol = 0;
-        while (remaining > 1 && symbol < normalized.length) {
-            if (previousZero) {
-                int start = symbol;
-                while (symbol < normalized.length && normalized[symbol] == 0) {
-                    symbol++;
-                }
-                int zeroRun = symbol - start;
-                while (zeroRun >= 24) {
-                    bits.write(0xffff, 16);
-                    zeroRun -= 24;
-                }
-                while (zeroRun >= 3) {
-                    bits.write(3, 2);
-                    zeroRun -= 3;
-                }
-                bits.write(zeroRun, 2);
-            }
-
-            int count = normalized[symbol++];
-            int maximum = (threshold << 1) - 1 - remaining;
-            remaining -= Math.abs(count);
-            int encoded = count + 1;
-            if (encoded >= threshold) {
-                encoded += maximum;
-            }
-            bits.write(encoded, numberOfBits - (encoded < maximum ? 1 : 0));
-            previousZero = count == 0;
-            while (remaining < threshold) {
-                numberOfBits--;
-                threshold >>>= 1;
-            }
-        }
-        if (remaining != 1) {
-            throw new IllegalArgumentException("Invalid normalized Zstandard FSE distribution");
-        }
-        output.writeBytes(bits.finish());
+        output.writeBytes(ZstdEntropy.encodeFseTableDescription(
+                distribution.normalized(),
+                distribution.normalized().length,
+                distribution.tableLog()
+        ));
     }
 
     /// Derives a compliant non-zero dictionary identifier from dictionary content.
@@ -402,43 +362,6 @@ public final class ZstdDictionaryBuilder {
 
         /// Creates candidate metadata.
         private Candidate {
-        }
-    }
-
-    /// Packs little-endian fields into a forward-readable bitstream.
-    @NotNullByDefault
-    private static final class ForwardBitWriter {
-        /// Packed bytes.
-        private byte[] bytes = new byte[16];
-
-        /// Number of bits written.
-        private int bitCount;
-
-        /// Appends a low-order bit field.
-        private void write(int value, int count) {
-            if (count < 0 || count > 31 || (count != 31 && value >>> count != 0)) {
-                throw new IllegalArgumentException("Invalid Zstandard forward bit field");
-            }
-            ensureCapacity(bitCount + count);
-            for (int bit = 0; bit < count; bit++) {
-                if ((value & 1 << bit) != 0) {
-                    bytes[(bitCount + bit) >>> 3] |= (byte) (1 << ((bitCount + bit) & 7));
-                }
-            }
-            bitCount += count;
-        }
-
-        /// Returns the complete byte-aligned representation.
-        private byte[] finish() {
-            return Arrays.copyOf(bytes, (bitCount + 7) >>> 3);
-        }
-
-        /// Grows the packed storage to hold the requested bit count.
-        private void ensureCapacity(int requiredBits) {
-            int requiredBytes = (requiredBits + 7) >>> 3;
-            if (requiredBytes > bytes.length) {
-                bytes = Arrays.copyOf(bytes, Math.max(requiredBytes, bytes.length * 2));
-            }
         }
     }
 

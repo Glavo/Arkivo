@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.zstd.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.ByteArrayOutputStream;
@@ -11,7 +12,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-/// Encodes independent Zstandard blocks using raw, run-length, or sequence-compressed payloads.
+/// Encodes Zstandard blocks while retaining frame-local entropy state.
 @NotNullByDefault
 final class ZstdBlockEncoder {
     /// Baselines for literal-length codes.
@@ -45,13 +46,108 @@ final class ZstdBlockEncoder {
             5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
     };
 
+    /// Huffman table established by an earlier compressed block in the current frame.
+    private @Nullable ZstdLiteralEncoder.HuffmanEncoding huffmanTable;
+
+    /// Literal-length table established by the dictionary or an earlier sequence section.
+    private @Nullable ZstdEntropy.FseEncoderTable literalLengthTable;
+
+    /// Offset table established by the dictionary or an earlier sequence section.
+    private @Nullable ZstdEntropy.FseEncoderTable offsetTable;
+
+    /// Match-length table established by the dictionary or an earlier sequence section.
+    private @Nullable ZstdEntropy.FseEncoderTable matchLengthTable;
+
+    /// Retained frame tail used as a cross-block match prefix.
+    private byte @Unmodifiable [] history = new byte[0];
+
+    /// Number of uncompressed bytes accepted in the current frame.
+    private long frameSize;
+
+    /// Maximum retained and searchable distance.
+    private int historyLimit;
+
+    /// Whether dictionary and repeated-offset state is known at this block boundary.
+    private boolean contextualState;
+
+    /// Most-recent match offset.
+    private int repeatedOffset1;
+
+    /// Second-most-recent match offset.
+    private int repeatedOffset2;
+
+    /// Third-most-recent match offset.
+    private int repeatedOffset3;
+
+    /// Initializes one independently scheduled job at its frame offset.
+    void resetJob(
+            ZstdEncoderParameters parameters,
+            byte @Unmodifiable [] prefix,
+            long frameOffset
+    ) {
+        if (frameOffset < 0L || prefix.length > frameOffset) {
+            throw new IllegalArgumentException("Invalid Zstandard parallel job prefix");
+        }
+        if (frameOffset == 0L) {
+            reset(parameters);
+            return;
+        }
+
+        huffmanTable = null;
+        literalLengthTable = null;
+        offsetTable = null;
+        matchLengthTable = null;
+        historyLimit = matchDistanceLimit(parameters);
+        int retained = Math.min(prefix.length, historyLimit);
+        history = Arrays.copyOfRange(prefix, prefix.length - retained, prefix.length);
+        frameSize = frameOffset;
+        contextualState = false;
+        repeatedOffset1 = 0;
+        repeatedOffset2 = 0;
+        repeatedOffset3 = 0;
+    }
+
+    /// Resets frame-local state to the configured dictionary.
+    void reset(ZstdEncoderParameters parameters) {
+        huffmanTable = null;
+        ZstdDictionary dictionary = parameters.dictionary();
+        literalLengthTable =
+                ZstdSequenceEntropy.invertLiteralLengths(dictionary.literalLengthTable());
+        offsetTable = ZstdSequenceEntropy.invertOffsets(dictionary.offsetTable());
+        matchLengthTable = ZstdSequenceEntropy.invertMatchLengths(dictionary.matchLengthTable());
+        history = new byte[0];
+        frameSize = 0L;
+        historyLimit = matchDistanceLimit(parameters);
+        contextualState = true;
+        repeatedOffset1 = dictionary.repeatedOffset1();
+        repeatedOffset2 = dictionary.repeatedOffset2();
+        repeatedOffset3 = dictionary.repeatedOffset3();
+    }
+
     /// Encodes one block including its three-byte block header.
     ///
     /// @param source block bytes
     /// @param length number of valid source bytes
     /// @param last whether this is the last block in its frame
     /// @param parameters encoder parameters
-    static byte[] encode(byte[] source, int length, boolean last, ZstdEncoderParameters parameters) {
+    byte[] encode(byte[] source, int length, boolean last, ZstdEncoderParameters parameters) {
+        return encode(source, length, last, parameters, List.of());
+    }
+
+    /// Encodes one block with preplanned matches beyond the ordinary hash-chain distance.
+    ///
+    /// @param source block bytes
+    /// @param length number of valid source bytes
+    /// @param last whether this is the last block in its frame
+    /// @param parameters encoder parameters
+    /// @param longDistanceMatches verified frame-history matches for this block
+    byte[] encode(
+            byte[] source,
+            int length,
+            boolean last,
+            ZstdEncoderParameters parameters,
+            @Unmodifiable List<ZstdLongDistanceMatcher.Match> longDistanceMatches
+    ) {
         if (length < 0 || length > source.length || length > parameters.blockSize()) {
             throw new IllegalArgumentException("Invalid Zstandard block length");
         }
@@ -60,20 +156,36 @@ final class ZstdBlockEncoder {
             byte[] result = new byte[4];
             writeBlockHeader(result, length, 1, last);
             result[3] = source[0];
+            appendHistory(source, length);
             return result;
         }
 
-        byte[] compressed = encodeCompressed(source, length, parameters);
-        if (compressed.length < length) {
-            byte[] result = new byte[3 + compressed.length];
-            writeBlockHeader(result, compressed.length, 2, last);
-            System.arraycopy(compressed, 0, result, 3, compressed.length);
+        CompressedEncoding compressed = encodeCompressed(
+                source,
+                length,
+                parameters,
+                longDistanceMatches
+        );
+        byte[] payload = compressed.payload();
+        if (payload.length < length) {
+            huffmanTable = compressed.huffmanTable();
+            literalLengthTable = compressed.literalLengthTable();
+            offsetTable = compressed.offsetTable();
+            matchLengthTable = compressed.matchLengthTable();
+            repeatedOffset1 = compressed.repeatedOffset1();
+            repeatedOffset2 = compressed.repeatedOffset2();
+            repeatedOffset3 = compressed.repeatedOffset3();
+            byte[] result = new byte[3 + payload.length];
+            writeBlockHeader(result, payload.length, 2, last);
+            System.arraycopy(payload, 0, result, 3, payload.length);
+            appendHistory(source, length);
             return result;
         }
 
         byte[] result = new byte[3 + length];
         writeBlockHeader(result, length, 0, last);
         System.arraycopy(source, 0, result, 3, length);
+        appendHistory(source, length);
         return result;
     }
 
@@ -89,10 +201,29 @@ final class ZstdBlockEncoder {
     }
 
     /// Attempts to encode a sequence-compressed block.
-    private static byte[] encodeCompressed(byte[] source, int length, ZstdEncoderParameters parameters) {
-        @Unmodifiable List<Sequence> sequences = findSequences(source, length, parameters);
+    private CompressedEncoding encodeCompressed(
+            byte[] source,
+            int length,
+            ZstdEncoderParameters parameters,
+            @Unmodifiable List<ZstdLongDistanceMatcher.Match> longDistanceMatches
+    ) {
+        @Unmodifiable List<Sequence> sequences = findSequences(
+                source,
+                length,
+                parameters,
+                longDistanceMatches
+        );
         if (sequences.isEmpty()) {
-            return source;
+            return new CompressedEncoding(
+                    source,
+                    huffmanTable,
+                    literalLengthTable,
+                    offsetTable,
+                    matchLengthTable,
+                    repeatedOffset1,
+                    repeatedOffset2,
+                    repeatedOffset3
+            );
         }
 
         int literalSize = length;
@@ -111,193 +242,175 @@ final class ZstdBlockEncoder {
         System.arraycopy(source, literalStart, literals, literalOffset, length - literalStart);
 
         ByteArrayOutputStream output = new ByteArrayOutputStream(length);
-        output.writeBytes(ZstdLiteralEncoder.encode(literals));
-
+        ZstdLiteralEncoder.LiteralEncoding literalEncoding =
+                ZstdLiteralEncoder.encode(literals, huffmanTable);
+        output.writeBytes(literalEncoding.bytes());
         writeSequenceCount(output, sequences.size());
-        output.write(0);
 
         EncodedSequence[] encoded = new EncodedSequence[sequences.size()];
+        int[] literalCodes = new int[sequences.size()];
+        int[] offsetCodes = new int[sequences.size()];
+        int[] matchCodes = new int[sequences.size()];
+        RepeatedOffsets repeated =
+                new RepeatedOffsets(repeatedOffset1, repeatedOffset2, repeatedOffset3);
         for (int index = 0; index < sequences.size(); index++) {
             Sequence sequence = sequences.get(index);
             int literalCode = lengthCode(sequence.literalLength(), LITERAL_BASELINES, LITERAL_BITS);
             int matchCode = lengthCode(sequence.length(), MATCH_BASELINES, MATCH_BITS);
-            long offsetValue = Integer.toUnsignedLong(sequence.distance()) + 3L;
+            OffsetEncoding offsetEncoding = selectOffset(
+                    sequence.distance(), sequence.literalLength(), repeated, contextualState
+            );
+            repeated = offsetEncoding.repeatedOffsets();
+            long offsetValue = offsetEncoding.value();
             int offsetCode = 63 - Long.numberOfLeadingZeros(offsetValue);
-            encoded[index] = new EncodedSequence(sequence, literalCode, offsetCode, matchCode, offsetValue);
+            encoded[index] = new EncodedSequence(
+                    sequence,
+                    literalCode,
+                    offsetCode,
+                    matchCode,
+                    offsetValue
+            );
+            literalCodes[index] = literalCode;
+            offsetCodes[index] = offsetCode;
+            matchCodes[index] = matchCode;
         }
 
+        ZstdSequenceEntropy.TableEncoding literalsTable =
+                ZstdSequenceEntropy.selectLiteralLengths(literalCodes, literalLengthTable);
+        ZstdSequenceEntropy.TableEncoding offsetsTable =
+                ZstdSequenceEntropy.selectOffsets(offsetCodes, offsetTable);
+        ZstdSequenceEntropy.TableEncoding matchesTable =
+                ZstdSequenceEntropy.selectMatchLengths(matchCodes, matchLengthTable);
+        output.write(
+                literalsTable.mode() << 6
+                        | offsetsTable.mode() << 4
+                        | matchesTable.mode() << 2
+        );
+        output.writeBytes(literalsTable.description());
+        output.writeBytes(offsetsTable.description());
+        output.writeBytes(matchesTable.description());
+
+        ZstdEntropy.FseEncoderTable literalEncoder = literalsTable.table();
+        ZstdEntropy.FseEncoderTable offsetEncoder = offsetsTable.table();
+        ZstdEntropy.FseEncoderTable matchEncoder = matchesTable.table();
         ZstdEntropy.ReverseBitWriter bits = new ZstdEntropy.ReverseBitWriter();
         EncodedSequence last = encoded[encoded.length - 1];
-        int literalState = ZstdSequenceEntropy.LITERAL_LENGTH_ENCODER.initialState(last.literalCode());
-        int offsetState = ZstdSequenceEntropy.OFFSET_ENCODER.initialState(last.offsetCode());
-        int matchState = ZstdSequenceEntropy.MATCH_LENGTH_ENCODER.initialState(last.matchCode());
+        int literalState = literalEncoder.initialState(last.literalCode());
+        int offsetState = offsetEncoder.initialState(last.offsetCode());
+        int matchState = matchEncoder.initialState(last.matchCode());
         writeSequenceExtraBits(bits, last);
 
         for (int index = encoded.length - 2; index >= 0; index--) {
             EncodedSequence sequence = encoded[index];
-            ZstdSequenceEntropy.Transition offsetTransition =
-                    ZstdSequenceEntropy.OFFSET_ENCODER.transition(sequence.offsetCode(), offsetState);
+            ZstdEntropy.FseTransition offsetTransition =
+                    offsetEncoder.transition(sequence.offsetCode(), offsetState);
             bits.writeBits(offsetTransition.value(), offsetTransition.bitCount());
             offsetState = offsetTransition.state();
 
-            ZstdSequenceEntropy.Transition matchTransition =
-                    ZstdSequenceEntropy.MATCH_LENGTH_ENCODER.transition(sequence.matchCode(), matchState);
+            ZstdEntropy.FseTransition matchTransition =
+                    matchEncoder.transition(sequence.matchCode(), matchState);
             bits.writeBits(matchTransition.value(), matchTransition.bitCount());
             matchState = matchTransition.state();
 
-            ZstdSequenceEntropy.Transition literalTransition =
-                    ZstdSequenceEntropy.LITERAL_LENGTH_ENCODER.transition(sequence.literalCode(), literalState);
+            ZstdEntropy.FseTransition literalTransition =
+                    literalEncoder.transition(sequence.literalCode(), literalState);
             bits.writeBits(literalTransition.value(), literalTransition.bitCount());
             literalState = literalTransition.state();
             writeSequenceExtraBits(bits, sequence);
         }
 
-        bits.writeBits(matchState, ZstdSequenceEntropy.MATCH_LENGTH_ENCODER.tableLog());
-        bits.writeBits(offsetState, ZstdSequenceEntropy.OFFSET_ENCODER.tableLog());
-        bits.writeBits(literalState, ZstdSequenceEntropy.LITERAL_LENGTH_ENCODER.tableLog());
+        bits.writeBits(matchState, matchEncoder.tableLog());
+        bits.writeBits(offsetState, offsetEncoder.tableLog());
+        bits.writeBits(literalState, literalEncoder.tableLog());
         output.writeBytes(bits.finish());
-        return output.toByteArray();
+        return new CompressedEncoding(
+                output.toByteArray(),
+                literalEncoding.table(),
+                literalEncoder,
+                offsetEncoder,
+                matchEncoder,
+                repeated.first(),
+                repeated.second(),
+                repeated.third()
+        );
     }
 
-    /// Finds non-overlapping matches from left to right in the block and configured dictionary tail.
-    private static @Unmodifiable List<Sequence> findSequences(
+    /// Finds non-overlapping matches across the retained frame prefix and current block.
+    private @Unmodifiable List<Sequence> findSequences(
             byte[] source,
             int length,
-            ZstdEncoderParameters parameters
+            ZstdEncoderParameters parameters,
+            @Unmodifiable List<ZstdLongDistanceMatcher.Match> longDistanceMatches
     ) {
-        int minimumMatch = parameters.minimumMatch();
-        if (length < minimumMatch) {
-            return List.of();
-        }
-
-        int[] heads = new int[1 << parameters.hashLog()];
-        Arrays.fill(heads, Integer.MIN_VALUE);
-        int[] previous = new int[length];
-        Arrays.fill(previous, Integer.MIN_VALUE);
-        byte[] dictionary = parameters.dictionary().content();
-        int windowSize = parameters.windowLog() >= 30
-                ? Integer.MAX_VALUE
-                : 1 << parameters.windowLog();
-        seedDictionary(heads, dictionary, windowSize);
-
-        ArrayList<Sequence> sequences = new ArrayList<>();
+        @Unmodifiable List<ZstdMatchParser.Match> matches = ZstdMatchParser.parse(
+                source,
+                length,
+                buildMatchPrefix(parameters),
+                historyLimit,
+                parameters,
+                longDistanceMatches
+        );
+        ArrayList<Sequence> sequences = new ArrayList<>(matches.size());
         int literalStart = 0;
-        int lastPosition = length - 4;
-        int position = 0;
-        while (position <= lastPosition) {
-            int hash = hash(source, position, heads.length - 1);
-            int candidate = heads[hash];
-            previous[position] = candidate;
-            heads[hash] = position;
-
-            Match match = findMatchAt(
-                    source,
-                    length,
-                    position,
-                    candidate,
-                    previous,
-                    dictionary,
-                    windowSize,
-                    parameters
-            );
-            if (match.length() < minimumMatch) {
-                position++;
-                continue;
-            }
-
+        for (ZstdMatchParser.Match match : matches) {
             sequences.add(new Sequence(
-                    position,
+                    match.position(),
                     match.length(),
                     match.distance(),
-                    position - literalStart
+                    match.position() - literalStart
             ));
-            int matchEnd = position + match.length();
-            for (int skipped = position + 1; skipped < matchEnd && skipped <= lastPosition; skipped++) {
-                int skippedHash = hash(source, skipped, heads.length - 1);
-                previous[skipped] = heads[skippedHash];
-                heads[skippedHash] = skipped;
-            }
-            position = matchEnd;
-            literalStart = matchEnd;
+            literalStart = match.position() + match.length();
         }
         return List.copyOf(sequences);
     }
 
-    /// Finds the best match beginning at one already inserted source position.
-    private static Match findMatchAt(
-            byte[] source,
-            int length,
-            int position,
-            int candidate,
-            int[] previous,
-            byte[] dictionary,
-            int windowSize,
-            ZstdEncoderParameters parameters
-    ) {
-        Match best = Match.NONE;
-        int searched = 0;
-        while (candidate != Integer.MIN_VALUE && searched++ < parameters.searchDepth()) {
-            int distance = position - candidate;
-            if (distance <= 0 || distance > windowSize || distance > parameters.chainLimit()) {
-                break;
-            }
-            int matchLength = commonLength(source, length, position, candidate, dictionary);
-            if (matchLength > best.length()) {
-                best = new Match(matchLength, distance);
-                if (matchLength == length - position
-                        || parameters.targetLength() > 0 && matchLength >= parameters.targetLength()) {
-                    break;
-                }
-            }
-            candidate = candidate >= 0 ? previous[candidate] : Integer.MIN_VALUE;
+    /// Builds the contiguous dictionary and frame-history prefix visible to this block.
+    private byte[] buildMatchPrefix(ZstdEncoderParameters parameters) {
+        int dictionarySize = 0;
+        byte[] dictionary = parameters.dictionary().content();
+        if (contextualState && frameSize < historyLimit) {
+            int remaining = (int) ((long) historyLimit - frameSize);
+            dictionarySize = Math.min(dictionary.length, remaining);
         }
-        return best;
+
+        byte[] prefix = new byte[dictionarySize + history.length];
+        if (dictionarySize != 0) {
+            System.arraycopy(
+                    dictionary,
+                    dictionary.length - dictionarySize,
+                    prefix,
+                    0,
+                    dictionarySize
+            );
+        }
+        System.arraycopy(history, 0, prefix, dictionarySize, history.length);
+        return prefix;
     }
 
-    /// Seeds the hash table with the latest matching position from the usable dictionary tail.
-    private static void seedDictionary(int[] heads, byte[] dictionary, int windowSize) {
-        int first = Math.max(0, dictionary.length - windowSize);
-        int last = dictionary.length - 4;
-        for (int position = first; position <= last; position++) {
-            heads[hash(dictionary, position, heads.length - 1)] = position - dictionary.length;
-        }
+    /// Returns the bounded distance retained by the current match finder.
+    private static int matchDistanceLimit(ZstdEncoderParameters parameters) {
+        int windowSize = parameters.windowLog() >= 30
+                ? Integer.MAX_VALUE
+                : 1 << parameters.windowLog();
+        return Math.min(windowSize, parameters.chainLimit());
     }
 
-    /// Returns the common length for a block or dictionary candidate.
-    private static int commonLength(
-            byte[] source,
-            int sourceLength,
-            int position,
-            int candidate,
-            byte[] dictionary
-    ) {
-        int maximum = sourceLength - position;
-        if (candidate < 0) {
-            int dictionaryPosition = dictionary.length + candidate;
-            maximum = Math.min(maximum, dictionary.length - dictionaryPosition);
-            int length = 0;
-            while (length < maximum
-                    && source[position + length] == dictionary[dictionaryPosition + length]) {
-                length++;
-            }
-            return length;
+    /// Appends one uncompressed block to the retained frame tail.
+    private void appendHistory(byte[] source, int length) {
+        frameSize += length;
+        if (length == 0 || historyLimit == 0) {
+            return;
+        }
+        if (length >= historyLimit) {
+            history = Arrays.copyOfRange(source, length - historyLimit, length);
+            return;
         }
 
-        int length = 0;
-        while (length < maximum && source[position + length] == source[candidate + length]) {
-            length++;
-        }
-        return length;
-    }
-
-    /// Hashes four bytes into a power-of-two table.
-    private static int hash(byte[] source, int offset, int mask) {
-        int value = Byte.toUnsignedInt(source[offset])
-                | Byte.toUnsignedInt(source[offset + 1]) << 8
-                | Byte.toUnsignedInt(source[offset + 2]) << 16
-                | source[offset + 3] << 24;
-        int tableLog = Integer.bitCount(mask);
-        return (int) (Integer.toUnsignedLong(value * 0x9e37_79b1) >>> (32 - tableLog));
+        int retained = Math.min(history.length, historyLimit - length);
+        byte[] updated = new byte[retained + length];
+        System.arraycopy(history, history.length - retained, updated, 0, retained);
+        System.arraycopy(source, 0, updated, retained, length);
+        history = updated;
     }
 
     /// Selects the canonical code covering a length value.
@@ -309,6 +422,65 @@ final class ZstdBlockEncoder {
             }
         }
         throw new IllegalArgumentException("Zstandard sequence length is out of range");
+    }
+
+    /// Selects an explicit or repeated offset and returns the resulting decoder state.
+    static OffsetEncoding selectOffset(
+            int distance,
+            int literalLength,
+            RepeatedOffsets repeated,
+            boolean repeatedEnabled
+    ) {
+        if (distance <= 0 || literalLength < 0) {
+            throw new IllegalArgumentException("Invalid Zstandard sequence offset");
+        }
+
+        int first = repeated.first();
+        int second = repeated.second();
+        int third = repeated.third();
+        if (repeatedEnabled) {
+            if (literalLength != 0) {
+                if (distance == first) {
+                    return new OffsetEncoding(1L, repeated);
+                }
+                if (distance == second) {
+                    return new OffsetEncoding(
+                            2L,
+                            new RepeatedOffsets(second, first, third)
+                    );
+                }
+                if (distance == third) {
+                    return new OffsetEncoding(
+                            3L,
+                            new RepeatedOffsets(third, first, second)
+                    );
+                }
+            } else {
+                if (distance == second) {
+                    return new OffsetEncoding(
+                            1L,
+                            new RepeatedOffsets(second, first, third)
+                    );
+                }
+                if (distance == third) {
+                    return new OffsetEncoding(
+                            2L,
+                            new RepeatedOffsets(third, first, second)
+                    );
+                }
+                if (first > 1 && distance == first - 1) {
+                    return new OffsetEncoding(
+                            3L,
+                            new RepeatedOffsets(distance, first, second)
+                    );
+                }
+            }
+        }
+
+        return new OffsetEncoding(
+                Integer.toUnsignedLong(distance) + 3L,
+                new RepeatedOffsets(distance, first, second)
+        );
     }
 
     /// Writes the variable-width number of sequences field.
@@ -357,6 +529,28 @@ final class ZstdBlockEncoder {
         target[2] = (byte) (header >>> 16);
     }
 
+    /// Holds a compressed block payload and frame-local state active after it.
+    ///
+    /// @param payload compressed block payload
+    /// @param huffmanTable active Huffman table after decoding the payload
+    /// @param literalLengthTable active literal-length table after decoding the payload
+    /// @param offsetTable active offset table after decoding the payload
+    /// @param matchLengthTable active match-length table after decoding the payload
+    /// @param repeatedOffset1 active most-recent offset after decoding the payload
+    /// @param repeatedOffset2 active second-most-recent offset after decoding the payload
+    /// @param repeatedOffset3 active third-most-recent offset after decoding the payload
+    private record CompressedEncoding(
+            byte @Unmodifiable [] payload,
+            @Nullable ZstdLiteralEncoder.HuffmanEncoding huffmanTable,
+            @Nullable ZstdEntropy.FseEncoderTable literalLengthTable,
+            @Nullable ZstdEntropy.FseEncoderTable offsetTable,
+            @Nullable ZstdEntropy.FseEncoderTable matchLengthTable,
+            int repeatedOffset1,
+            int repeatedOffset2,
+            int repeatedOffset3
+    ) {
+    }
+
     /// Holds one non-overlapping sequence selected by the match finder.
     ///
     /// @param position match start in the source block
@@ -366,13 +560,13 @@ final class ZstdBlockEncoder {
     private record Sequence(int position, int length, int distance, int literalLength) {
     }
 
-    /// Holds sequence symbols and the explicit offset value written to the bitstream.
+    /// Holds sequence symbols and the offset value written to the bitstream.
     ///
     /// @param sequence selected sequence
     /// @param literalCode literal-length symbol
     /// @param offsetCode offset symbol
     /// @param matchCode match-length symbol
-    /// @param offsetValue explicit offset value before its baseline is removed
+    /// @param offsetValue explicit or repeated offset value before its baseline is removed
     private record EncodedSequence(
             Sequence sequence,
             int literalCode,
@@ -382,20 +576,22 @@ final class ZstdBlockEncoder {
     ) {
     }
 
-    /// Holds one selected match.
+    /// Holds the three repeated offsets active at one sequence boundary.
     ///
-    /// @param length match length
-    /// @param distance backward match distance
-    private record Match(int length, int distance) {
-        /// Sentinel indicating that no match was found.
-        private static final Match NONE = new Match(0, 0);
-
-        /// Creates match metadata.
-        private Match {
-        }
+    /// @param first most-recent offset
+    /// @param second second-most-recent offset
+    /// @param third third-most-recent offset
+    record RepeatedOffsets(int first, int second, int third) {
     }
 
-    /// Creates no instances.
-    private ZstdBlockEncoder() {
+    /// Holds one encoded offset value and its resulting repeated-offset state.
+    ///
+    /// @param value encoded offset value before its power-of-two baseline is removed
+    /// @param repeatedOffsets state active after decoding the offset
+    record OffsetEncoding(long value, RepeatedOffsets repeatedOffsets) {
+    }
+
+    /// Creates an encoder with no frame-local Huffman table.
+    ZstdBlockEncoder() {
     }
 }

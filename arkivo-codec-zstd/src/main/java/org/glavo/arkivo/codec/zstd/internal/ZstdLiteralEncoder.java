@@ -167,12 +167,12 @@ final class ZstdLiteralEncoder {
 
     /// Builds a deterministic complete Huffman tree and its canonical Zstandard codes.
     private static @Nullable HuffmanEncoding buildHuffmanEncoding(byte[] literals) {
-        long[] symbolFrequencies = new long[256];
+        long[] frequencies = new long[256];
         int maximumSymbol = 0;
         int distinctSymbols = 0;
         for (byte literal : literals) {
             int symbol = Byte.toUnsignedInt(literal);
-            if (symbolFrequencies[symbol]++ == 0L) {
+            if (frequencies[symbol]++ == 0L) {
                 distinctSymbols++;
                 maximumSymbol = Math.max(maximumSymbol, symbol);
             }
@@ -181,7 +181,6 @@ final class ZstdLiteralEncoder {
             return null;
         }
 
-        long[] nodeFrequencies = new long[511];
         int[] leftChildren = new int[511];
         int[] rightChildren = new int[511];
         int[] symbols = new int[511];
@@ -190,16 +189,16 @@ final class ZstdLiteralEncoder {
         Arrays.fill(rightChildren, -1);
         Arrays.fill(symbols, -1);
         Comparator<Integer> order = Comparator
-                .comparingLong((Integer node) -> nodeFrequencies[node])
+                .comparingLong((Integer node) -> frequencies[node])
                 .thenComparingInt(node -> minimumSymbols[node]);
         PriorityQueue<Integer> queue = new PriorityQueue<>(order);
 
         int nodeCount = 0;
         for (int symbol = 0; symbol <= maximumSymbol; symbol++) {
-            if (symbolFrequencies[symbol] == 0L) {
+            if (frequencies[symbol] == 0L) {
                 continue;
             }
-            nodeFrequencies[nodeCount] = symbolFrequencies[symbol];
+            frequencies[nodeCount] = frequencies[symbol];
             symbols[nodeCount] = symbol;
             minimumSymbols[nodeCount] = symbol;
             queue.add(nodeCount++);
@@ -207,7 +206,7 @@ final class ZstdLiteralEncoder {
         while (queue.size() > 1) {
             int left = queue.remove();
             int right = queue.remove();
-            nodeFrequencies[nodeCount] = nodeFrequencies[left] + nodeFrequencies[right];
+            frequencies[nodeCount] = frequencies[left] + frequencies[right];
             minimumSymbols[nodeCount] = Math.min(minimumSymbols[left], minimumSymbols[right]);
             leftChildren[nodeCount] = left;
             rightChildren[nodeCount] = right;
@@ -252,6 +251,7 @@ final class ZstdLiteralEncoder {
         int[] codes = new int[256];
         int nextCode = 0;
         for (int weight = 1; weight <= tableLog; weight++) {
+            int codeLength = tableLog + 1 - weight;
             int count = 0;
             for (int symbol = 0; symbol < symbolCount; symbol++) {
                 if (weights[symbol] == weight) {

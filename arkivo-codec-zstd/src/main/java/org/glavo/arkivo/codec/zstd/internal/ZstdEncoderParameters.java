@@ -15,6 +15,12 @@ public final class ZstdEncoderParameters {
     /// Maximum Zstandard block size.
     private static final int MAX_BLOCK_SIZE = 128 * 1024;
 
+    /// Minimum effective size of a parallel compression job.
+    private static final int MIN_PARALLEL_JOB_SIZE = 512 * 1024;
+
+    /// Maximum effective size of a parallel compression job.
+    private static final int MAX_PARALLEL_JOB_SIZE = 1 << 30;
+
     /// Maximum supported parallel block-compression worker count.
     private static final int MAX_WORKER_COUNT = 256;
 
@@ -36,6 +42,9 @@ public final class ZstdEncoderParameters {
     /// Match length at which candidate searching may stop early.
     private final int targetLength;
 
+    /// Effective match-finding and sequence-parsing strategy number.
+    private final int strategy;
+
     /// Whether frame checksums are emitted.
     private final boolean checksum;
 
@@ -45,8 +54,17 @@ public final class ZstdEncoderParameters {
     /// Whether a known dictionary identifier is emitted.
     private final boolean dictionaryId;
 
-    /// Number of parallel block-compression workers, or zero for synchronous compression.
+    /// Whether frame-wide long-distance matching is enabled.
+    private final boolean longDistanceMatching;
+
+    /// Number of parallel job-compression workers, or zero for synchronous compression.
     private final int workerCount;
+
+    /// Effective uncompressed bytes assigned to each parallel job.
+    private final int jobSize;
+
+    /// Frame-tail bytes reloaded as the match prefix of a later parallel job.
+    private final int overlapSize;
 
     /// Exact source size pledged for every frame, or the unknown sentinel.
     private final long pledgedSourceSize;
@@ -63,12 +81,14 @@ public final class ZstdEncoderParameters {
     /// @param searchLog requested search-depth logarithm, or zero for an encoder-selected value
     /// @param minimumMatch requested minimum match length, or zero for an encoder-selected value
     /// @param targetLength requested target match length, or zero for no explicit target
-    /// @param strategy match-finding strategy number from one through nine
+    /// @param strategy match-finding strategy number from one through nine, or zero for a level-derived default
     /// @param checksum whether frame checksums are emitted
     /// @param contentSize whether a known pledged source size is emitted
     /// @param dictionaryId whether a known dictionary identifier is emitted
     /// @param longDistanceMatching whether long-distance matching was requested
-    /// @param workerCount number of parallel block-compression workers, or zero for synchronous compression
+    /// @param workerCount number of parallel job-compression workers, or zero for synchronous compression
+    /// @param jobSize requested parallel job size in bytes, or zero for an encoder-selected value
+    /// @param overlapLog requested worker overlap logarithm from zero through nine
     /// @param pledgedSourceSize exact source size for every frame, or the unknown sentinel
     /// @param dictionary configured dictionary, or null
     public ZstdEncoderParameters(
@@ -85,6 +105,8 @@ public final class ZstdEncoderParameters {
             boolean dictionaryId,
             boolean longDistanceMatching,
             int workerCount,
+            int jobSize,
+            int overlapLog,
             long pledgedSourceSize,
             @Nullable CompressionDictionary dictionary
     ) throws IOException {
@@ -93,19 +115,54 @@ public final class ZstdEncoderParameters {
                     "Zstandard worker count must be between zero and " + MAX_WORKER_COUNT
             );
         }
+        if (strategy < 0 || strategy > 9) {
+            throw new IllegalArgumentException("Zstandard strategy must be between zero and nine");
+        }
+        if (jobSize < 0) {
+            throw new IllegalArgumentException("Zstandard job size must not be negative");
+        }
+        if (overlapLog < 0 || overlapLog > 9) {
+            throw new IllegalArgumentException("Zstandard overlap log must be between zero and nine");
+        }
         this.windowLog = windowLog != 0 ? windowLog : longDistanceMatching ? 27 : 17;
         this.hashLog = hashLog != 0 ? Math.min(hashLog, 18) : defaultHashLog(compressionLevel);
         int effectiveChainLog = chainLog != 0 ? chainLog : defaultChainLog(compressionLevel);
         this.chainLimit = 1 << Math.min(effectiveChainLog, 17);
+        this.strategy = strategy != 0 ? strategy : defaultStrategy(compressionLevel);
         this.searchDepth = searchLog != 0
                 ? 1 << Math.min(searchLog, 10)
-                : defaultSearchDepth(compressionLevel, strategy);
+                : defaultSearchDepth(compressionLevel, this.strategy);
         this.minimumMatch = minimumMatch != 0 ? minimumMatch : compressionLevel < 0 ? 6 : 4;
         this.targetLength = targetLength;
         this.checksum = checksum;
         this.contentSize = contentSize;
         this.dictionaryId = dictionaryId;
+        this.longDistanceMatching = longDistanceMatching;
         this.workerCount = workerCount;
+        int targetJobLog = longDistanceMatching
+                ? Math.max(21, Math.min(effectiveChainLog, 17) + 3)
+                : Math.max(20, this.windowLog + 2);
+        targetJobLog = Math.min(targetJobLog, 30);
+        int selectedJobSize = jobSize == 0
+                ? 1 << targetJobLog
+                : Math.min(MAX_PARALLEL_JOB_SIZE, Math.max(MIN_PARALLEL_JOB_SIZE, jobSize));
+
+        int selectedOverlapLog = overlapLog != 0 ? overlapLog : defaultOverlapLog(this.strategy);
+        int overlapReduction = 9 - selectedOverlapLog;
+        int overlapWindowLog = overlapReduction >= 8
+                ? 0
+                : longDistanceMatching
+                ? Math.min(this.windowLog, targetJobLog - 2) - overlapReduction
+                : this.windowLog - overlapReduction;
+        long requestedOverlapSize = overlapWindowLog <= 0 ? 0L : 1L << overlapWindowLog;
+        int windowSize = this.windowLog >= 30 ? Integer.MAX_VALUE : 1 << this.windowLog;
+        int matchDistanceLimit = Math.min(windowSize, this.chainLimit);
+        int selectedOverlapSize = (int) Math.min(requestedOverlapSize, matchDistanceLimit);
+
+        this.jobSize = workerCount == 0
+                ? 0
+                : Math.max(selectedJobSize, selectedOverlapSize);
+        this.overlapSize = workerCount == 0 ? 0 : selectedOverlapSize;
         this.pledgedSourceSize = pledgedSourceSize;
         this.dictionary = ZstdDictionary.parse(dictionary);
         if (this.dictionary.id() > 0xffff_ffffL) {
@@ -148,6 +205,11 @@ public final class ZstdEncoderParameters {
         return targetLength;
     }
 
+    /// Returns the effective match-finding and sequence-parsing strategy number.
+    int strategy() {
+        return strategy;
+    }
+
     /// Returns whether frame checksums are emitted.
     boolean checksum() {
         return checksum;
@@ -158,9 +220,24 @@ public final class ZstdEncoderParameters {
         return contentSize;
     }
 
-    /// Returns the number of parallel block-compression workers.
+    /// Returns whether frame-wide long-distance matching is enabled.
+    boolean longDistanceMatching() {
+        return longDistanceMatching;
+    }
+
+    /// Returns the number of parallel job-compression workers.
     int workerCount() {
         return workerCount;
+    }
+
+    /// Returns the effective uncompressed size of a parallel compression job.
+    int jobSize() {
+        return jobSize;
+    }
+
+    /// Returns the retained prefix size for later parallel compression jobs.
+    int overlapSize() {
+        return overlapSize;
     }
 
     /// Returns the exact source size pledged for every frame, or the unknown sentinel.
@@ -194,6 +271,33 @@ public final class ZstdEncoderParameters {
             return 12;
         }
         return Math.min(17, 14 + compressionLevel / 4);
+    }
+
+    /// Selects a match-finding strategy from the requested compression level.
+    private static int defaultStrategy(int compressionLevel) {
+        if (compressionLevel < 0) {
+            return 1;
+        }
+        if (compressionLevel <= 1) {
+            return 2;
+        }
+        if (compressionLevel <= 3) {
+            return 3;
+        }
+        if (compressionLevel <= 5) {
+            return 4;
+        }
+        return Math.min(9, 5 + (compressionLevel - 6) / 4);
+    }
+
+    /// Selects the standard worker overlap logarithm for a match-finding strategy.
+    private static int defaultOverlapLog(int strategy) {
+        return switch (strategy) {
+            case 9 -> 9;
+            case 7, 8 -> 8;
+            case 5, 6 -> 7;
+            default -> 6;
+        };
     }
 
     /// Selects a bounded search depth from the level and strategy.

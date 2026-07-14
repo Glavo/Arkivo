@@ -103,10 +103,16 @@ public final class ZstdCodec implements CompressionCodec {
     public static final CodecOption<ZstdStrategy> STRATEGY =
             CodecOption.of("zstd.strategy", ZstdStrategy.class);
 
-    /// Selects the size in bytes of jobs submitted to compression workers; zero selects the default.
+    /// Selects the target size in bytes of jobs submitted to compression workers.
+    ///
+    /// Zero selects a parameter-derived default. Nonzero values are normalized to the supported
+    /// range from 512 KiB through 1 GiB and have no effect when worker count is zero.
     public static final CodecOption<Long> JOB_SIZE = CodecOption.of("zstd.jobSize", Long.class);
 
     /// Selects the worker overlap logarithm from zero through nine.
+    ///
+    /// Zero selects a strategy-derived default, one disables overlap, and nine reloads a full
+    /// searchable window. Intermediate values halve the retained prefix at each lower rank.
     public static final CodecOption<Long> OVERLAP_LOG = CodecOption.of("zstd.overlapLog", Long.class);
 
     /// Selects whether the frame header records the pledged content size.
@@ -407,8 +413,14 @@ public final class ZstdCodec implements CompressionCodec {
         @Nullable Boolean longDistanceMatching = options.get(LONG_DISTANCE_MATCHING);
         @Nullable ChecksumMode checksum = options.get(StandardCodecOptions.CHECKSUM);
         @Nullable WorkerCount workers = options.get(StandardCodecOptions.WORKER_COUNT);
-        nonNegativeInt(jobSize != null ? jobSize : 0L, "Zstandard job size");
-        boundedParameter(overlapLog != null ? overlapLog : 0L, 0, 9, "Zstandard overlap log");
+        int selectedJobSize = nonNegativeInt(
+                jobSize != null ? jobSize : 0L,
+                "Zstandard job size"
+        );
+        int selectedOverlapLog = boundedParameter(
+                overlapLog != null ? overlapLog : 0L,
+                0, 9, "Zstandard overlap log"
+        );
 
         @Nullable CompressionDictionary requestedDictionary = options.get(StandardCodecOptions.DICTIONARY);
         @Nullable CompressionDictionary selectedDictionary = requestedDictionary != null
@@ -450,12 +462,14 @@ public final class ZstdCodec implements CompressionCodec {
                         targetLength != null ? targetLength : 0L,
                         "Zstandard target length"
                 ),
-                strategy != null ? strategy.ordinal() + 1 : 1,
+                strategy != null ? strategy.ordinal() + 1 : 0,
                 checksum == ChecksumMode.ENABLED,
                 contentSize == null || contentSize,
                 dictionaryId == null || dictionaryId,
                 longDistanceMatching != null && longDistanceMatching,
                 workers != null ? workers.value() : 0,
+                selectedJobSize,
+                selectedOverlapLog,
                 pledgedSourceSize,
                 selectedDictionary
         );

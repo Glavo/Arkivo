@@ -8,13 +8,16 @@ import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.WritableByteChannel;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -33,20 +36,38 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
     /// Validated encoder parameters.
     private final ZstdEncoderParameters parameters;
 
+    /// Stateful synchronous block encoder.
+    private final ZstdBlockEncoder blockEncoder = new ZstdBlockEncoder();
+
+    /// Frame-level long-distance planner, or null when disabled.
+    private final @Nullable ZstdLongDistanceMatcher longDistanceMatcher;
+
     /// Pending uncompressed block retained until its last-block status is known.
     private final byte[] inputBuffer;
 
-    /// Parallel block executor, or null for synchronous compression.
+    /// Parallel job executor, or null for synchronous compression.
     private final @Nullable ExecutorService executor;
 
-    /// Ordered parallel block results awaiting channel output.
-    private final ArrayDeque<Future<byte[]>> pendingBlocks = new ArrayDeque<>();
+    /// Uncompressed blocks collected for the current parallel job.
+    private final ArrayList<ZstdFrameEncoder.BlockInput> pendingJobBlocks = new ArrayList<>();
 
-    /// Maximum queued block count before the oldest result is drained.
-    private final int maximumPendingBlocks;
+    /// Ordered parallel job results awaiting channel output.
+    private final ArrayDeque<Future<ZstdFrameEncoder.JobEncoding>> pendingJobs = new ArrayDeque<>();
+
+    /// Maximum queued job count before the oldest result is drained.
+    private final int maximumPendingJobs;
 
     /// Number of valid bytes in the pending input block.
     private int inputSize;
+
+    /// Number of uncompressed bytes collected for the current parallel job.
+    private int pendingJobSize;
+
+    /// Tail reloaded as the match prefix of the next parallel job.
+    private byte @Unmodifiable [] nextJobPrefix = new byte[0];
+
+    /// Number of frame bytes already submitted to parallel jobs.
+    private long parallelFrameSubmitted;
 
     /// Checksum for the active frame.
     private ZstdXXHash64 checksum = new ZstdXXHash64();
@@ -82,12 +103,16 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
         this.target = Objects.requireNonNull(target, "target");
         this.targetCloser = new OwnedChannelCloser(target, ownership);
         this.parameters = Objects.requireNonNull(parameters, "parameters");
+        this.blockEncoder.reset(parameters);
+        this.longDistanceMatcher = parameters.longDistanceMatching()
+                ? new ZstdLongDistanceMatcher(parameters)
+                : null;
         this.inputBuffer = new byte[parameters.blockSize()];
         int workerCount = parameters.workerCount();
         this.executor = workerCount == 0
                 ? null
                 : Executors.newFixedThreadPool(workerCount);
-        this.maximumPendingBlocks = Math.max(1, workerCount * 2);
+        this.maximumPendingJobs = Math.max(1, workerCount * 2);
     }
 
     /// Consumes uncompressed bytes while retaining one pending block for frame finalization.
@@ -103,10 +128,12 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
 
         int start = source.position();
         while (source.hasRemaining()) {
-            if (inputSize == inputBuffer.length) {
+            int inputLimit = pendingInputLimit();
+            if (inputSize == inputLimit) {
                 writePendingBlock(false);
+                inputLimit = pendingInputLimit();
             }
-            int count = Math.min(source.remaining(), inputBuffer.length - inputSize);
+            int count = Math.min(source.remaining(), inputLimit - inputSize);
             source.get(inputBuffer, inputSize, count);
             checksum.update(inputBuffer, inputSize, count);
             inputSize += count;
@@ -127,7 +154,10 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
         if (inputSize != 0) {
             writePendingBlock(false);
         }
-        drainPendingBlocks();
+        if (!pendingJobBlocks.isEmpty()) {
+            submitPendingJob(false);
+        }
+        drainPendingJobs();
     }
 
     /// Finishes the active frame while retaining the encoder for another frame.
@@ -192,9 +222,18 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
             return;
         }
         frameActive = true;
+        blockEncoder.reset(parameters);
+        @Nullable ZstdLongDistanceMatcher matcher = longDistanceMatcher;
+        if (matcher != null) {
+            matcher.reset();
+        }
         headerWritten = false;
         frameInputBytes = 0L;
         inputSize = 0;
+        pendingJobBlocks.clear();
+        pendingJobSize = 0;
+        nextJobPrefix = new byte[0];
+        parallelFrameSubmitted = 0L;
         checksum = new ZstdXXHash64();
     }
 
@@ -217,49 +256,136 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
         }
         writeHeader();
         writePendingBlock(true);
-        drainPendingBlocks();
+        drainPendingJobs();
         if (parameters.checksum()) {
             writeFully(ZstdFrameEncoder.checksum(checksum));
         }
         inputSize = 0;
     }
 
+    /// Returns the staging limit for the current synchronous block or parallel job.
+    private int pendingInputLimit() {
+        if (executor == null) {
+            return inputBuffer.length;
+        }
+        int remainingJobSize = parameters.jobSize() - pendingJobSize;
+        if (remainingJobSize <= 0) {
+            throw new AssertionError("Zstandard parallel job exceeded its target size");
+        }
+        return Math.min(inputBuffer.length, remainingJobSize);
+    }
+
     /// Writes the pending block and clears its staging range.
     private void writePendingBlock(boolean last) throws IOException {
         writeHeader();
-        @Nullable ExecutorService blockExecutor = executor;
-        if (blockExecutor == null) {
-            writeFully(ZstdFrameEncoder.block(inputBuffer, inputSize, last, parameters));
-        } else {
-            byte[] blockInput = Arrays.copyOf(inputBuffer, inputSize);
-            int blockLength = inputSize;
-            pendingBlocks.addLast(blockExecutor.submit(
-                    () -> ZstdFrameEncoder.block(blockInput, blockLength, last, parameters)
+        @Unmodifiable List<ZstdLongDistanceMatcher.Match> longDistanceMatches =
+                planLongDistanceMatches(
+                        inputBuffer,
+                        inputSize
+                );
+        @Nullable ExecutorService jobExecutor = executor;
+        if (jobExecutor == null) {
+            writeFully(blockEncoder.encode(
+                    inputBuffer,
+                    inputSize,
+                    last,
+                    parameters,
+                    longDistanceMatches
             ));
-            if (pendingBlocks.size() >= maximumPendingBlocks) {
-                drainPendingBlock();
+        } else {
+            byte @Unmodifiable [] blockInput = Arrays.copyOf(inputBuffer, inputSize);
+            pendingJobBlocks.add(new ZstdFrameEncoder.BlockInput(
+                    blockInput,
+                    longDistanceMatches
+            ));
+            pendingJobSize += inputSize;
+            if (last || pendingJobSize == parameters.jobSize()) {
+                submitPendingJob(last);
             }
         }
         inputSize = 0;
     }
 
-    /// Drains every queued parallel block in submission order.
-    private void drainPendingBlocks() throws IOException {
-        while (!pendingBlocks.isEmpty()) {
-            drainPendingBlock();
+    /// Plans verified frame-history matches for one block when long-distance mode is enabled.
+    private @Unmodifiable List<ZstdLongDistanceMatcher.Match> planLongDistanceMatches(
+            byte[] source,
+            int length
+    ) {
+        @Nullable ZstdLongDistanceMatcher matcher = longDistanceMatcher;
+        return matcher == null ? List.of() : matcher.plan(source, length);
+    }
+
+    /// Submits the collected blocks as one independently encoded parallel job.
+    private void submitPendingJob(boolean last) throws IOException {
+        @Nullable ExecutorService jobExecutor = executor;
+        if (jobExecutor == null || pendingJobBlocks.isEmpty()) {
+            throw new AssertionError("Missing Zstandard parallel job state");
+        }
+
+        @Unmodifiable List<ZstdFrameEncoder.BlockInput> blocks = List.copyOf(pendingJobBlocks);
+        byte @Unmodifiable [] prefix = nextJobPrefix;
+        long frameOffset = parallelFrameSubmitted;
+        pendingJobs.addLast(jobExecutor.submit(
+                () -> ZstdFrameEncoder.job(blocks, prefix, frameOffset, last, parameters)
+        ));
+
+        nextJobPrefix = retainOverlap(prefix, blocks, parameters.overlapSize());
+        parallelFrameSubmitted += pendingJobSize;
+        pendingJobBlocks.clear();
+        pendingJobSize = 0;
+        if (pendingJobs.size() >= maximumPendingJobs) {
+            drainPendingJob();
         }
     }
 
-    /// Waits for and writes the oldest queued parallel block.
-    private void drainPendingBlock() throws IOException {
-        Future<byte[]> future = pendingBlocks.removeFirst();
+    /// Retains the configured tail from one completed uncompressed job.
+    private static byte @Unmodifiable [] retainOverlap(
+            byte @Unmodifiable [] prefix,
+            @Unmodifiable List<ZstdFrameEncoder.BlockInput> blocks,
+            int overlapSize
+    ) {
+        if (overlapSize == 0) {
+            return new byte[0];
+        }
+
+        long totalSize = prefix.length;
+        for (ZstdFrameEncoder.BlockInput block : blocks) {
+            totalSize += block.bytes().length;
+        }
+        int retainedSize = (int) Math.min(totalSize, overlapSize);
+        byte[] retained = new byte[retainedSize];
+        int target = retainedSize;
+        for (int index = blocks.size() - 1; index >= 0 && target > 0; index--) {
+            byte @Unmodifiable [] block = blocks.get(index).bytes();
+            int count = Math.min(target, block.length);
+            target -= count;
+            System.arraycopy(block, block.length - count, retained, target, count);
+        }
+        if (target > 0) {
+            System.arraycopy(prefix, prefix.length - target, retained, 0, target);
+        }
+        return retained;
+    }
+
+    /// Drains every queued parallel job in submission order.
+    private void drainPendingJobs() throws IOException {
+        while (!pendingJobs.isEmpty()) {
+            drainPendingJob();
+        }
+    }
+
+    /// Waits for and writes the oldest queued parallel job.
+    private void drainPendingJob() throws IOException {
+        Future<ZstdFrameEncoder.JobEncoding> future = pendingJobs.removeFirst();
         try {
-            writeFully(future.get());
+            for (byte @Unmodifiable [] block : future.get().blocks()) {
+                writeFully(block);
+            }
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while encoding a Zstandard block", exception);
+            throw new IOException("Interrupted while encoding a Zstandard job", exception);
         } catch (ExecutionException exception) {
-            throw new IOException("Parallel Zstandard block encoding failed", exception.getCause());
+            throw new IOException("Parallel Zstandard job encoding failed", exception.getCause());
         }
     }
 
