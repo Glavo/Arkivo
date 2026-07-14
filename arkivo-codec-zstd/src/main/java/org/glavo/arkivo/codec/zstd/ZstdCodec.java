@@ -5,7 +5,6 @@ package org.glavo.arkivo.codec.zstd;
 
 import com.github.luben.zstd.Zstd;
 import com.github.luben.zstd.ZstdCompressCtx;
-import com.github.luben.zstd.ZstdDecompressCtx;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.ChecksumMode;
 import org.glavo.arkivo.codec.CodecOption;
@@ -336,7 +335,7 @@ public final class ZstdCodec implements CompressionCodec {
         long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
         long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
         return StandardCodecOptionSupport.limitOutput(
-                new ZstdChannelDecoder(source, ownership, createDecoderContext(options), maximumWindowSize),
+                new ZstdChannelDecoder(source, ownership, decoderDictionary(options), maximumWindowSize),
                 maximumOutputSize
         );
     }
@@ -496,21 +495,12 @@ public final class ZstdCodec implements CompressionCodec {
         return (int) value;
     }
 
-    /// Creates and configures one native decompression context.
-    private ZstdDecompressCtx createDecoderContext(CodecOptions options) {
-        ZstdDecompressCtx context = new ZstdDecompressCtx();
-        try {
-            @Nullable CompressionDictionary requestedDictionary = options.get(StandardCodecOptions.DICTIONARY);
-            if (requestedDictionary != null) {
-                context.loadDict(requestedDictionary.bytes());
-            } else if (dictionary != null) {
-                context.loadDict(dictionary);
-            }
-            return context;
-        } catch (RuntimeException | Error exception) {
-            context.close();
-            throw exception;
-        }
+    /// Returns the configured decoder dictionary, or null when no dictionary is configured.
+    private @Nullable CompressionDictionary decoderDictionary(CodecOptions options) {
+        @Nullable CompressionDictionary requestedDictionary = options.get(StandardCodecOptions.DICTIONARY);
+        return requestedDictionary != null
+                ? requestedDictionary
+                : dictionary != null ? CompressionDictionary.of(dictionary) : null;
     }
 
     /// Compresses all remaining source bytes into the target buffer.
@@ -569,32 +559,6 @@ public final class ZstdCodec implements CompressionCodec {
         if (target.isReadOnly()) {
             throw new IOException("Zstandard ByteBuffer decompression target buffer must be writable");
         }
-        long result;
-        if (dictionary != null) {
-            result = Zstd.decompressDirectByteBufferUsingDict(
-                    target,
-                    target.position(),
-                    target.remaining(),
-                    source,
-                    source.position(),
-                    source.remaining(),
-                    dictionary
-            );
-        } else {
-            result = Zstd.decompressDirectByteBuffer(
-                    target,
-                    target.position(),
-                    target.remaining(),
-                    source,
-                    source.position(),
-                    source.remaining()
-            );
-        }
-        if (Zstd.isError(result)) {
-            throw new IOException("Zstandard ByteBuffer decompression failed: " + Zstd.getErrorName(result));
-        }
-
-        source.position(source.limit());
-        target.position(target.position() + (int) result);
+        CompressionCodec.super.decompress(source, target);
     }
 }
