@@ -16,27 +16,6 @@ final class ZstdBlockDecoder {
     /// Maximum decompressed size of one block.
     static final int MAX_BLOCK_SIZE = 128 * 1024;
 
-    /// Default literal-length probabilities.
-    private static final int @Unmodifiable [] DEFAULT_LITERAL_LENGTHS = {
-            4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1,
-            2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 2, 1, 1, 1, 1, 1,
-            -1, -1, -1, -1
-    };
-
-    /// Default match-length probabilities.
-    private static final int @Unmodifiable [] DEFAULT_MATCH_LENGTHS = {
-            1, 4, 3, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -1, -1,
-            -1, -1, -1, -1, -1
-    };
-
-    /// Default offset-code probabilities.
-    private static final int @Unmodifiable [] DEFAULT_OFFSETS = {
-            1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1,
-            1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, -1
-    };
-
     /// Baselines for literal-length codes.
     private static final int @Unmodifiable [] LITERAL_BASELINES = {
             0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
@@ -69,35 +48,16 @@ final class ZstdBlockDecoder {
     };
 
     /// Predefined literal-length table.
-    private static final ZstdEntropy.FseTable DEFAULT_LITERAL_TABLE;
+    private static final ZstdEntropy.FseTable DEFAULT_LITERAL_TABLE =
+            ZstdSequenceEntropy.LITERAL_LENGTH_DECODER;
 
     /// Predefined match-length table.
-    private static final ZstdEntropy.FseTable DEFAULT_MATCH_TABLE;
+    private static final ZstdEntropy.FseTable DEFAULT_MATCH_TABLE =
+            ZstdSequenceEntropy.MATCH_LENGTH_DECODER;
 
     /// Predefined offset table.
-    private static final ZstdEntropy.FseTable DEFAULT_OFFSET_TABLE;
-
-    static {
-        try {
-            DEFAULT_LITERAL_TABLE = ZstdEntropy.FseTable.fromNormalized(
-                    DEFAULT_LITERAL_LENGTHS,
-                    DEFAULT_LITERAL_LENGTHS.length,
-                    6
-            );
-            DEFAULT_MATCH_TABLE = ZstdEntropy.FseTable.fromNormalized(
-                    DEFAULT_MATCH_LENGTHS,
-                    DEFAULT_MATCH_LENGTHS.length,
-                    6
-            );
-            DEFAULT_OFFSET_TABLE = ZstdEntropy.FseTable.fromNormalized(
-                    DEFAULT_OFFSETS,
-                    DEFAULT_OFFSETS.length,
-                    5
-            );
-        } catch (IOException exception) {
-            throw new ExceptionInInitializerError(exception);
-        }
-    }
+    private static final ZstdEntropy.FseTable DEFAULT_OFFSET_TABLE =
+            ZstdSequenceEntropy.OFFSET_DECODER;
 
     /// Configured dictionary context.
     private final ZstdDictionary dictionary;

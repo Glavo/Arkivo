@@ -49,6 +49,61 @@ public final class ZstdPureJavaEncoderTest {
         assertEquals(2, blockHeader >>> 1 & 3);
     }
 
+    /// Verifies one block can encode more than 127 sequences with varying length and offset symbols.
+    @Test
+    public void nativeDecoderReadsMultipleVaryingSequences() throws IOException {
+        ByteArrayOutputStream input = new ByteArrayOutputStream();
+        Random random = new Random(0x6d75_6c74_6973_6571L);
+        for (int index = 0; index < 160; index++) {
+            byte[] repeated = new byte[48 + index % 13 * 7];
+            random.nextBytes(repeated);
+            input.write(repeated);
+            input.write(repeated);
+
+            byte[] separator = new byte[3 + index % 11];
+            random.nextBytes(separator);
+            input.write(separator);
+        }
+        byte[] expected = input.toByteArray();
+        ZstdCodec codec = new ZstdCodec();
+        byte[] compressed = compress(codec, expected, CodecOptions.EMPTY);
+
+        assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
+        assertArrayEquals(expected, codec.decompress(ByteBuffer.wrap(compressed), expected.length).array());
+        assertTrue(firstBlockSequenceCount(codec, compressed) >= 128);
+        assertTrue(compressed.length < expected.length * 3 / 4);
+    }
+
+    /// Verifies randomized copied ranges across single- and multi-block frames with both decoders.
+    @Test
+    public void randomizedMultiSequenceBlocksInteroperate() throws IOException {
+        Random random = new Random(0x5e71_6f6e_2026L);
+        ZstdCodec codec = new ZstdCodec();
+        for (int iteration = 0; iteration < 24; iteration++) {
+            int size = 4_096 + random.nextInt(260_000);
+            byte[] expected = new byte[size];
+            random.nextBytes(expected);
+            int position = 256;
+            while (position + 4 < expected.length) {
+                int distance = 16 + random.nextInt(Math.min(position, 8_192) - 15);
+                int copyLength = Math.min(
+                        4 + random.nextInt(509),
+                        expected.length - position
+                );
+                System.arraycopy(expected, position - distance, expected, position, copyLength);
+                position += copyLength + 3 + random.nextInt(97);
+            }
+
+            byte[] compressed = compress(codec, expected, CodecOptions.EMPTY);
+            assertArrayEquals(expected, Zstd.decompress(compressed, expected.length), "iteration=" + iteration);
+            assertArrayEquals(
+                    expected,
+                    codec.decompress(ByteBuffer.wrap(compressed), expected.length).array(),
+                    "iteration=" + iteration
+            );
+        }
+    }
+
     /// Verifies checksummed output over random and boundary-sized inputs with the native decoder.
     @Test
     public void nativeDecoderReadsChecksummedBoundarySizes() throws IOException {
@@ -159,6 +214,47 @@ public final class ZstdPureJavaEncoderTest {
         System.arraycopy(first, 0, expected, 0, first.length);
         System.arraycopy(second, 0, expected, first.length, second.length);
         assertArrayEquals(expected, Zstd.decompress(encoded.toByteArray(), expected.length));
+    }
+
+    /// Returns the sequence count from the first raw-literals compressed block.
+    private static int firstBlockSequenceCount(ZstdCodec codec, byte[] frame) throws IOException {
+        ZstdStandardFrameInfo info = (ZstdStandardFrameInfo) codec.frameInfo(ByteBuffer.wrap(frame));
+        int blockOffset = info.headerSize();
+        int blockHeader = Byte.toUnsignedInt(frame[blockOffset])
+                | Byte.toUnsignedInt(frame[blockOffset + 1]) << 8
+                | Byte.toUnsignedInt(frame[blockOffset + 2]) << 16;
+        assertEquals(2, blockHeader >>> 1 & 3);
+
+        int literalOffset = blockOffset + 3;
+        int literalHeader = Byte.toUnsignedInt(frame[literalOffset]);
+        assertEquals(0, literalHeader & 3);
+        int sizeFormat = literalHeader >>> 2 & 3;
+        int literalHeaderSize;
+        int literalSize;
+        if (sizeFormat == 0 || sizeFormat == 2) {
+            literalHeaderSize = 1;
+            literalSize = literalHeader >>> 3;
+        } else if (sizeFormat == 1) {
+            literalHeaderSize = 2;
+            literalSize = (literalHeader
+                    | Byte.toUnsignedInt(frame[literalOffset + 1]) << 8) >>> 4;
+        } else {
+            literalHeaderSize = 3;
+            literalSize = (literalHeader
+                    | Byte.toUnsignedInt(frame[literalOffset + 1]) << 8
+                    | Byte.toUnsignedInt(frame[literalOffset + 2]) << 16) >>> 4;
+        }
+
+        int sequenceOffset = literalOffset + literalHeaderSize + literalSize;
+        int first = Byte.toUnsignedInt(frame[sequenceOffset]);
+        if (first < 128) {
+            return first;
+        }
+        if (first < 255) {
+            return (first - 128) << 8 | Byte.toUnsignedInt(frame[sequenceOffset + 1]);
+        }
+        return (Byte.toUnsignedInt(frame[sequenceOffset + 1])
+                | Byte.toUnsignedInt(frame[sequenceOffset + 2]) << 8) + 0x7f00;
     }
 
     /// Compresses bytes through the channel API without closing the caller-owned target.

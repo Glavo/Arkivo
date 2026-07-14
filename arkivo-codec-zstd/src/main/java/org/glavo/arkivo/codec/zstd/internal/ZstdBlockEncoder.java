@@ -7,7 +7,9 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.ByteArrayOutputStream;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 
 /// Encodes independent Zstandard blocks using raw, run-length, or sequence-compressed payloads.
 @NotNullByDefault
@@ -42,9 +44,6 @@ final class ZstdBlockEncoder {
             0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 4, 4,
             5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
     };
-
-    /// Sequence modes selecting run-length tables for all three codes.
-    private static final int RLE_SEQUENCE_MODES = 0x54;
 
     /// Encodes one block including its three-byte block header.
     ///
@@ -89,50 +88,81 @@ final class ZstdBlockEncoder {
         return true;
     }
 
-    /// Attempts to encode one match sequence with raw literals.
+    /// Attempts to encode a sequence-compressed block with raw literals.
     private static byte[] encodeCompressed(byte[] source, int length, ZstdEncoderParameters parameters) {
-        Match match = findBestMatch(source, length, parameters);
-        if (match.length() < parameters.minimumMatch()) {
+        @Unmodifiable List<Sequence> sequences = findSequences(source, length, parameters);
+        if (sequences.isEmpty()) {
             return source;
         }
 
-        int trailingLiterals = length - match.position() - match.length();
-        int literalSize = match.position() + trailingLiterals;
+        int literalSize = length;
+        for (Sequence sequence : sequences) {
+            literalSize -= sequence.length();
+        }
         ByteArrayOutputStream output = new ByteArrayOutputStream(length);
         writeRawLiteralsHeader(output, literalSize);
-        output.write(source, 0, match.position());
-        output.write(source, match.position() + match.length(), trailingLiterals);
+        int literalStart = 0;
+        for (Sequence sequence : sequences) {
+            output.write(source, literalStart, sequence.position() - literalStart);
+            literalStart = sequence.position() + sequence.length();
+        }
+        output.write(source, literalStart, length - literalStart);
 
-        int literalCode = lengthCode(match.position(), LITERAL_BASELINES, LITERAL_BITS);
-        int matchCode = lengthCode(match.length(), MATCH_BASELINES, MATCH_BITS);
-        long offsetValue = Integer.toUnsignedLong(match.distance()) + 3L;
-        int offsetCode = 63 - Long.numberOfLeadingZeros(offsetValue);
+        writeSequenceCount(output, sequences.size());
+        output.write(0);
 
-        output.write(1);
-        output.write(RLE_SEQUENCE_MODES);
-        output.write(literalCode);
-        output.write(offsetCode);
-        output.write(matchCode);
+        EncodedSequence[] encoded = new EncodedSequence[sequences.size()];
+        for (int index = 0; index < sequences.size(); index++) {
+            Sequence sequence = sequences.get(index);
+            int literalCode = lengthCode(sequence.literalLength(), LITERAL_BASELINES, LITERAL_BITS);
+            int matchCode = lengthCode(sequence.length(), MATCH_BASELINES, MATCH_BITS);
+            long offsetValue = Integer.toUnsignedLong(sequence.distance()) + 3L;
+            int offsetCode = 63 - Long.numberOfLeadingZeros(offsetValue);
+            encoded[index] = new EncodedSequence(sequence, literalCode, offsetCode, matchCode, offsetValue);
+        }
 
         ReverseBitWriter bits = new ReverseBitWriter();
-        bits.writeBits(
-                match.position() - LITERAL_BASELINES[literalCode],
-                LITERAL_BITS[literalCode]
-        );
-        bits.writeBits(
-                match.length() - MATCH_BASELINES[matchCode],
-                MATCH_BITS[matchCode]
-        );
-        bits.writeBits(offsetValue - (1L << offsetCode), offsetCode);
+        EncodedSequence last = encoded[encoded.length - 1];
+        int literalState = ZstdSequenceEntropy.LITERAL_LENGTH_ENCODER.initialState(last.literalCode());
+        int offsetState = ZstdSequenceEntropy.OFFSET_ENCODER.initialState(last.offsetCode());
+        int matchState = ZstdSequenceEntropy.MATCH_LENGTH_ENCODER.initialState(last.matchCode());
+        writeSequenceExtraBits(bits, last);
+
+        for (int index = encoded.length - 2; index >= 0; index--) {
+            EncodedSequence sequence = encoded[index];
+            ZstdSequenceEntropy.Transition offsetTransition =
+                    ZstdSequenceEntropy.OFFSET_ENCODER.transition(sequence.offsetCode(), offsetState);
+            bits.writeBits(offsetTransition.value(), offsetTransition.bitCount());
+            offsetState = offsetTransition.state();
+
+            ZstdSequenceEntropy.Transition matchTransition =
+                    ZstdSequenceEntropy.MATCH_LENGTH_ENCODER.transition(sequence.matchCode(), matchState);
+            bits.writeBits(matchTransition.value(), matchTransition.bitCount());
+            matchState = matchTransition.state();
+
+            ZstdSequenceEntropy.Transition literalTransition =
+                    ZstdSequenceEntropy.LITERAL_LENGTH_ENCODER.transition(sequence.literalCode(), literalState);
+            bits.writeBits(literalTransition.value(), literalTransition.bitCount());
+            literalState = literalTransition.state();
+            writeSequenceExtraBits(bits, sequence);
+        }
+
+        bits.writeBits(matchState, ZstdSequenceEntropy.MATCH_LENGTH_ENCODER.tableLog());
+        bits.writeBits(offsetState, ZstdSequenceEntropy.OFFSET_ENCODER.tableLog());
+        bits.writeBits(literalState, ZstdSequenceEntropy.LITERAL_LENGTH_ENCODER.tableLog());
         output.writeBytes(bits.finish());
         return output.toByteArray();
     }
 
-    /// Finds the longest useful match in the block or configured dictionary tail.
-    private static Match findBestMatch(byte[] source, int length, ZstdEncoderParameters parameters) {
+    /// Finds non-overlapping matches from left to right in the block and configured dictionary tail.
+    private static @Unmodifiable List<Sequence> findSequences(
+            byte[] source,
+            int length,
+            ZstdEncoderParameters parameters
+    ) {
         int minimumMatch = parameters.minimumMatch();
-        if (length < minimumMatch * 2) {
-            return Match.NONE;
+        if (length < minimumMatch) {
+            return List.of();
         }
 
         int[] heads = new int[1 << parameters.hashLog()];
@@ -145,31 +175,76 @@ final class ZstdBlockEncoder {
                 : 1 << parameters.windowLog();
         seedDictionary(heads, dictionary, windowSize);
 
-        Match best = Match.NONE;
-        int targetLength = parameters.targetLength();
+        ArrayList<Sequence> sequences = new ArrayList<>();
+        int literalStart = 0;
         int lastPosition = length - 4;
-        for (int position = 0; position <= lastPosition; position++) {
+        int position = 0;
+        while (position <= lastPosition) {
             int hash = hash(source, position, heads.length - 1);
             int candidate = heads[hash];
             previous[position] = candidate;
             heads[hash] = position;
 
-            int searched = 0;
-            while (candidate != Integer.MIN_VALUE && searched++ < parameters.searchDepth()) {
-                int distance = position - candidate;
-                if (distance <= 0 || distance > windowSize || distance > parameters.chainLimit()) {
+            Match match = findMatchAt(
+                    source,
+                    length,
+                    position,
+                    candidate,
+                    previous,
+                    dictionary,
+                    windowSize,
+                    parameters
+            );
+            if (match.length() < minimumMatch) {
+                position++;
+                continue;
+            }
+
+            sequences.add(new Sequence(
+                    position,
+                    match.length(),
+                    match.distance(),
+                    position - literalStart
+            ));
+            int matchEnd = position + match.length();
+            for (int skipped = position + 1; skipped < matchEnd && skipped <= lastPosition; skipped++) {
+                int skippedHash = hash(source, skipped, heads.length - 1);
+                previous[skipped] = heads[skippedHash];
+                heads[skippedHash] = skipped;
+            }
+            position = matchEnd;
+            literalStart = matchEnd;
+        }
+        return List.copyOf(sequences);
+    }
+
+    /// Finds the best match beginning at one already inserted source position.
+    private static Match findMatchAt(
+            byte[] source,
+            int length,
+            int position,
+            int candidate,
+            int[] previous,
+            byte[] dictionary,
+            int windowSize,
+            ZstdEncoderParameters parameters
+    ) {
+        Match best = Match.NONE;
+        int searched = 0;
+        while (candidate != Integer.MIN_VALUE && searched++ < parameters.searchDepth()) {
+            int distance = position - candidate;
+            if (distance <= 0 || distance > windowSize || distance > parameters.chainLimit()) {
+                break;
+            }
+            int matchLength = commonLength(source, length, position, candidate, dictionary);
+            if (matchLength > best.length()) {
+                best = new Match(matchLength, distance);
+                if (matchLength == length - position
+                        || parameters.targetLength() > 0 && matchLength >= parameters.targetLength()) {
                     break;
                 }
-                int matchLength = commonLength(source, length, position, candidate, dictionary);
-                if (matchLength > best.length()) {
-                    best = new Match(position, matchLength, distance);
-                    if (matchLength == length - position
-                            || targetLength > 0 && matchLength >= targetLength) {
-                        return best;
-                    }
-                }
-                candidate = candidate >= 0 ? previous[candidate] : Integer.MIN_VALUE;
             }
+            candidate = candidate >= 0 ? previous[candidate] : Integer.MIN_VALUE;
         }
         return best;
     }
@@ -231,6 +306,41 @@ final class ZstdBlockEncoder {
         throw new IllegalArgumentException("Zstandard sequence length is out of range");
     }
 
+    /// Writes the variable-width number of sequences field.
+    private static void writeSequenceCount(ByteArrayOutputStream output, int count) {
+        if (count < 0 || count > 0xffff + 0x7f00) {
+            throw new IllegalArgumentException("Invalid Zstandard sequence count");
+        }
+        if (count < 128) {
+            output.write(count);
+        } else if (count < 0x7f00) {
+            output.write(0x80 + (count >>> 8));
+            output.write(count);
+        } else {
+            int adjusted = count - 0x7f00;
+            output.write(0xff);
+            output.write(adjusted);
+            output.write(adjusted >>> 8);
+        }
+    }
+
+    /// Writes one sequence's extra bits in reverse decoder order.
+    private static void writeSequenceExtraBits(ReverseBitWriter bits, EncodedSequence encoded) {
+        Sequence sequence = encoded.sequence();
+        bits.writeBits(
+                sequence.literalLength() - LITERAL_BASELINES[encoded.literalCode()],
+                LITERAL_BITS[encoded.literalCode()]
+        );
+        bits.writeBits(
+                sequence.length() - MATCH_BASELINES[encoded.matchCode()],
+                MATCH_BITS[encoded.matchCode()]
+        );
+        bits.writeBits(
+                encoded.offsetValue() - (1L << encoded.offsetCode()),
+                encoded.offsetCode()
+        );
+    }
+
     /// Writes a raw-literals section size header.
     private static void writeRawLiteralsHeader(ByteArrayOutputStream output, int literalSize) {
         if (literalSize <= 31) {
@@ -255,14 +365,38 @@ final class ZstdBlockEncoder {
         target[2] = (byte) (header >>> 16);
     }
 
-    /// Holds one selected match.
+    /// Holds one non-overlapping sequence selected by the match finder.
     ///
-    /// @param position literal prefix length and match start
+    /// @param position match start in the source block
     /// @param length match length
     /// @param distance backward match distance
-    private record Match(int position, int length, int distance) {
+    /// @param literalLength number of literals preceding this match
+    private record Sequence(int position, int length, int distance, int literalLength) {
+    }
+
+    /// Holds sequence symbols and the explicit offset value written to the bitstream.
+    ///
+    /// @param sequence selected sequence
+    /// @param literalCode literal-length symbol
+    /// @param offsetCode offset symbol
+    /// @param matchCode match-length symbol
+    /// @param offsetValue explicit offset value before its baseline is removed
+    private record EncodedSequence(
+            Sequence sequence,
+            int literalCode,
+            int offsetCode,
+            int matchCode,
+            long offsetValue
+    ) {
+    }
+
+    /// Holds one selected match.
+    ///
+    /// @param length match length
+    /// @param distance backward match distance
+    private record Match(int length, int distance) {
         /// Sentinel indicating that no match was found.
-        private static final Match NONE = new Match(0, 0, 0);
+        private static final Match NONE = new Match(0, 0);
 
         /// Creates match metadata.
         private Match {

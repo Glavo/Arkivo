@@ -437,6 +437,14 @@ final class ZstdEntropy {
             return numbersOfBits[state];
         }
 
+        /// Returns the baseline for one state transition.
+        int baseline(int state) throws IOException {
+            if (state < 0 || state >= symbols.length) {
+                throw new IOException("Invalid Zstandard FSE state");
+            }
+            return baselines[state];
+        }
+
         /// Advances one state using the reverse bitstream.
         int nextState(int state, ReverseBitReader bits) throws IOException {
             if (state < 0 || state >= symbols.length) {
