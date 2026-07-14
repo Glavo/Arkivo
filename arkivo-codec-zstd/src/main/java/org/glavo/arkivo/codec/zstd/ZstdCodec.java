@@ -3,8 +3,6 @@
 
 package org.glavo.arkivo.codec.zstd;
 
-import com.github.luben.zstd.Zstd;
-import com.github.luben.zstd.ZstdCompressCtx;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.ChecksumMode;
 import org.glavo.arkivo.codec.CodecOption;
@@ -21,6 +19,7 @@ import org.glavo.arkivo.codec.WorkerCount;
 import org.glavo.arkivo.codec.zstd.internal.ZstdChannelDecoder;
 import org.glavo.arkivo.codec.zstd.internal.ZstdChannelEncoder;
 import org.glavo.arkivo.codec.zstd.internal.ZstdDictionarySupport;
+import org.glavo.arkivo.codec.zstd.internal.ZstdEncoderParameters;
 import org.glavo.arkivo.codec.zstd.internal.ZstdFrameHeader;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -42,6 +41,39 @@ public final class ZstdCodec implements CompressionCodec {
 
     /// The sentinel compression level that asks Zstandard to use its default level.
     public static final long DEFAULT_COMPRESSION_LEVEL = Long.MIN_VALUE;
+
+    /// The minimum compression level accepted by Zstandard 1.x.
+    private static final int MINIMUM_COMPRESSION_LEVEL = -131_072;
+
+    /// The maximum standard Zstandard compression level.
+    private static final int MAXIMUM_COMPRESSION_LEVEL = 22;
+
+    /// The default standard Zstandard compression level.
+    private static final int STANDARD_DEFAULT_COMPRESSION_LEVEL = 3;
+
+    /// The minimum supported Zstandard window logarithm.
+    private static final int MINIMUM_WINDOW_LOG = 10;
+
+    /// The maximum supported Zstandard window logarithm on the Java runtime.
+    private static final int MAXIMUM_WINDOW_LOG = 31;
+
+    /// The minimum supported Zstandard hash-table logarithm.
+    private static final int MINIMUM_HASH_LOG = 6;
+
+    /// The maximum supported Zstandard hash-table logarithm.
+    private static final int MAXIMUM_HASH_LOG = 30;
+
+    /// The minimum supported Zstandard chain-table logarithm.
+    private static final int MINIMUM_CHAIN_LOG = 6;
+
+    /// The maximum supported Zstandard chain-table logarithm.
+    private static final int MAXIMUM_CHAIN_LOG = 30;
+
+    /// The minimum supported Zstandard search-depth logarithm.
+    private static final int MINIMUM_SEARCH_LOG = 1;
+
+    /// The maximum supported Zstandard search-depth logarithm.
+    private static final int MAXIMUM_SEARCH_LOG = 30;
 
     /// The minimum match length accepted by the stable Zstandard compression API.
     private static final int MIN_MATCH_LENGTH_MINIMUM = 3;
@@ -67,7 +99,7 @@ public final class ZstdCodec implements CompressionCodec {
     /// Overrides the strategy-specific target match length; zero selects the default.
     public static final CodecOption<Long> TARGET_LENGTH = CodecOption.of("zstd.targetLength", Long.class);
 
-    /// Selects the native Zstandard match-finding strategy.
+    /// Selects the Zstandard match-finding strategy.
     public static final CodecOption<ZstdStrategy> STRATEGY =
             CodecOption.of("zstd.strategy", ZstdStrategy.class);
 
@@ -180,59 +212,59 @@ public final class ZstdCodec implements CompressionCodec {
     /// Returns the minimum Zstandard compression level.
     @Override
     public long minimumCompressionLevel() {
-        return Zstd.minCompressionLevel();
+        return MINIMUM_COMPRESSION_LEVEL;
     }
 
     /// Returns the maximum Zstandard compression level.
     @Override
     public long maximumCompressionLevel() {
-        return Zstd.maxCompressionLevel();
+        return MAXIMUM_COMPRESSION_LEVEL;
     }
 
     /// Returns the default Zstandard compression level.
     @Override
     public long defaultCompressionLevel() {
-        return Zstd.defaultCompressionLevel();
+        return STANDARD_DEFAULT_COMPRESSION_LEVEL;
     }
 
     /// Returns the minimum supported Zstandard window logarithm.
     public long minimumWindowLog() {
-        return Zstd.windowLogMin();
+        return MINIMUM_WINDOW_LOG;
     }
 
     /// Returns the maximum supported Zstandard window logarithm.
     public long maximumWindowLog() {
-        return Zstd.windowLogMax();
+        return MAXIMUM_WINDOW_LOG;
     }
 
     /// Returns the minimum supported Zstandard hash-table logarithm.
     public long minimumHashLog() {
-        return Zstd.hashLogMin();
+        return MINIMUM_HASH_LOG;
     }
 
     /// Returns the maximum supported Zstandard hash-table logarithm.
     public long maximumHashLog() {
-        return Zstd.hashLogMax();
+        return MAXIMUM_HASH_LOG;
     }
 
     /// Returns the minimum supported Zstandard chain-table logarithm.
     public long minimumChainLog() {
-        return Zstd.chainLogMin();
+        return MINIMUM_CHAIN_LOG;
     }
 
     /// Returns the maximum supported Zstandard chain-table logarithm.
     public long maximumChainLog() {
-        return Zstd.chainLogMax();
+        return MAXIMUM_CHAIN_LOG;
     }
 
     /// Returns the minimum supported Zstandard search-depth logarithm.
     public long minimumSearchLog() {
-        return Zstd.searchLogMin();
+        return MINIMUM_SEARCH_LOG;
     }
 
     /// Returns the maximum supported Zstandard search-depth logarithm.
     public long maximumSearchLog() {
-        return Zstd.searchLogMax();
+        return MAXIMUM_SEARCH_LOG;
     }
 
     /// Returns the minimum supported Zstandard match length.
@@ -278,7 +310,14 @@ public final class ZstdCodec implements CompressionCodec {
         if (sourceSize < 0) {
             throw new IllegalArgumentException("sourceSize must not be negative");
         }
-        return Zstd.compressBound(sourceSize);
+        long margin = sourceSize < 128L * 1024L
+                ? (128L * 1024L - sourceSize) >>> 11
+                : 0L;
+        try {
+            return Math.addExact(Math.addExact(sourceSize, sourceSize >>> 8), margin);
+        } catch (ArithmeticException exception) {
+            return Long.MAX_VALUE;
+        }
     }
 
     /// Parses one standard or skippable frame header without changing the source buffer.
@@ -317,8 +356,7 @@ public final class ZstdCodec implements CompressionCodec {
         return new ZstdChannelEncoder(
                 target,
                 ownership,
-                createEncoderContext(options, pledgedSourceSize),
-                pledgedSourceSize
+                createEncoderParameters(options, pledgedSourceSize)
         );
     }
 
@@ -340,142 +378,90 @@ public final class ZstdCodec implements CompressionCodec {
         );
     }
 
-    /// Creates and configures one native compression context.
-    private ZstdCompressCtx createEncoderContext(CodecOptions options, long pledgedSourceSize) {
-        ZstdCompressCtx context = new ZstdCompressCtx();
-        try {
-            @Nullable Long requestedLevel = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
-            if (requestedLevel != null) {
-                if (requestedLevel < minimumCompressionLevel() || requestedLevel > maximumCompressionLevel()) {
-                    throw new IllegalArgumentException("Zstandard compression level is out of range");
-                }
-                context.setLevel(Math.toIntExact(requestedLevel));
-            } else if (compressionLevel != DEFAULT_COMPRESSION_LEVEL) {
-                context.setLevel(Math.toIntExact(compressionLevel));
-            }
-
-            configureAdvancedCompression(context, options);
-
-            @Nullable CompressionDictionary requestedDictionary = options.get(StandardCodecOptions.DICTIONARY);
-            if (requestedDictionary != null) {
-                context.loadDict(requestedDictionary.bytes());
-            } else if (dictionary != null) {
-                context.loadDict(dictionary);
-            }
-
-            @Nullable ChecksumMode checksum = options.get(StandardCodecOptions.CHECKSUM);
-            if (checksum == ChecksumMode.ENABLED) {
-                context.setChecksum(true);
-            } else if (checksum == ChecksumMode.DISABLED) {
-                context.setChecksum(false);
-            }
-
-            @Nullable WorkerCount workers = options.get(StandardCodecOptions.WORKER_COUNT);
-            if (workers != null) {
-                context.setWorkers(workers.value());
-            }
-
-            if (pledgedSourceSize >= 0L) {
-                context.setPledgedSrcSize(pledgedSourceSize);
-            }
-            return context;
-        } catch (RuntimeException | Error exception) {
-            context.close();
-            throw exception;
+    /// Resolves operation options into immutable pure Java encoder parameters.
+    private ZstdEncoderParameters createEncoderParameters(
+            CodecOptions options,
+            long pledgedSourceSize
+    ) throws IOException {
+        @Nullable Long requestedLevel = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
+        long selectedLevel = requestedLevel != null
+                ? requestedLevel
+                : compressionLevel != DEFAULT_COMPRESSION_LEVEL
+                ? compressionLevel
+                : STANDARD_DEFAULT_COMPRESSION_LEVEL;
+        if (selectedLevel < minimumCompressionLevel() || selectedLevel > maximumCompressionLevel()) {
+            throw new IllegalArgumentException("Zstandard compression level is out of range");
         }
-    }
 
-    /// Applies algorithm-specific compression parameters to a native context.
-    private static void configureAdvancedCompression(ZstdCompressCtx context, CodecOptions options) {
         @Nullable Long windowLog = options.get(WINDOW_LOG);
-        if (windowLog != null) {
-            context.setWindowLog(boundedParameter(
-                    windowLog,
-                    Zstd.windowLogMin(),
-                    Zstd.windowLogMax(),
-                    "Zstandard window log"
-            ));
-        }
-
         @Nullable Long hashLog = options.get(HASH_LOG);
-        if (hashLog != null) {
-            context.setHashLog(boundedParameter(
-                    hashLog,
-                    Zstd.hashLogMin(),
-                    Zstd.hashLogMax(),
-                    "Zstandard hash log"
-            ));
-        }
-
         @Nullable Long chainLog = options.get(CHAIN_LOG);
-        if (chainLog != null) {
-            context.setChainLog(boundedParameter(
-                    chainLog,
-                    Zstd.chainLogMin(),
-                    Zstd.chainLogMax(),
-                    "Zstandard chain log"
-            ));
-        }
-
         @Nullable Long searchLog = options.get(SEARCH_LOG);
-        if (searchLog != null) {
-            context.setSearchLog(boundedParameter(
-                    searchLog,
-                    Zstd.searchLogMin(),
-                    Zstd.searchLogMax(),
-                    "Zstandard search log"
-            ));
-        }
-
         @Nullable Long minMatch = options.get(MIN_MATCH);
-        if (minMatch != null) {
-            context.setMinMatch(boundedParameter(
-                    minMatch,
-                    MIN_MATCH_LENGTH_MINIMUM,
-                    MIN_MATCH_LENGTH_MAXIMUM,
-                    "Zstandard minimum match length"
-            ));
-        }
-
         @Nullable Long targetLength = options.get(TARGET_LENGTH);
-        if (targetLength != null) {
-            context.setTargetLength(nonNegativeInt(targetLength, "Zstandard target length"));
-        }
-
         @Nullable ZstdStrategy strategy = options.get(STRATEGY);
-        if (strategy != null) {
-            context.setStrategy(strategy.nativeValue());
-        }
-
         @Nullable Long jobSize = options.get(JOB_SIZE);
-        if (jobSize != null) {
-            context.setJobSize(nonNegativeInt(jobSize, "Zstandard job size"));
-        }
-
         @Nullable Long overlapLog = options.get(OVERLAP_LOG);
-        if (overlapLog != null) {
-            context.setOverlapLog(boundedParameter(overlapLog, 0, 9, "Zstandard overlap log"));
-        }
-
         @Nullable Boolean contentSize = options.get(CONTENT_SIZE);
-        if (contentSize != null) {
-            context.setContentSize(contentSize);
-        }
-
         @Nullable Boolean dictionaryId = options.get(DICTIONARY_ID);
-        if (dictionaryId != null) {
-            context.setDictID(dictionaryId);
-        }
-
         @Nullable Boolean longDistanceMatching = options.get(LONG_DISTANCE_MATCHING);
-        if (longDistanceMatching != null) {
-            context.setEnableLongDistanceMatching(
-                    longDistanceMatching ? Zstd.ParamSwitch.ENABLE : Zstd.ParamSwitch.DISABLE
-            );
-        }
+        @Nullable ChecksumMode checksum = options.get(StandardCodecOptions.CHECKSUM);
+        @Nullable WorkerCount workers = options.get(StandardCodecOptions.WORKER_COUNT);
+        nonNegativeInt(jobSize != null ? jobSize : 0L, "Zstandard job size");
+        boundedParameter(overlapLog != null ? overlapLog : 0L, 0, 9, "Zstandard overlap log");
+
+        @Nullable CompressionDictionary requestedDictionary = options.get(StandardCodecOptions.DICTIONARY);
+        @Nullable CompressionDictionary selectedDictionary = requestedDictionary != null
+                ? requestedDictionary
+                : dictionary != null ? CompressionDictionary.of(dictionary) : null;
+        return new ZstdEncoderParameters(
+                Math.toIntExact(selectedLevel),
+                boundedParameter(
+                        windowLog != null ? windowLog : 0L,
+                        MINIMUM_WINDOW_LOG,
+                        MAXIMUM_WINDOW_LOG,
+                        "Zstandard window log"
+                ),
+                boundedParameter(
+                        hashLog != null ? hashLog : 0L,
+                        MINIMUM_HASH_LOG,
+                        MAXIMUM_HASH_LOG,
+                        "Zstandard hash log"
+                ),
+                boundedParameter(
+                        chainLog != null ? chainLog : 0L,
+                        MINIMUM_CHAIN_LOG,
+                        MAXIMUM_CHAIN_LOG,
+                        "Zstandard chain log"
+                ),
+                boundedParameter(
+                        searchLog != null ? searchLog : 0L,
+                        MINIMUM_SEARCH_LOG,
+                        MAXIMUM_SEARCH_LOG,
+                        "Zstandard search log"
+                ),
+                boundedParameter(
+                        minMatch != null ? minMatch : 0L,
+                        MIN_MATCH_LENGTH_MINIMUM,
+                        MIN_MATCH_LENGTH_MAXIMUM,
+                        "Zstandard minimum match length"
+                ),
+                nonNegativeInt(
+                        targetLength != null ? targetLength : 0L,
+                        "Zstandard target length"
+                ),
+                strategy != null ? strategy.ordinal() + 1 : 1,
+                checksum == ChecksumMode.ENABLED,
+                contentSize == null || contentSize,
+                dictionaryId == null || dictionaryId,
+                longDistanceMatching != null && longDistanceMatching,
+                workers != null ? workers.value() : 0,
+                pledgedSourceSize,
+                selectedDictionary
+        );
     }
 
-    /// Converts a parameter that accepts zero for automatic selection or a native bounded value.
+    /// Converts a parameter that accepts zero for automatic selection or a bounded value.
     private static int boundedParameter(long value, int minimum, int maximum, String name) {
         if (value != 0L && (value < minimum || value > maximum)) {
             throw new IllegalArgumentException(
@@ -514,38 +500,7 @@ public final class ZstdCodec implements CompressionCodec {
         if (target.isReadOnly()) {
             throw new IOException("Zstandard ByteBuffer compression target buffer must be writable");
         }
-        int level = compressionLevel != DEFAULT_COMPRESSION_LEVEL
-                ? Math.toIntExact(compressionLevel)
-                : Zstd.defaultCompressionLevel();
-        long result;
-        if (dictionary != null) {
-            result = Zstd.compressDirectByteBufferUsingDict(
-                    target,
-                    target.position(),
-                    target.remaining(),
-                    source,
-                    source.position(),
-                    source.remaining(),
-                    dictionary,
-                    level
-            );
-        } else {
-            result = Zstd.compressDirectByteBuffer(
-                    target,
-                    target.position(),
-                    target.remaining(),
-                    source,
-                    source.position(),
-                    source.remaining(),
-                    level
-            );
-        }
-        if (Zstd.isError(result)) {
-            throw new IOException("Zstandard ByteBuffer compression failed: " + Zstd.getErrorName(result));
-        }
-
-        source.position(source.limit());
-        target.position(target.position() + (int) result);
+        CompressionCodec.super.compress(source, target);
     }
 
     /// Decompresses all remaining source bytes into the target buffer.

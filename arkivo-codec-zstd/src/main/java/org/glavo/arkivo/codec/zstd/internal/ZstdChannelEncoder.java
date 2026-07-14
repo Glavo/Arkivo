@@ -3,11 +3,7 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
-import com.github.luben.zstd.EndDirective;
-import com.github.luben.zstd.ZstdCompressCtx;
-import com.github.luben.zstd.ZstdDirectBufferCompressingStreamNoFinalizer;
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -17,81 +13,84 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.WritableByteChannel;
+import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.Objects;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
-/// Encodes Zstandard frames through a native direct-ByteBuffer context.
+/// Encodes Zstandard frames directly over a writable byte channel in pure Java.
 @NotNullByDefault
 public final class ZstdChannelEncoder implements CompressionEncoder {
-    /// The owned uncompressed-input staging-buffer size.
-    private static final int INPUT_BUFFER_SIZE = 128 * 1024;
-
-    /// The compressed-data target.
+    /// Compressed-data target.
     private final WritableByteChannel target;
 
     /// Tracks closure of the owned compressed-data target.
     private final OwnedChannelCloser targetCloser;
 
-    /// The configured native Zstandard compression context.
-    private final ZstdCompressCtx context;
+    /// Validated encoder parameters.
+    private final ZstdEncoderParameters parameters;
 
-    /// The exact source size pledged independently for every frame, or the unknown sentinel.
-    private final long pledgedSourceSize;
+    /// Pending uncompressed block retained until its last-block status is known.
+    private final byte[] inputBuffer;
 
-    /// The direct owned input staging buffer.
-    private final ByteBuffer inputBuffer = ByteBuffer.allocateDirect(INPUT_BUFFER_SIZE);
+    /// Parallel block executor, or null for synchronous compression.
+    private final @Nullable ExecutorService executor;
 
-    /// The direct native output staging buffer.
-    private final ByteBuffer outputBuffer = ByteBuffer.allocateDirect(
-            ZstdDirectBufferCompressingStreamNoFinalizer.recommendedOutputBufferSize()
-    );
+    /// Ordered parallel block results awaiting channel output.
+    private final ArrayDeque<Future<byte[]>> pendingBlocks = new ArrayDeque<>();
 
-    /// The number of uncompressed bytes consumed.
+    /// Maximum queued block count before the oldest result is drained.
+    private final int maximumPendingBlocks;
+
+    /// Number of valid bytes in the pending input block.
+    private int inputSize;
+
+    /// Checksum for the active frame.
+    private ZstdXXHash64 checksum = new ZstdXXHash64();
+
+    /// Number of uncompressed bytes accepted in the active frame.
+    private long frameInputBytes;
+
+    /// Number of uncompressed bytes consumed across all frames.
     private long inputBytes;
 
-    /// The number of compressed bytes written.
+    /// Number of compressed bytes written across all frames.
     private long outputBytes;
 
     /// Whether one frame is active and will be finished on the next frame boundary.
     private boolean frameActive = true;
 
+    /// Whether the active frame header has been written.
+    private boolean headerWritten;
+
     /// Whether this encoder remains open.
     private boolean open = true;
 
-    /// Creates an encoder that owns the configured native context.
+    /// Creates a pure Java Zstandard channel encoder.
     ///
     /// @param target compressed-data target
     /// @param ownership whether this context closes the target
-    /// @param context configured native compression context
+    /// @param parameters validated encoder parameters
     public ZstdChannelEncoder(
             WritableByteChannel target,
             ChannelOwnership ownership,
-            ZstdCompressCtx context
-    ) {
-        this(target, ownership, context, CompressionCodec.UNKNOWN_SIZE);
-    }
-
-    /// Creates an encoder with an optional source-size pledge for every frame.
-    ///
-    /// @param target compressed-data target
-    /// @param ownership whether this context closes the target
-    /// @param context configured native compression context
-    /// @param pledgedSourceSize exact source size for every frame, or the unknown sentinel
-    public ZstdChannelEncoder(
-            WritableByteChannel target,
-            ChannelOwnership ownership,
-            ZstdCompressCtx context,
-            long pledgedSourceSize
+            ZstdEncoderParameters parameters
     ) {
         this.target = Objects.requireNonNull(target, "target");
         this.targetCloser = new OwnedChannelCloser(target, ownership);
-        this.context = Objects.requireNonNull(context, "context");
-        if (pledgedSourceSize < CompressionCodec.UNKNOWN_SIZE) {
-            throw new IllegalArgumentException("pledgedSourceSize must not be less than the unknown sentinel");
-        }
-        this.pledgedSourceSize = pledgedSourceSize;
+        this.parameters = Objects.requireNonNull(parameters, "parameters");
+        this.inputBuffer = new byte[parameters.blockSize()];
+        int workerCount = parameters.workerCount();
+        this.executor = workerCount == 0
+                ? null
+                : Executors.newFixedThreadPool(workerCount);
+        this.maximumPendingBlocks = Math.max(1, workerCount * 2);
     }
 
-    /// Consumes uncompressed bytes through the native streaming context.
+    /// Consumes uncompressed bytes while retaining one pending block for frame finalization.
     @Override
     public int write(ByteBuffer source) throws IOException {
         Objects.requireNonNull(source, "source");
@@ -100,38 +99,35 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
             return 0;
         }
         startFrame();
+        requirePledgeCapacity(source.remaining());
 
         int start = source.position();
-        try {
-            while (source.hasRemaining()) {
-                stageInput(source);
-                while (inputBuffer.hasRemaining()) {
-                    int inputPosition = inputBuffer.position();
-                    long outputBefore = outputBytes;
-                    process(EndDirective.CONTINUE);
-                    if (inputBuffer.position() == inputPosition && outputBytes == outputBefore) {
-                        throw new IOException("Zstandard encoder made no progress");
-                    }
-                }
+        while (source.hasRemaining()) {
+            if (inputSize == inputBuffer.length) {
+                writePendingBlock(false);
             }
-            return source.position() - start;
-        } finally {
-            inputBytes += source.position() - start;
+            int count = Math.min(source.remaining(), inputBuffer.length - inputSize);
+            source.get(inputBuffer, inputSize, count);
+            checksum.update(inputBuffer, inputSize, count);
+            inputSize += count;
+            frameInputBytes += count;
+            inputBytes += count;
         }
+        return source.position() - start;
     }
 
-    /// Flushes pending compressed output without ending the frame.
+    /// Flushes all currently accepted input as complete non-final blocks.
     @Override
     public void flush() throws IOException {
         ensureOpen();
         if (!frameActive) {
             return;
         }
-        inputBuffer.clear();
-        inputBuffer.limit(0);
-        while (!process(EndDirective.FLUSH)) {
-            // Continue until the native context reports a completed flush.
+        writeHeader();
+        if (inputSize != 0) {
+            writePendingBlock(false);
         }
+        drainPendingBlocks();
     }
 
     /// Finishes the active frame while retaining the encoder for another frame.
@@ -145,7 +141,7 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
         frameActive = false;
     }
 
-    /// Finishes the active frame and releases the native context.
+    /// Finishes the active frame and closes an owned target.
     @Override
     public void finish() throws IOException {
         if (!open) {
@@ -162,16 +158,8 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
             failure = exception;
         }
         open = false;
-        try {
-            context.close();
-        } catch (RuntimeException | Error exception) {
-            if (failure == null) {
-                failure = exception;
-            } else {
-                failure.addSuppressed(exception);
-            }
-        }
-        closeOwnedTarget(failure);
+        closeExecutor(failure);
+        targetCloser.closeAfter(failure);
     }
 
     /// Returns the consumed uncompressed byte count.
@@ -198,56 +186,114 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
         finish();
     }
 
-    /// Lazily resets the native session before accepting the next frame's input.
+    /// Starts a fresh frame after an earlier explicit frame boundary.
     private void startFrame() {
         if (frameActive) {
             return;
         }
-        context.reset();
-        if (pledgedSourceSize >= 0L) {
-            context.setPledgedSrcSize(pledgedSourceSize);
-        }
         frameActive = true;
+        headerWritten = false;
+        frameInputBytes = 0L;
+        inputSize = 0;
+        checksum = new ZstdXXHash64();
     }
 
-    /// Finishes one active native frame.
-    private void endFrame() throws IOException {
-        inputBuffer.clear();
-        inputBuffer.limit(0);
-        while (!process(EndDirective.END)) {
-            // Continue until the complete frame epilogue is written.
+    /// Writes the active frame header once.
+    private void writeHeader() throws IOException {
+        if (!headerWritten) {
+            writeFully(ZstdFrameEncoder.header(parameters));
+            headerWritten = true;
         }
     }
 
-    /// Processes one native streaming operation and drains produced output.
-    private boolean process(EndDirective directive) throws IOException {
-        outputBuffer.clear();
-        boolean complete = context.compressDirectByteBufferStream(outputBuffer, inputBuffer, directive);
-        outputBuffer.flip();
-        while (outputBuffer.hasRemaining()) {
-            int written = target.write(outputBuffer);
+    /// Finishes one active frame and validates its source-size pledge.
+    private void endFrame() throws IOException {
+        long pledgedSourceSize = parameters.pledgedSourceSize();
+        if (pledgedSourceSize >= 0L && frameInputBytes != pledgedSourceSize) {
+            throw new IOException(
+                    "Zstandard frame source size " + frameInputBytes
+                            + " does not match pledged size " + pledgedSourceSize
+            );
+        }
+        writeHeader();
+        writePendingBlock(true);
+        drainPendingBlocks();
+        if (parameters.checksum()) {
+            writeFully(ZstdFrameEncoder.checksum(checksum));
+        }
+        inputSize = 0;
+    }
+
+    /// Writes the pending block and clears its staging range.
+    private void writePendingBlock(boolean last) throws IOException {
+        writeHeader();
+        @Nullable ExecutorService blockExecutor = executor;
+        if (blockExecutor == null) {
+            writeFully(ZstdFrameEncoder.block(inputBuffer, inputSize, last, parameters));
+        } else {
+            byte[] blockInput = Arrays.copyOf(inputBuffer, inputSize);
+            int blockLength = inputSize;
+            pendingBlocks.addLast(blockExecutor.submit(
+                    () -> ZstdFrameEncoder.block(blockInput, blockLength, last, parameters)
+            ));
+            if (pendingBlocks.size() >= maximumPendingBlocks) {
+                drainPendingBlock();
+            }
+        }
+        inputSize = 0;
+    }
+
+    /// Drains every queued parallel block in submission order.
+    private void drainPendingBlocks() throws IOException {
+        while (!pendingBlocks.isEmpty()) {
+            drainPendingBlock();
+        }
+    }
+
+    /// Waits for and writes the oldest queued parallel block.
+    private void drainPendingBlock() throws IOException {
+        Future<byte[]> future = pendingBlocks.removeFirst();
+        try {
+            writeFully(future.get());
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while encoding a Zstandard block", exception);
+        } catch (ExecutionException exception) {
+            throw new IOException("Parallel Zstandard block encoding failed", exception.getCause());
+        }
+    }
+
+    /// Stops the block executor without obscuring an earlier failure.
+    private void closeExecutor(@Nullable Throwable failure) {
+        @Nullable ExecutorService blockExecutor = executor;
+        if (blockExecutor == null) {
+            return;
+        }
+        if (failure == null) {
+            blockExecutor.shutdown();
+        } else {
+            blockExecutor.shutdownNow();
+        }
+    }
+
+    /// Rejects input that would exceed an exact frame source-size pledge.
+    private void requirePledgeCapacity(int count) throws IOException {
+        long pledgedSourceSize = parameters.pledgedSourceSize();
+        if (pledgedSourceSize >= 0L && count > pledgedSourceSize - frameInputBytes) {
+            throw new IOException("Zstandard input exceeds the pledged frame source size");
+        }
+    }
+
+    /// Writes every byte while rejecting a target channel that makes no progress.
+    private void writeFully(byte[] bytes) throws IOException {
+        ByteBuffer output = ByteBuffer.wrap(bytes);
+        while (output.hasRemaining()) {
+            int written = target.write(output);
             if (written == 0) {
                 throw new IOException("Zstandard target channel made no progress");
             }
             outputBytes += written;
         }
-        return complete;
-    }
-
-    /// Copies one bounded source range into the owned direct input buffer.
-    private void stageInput(ByteBuffer source) {
-        inputBuffer.clear();
-        int count = Math.min(source.remaining(), inputBuffer.capacity());
-        ByteBuffer chunk = source.slice();
-        chunk.limit(count);
-        inputBuffer.put(chunk);
-        source.position(source.position() + count);
-        inputBuffer.flip();
-    }
-
-    /// Closes the owned target without hiding an earlier failure.
-    private void closeOwnedTarget(@Nullable Throwable failure) throws IOException {
-        targetCloser.closeAfter(failure);
     }
 
     /// Requires the encoder to remain open.
