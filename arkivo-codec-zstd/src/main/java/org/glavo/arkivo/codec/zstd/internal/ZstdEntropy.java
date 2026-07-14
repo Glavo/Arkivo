@@ -340,6 +340,46 @@ final class ZstdEntropy {
         }
     }
 
+    /// Writes little-endian fields that a Zstandard reverse bit reader consumes in reverse order.
+    @NotNullByDefault
+    static final class ReverseBitWriter {
+        /// Packed output bytes.
+        private byte[] bytes = new byte[8];
+
+        /// Number of useful bits written.
+        private int bitCount;
+
+        /// Appends the low `count` bits of a value.
+        void writeBits(long value, int count) {
+            if (count < 0 || count > 31 || (count != 0 && value >>> count != 0L)) {
+                throw new IllegalArgumentException("Invalid Zstandard reverse bit field");
+            }
+            ensureCapacity(bitCount + count + 1);
+            for (int bit = 0; bit < count; bit++) {
+                if ((value & 1L << bit) != 0L) {
+                    bytes[(bitCount + bit) >>> 3] |= (byte) (1 << ((bitCount + bit) & 7));
+                }
+            }
+            bitCount += count;
+        }
+
+        /// Appends the terminal marker and returns the complete stream.
+        byte[] finish() {
+            ensureCapacity(bitCount + 1);
+            bytes[bitCount >>> 3] |= (byte) (1 << (bitCount & 7));
+            bitCount++;
+            return Arrays.copyOf(bytes, (bitCount + 7) >>> 3);
+        }
+
+        /// Expands the packed byte array to hold a bit count.
+        private void ensureCapacity(int requiredBits) {
+            int requiredBytes = (requiredBits + 7) >>> 3;
+            if (requiredBytes > bytes.length) {
+                bytes = Arrays.copyOf(bytes, Math.max(requiredBytes, bytes.length * 2));
+            }
+        }
+    }
+
     /// An immutable finite-state entropy decoding table.
     @NotNullByDefault
     static final class FseTable {

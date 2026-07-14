@@ -88,7 +88,7 @@ final class ZstdBlockEncoder {
         return true;
     }
 
-    /// Attempts to encode a sequence-compressed block with raw literals.
+    /// Attempts to encode a sequence-compressed block.
     private static byte[] encodeCompressed(byte[] source, int length, ZstdEncoderParameters parameters) {
         @Unmodifiable List<Sequence> sequences = findSequences(source, length, parameters);
         if (sequences.isEmpty()) {
@@ -99,14 +99,19 @@ final class ZstdBlockEncoder {
         for (Sequence sequence : sequences) {
             literalSize -= sequence.length();
         }
-        ByteArrayOutputStream output = new ByteArrayOutputStream(length);
-        writeRawLiteralsHeader(output, literalSize);
+        byte[] literals = new byte[literalSize];
         int literalStart = 0;
+        int literalOffset = 0;
         for (Sequence sequence : sequences) {
-            output.write(source, literalStart, sequence.position() - literalStart);
+            int runLength = sequence.position() - literalStart;
+            System.arraycopy(source, literalStart, literals, literalOffset, runLength);
+            literalOffset += runLength;
             literalStart = sequence.position() + sequence.length();
         }
-        output.write(source, literalStart, length - literalStart);
+        System.arraycopy(source, literalStart, literals, literalOffset, length - literalStart);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream(length);
+        output.writeBytes(ZstdLiteralEncoder.encode(literals));
 
         writeSequenceCount(output, sequences.size());
         output.write(0);
@@ -121,7 +126,7 @@ final class ZstdBlockEncoder {
             encoded[index] = new EncodedSequence(sequence, literalCode, offsetCode, matchCode, offsetValue);
         }
 
-        ReverseBitWriter bits = new ReverseBitWriter();
+        ZstdEntropy.ReverseBitWriter bits = new ZstdEntropy.ReverseBitWriter();
         EncodedSequence last = encoded[encoded.length - 1];
         int literalState = ZstdSequenceEntropy.LITERAL_LENGTH_ENCODER.initialState(last.literalCode());
         int offsetState = ZstdSequenceEntropy.OFFSET_ENCODER.initialState(last.offsetCode());
@@ -325,7 +330,10 @@ final class ZstdBlockEncoder {
     }
 
     /// Writes one sequence's extra bits in reverse decoder order.
-    private static void writeSequenceExtraBits(ReverseBitWriter bits, EncodedSequence encoded) {
+    private static void writeSequenceExtraBits(
+            ZstdEntropy.ReverseBitWriter bits,
+            EncodedSequence encoded
+    ) {
         Sequence sequence = encoded.sequence();
         bits.writeBits(
                 sequence.literalLength() - LITERAL_BASELINES[encoded.literalCode()],
@@ -339,22 +347,6 @@ final class ZstdBlockEncoder {
                 encoded.offsetValue() - (1L << encoded.offsetCode()),
                 encoded.offsetCode()
         );
-    }
-
-    /// Writes a raw-literals section size header.
-    private static void writeRawLiteralsHeader(ByteArrayOutputStream output, int literalSize) {
-        if (literalSize <= 31) {
-            output.write(literalSize << 3);
-        } else if (literalSize <= 4095) {
-            int header = (literalSize << 4) | 4;
-            output.write(header);
-            output.write(header >>> 8);
-        } else {
-            int header = (literalSize << 4) | 12;
-            output.write(header);
-            output.write(header >>> 8);
-            output.write(header >>> 16);
-        }
     }
 
     /// Writes a little-endian block header.
@@ -400,46 +392,6 @@ final class ZstdBlockEncoder {
 
         /// Creates match metadata.
         private Match {
-        }
-    }
-
-    /// Writes little-endian fields that a Zstandard reverse bit reader consumes in reverse order.
-    @NotNullByDefault
-    private static final class ReverseBitWriter {
-        /// Packed output bytes.
-        private byte[] bytes = new byte[8];
-
-        /// Number of useful bits written.
-        private int bitCount;
-
-        /// Appends the low `count` bits of a value.
-        private void writeBits(long value, int count) {
-            if (count < 0 || count > 31 || (count != 0 && value >>> count != 0L)) {
-                throw new IllegalArgumentException("Invalid Zstandard reverse bit field");
-            }
-            ensureCapacity(bitCount + count + 1);
-            for (int bit = 0; bit < count; bit++) {
-                if ((value & 1L << bit) != 0L) {
-                    bytes[(bitCount + bit) >>> 3] |= (byte) (1 << ((bitCount + bit) & 7));
-                }
-            }
-            bitCount += count;
-        }
-
-        /// Appends the terminal marker and returns the complete stream.
-        private byte[] finish() {
-            ensureCapacity(bitCount + 1);
-            bytes[bitCount >>> 3] |= (byte) (1 << (bitCount & 7));
-            bitCount++;
-            return Arrays.copyOf(bytes, (bitCount + 7) >>> 3);
-        }
-
-        /// Expands the packed byte array to hold a bit count.
-        private void ensureCapacity(int requiredBits) {
-            int requiredBytes = (requiredBits + 7) >>> 3;
-            if (requiredBytes > bytes.length) {
-                bytes = Arrays.copyOf(bytes, Math.max(requiredBytes, bytes.length * 2));
-            }
         }
     }
 

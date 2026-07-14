@@ -74,6 +74,37 @@ public final class ZstdPureJavaEncoderTest {
         assertTrue(compressed.length < expected.length * 3 / 4);
     }
 
+    /// Verifies a compact Huffman literal section uses one reverse bitstream.
+    @Test
+    public void nativeDecoderReadsSingleStreamHuffmanLiterals() throws IOException {
+        byte[] expected = huffmanFixture(6, 128, 0x51a9_2026L);
+        ZstdCodec codec = new ZstdCodec();
+        byte[] compressed = compress(codec, expected, CodecOptions.EMPTY);
+        LiteralSectionInfo literals = firstLiteralSection(codec, compressed);
+
+        assertEquals(2, literals.type());
+        assertEquals(1, literals.streamCount());
+        assertTrue(literals.regeneratedSize() > 0 && literals.regeneratedSize() <= 1023);
+        assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
+        assertArrayEquals(expected, codec.decompress(ByteBuffer.wrap(compressed), expected.length).array());
+    }
+
+    /// Verifies a large Huffman literal section uses four independently sized streams.
+    @Test
+    public void nativeDecoderReadsFourStreamHuffmanLiterals() throws IOException {
+        byte[] expected = huffmanFixture(100, 160, 0x4f75_7220_2026L);
+        ZstdCodec codec = new ZstdCodec();
+        byte[] compressed = compress(codec, expected, CodecOptions.EMPTY);
+        LiteralSectionInfo literals = firstLiteralSection(codec, compressed);
+
+        assertEquals(2, literals.type());
+        assertEquals(4, literals.streamCount());
+        assertTrue(literals.regeneratedSize() > 1023);
+        assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
+        assertArrayEquals(expected, codec.decompress(ByteBuffer.wrap(compressed), expected.length).array());
+        assertTrue(compressed.length < expected.length * 3 / 4);
+    }
+
     /// Verifies randomized copied ranges across single- and multi-block frames with both decoders.
     @Test
     public void randomizedMultiSequenceBlocksInteroperate() throws IOException {
@@ -255,6 +286,89 @@ public final class ZstdPureJavaEncoderTest {
         }
         return (Byte.toUnsignedInt(frame[sequenceOffset + 1])
                 | Byte.toUnsignedInt(frame[sequenceOffset + 2]) << 8) + 0x7f00;
+    }
+
+    /// Returns literal metadata from the first compressed block in a frame.
+    private static LiteralSectionInfo firstLiteralSection(ZstdCodec codec, byte[] frame) throws IOException {
+        ZstdStandardFrameInfo info = (ZstdStandardFrameInfo) codec.frameInfo(ByteBuffer.wrap(frame));
+        int blockOffset = info.headerSize();
+        int blockHeader = Byte.toUnsignedInt(frame[blockOffset])
+                | Byte.toUnsignedInt(frame[blockOffset + 1]) << 8
+                | Byte.toUnsignedInt(frame[blockOffset + 2]) << 16;
+        assertEquals(2, blockHeader >>> 1 & 3);
+
+        int literalOffset = blockOffset + 3;
+        int first = Byte.toUnsignedInt(frame[literalOffset]);
+        int type = first & 3;
+        int sizeFormat = first >>> 2 & 3;
+        if (type <= 1) {
+            int regeneratedSize;
+            if (sizeFormat == 0 || sizeFormat == 2) {
+                regeneratedSize = first >>> 3;
+            } else if (sizeFormat == 1) {
+                regeneratedSize = (first
+                        | Byte.toUnsignedInt(frame[literalOffset + 1]) << 8) >>> 4;
+            } else {
+                regeneratedSize = (first
+                        | Byte.toUnsignedInt(frame[literalOffset + 1]) << 8
+                        | Byte.toUnsignedInt(frame[literalOffset + 2]) << 16) >>> 4;
+            }
+            return new LiteralSectionInfo(type, regeneratedSize, 0);
+        }
+
+        if (sizeFormat <= 1) {
+            int header = first
+                    | Byte.toUnsignedInt(frame[literalOffset + 1]) << 8
+                    | Byte.toUnsignedInt(frame[literalOffset + 2]) << 16;
+            return new LiteralSectionInfo(type, header >>> 4 & 0x3ff, sizeFormat == 0 ? 1 : 4);
+        }
+        if (sizeFormat == 2) {
+            long header = Integer.toUnsignedLong(
+                    first
+                            | Byte.toUnsignedInt(frame[literalOffset + 1]) << 8
+                            | Byte.toUnsignedInt(frame[literalOffset + 2]) << 16
+                            | frame[literalOffset + 3] << 24
+            );
+            return new LiteralSectionInfo(type, (int) (header >>> 4 & 0x3fff), 4);
+        }
+        long header = Integer.toUnsignedLong(
+                first
+                        | Byte.toUnsignedInt(frame[literalOffset + 1]) << 8
+                        | Byte.toUnsignedInt(frame[literalOffset + 2]) << 16
+                        | frame[literalOffset + 3] << 24
+        ) | (long) Byte.toUnsignedInt(frame[literalOffset + 4]) << 32;
+        return new LiteralSectionInfo(type, (int) (header >>> 4 & 0x3ffff), 4);
+    }
+
+    /// Creates duplicated skewed-ASCII chunks that leave a controllable literal population.
+    private static byte[] huffmanFixture(int chunkCount, int chunkSize, long seed) {
+        ByteArrayOutputStream input = new ByteArrayOutputStream(chunkCount * (chunkSize * 2 + 3));
+        Random random = new Random(seed);
+        for (int chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++) {
+            byte[] chunk = new byte[chunkSize];
+            for (int index = 0; index < chunk.length; index++) {
+                int sample = random.nextInt(100);
+                chunk[index] = sample < 50
+                        ? (byte) ' '
+                        : sample < 88
+                        ? (byte) ('a' + random.nextInt(6))
+                        : (byte) ('0' + random.nextInt(4));
+            }
+            input.writeBytes(chunk);
+            input.writeBytes(chunk);
+            input.write('a');
+            input.write('0' + chunkIndex % 4);
+            input.write('b');
+        }
+        return input.toByteArray();
+    }
+
+    /// Describes the first literal section representation.
+    ///
+    /// @param type literal block type
+    /// @param regeneratedSize decoded literal byte count
+    /// @param streamCount Huffman stream count, or zero for an uncompressed representation
+    private record LiteralSectionInfo(int type, int regeneratedSize, int streamCount) {
     }
 
     /// Compresses bytes through the channel API without closing the caller-owned target.
