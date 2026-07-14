@@ -3,9 +3,8 @@
 
 package org.glavo.arkivo.codec.zstd;
 
-import com.github.luben.zstd.Zstd;
-import com.github.luben.zstd.ZstdException;
 import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.zstd.internal.ZstdDictionaryBuilder;
 import org.glavo.arkivo.codec.zstd.internal.ZstdDictionarySupport;
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -23,6 +22,15 @@ import java.util.Objects;
 /// available so multiple training modes can be evaluated.
 @NotNullByDefault
 public final class ZstdDictionaryTrainer {
+    /// Minimum accepted compression level.
+    private static final int MINIMUM_COMPRESSION_LEVEL = -131_072;
+
+    /// Maximum accepted compression level.
+    private static final int MAXIMUM_COMPRESSION_LEVEL = 22;
+
+    /// Default compression level.
+    private static final int DEFAULT_COMPRESSION_LEVEL = 3;
+
     /// The initial number of sample-size slots.
     private static final int INITIAL_SAMPLE_COUNT = 16;
 
@@ -43,14 +51,14 @@ public final class ZstdDictionaryTrainer {
 
     /// Creates a trainer using the default Zstandard compression level.
     public ZstdDictionaryTrainer(long sampleCapacity, long dictionaryCapacity) {
-        this(sampleCapacity, dictionaryCapacity, Zstd.defaultCompressionLevel());
+        this(sampleCapacity, dictionaryCapacity, DEFAULT_COMPRESSION_LEVEL);
     }
 
     /// Creates a trainer with an explicit Zstandard compression level.
     public ZstdDictionaryTrainer(long sampleCapacity, long dictionaryCapacity, long compressionLevel) {
         int validatedSampleCapacity = positiveBufferSize(sampleCapacity, "sampleCapacity");
         int validatedDictionaryCapacity = positiveBufferSize(dictionaryCapacity, "dictionaryCapacity");
-        if (compressionLevel < Zstd.minCompressionLevel() || compressionLevel > Zstd.maxCompressionLevel()) {
+        if (compressionLevel < MINIMUM_COMPRESSION_LEVEL || compressionLevel > MAXIMUM_COMPRESSION_LEVEL) {
             throw new IllegalArgumentException("compressionLevel is out of range");
         }
         this.samples = ByteBuffer.allocateDirect(validatedSampleCapacity);
@@ -145,38 +153,57 @@ public final class ZstdDictionaryTrainer {
         sampleSizes[sampleCount++] = size;
     }
 
-    /// Trains a dictionary using the current Zstandard training algorithm.
+    /// Trains a dictionary using frequency-ranked reusable sample segments.
     public synchronized CompressionDictionary train() {
         return train(false);
     }
 
-    /// Trains a dictionary using either the current or legacy Zstandard training algorithm.
+    /// Trains a dictionary using either frequency-ranked or legacy-oriented content selection.
     ///
-    /// Legacy mode is provided for compatibility with dictionaries produced by older Zstandard tooling.
+    /// Legacy mode selects the packed sample suffix. Both modes produce standard formatted Zstandard dictionaries;
+    /// they are not intended to reproduce byte-identical output from the native training implementations.
     public synchronized CompressionDictionary train(boolean legacy) {
         if (sampleCount == 0) {
             throw new IllegalStateException("At least one sample is required");
         }
 
-        ByteBuffer dictionary = ByteBuffer.allocateDirect(dictionaryCapacity);
-        long size;
-        try {
-            size = Zstd.trainFromBufferDirect(
-                    samples.duplicate(),
-                    Arrays.copyOf(sampleSizes, sampleCount),
-                    dictionary,
-                    legacy,
-                    compressionLevel
+        if (dictionaryCapacity < ZstdDictionaryBuilder.MINIMUM_DICTIONARY_CAPACITY) {
+            throw new ZstdDictionaryTrainingException(
+                    ZstdDictionaryTrainingException.DESTINATION_TOO_SMALL,
+                    "dictionary capacity must be at least "
+                            + ZstdDictionaryBuilder.MINIMUM_DICTIONARY_CAPACITY + " bytes"
             );
-        } catch (ZstdException exception) {
-            throw new ZstdDictionaryTrainingException(exception.getErrorCode(), exception);
         }
-        if (Zstd.isError(size)) {
-            throw new ZstdDictionaryTrainingException(size);
+        int sampleBytes = samples.position();
+        if (sampleBytes < ZstdDictionaryBuilder.MINIMUM_SAMPLE_BYTES) {
+            throw new ZstdDictionaryTrainingException(
+                    ZstdDictionaryTrainingException.INSUFFICIENT_SAMPLES,
+                    "at least " + ZstdDictionaryBuilder.MINIMUM_SAMPLE_BYTES
+                            + " sample bytes are required"
+            );
         }
 
-        dictionary.limit(Math.toIntExact(size));
-        long id = ZstdDictionarySupport.dictionaryId(dictionary);
+        ByteBuffer source = samples.duplicate();
+        source.flip();
+        byte[] packedSamples = new byte[source.remaining()];
+        source.get(packedSamples);
+        byte[] dictionary;
+        try {
+            dictionary = ZstdDictionaryBuilder.build(
+                    packedSamples,
+                    Arrays.copyOf(sampleSizes, sampleCount),
+                    dictionaryCapacity,
+                    compressionLevel,
+                    legacy
+            );
+        } catch (IllegalArgumentException exception) {
+            throw new ZstdDictionaryTrainingException(
+                    ZstdDictionaryTrainingException.DICTIONARY_CREATION_FAILED,
+                    exception.getMessage(),
+                    exception
+            );
+        }
+        long id = ZstdDictionarySupport.dictionaryId(ByteBuffer.wrap(dictionary));
         return CompressionDictionary.of(dictionary, id);
     }
 

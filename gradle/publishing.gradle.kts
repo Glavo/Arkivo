@@ -383,10 +383,7 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-codec-lzma:runtime:$publicationVersion"
     ),
     "arkivo-codec-zlib" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
-    "arkivo-codec-zstd" to setOf(
-        "org.glavo:arkivo-codec:compile:$publicationVersion",
-        "com.github.luben:zstd-jni:runtime:1.5.7-9"
-    )
+    "arkivo-codec-zstd" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion")
 )
 
 check(expectedDependencies.keys == publicationMetadata.keys) {

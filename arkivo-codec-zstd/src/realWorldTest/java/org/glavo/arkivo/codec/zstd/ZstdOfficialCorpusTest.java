@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.zstd;
 
 import com.github.luben.zstd.Zstd;
+import com.github.luben.zstd.ZstdCompressCtx;
 import com.github.luben.zstd.ZstdDecompressCtx;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionDictionary;
@@ -23,6 +24,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -94,6 +96,44 @@ public final class ZstdOfficialCorpusTest {
             context.loadDict(dictionaryBytes);
             assertArrayEquals(input, context.decompress(compressed, input.length));
         }
+    }
+
+    /// Trains a pure Java dictionary from official regression inputs and verifies native interoperability.
+    @Test
+    public void trainsFromOfficialCompressionRegressionInputs() throws IOException {
+        List<Path> samplePaths = compressionRegressionInputNames()
+                .map(name -> corpusPath("tests/golden-compression").resolve(name))
+                .toList();
+        long sampleCapacity = 0L;
+        for (Path samplePath : samplePaths) {
+            sampleCapacity = Math.addExact(sampleCapacity, Files.size(samplePath));
+        }
+
+        ZstdDictionaryTrainer trainer = new ZstdDictionaryTrainer(sampleCapacity, 8_192L, 9L);
+        for (Path samplePath : samplePaths) {
+            try (var source = Files.newByteChannel(samplePath)) {
+                trainer.addSample(source, Files.size(samplePath));
+            }
+        }
+        CompressionDictionary dictionary = trainer.train();
+        byte[] input = Files.readAllBytes(corpusPath("tests/golden-compression/http"));
+        CodecOptions options = CodecOptions.builder()
+                .set(StandardCodecOptions.DICTIONARY, dictionary)
+                .build();
+        ZstdCodec codec = new ZstdCodec();
+
+        byte[] compressed = compress(codec, input, options);
+        try (ZstdDecompressCtx context = new ZstdDecompressCtx()) {
+            context.loadDict(dictionary.bytes());
+            assertArrayEquals(input, context.decompress(compressed, input.length));
+        }
+
+        byte[] nativeCompressed;
+        try (ZstdCompressCtx context = new ZstdCompressCtx()) {
+            context.loadDict(dictionary.bytes());
+            nativeCompressed = context.compress(input);
+        }
+        assertArrayEquals(input, decompress(codec, nativeCompressed, options));
     }
 
     /// Verifies extraction retains the upstream license and the exact download lock manifest.
@@ -212,6 +252,6 @@ public final class ZstdOfficialCorpusTest {
     /// @param size the expected decompressed size
     /// @param sha256 the expected lowercase SHA-256 of the decompressed bytes
     @NotNullByDefault
-    private record GoldenFrame(String name, long size, String sha256) {
+    public record GoldenFrame(String name, long size, String sha256) {
     }
 }

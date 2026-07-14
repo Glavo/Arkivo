@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.codec.zstd;
 
+import com.github.luben.zstd.ZstdCompressCtx;
+import com.github.luben.zstd.ZstdDecompressCtx;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.StandardCodecOptions;
@@ -20,6 +22,7 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -53,6 +56,8 @@ final class ZstdDictionaryTrainerTest {
         CompressionDictionary legacyDictionary = trainer.train(true);
         assertTrue(legacyDictionary.size() > 0);
         assertTrue(legacyDictionary.id() >= 0L);
+        assertArrayEquals(dictionary.bytes(), trainer.train().bytes());
+        assertFalse(java.util.Arrays.equals(dictionary.bytes(), legacyDictionary.bytes()));
 
         byte[] payload = sample(91);
         CodecOptions options = CodecOptions.builder()
@@ -80,6 +85,27 @@ final class ZstdDictionaryTrainerTest {
                 options
         );
         assertArrayEquals(payload, channelDecoded.toByteArray());
+
+        try (ZstdDecompressCtx context = new ZstdDecompressCtx()) {
+            context.loadDict(dictionary.bytes());
+            assertArrayEquals(
+                    payload,
+                    context.decompress(channelCompressed.toByteArray(), payload.length)
+            );
+        }
+
+        byte[] nativeCompressed;
+        try (ZstdCompressCtx context = new ZstdCompressCtx()) {
+            context.loadDict(dictionary.bytes());
+            nativeCompressed = context.compress(payload);
+        }
+        ByteArrayOutputStream nativeDecoded = new ByteArrayOutputStream();
+        codec.decompress(
+                Channels.newChannel(new ByteArrayInputStream(nativeCompressed)),
+                Channels.newChannel(nativeDecoded),
+                options
+        );
+        assertArrayEquals(payload, nativeDecoded.toByteArray());
     }
 
     /// Verifies sample acceptance advances buffers only after capacity checks succeed.
@@ -96,7 +122,7 @@ final class ZstdDictionaryTrainerTest {
 
         ByteBuffer rejected = ByteBuffer.wrap(new byte[]{4, 5});
         int rejectedPosition = rejected.position();
-        assertEquals(false, trainer.tryAddSample(rejected));
+        assertFalse(trainer.tryAddSample(rejected));
         assertEquals(rejectedPosition, rejected.position());
         assertEquals(1, trainer.sampleCount());
         assertEquals(3L, trainer.sampleBytes());

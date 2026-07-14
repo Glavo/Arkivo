@@ -4,7 +4,7 @@ import java.util.Properties
 
 dependencies {
     api(project(":arkivo-codec"))
-    implementation("com.github.luben:zstd-jni:1.5.7-9")
+    testImplementation("com.github.luben:zstd-jni:1.5.7-9")
 }
 
 val zstdTestDataManifestFile = rootProject.file("gradle/test-data/zstd.properties")
