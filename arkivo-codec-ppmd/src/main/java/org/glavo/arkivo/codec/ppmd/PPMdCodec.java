@@ -9,11 +9,13 @@ import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.StandardCodecOptions;
-import org.glavo.arkivo.codec.ppmd.internal.PPMd7ChannelEncoder;
-import org.glavo.arkivo.codec.ppmd.internal.PPMd7ChannelDecoder;
+import org.glavo.arkivo.codec.ppmd.internal.PPMd7Decoder;
+import org.glavo.arkivo.codec.ppmd.internal.PPMd7Encoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -24,7 +26,7 @@ import java.nio.channels.WritableByteChannel;
 import java.util.List;
 import java.util.Set;
 
-/// Provides raw PPMd7 compression and decompression with configurable model parameters.
+/// Provides pure Java raw PPMd7 buffer engines and shared channel adapters with configurable model parameters.
 @NotNullByDefault
 public final class PPMdCodec implements CompressionCodec {
     /// The stable PPMd codec name.
@@ -43,7 +45,9 @@ public final class PPMdCodec implements CompressionCodec {
                     CompressionFeature.DECOMPRESSION,
                     CompressionFeature.ONE_SHOT_COMPRESSION,
                     CompressionFeature.ONE_SHOT_DECOMPRESSION,
-                    CompressionFeature.DIRECT_BYTE_BUFFER
+                    CompressionFeature.DIRECT_BYTE_BUFFER,
+                    CompressionFeature.BUFFER_COMPRESSION,
+                    CompressionFeature.BUFFER_DECOMPRESSION
             ),
             Set.of(
                     PPMdCodecOptions.MAXIMUM_ORDER,
@@ -85,13 +89,9 @@ public final class PPMdCodec implements CompressionCodec {
         return CAPABILITIES;
     }
 
-    /// Opens a raw PPMd7 encoder over the target channel.
+    /// Creates a configured transport-independent raw PPMd7 encoder.
     @Override
-    public CompressingWritableByteChannel openEncoder(
-            WritableByteChannel target,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
+    public CompressionEncoder newEncoder(CodecOptions options) throws IOException {
         options.requireSupported(CAPABILITIES.compressionOptions(), "PPMd compression");
         long maximumOrder = selectedNonNegative(
                 options,
@@ -105,38 +105,54 @@ public final class PPMdCodec implements CompressionCodec {
         );
         validateMaximumOrder(maximumOrder);
         validateMemorySize(memorySize);
-        return new PPMd7ChannelEncoder(target, ownership, (int) maximumOrder, memorySize);
+        return new PPMd7Encoder((int) maximumOrder, memorySize);
     }
 
-    /// Opens a configured raw PPMd7 decoder over the source channel.
+    /// Opens the transport-independent raw PPMd7 encoder through the shared blocking channel adapter.
     @Override
-    public DecompressingReadableByteChannel openDecoder(
-            ReadableByteChannel source,
+    public CompressingWritableByteChannel openEncoder(
+            WritableByteChannel target,
             CodecOptions options,
             ChannelOwnership ownership
     ) throws IOException {
+        return CompressionCodec.super.openEncoder(target, options, ownership);
+    }
+
+    /// Creates a configured transport-independent exactly sized raw PPMd7 decoder.
+    @Override
+    public CompressionDecoder newDecoder(CodecOptions options) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "PPMd decompression");
         long maximumOrder = requiredNonNegative(options, PPMdCodecOptions.MAXIMUM_ORDER);
         long memorySize = requiredNonNegative(options, PPMdCodecOptions.MEMORY_SIZE);
         long decodedSize = requiredNonNegative(options, PPMdCodecOptions.DECODED_SIZE);
         validateMaximumOrder(maximumOrder);
         validateMemorySize(memorySize);
+        validateOutputLimit(options, decodedSize);
+        return new PPMd7Decoder((int) maximumOrder, memorySize, decodedSize);
+    }
+
+    /// Opens the transport-independent raw PPMd7 decoder through the shared blocking channel adapter.
+    @Override
+    public DecompressingReadableByteChannel openDecoder(
+            ReadableByteChannel source,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        return CompressionCodec.super.openDecoder(source, options, ownership);
+    }
+
+    /// Validates the externally declared decoded size against an optional output limit.
+    private static void validateOutputLimit(CodecOptions options, long decodedSize) throws DecompressionLimitException {
         @Nullable Long maximumOutputSize = options.get(StandardCodecOptions.MAX_OUTPUT_SIZE);
-        if (maximumOutputSize != null) {
-            if (maximumOutputSize < 0L) {
-                throw new IllegalArgumentException("maximum output size must not be negative");
-            }
-            if (decodedSize > maximumOutputSize) {
-                throw new DecompressionLimitException(maximumOutputSize);
-            }
+        if (maximumOutputSize == null) {
+            return;
         }
-        return new PPMd7ChannelDecoder(
-                source,
-                ownership,
-                (int) maximumOrder,
-                memorySize,
-                decodedSize
-        );
+        if (maximumOutputSize < 0L) {
+            throw new IllegalArgumentException("maximum output size must not be negative");
+        }
+        if (decodedSize > maximumOutputSize) {
+            throw new DecompressionLimitException(maximumOutputSize);
+        }
     }
 
     /// Returns one required non-negative long option.

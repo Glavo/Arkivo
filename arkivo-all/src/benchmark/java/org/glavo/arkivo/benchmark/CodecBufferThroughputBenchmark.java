@@ -10,6 +10,7 @@ import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.lzma.LZMAOptions;
+import org.glavo.arkivo.codec.ppmd.PPMdCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -53,7 +54,7 @@ public class CodecBufferThroughputBenchmark {
     private static final long LZMA_DICTIONARY_SIZE = 1L << 20;
 
     /// The stable codec name selected for the current benchmark trial.
-    @Param({"bzip2", "deflate", "deflate64", "gzip", "lzma", "lzma-raw", "lzma2", "zlib", "zstd"})
+    @Param({"bzip2", "deflate", "deflate64", "gzip", "lzma", "lzma-raw", "lzma2", "ppmd", "xz", "zlib", "zstd"})
     public String codecName = "gzip";
 
     /// The deterministic uncompressed bytes used to verify decoder output.
@@ -74,8 +75,11 @@ public class CodecBufferThroughputBenchmark {
     /// The codec whose public one-shot buffer operations are under measurement.
     private @Nullable CompressionCodec codec;
 
-    /// Immutable codec options used by all operations in the current trial.
-    private CodecOptions codecOptions = CodecOptions.EMPTY;
+    /// Immutable encoder options used by compression operations in the current trial.
+    private CodecOptions compressionOptions = CodecOptions.EMPTY;
+
+    /// Immutable decoder options used by decompression operations in the current trial.
+    private CodecOptions decompressionOptions = CodecOptions.EMPTY;
 
     /// The transport-independent encoder under measurement.
     private @Nullable CompressionEncoder encoder;
@@ -92,13 +96,27 @@ public class CodecBufferThroughputBenchmark {
         }
 
         codec = selectedCodec;
-        codecOptions = codecName.equals("lzma2") || codecName.equals("lzma-raw")
-                ? CodecOptions.builder()
-                .set(LZMAOptions.DICTIONARY_SIZE, LZMA_DICTIONARY_SIZE)
-                .build()
-                : CodecOptions.EMPTY;
-        encoder = selectedCodec.newEncoder(codecOptions);
-        decoder = selectedCodec.newDecoder(codecOptions);
+        if (codecName.equals("ppmd")) {
+            compressionOptions = CodecOptions.builder()
+                    .set(PPMdCodecOptions.MAXIMUM_ORDER, 6L)
+                    .set(PPMdCodecOptions.MEMORY_SIZE, 16L << 20)
+                    .build();
+            decompressionOptions = CodecOptions.builder()
+                    .set(PPMdCodecOptions.MAXIMUM_ORDER, 6L)
+                    .set(PPMdCodecOptions.MEMORY_SIZE, 16L << 20)
+                    .set(PPMdCodecOptions.DECODED_SIZE, (long) SOURCE_SIZE)
+                    .build();
+        } else if (codecName.equals("lzma2") || codecName.equals("lzma-raw")) {
+            compressionOptions = CodecOptions.builder()
+                    .set(LZMAOptions.DICTIONARY_SIZE, LZMA_DICTIONARY_SIZE)
+                    .build();
+            decompressionOptions = compressionOptions;
+        } else {
+            compressionOptions = CodecOptions.EMPTY;
+            decompressionOptions = CodecOptions.EMPTY;
+        }
+        encoder = selectedCodec.newEncoder(compressionOptions);
+        decoder = selectedCodec.newDecoder(decompressionOptions);
 
         byte[] content = new byte[SOURCE_SIZE];
         for (int index = 0; index < content.length; index++) {
@@ -127,7 +145,8 @@ public class CodecBufferThroughputBenchmark {
     @TearDown
     public void tearDown() {
         codec = null;
-        codecOptions = CodecOptions.EMPTY;
+        compressionOptions = CodecOptions.EMPTY;
+        decompressionOptions = CodecOptions.EMPTY;
         CompressionEncoder currentEncoder = encoder;
         encoder = null;
         if (currentEncoder != null) {
@@ -146,7 +165,7 @@ public class CodecBufferThroughputBenchmark {
     @OperationsPerInvocation(SOURCE_SIZE)
     public ByteBuffer compressOneShot() throws IOException {
         sourceInput.clear();
-        return requireCodec().compress(sourceInput, codecOptions);
+        return requireCodec().compress(sourceInput, compressionOptions);
     }
 
     /// Decompresses one encoding through the public allocating ByteBuffer operation.
@@ -154,7 +173,7 @@ public class CodecBufferThroughputBenchmark {
     @OperationsPerInvocation(SOURCE_SIZE)
     public ByteBuffer decompressOneShot() throws IOException {
         compressedInput.clear();
-        ByteBuffer restored = requireCodec().decompress(compressedInput, SOURCE_SIZE, codecOptions);
+        ByteBuffer restored = requireCodec().decompress(compressedInput, SOURCE_SIZE, decompressionOptions);
         if (restored.remaining() != SOURCE_SIZE) {
             throw new AssertionError("Unexpected one-shot decoded size: " + restored.remaining());
         }
@@ -231,7 +250,7 @@ public class CodecBufferThroughputBenchmark {
             int targetPosition = decodedOutput.position();
             CodecOutcome outcome = current.decode(compressedInput, decodedOutput, true);
             if (outcome == CodecOutcome.FINISHED) {
-                if (compressedInput.hasRemaining()) {
+                if (compressedInput.hasRemaining() && !codecName.equals("ppmd")) {
                     throw new IOException("Compression decoder left trailing input");
                 }
                 return decodedOutput.position();

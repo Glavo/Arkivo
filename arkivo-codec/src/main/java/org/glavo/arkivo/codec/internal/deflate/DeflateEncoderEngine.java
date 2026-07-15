@@ -11,7 +11,6 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
@@ -49,6 +48,9 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
 
     /// The maximum code-length Huffman code length.
     private static final int MAXIMUM_CODE_LENGTH = 7;
+
+    /// Minimum dynamic-block header cost before encoded code-length symbols.
+    private static final int MINIMUM_DYNAMIC_HEADER_BIT_COST = 29;
 
     /// Shared empty output marker.
     private static final @Unmodifiable ByteBuffer EMPTY_OUTPUT = ByteBuffer.allocate(0);
@@ -104,6 +106,9 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
     /// History retained from the dictionary and preceding blocks.
     private final byte[] history;
 
+    /// Contiguous retained history and current block used by the match finder.
+    private final byte[] matchBytes;
+
     /// Hash-chain heads for the combined history and current block.
     private final int[] hashHeads = new int[HASH_SIZE];
 
@@ -122,6 +127,12 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
     /// Distance symbol frequencies for the current block.
     private final int[] distanceFrequencies = new int[32];
 
+    /// Sorted nonzero weights used to calculate an allocation-free Huffman cost lower bound.
+    private final long[] huffmanCostLeaves = new long[286];
+
+    /// Ordered merged weights used to calculate an allocation-free Huffman cost lower bound.
+    private final long[] huffmanCostMerged = new long[286];
+
     /// Current encoder lifecycle state.
     private State state = State.ACTIVE;
 
@@ -136,6 +147,9 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
 
     /// The number of generated literal or match tokens.
     private int tokenCount;
+
+    /// Extra bits contributed by the current block's match tokens.
+    private long tokenExtraBitCost;
 
     /// Whether the current flush has already encoded its synchronization boundary.
     private boolean flushPrepared;
@@ -164,6 +178,7 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
         this.dictionary = dictionary != null ? dictionary.bytes() : null;
         this.searchLimit = searchLimit(compressionLevel, strategy);
         this.history = new byte[format.windowSize()];
+        this.matchBytes = new byte[format.windowSize() + BLOCK_SIZE];
         this.previous = new int[format.windowSize() + BLOCK_SIZE];
         restoreDictionary();
     }
@@ -247,9 +262,15 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
             return CodecOutcome.FINISHED;
         }
         if (state == State.ACTIVE) {
+            copyPendingOutput(target);
+            if (pendingOutput.hasRemaining()) {
+                return CodecOutcome.NEEDS_OUTPUT;
+            }
+            pendingOutput = EMPTY_OUTPUT;
+
             writeBlock(true);
             bits.finish();
-            appendPendingOutput(bits.takeOutput());
+            pendingOutput = bits.takeOutput();
             state = State.FINISHING;
         }
 
@@ -292,15 +313,19 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
             writeStoredBlock(finalBlock);
         } else {
             generateTokens();
-            DynamicPlan dynamicPlan = createDynamicPlan();
             long fixedCost = fixedBlockBitCost();
             long storedCost = storedBlockBitCost();
-            if (storedCost <= fixedCost && storedCost <= dynamicPlan.bitCost()) {
+            if (storedCost <= fixedCost && dynamicBlockBitCostLowerBound() >= storedCost) {
                 writeStoredBlock(finalBlock);
-            } else if (dynamicPlan.bitCost() < fixedCost) {
-                writeDynamicBlock(finalBlock, dynamicPlan);
             } else {
-                writeFixedBlock(finalBlock);
+                DynamicPlan dynamicPlan = createDynamicPlan();
+                if (storedCost <= fixedCost && storedCost <= dynamicPlan.bitCost()) {
+                    writeStoredBlock(finalBlock);
+                } else if (dynamicPlan.bitCost() < fixedCost) {
+                    writeDynamicBlock(finalBlock, dynamicPlan);
+                } else {
+                    writeFixedBlock(finalBlock);
+                }
             }
         }
         retainHistory();
@@ -375,6 +400,7 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
         Arrays.fill(literalLengthFrequencies, 0);
         Arrays.fill(distanceFrequencies, 0);
         tokenCount = 0;
+        tokenExtraBitCost = 0L;
 
         if (strategy == CompressionStrategy.HUFFMAN_ONLY) {
             for (int position = 0; position < blockSize; position++) {
@@ -385,20 +411,20 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
             int position = 0;
             while (position < blockSize) {
                 int logicalPosition = historySize + position;
-                Match match = findMatch(logicalPosition);
+                Match match = findAndInsertMatch(logicalPosition);
                 if (strategy == CompressionStrategy.FILTERED && match.length() <= 5) {
                     match = Match.NONE;
                 }
                 if (match.length() >= MINIMUM_MATCH_LENGTH) {
                     addMatch(match.length(), match.distance());
                     int end = position + match.length();
+                    position++;
                     while (position < end) {
                         insertPosition(historySize + position);
                         position++;
                     }
                 } else {
                     addLiteral(Byte.toUnsignedInt(block[position]));
-                    insertPosition(logicalPosition);
                     position++;
                 }
             }
@@ -419,26 +445,33 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
         tokenValues[tokenCount] = length;
         tokenDistances[tokenCount] = distance;
         tokenCount++;
-        literalLengthFrequencies[lengthSymbol(length)]++;
-        distanceFrequencies[distanceSymbol(distance)]++;
+        int lengthSymbol = lengthSymbol(length);
+        int distanceSymbol = distanceSymbol(distance);
+        literalLengthFrequencies[lengthSymbol]++;
+        distanceFrequencies[distanceSymbol]++;
+        tokenExtraBitCost += lengthExtraBits(lengthSymbol) + distanceExtraBits(distanceSymbol);
     }
 
     /// Initializes hash chains with the retained dictionary or preceding-block history.
     private void initializeMatchFinder() {
+        System.arraycopy(history, 0, matchBytes, 0, historySize);
+        System.arraycopy(block, 0, matchBytes, historySize, blockSize);
         Arrays.fill(hashHeads, -1);
-        Arrays.fill(previous, -1);
         for (int position = 0; position + 2 < historySize; position++) {
             insertPosition(position);
         }
     }
 
-    /// Finds the longest bounded match at one combined-domain position.
-    private Match findMatch(int position) {
+    /// Finds the longest bounded match and inserts the current combined-domain position.
+    private Match findAndInsertMatch(int position) {
         int remaining = Math.min(historySize + blockSize - position, format.maximumMatchLength());
         if (searchLimit == 0 || remaining < MINIMUM_MATCH_LENGTH) {
             return Match.NONE;
         }
-        int candidate = hashHeads[hash(position)];
+        int hash = hash(position);
+        int candidate = hashHeads[hash];
+        previous[position] = candidate;
+        hashHeads[hash] = position;
         int bestLength = 0;
         int bestDistance = 0;
         int searched = 0;
@@ -447,13 +480,20 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
             if (distance > format.windowSize()) {
                 break;
             }
-            if (byteAt(candidate) == byteAt(position)
-                    && byteAt(candidate + 1) == byteAt(position + 1)
-                    && byteAt(candidate + 2) == byteAt(position + 2)) {
-                int length = MINIMUM_MATCH_LENGTH;
-                while (length < remaining && byteAt(candidate + length) == byteAt(position + length)) {
-                    length++;
-                }
+            // A candidate differing at the current best endpoint cannot extend beyond that match.
+            if ((bestLength == 0 || matchBytes[candidate + bestLength] == matchBytes[position + bestLength])
+                    && matchBytes[candidate] == matchBytes[position]
+                    && matchBytes[candidate + 1] == matchBytes[position + 1]
+                    && matchBytes[candidate + 2] == matchBytes[position + 2]) {
+                int mismatch = Arrays.mismatch(
+                        matchBytes,
+                        candidate + MINIMUM_MATCH_LENGTH,
+                        candidate + remaining,
+                        matchBytes,
+                        position + MINIMUM_MATCH_LENGTH,
+                        position + remaining
+                );
+                int length = mismatch < 0 ? remaining : MINIMUM_MATCH_LENGTH + mismatch;
                 if (length > bestLength) {
                     bestLength = length;
                     bestDistance = distance;
@@ -481,17 +521,10 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
 
     /// Returns the hash of three bytes at one combined-domain position.
     private int hash(int position) {
-        int value = byteAt(position);
-        value = value * 251 + byteAt(position + 1);
-        value = value * 251 + byteAt(position + 2);
+        int value = Byte.toUnsignedInt(matchBytes[position]);
+        value = value * 251 + Byte.toUnsignedInt(matchBytes[position + 1]);
+        value = value * 251 + Byte.toUnsignedInt(matchBytes[position + 2]);
         return value & (HASH_SIZE - 1);
-    }
-
-    /// Returns one unsigned byte from retained history or the current block.
-    private int byteAt(int position) {
-        return position < historySize
-                ? Byte.toUnsignedInt(history[position])
-                : Byte.toUnsignedInt(block[position - historySize]);
     }
 
     /// Creates the dynamic trees and run-length encoded tree description for the current token stream.
@@ -538,6 +571,60 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
         );
     }
 
+    /// Returns a lower bound for the complete dynamic-Huffman block cost.
+    private long dynamicBlockBitCostLowerBound() {
+        return MINIMUM_DYNAMIC_HEADER_BIT_COST
+                + tokenExtraBitCost
+                + minimumHuffmanBitCost(literalLengthFrequencies)
+                + minimumHuffmanBitCost(distanceFrequencies);
+    }
+
+    /// Returns the unconstrained optimal Huffman data cost for one frequency alphabet.
+    private long minimumHuffmanBitCost(int[] frequencies) {
+        int leafCount = 0;
+        for (int frequency : frequencies) {
+            if (frequency > 0) {
+                huffmanCostLeaves[leafCount++] = frequency;
+            }
+        }
+        if (leafCount == 0) {
+            return 0L;
+        }
+        if (leafCount == 1) {
+            return huffmanCostLeaves[0];
+        }
+
+        Arrays.sort(huffmanCostLeaves, 0, leafCount);
+        int leafPosition = 0;
+        int mergedPosition = 0;
+        int mergedCount = 0;
+        long cost = 0L;
+        for (int merge = 1; merge < leafCount; merge++) {
+            long first;
+            if (leafPosition < leafCount
+                    && (mergedPosition >= mergedCount
+                    || huffmanCostLeaves[leafPosition] <= huffmanCostMerged[mergedPosition])) {
+                first = huffmanCostLeaves[leafPosition++];
+            } else {
+                first = huffmanCostMerged[mergedPosition++];
+            }
+
+            long second;
+            if (leafPosition < leafCount
+                    && (mergedPosition >= mergedCount
+                    || huffmanCostLeaves[leafPosition] <= huffmanCostMerged[mergedPosition])) {
+                second = huffmanCostLeaves[leafPosition++];
+            } else {
+                second = huffmanCostMerged[mergedPosition++];
+            }
+
+            long combined = first + second;
+            huffmanCostMerged[mergedCount++] = combined;
+            cost += combined;
+        }
+        return cost;
+    }
+
     /// Returns the encoded cost of the fixed-Huffman block including its header.
     private long fixedBlockBitCost() {
         return 3L + tokenBitCost(FixedCode.INSTANCE, FixedDistanceCode.INSTANCE);
@@ -560,18 +647,12 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
 
     /// Returns the encoded token and end-of-block cost for two symbol trees.
     private long tokenBitCost(SymbolCode literalLengthCode, SymbolCode distanceCode) {
-        long cost = literalLengthCode.length(END_OF_BLOCK_SYMBOL);
-        for (int index = 0; index < tokenCount; index++) {
-            int distance = tokenDistances[index];
-            int value = tokenValues[index];
-            if (distance == 0) {
-                cost += literalLengthCode.length(value);
-            } else {
-                int lengthSymbol = lengthSymbol(value);
-                int distanceSymbol = distanceSymbol(distance);
-                cost += literalLengthCode.length(lengthSymbol) + lengthExtraBits(lengthSymbol);
-                cost += distanceCode.length(distanceSymbol) + distanceExtraBits(distanceSymbol);
-            }
+        long cost = tokenExtraBitCost;
+        for (int symbol = 0; symbol < literalLengthFrequencies.length; symbol++) {
+            cost += (long) literalLengthFrequencies[symbol] * literalLengthCode.length(symbol);
+        }
+        for (int symbol = 0; symbol < distanceFrequencies.length; symbol++) {
+            cost += (long) distanceFrequencies[symbol] * distanceCode.length(symbol);
         }
         return cost;
     }
@@ -674,20 +755,6 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
                 0,
                 historySize
         );
-    }
-
-    /// Appends newly completed bitstream bytes after output still awaiting target space.
-    private void appendPendingOutput(ByteBuffer output) {
-        if (!output.hasRemaining()) {
-            return;
-        }
-        if (!pendingOutput.hasRemaining()) {
-            pendingOutput = output;
-            return;
-        }
-        ByteBuffer combined = ByteBuffer.allocate(pendingOutput.remaining() + output.remaining());
-        combined.put(pendingOutput).put(output).flip();
-        pendingOutput = combined;
     }
 
     /// Copies as many staged compressed bytes as fit in the caller-owned target.
@@ -1182,11 +1249,17 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
     ) {
     }
 
-    /// Collects little-endian packed fields into engine-owned complete bytes.
+    /// Collects little-endian packed fields into reusable engine-owned complete bytes.
     @NotNullByDefault
     private static final class BitOutput {
-        /// Complete compressed bytes produced since the last transfer.
-        private final ByteArrayOutputStream output = new ByteArrayOutputStream();
+        /// Complete compressed-byte storage sized for one uncompressed block and its headers.
+        private byte[] output = new byte[BLOCK_SIZE + 64];
+
+        /// Reusable view of complete compressed bytes awaiting transfer.
+        private ByteBuffer outputView = ByteBuffer.wrap(output);
+
+        /// Number of complete compressed bytes currently stored.
+        private int outputSize;
 
         /// Packed pending bits, with the next output bit in bit zero.
         private long buffer;
@@ -1203,7 +1276,7 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
             buffer |= ((long) value & mask) << bitCount;
             bitCount += count;
             while (bitCount >= 8) {
-                output.write((int) buffer & 0xff);
+                writeByte((int) buffer);
                 buffer >>>= 8;
                 bitCount -= 8;
             }
@@ -1214,7 +1287,9 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
             if (bitCount != 0) {
                 throw new IllegalStateException("Deflate byte output is not aligned");
             }
-            output.write(values, offset, length);
+            ensureCapacity(length);
+            System.arraycopy(values, offset, output, outputSize, length);
+            outputSize += length;
         }
 
         /// Pads pending bits through the next byte boundary.
@@ -1226,20 +1301,20 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
         /// Pads the final partial byte into the complete-byte output.
         private void finish() {
             if (bitCount > 0) {
-                output.write((int) buffer & 0xff);
+                writeByte((int) buffer);
                 buffer = 0L;
                 bitCount = 0;
             }
         }
 
-        /// Transfers all complete bytes into an independently positioned buffer.
+        /// Transfers all complete bytes through a view that remains stable until the next write.
         private ByteBuffer takeOutput() {
-            if (output.size() == 0) {
+            if (outputSize == 0) {
                 return EMPTY_OUTPUT;
             }
-            ByteBuffer result = ByteBuffer.wrap(output.toByteArray());
-            output.reset();
-            return result;
+            outputView.clear().limit(outputSize);
+            outputSize = 0;
+            return outputView;
         }
 
         /// Returns the number of bits pending below the next byte boundary.
@@ -1249,9 +1324,26 @@ public final class DeflateEncoderEngine implements CompressionEncoder {
 
         /// Restores an empty bitstream session.
         private void reset() {
-            output.reset();
+            outputSize = 0;
+            outputView.clear();
             buffer = 0L;
             bitCount = 0;
+        }
+
+        /// Appends one completed byte to reusable storage.
+        private void writeByte(int value) {
+            ensureCapacity(1);
+            output[outputSize++] = (byte) value;
+        }
+
+        /// Ensures reusable storage can append the requested byte count.
+        private void ensureCapacity(int additional) {
+            int required = outputSize + additional;
+            if (required <= output.length) {
+                return;
+            }
+            output = Arrays.copyOf(output, Math.max(required, output.length << 1));
+            outputView = ByteBuffer.wrap(output);
         }
     }
 

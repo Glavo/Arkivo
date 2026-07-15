@@ -9,6 +9,8 @@ import org.glavo.arkivo.codec.CodecOption;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionFeature;
@@ -16,8 +18,9 @@ import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.glavo.arkivo.codec.lzma.LZMAOptions;
 import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
-import org.glavo.arkivo.codec.xz.internal.XzChannelDecoder;
 import org.glavo.arkivo.codec.xz.internal.XzChannelEncoder;
+import org.glavo.arkivo.codec.xz.internal.XzDecoder;
+import org.glavo.arkivo.codec.xz.internal.XzEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -28,7 +31,7 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.Set;
 
-/// Provides XZ compression and decompression channels.
+/// Provides pure Java XZ buffer engines and shared channel adapters.
 @NotNullByDefault
 public final class XZCodec implements CompressionCodec {
     /// The stable XZ codec name.
@@ -56,7 +59,10 @@ public final class XZCodec implements CompressionCodec {
             CompressionFeature.DECOMPRESSION,
             CompressionFeature.ONE_SHOT_COMPRESSION,
             CompressionFeature.ONE_SHOT_DECOMPRESSION,
+            CompressionFeature.FLUSH,
             CompressionFeature.DIRECT_BYTE_BUFFER,
+            CompressionFeature.BUFFER_COMPRESSION,
+            CompressionFeature.BUFFER_DECOMPRESSION,
             CompressionFeature.MULTI_FRAME,
             CompressionFeature.CONCATENATED_FRAMES
     ), Set.of(
@@ -117,13 +123,9 @@ public final class XZCodec implements CompressionCodec {
         return true;
     }
 
-    /// Opens a configured XZ encoder over the target channel.
+    /// Creates a configured transport-independent XZ encoder.
     @Override
-    public CompressingWritableByteChannel openEncoder(
-            WritableByteChannel target,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
+    public CompressionEncoder newEncoder(CodecOptions options) throws IOException {
         options.requireSupported(CAPABILITIES.compressionOptions(), "XZ compression");
         LZMAProperties properties = LZMAProperties.fromOptions(
                 options,
@@ -146,9 +148,7 @@ public final class XZCodec implements CompressionCodec {
         if (blockSize < 0L) {
             throw new IllegalArgumentException("XZ Block size must not be negative: " + blockSize);
         }
-        return new XzChannelEncoder(
-                target,
-                ownership,
+        return new XzEncoder(
                 properties,
                 checkType.flag(),
                 filterChain,
@@ -156,21 +156,37 @@ public final class XZCodec implements CompressionCodec {
         );
     }
 
-    /// Opens a configured XZ decoder over the source channel.
+    /// Opens the transport-independent XZ encoder through the shared blocking channel adapter.
     @Override
-    public DecompressingReadableByteChannel openDecoder(
-            ReadableByteChannel source,
+    public CompressingWritableByteChannel openEncoder(
+            WritableByteChannel target,
             CodecOptions options,
             ChannelOwnership ownership
     ) throws IOException {
+        return CompressionCodec.super.openEncoder(target, options, ownership);
+    }
+
+    /// Creates a configured transport-independent XZ decoder.
+    @Override
+    public CompressionDecoder newDecoder(CodecOptions options) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "XZ decompression");
         long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
         long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
         @Nullable ChecksumMode checksum = options.get(StandardCodecOptions.CHECKSUM);
         boolean verifyChecksums = checksum != ChecksumMode.DISABLED;
         return StandardCodecOptionSupport.limitOutput(
-                new XzChannelDecoder(source, ownership, true, maximumWindowSize, verifyChecksums),
+                new XzDecoder(maximumWindowSize, verifyChecksums),
                 maximumOutputSize
         );
+    }
+
+    /// Opens the transport-independent XZ decoder through the shared blocking channel adapter.
+    @Override
+    public DecompressingReadableByteChannel openDecoder(
+            ReadableByteChannel source,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        return CompressionCodec.super.openDecoder(source, options, ownership);
     }
 }

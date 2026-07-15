@@ -99,6 +99,22 @@ public final class PPMd7Model {
     private int currentContext;
     /// Whether a reset header has initialized the memory arena.
     private boolean initialized;
+    /// Whether decoding of one symbol is suspended inside its context chain.
+    private boolean decodingSymbol;
+    /// Current context being examined by a suspended symbol decode.
+    private int decodingMinimumContext;
+    /// Maximum-order context captured when the suspended symbol decode began.
+    private int decodingMaximumContext;
+    /// Number of symbols masked before the current escaped-context decode.
+    private int decodingMaskedStateCount;
+    /// Whether the current escaped-context SEE mean has already been consumed.
+    private boolean decodingEscapePrepared;
+    /// SEE estimator selected for the current escaped-context decode, or null for the root context.
+    private @Nullable SeeContext decodingSeeContext;
+    /// Escape frequency captured from the current escaped-context SEE estimator.
+    private int decodingEscapeFrequency;
+    /// Current phase of a resumable symbol decode.
+    private DecodePhase decodingPhase = DecodePhase.FIRST_ORDER;
 
     /// Creates an uninitialized PPMd model.
     public PPMd7Model(PPMdRangeDecoder rangeDecoder) {
@@ -117,6 +133,7 @@ public final class PPMd7Model {
         initialized = false;
         currentContext = 0;
         previousSymbol = 0;
+        clearDecodingSymbol();
     }
 
     /// Starts a range-coded block and optionally resets model memory and order.
@@ -136,6 +153,7 @@ public final class PPMd7Model {
         maximumOrder = requestedMaximumOrder;
         previousSymbol = 0;
         currentContext = 0;
+        clearDecodingSymbol();
         initialized = true;
     }
 
@@ -143,27 +161,68 @@ public final class PPMd7Model {
     public int readByte() throws IOException {
         if (rangeDecoder == null) throw new IOException("PPMd model is not configured for decoding");
         if (!initialized) throw new IOException("PPMd model is not initialized");
-        if (currentContext == 0) restartModel();
+        if (!decodingSymbol) beginDecodingSymbol();
 
-        int minimumContext = currentContext;
-        int maximumContext = minimumContext;
-        int selectedState = allocator.contextStateCount(minimumContext) == 1
-                ? decodeBinarySymbol(minimumContext)
-                : decodeFirstOrderSymbol(minimumContext);
-        while (selectedState == NO_STATE) {
-            int maskedStateCount = allocator.contextStateCount(minimumContext);
+        while (true) {
+            int selectedState;
+            if (decodingPhase == DecodePhase.FIRST_ORDER) {
+                selectedState = allocator.contextStateCount(decodingMinimumContext) == 1
+                        ? decodeBinarySymbol(decodingMinimumContext)
+                        : decodeFirstOrderSymbol(decodingMinimumContext);
+            } else {
+                selectedState = decodeEscapedSymbolResumable(
+                        decodingMinimumContext,
+                        decodingMaskedStateCount
+                );
+            }
+            if (selectedState != NO_STATE) {
+                int symbol = allocator.symbol(selectedState);
+                currentContext = updateModel(
+                        decodingMinimumContext,
+                        decodingMaximumContext,
+                        selectedState
+                );
+                previousSymbol = symbol;
+                clearDecodingSymbol();
+                return symbol;
+            }
+
+            decodingMaskedStateCount = allocator.contextStateCount(decodingMinimumContext);
             do {
                 orderFall++;
-                minimumContext = allocator.contextSuffix(minimumContext);
-                if (minimumContext == 0) throw new IOException("Corrupt PPMd suffix chain");
-            } while (allocator.contextStateCount(minimumContext) == maskedStateCount);
-            selectedState = decodeEscapedSymbol(minimumContext, maskedStateCount);
+                decodingMinimumContext = allocator.contextSuffix(decodingMinimumContext);
+                if (decodingMinimumContext == 0) {
+                    clearDecodingSymbol();
+                    throw new IOException("Corrupt PPMd suffix chain");
+                }
+            } while (allocator.contextStateCount(decodingMinimumContext) == decodingMaskedStateCount);
+            decodingPhase = DecodePhase.ESCAPED;
+            decodingEscapePrepared = false;
+            decodingSeeContext = null;
         }
+    }
 
-        int symbol = allocator.symbol(selectedState);
-        currentContext = updateModel(minimumContext, maximumContext, selectedState);
-        previousSymbol = symbol;
-        return symbol;
+    /// Captures the initial context for one symbol whose range operations may require more input.
+    private void beginDecodingSymbol() throws IOException {
+        if (currentContext == 0) restartModel();
+        decodingSymbol = true;
+        decodingMinimumContext = currentContext;
+        decodingMaximumContext = currentContext;
+        decodingPhase = DecodePhase.FIRST_ORDER;
+        decodingEscapePrepared = false;
+        decodingSeeContext = null;
+    }
+
+    /// Clears every transient field associated with a resumable symbol decode.
+    private void clearDecodingSymbol() {
+        decodingSymbol = false;
+        decodingMinimumContext = 0;
+        decodingMaximumContext = 0;
+        decodingMaskedStateCount = 0;
+        decodingEscapePrepared = false;
+        decodingSeeContext = null;
+        decodingEscapeFrequency = 0;
+        decodingPhase = DecodePhase.FIRST_ORDER;
     }
 
     /// Encodes and updates one unsigned byte symbol.
@@ -371,10 +430,15 @@ public final class PPMd7Model {
         return NO_STATE;
     }
 
-    /// Decodes from a suffix context after excluding symbols already escaped from higher orders.
-    private int decodeEscapedSymbol(int context, int maskedStateCount) throws IOException {
-        @Nullable SeeContext see = selectSeeContext(context, maskedStateCount);
-        int escapeFrequency = see == null ? 1 : see.mean();
+    /// Resumes decoding from a suffix context after excluding symbols already escaped from higher orders.
+    private int decodeEscapedSymbolResumable(int context, int maskedStateCount) throws IOException {
+        if (!decodingEscapePrepared) {
+            decodingSeeContext = selectSeeContext(context, maskedStateCount);
+            decodingEscapeFrequency = decodingSeeContext == null ? 1 : decodingSeeContext.mean();
+            decodingEscapePrepared = true;
+        }
+        @Nullable SeeContext see = decodingSeeContext;
+        int escapeFrequency = decodingEscapeFrequency;
         int states = allocator.contextStates(context);
         int stateCount = allocator.contextStateCount(context);
         int availableCount = stateCount - maskedStateCount;
@@ -398,6 +462,8 @@ public final class PPMd7Model {
             for (int index = 0; index < availableCount; index++) {
                 maskSymbol(allocator.symbol(stateIndexes[index]));
             }
+            decodingEscapePrepared = false;
+            decodingSeeContext = null;
             return NO_STATE;
         }
 
@@ -411,6 +477,8 @@ public final class PPMd7Model {
         runLength = initialRunLength;
         allocator.addFrequency(state, 4);
         allocator.addContextSumFrequency(context, 4);
+        decodingEscapePrepared = false;
+        decodingSeeContext = null;
         return rescaleContext(context, state);
     }
 
@@ -703,6 +771,16 @@ public final class PPMd7Model {
     /// Excludes one symbol in the current escape generation.
     private void maskSymbol(int symbol) {
         symbolMasks[symbol] = (byte) escapeGeneration;
+    }
+
+    /// Identifies the context-selection phase of one resumable decoded symbol.
+    @NotNullByDefault
+    private enum DecodePhase {
+        /// The maximum-order context is being decoded.
+        FIRST_ORDER,
+
+        /// A suffix context is being decoded after excluding symbols from higher orders.
+        ESCAPED
     }
 
     /// Maintains one secondary escape estimate with an adaptive period.

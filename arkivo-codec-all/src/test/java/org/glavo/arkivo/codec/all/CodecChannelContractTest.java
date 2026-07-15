@@ -137,7 +137,7 @@ final class CodecChannelContractTest {
     /// Verifies advertised flush support through explicit incremental directives.
     @Test
     void flushesIncrementalFramesForEveryAdvertisingCodec() throws IOException {
-        Set<String> flushCodecs = Set.of("deflate", "deflate64", "gzip", "zlib", "zstd");
+        Set<String> flushCodecs = Set.of("deflate", "deflate64", "gzip", "xz", "zlib", "zstd");
         byte[] first = ("first flushed segment " + "0123456789abcdef".repeat(512))
                 .getBytes(StandardCharsets.UTF_8);
         byte[] second = " and final segment".getBytes(StandardCharsets.UTF_8);

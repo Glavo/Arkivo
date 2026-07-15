@@ -199,14 +199,11 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
         return source.position() - start;
     }
 
-    /// Flushes bytes already emitted by the active LZMA2 encoder.
+    /// Finishes the active Block so every accepted byte reaches a decodable Stream boundary.
     @Override
     public void flush() throws IOException {
         ensureOpen();
-        LZMA2ChannelEncoder encoder = blockEncoder;
-        if (encoder != null) {
-            encoder.flush();
-        }
+        finishBlock();
         output.flush();
     }
 

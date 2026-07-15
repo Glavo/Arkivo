@@ -68,7 +68,7 @@ val publicationMetadata = mapOf(
     ),
     "arkivo-codec-bzip2" to ArkivoPublicationMetadata(
         "Arkivo BZip2 Codec",
-        "Provides channel-first BZip2 compression and decompression."
+        "Provides pure Java BZip2 buffer engines and channel adapters."
     ),
     "arkivo-codec-deflate" to ArkivoPublicationMetadata(
         "Arkivo Deflate Codec",
@@ -88,15 +88,15 @@ val publicationMetadata = mapOf(
     ),
     "arkivo-codec-lzma" to ArkivoPublicationMetadata(
         "Arkivo LZMA Codec",
-        "Provides channel-first standalone LZMA compression and decompression."
+        "Provides pure Java raw LZMA, LZMA-alone, and LZMA2 buffer engines and channel adapters."
     ),
     "arkivo-codec-ppmd" to ArkivoPublicationMetadata(
         "Arkivo PPMd Codec",
-        "Provides channel-first raw PPMd7 compression and decompression."
+        "Provides pure Java raw PPMd7 buffer engines and channel adapters."
     ),
     "arkivo-codec-xz" to ArkivoPublicationMetadata(
         "Arkivo XZ Codec",
-        "Provides channel-first XZ compression and decompression."
+        "Provides pure Java XZ buffer engines and channel adapters."
     ),
     "arkivo-codec-zlib" to ArkivoPublicationMetadata(
         "Arkivo Zlib Codec",

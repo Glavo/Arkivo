@@ -176,12 +176,11 @@ or target buffers after an operation returns. Shared adapters expose the same en
 `WritableByteChannel` contexts with explicit endpoint ownership.
 
 Deflate, Deflate64, gzip, and zlib share pure Java format-parameterized buffer engines. BZip2, Zstandard, raw LZMA,
-LZMA-alone, and raw LZMA2 also provide transport-independent buffer engines. XZ and PPMd currently provide
-channel-first contexts, while their stream convenience methods still use shared adapters rather than separate format implementations.
+LZMA-alone, raw LZMA2, XZ, and PPMd also provide transport-independent buffer engines. PPMd range decoding preserves
+partially normalized arithmetic intervals and context-chain progress across arbitrarily fragmented caller buffers.
 
-Allocating and fixed `ByteBuffer` operations drive transport-independent engines directly when advertised and fall back
-to channel contexts only for channel-first codecs. They accept heap and direct buffers in any source and target
-combination, including read-only sources and nonzero buffer ranges. Targets must be writable, and one buffer instance
+Allocating and fixed `ByteBuffer` operations drive transport-independent engines directly when advertised. They accept
+heap and direct buffers in any source and target combination, including read-only sources and nonzero buffer ranges. Targets must be writable, and one buffer instance
 cannot serve as both source and target. Configured and unconfigured overloads follow the same validation and exception
 contract.
 

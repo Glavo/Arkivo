@@ -126,6 +126,34 @@ public final class DeflateBufferEngineTest {
         assertArrayEquals(expected, decode(encoded.toByteArray(), 2, CodecOptions.EMPTY));
     }
 
+    /// Verifies finalization drains a completed block before reusing engine-owned output storage.
+    @Test
+    public void finishDrainsPendingBlockBeforeReusingOutput() throws IOException {
+        byte[] input = new byte[64 * 1024];
+        for (int index = 0; index < input.length; index++) {
+            input[index] = (byte) ((index * 37) ^ (index >>> 7));
+        }
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+
+        try (CompressionEncoder encoder = CODEC.newEncoder()) {
+            ByteBuffer source = ByteBuffer.wrap(input);
+            ByteBuffer firstTarget = ByteBuffer.allocate(1);
+            CodecOutcome outcome = encoder.encode(source, firstTarget);
+            drain(firstTarget, encoded);
+            assertEquals(CodecOutcome.NEEDS_OUTPUT, outcome);
+            assertEquals(false, source.hasRemaining());
+
+            do {
+                ByteBuffer target = ByteBuffer.allocate(7);
+                outcome = encoder.finish(target);
+                drain(target, encoded);
+            } while (outcome == CodecOutcome.NEEDS_OUTPUT);
+            assertEquals(CodecOutcome.FINISHED, outcome);
+        }
+
+        assertArrayEquals(input, decode(encoded.toByteArray(), 13, CodecOptions.EMPTY));
+    }
+
     /// Verifies reset, idempotent completed-stream observation, and close-abort behavior.
     @Test
     public void lifecycleStateIsExplicit() throws IOException {

@@ -116,6 +116,17 @@ final class PPMd7RangeEncoder implements PPMdRangeEncoder {
         return outputBytes;
     }
 
+    /// Abandons the current arithmetic representation and restores its initial state.
+    void reset() {
+        outputBuffer.clear();
+        low = 0L;
+        range = UINT_MASK;
+        cache = 0;
+        cacheSize = 1L;
+        outputBytes = 0L;
+        finished = false;
+    }
+
     /// Renormalizes the arithmetic range.
     private void normalize() throws IOException {
         while (range < RANGE_TOP) {

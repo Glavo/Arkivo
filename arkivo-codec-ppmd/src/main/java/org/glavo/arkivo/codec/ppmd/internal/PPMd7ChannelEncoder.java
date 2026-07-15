@@ -27,6 +27,12 @@ public final class PPMd7ChannelEncoder implements CompressingWritableByteChannel
     /// The initialized Variant H context model.
     private final PPMd7Model model;
 
+    /// Configured maximum context order restored by internal buffer-engine reset.
+    private final int maximumOrder;
+
+    /// Configured model arena size restored by internal buffer-engine reset.
+    private final long memorySize;
+
     /// Number of uncompressed bytes accepted.
     private long inputBytes;
 
@@ -42,6 +48,8 @@ public final class PPMd7ChannelEncoder implements CompressingWritableByteChannel
     ) throws IOException {
         Objects.requireNonNull(target, "target");
         targetCloser = new OwnedChannelCloser(target, ownership);
+        this.maximumOrder = maximumOrder;
+        this.memorySize = memorySize;
         try {
             rangeEncoder = new PPMd7RangeEncoder(target);
             model = new PPMd7Model(rangeEncoder);
@@ -88,6 +96,15 @@ public final class PPMd7ChannelEncoder implements CompressingWritableByteChannel
         }
         open = false;
         targetCloser.closeAfter(failure);
+    }
+
+    /// Abandons the current representation and reuses its arena for the buffer engine.
+    void resetForBufferEngine() throws IOException {
+        rangeEncoder.reset();
+        model.reset();
+        model.initialize(true, maximumOrder, memorySize);
+        inputBytes = 0L;
+        open = true;
     }
 
     /// Returns the number of uncompressed bytes accepted.

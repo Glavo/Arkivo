@@ -16,6 +16,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Random;
 import java.util.zip.Inflater;
 import java.util.zip.InflaterInputStream;
 
@@ -52,6 +54,36 @@ final class DeflateEncoderOptionsTest {
         assertTrue(compressed.length < stored.length / 8);
         assertArrayEquals(source, inflate(stored));
         assertArrayEquals(source, inflate(compressed));
+    }
+
+    /// Verifies exact block costs select stored encoding for deterministic incompressible input.
+    @Test
+    void incompressibleInputSelectsStoredBlockAtNonzeroLevel() throws IOException {
+        byte[] source = new byte[64 * 1024];
+        new Random(0xdef1_a7eL).nextBytes(source);
+
+        byte[] encoded = encode(source, options(6, CompressionStrategy.DEFAULT));
+
+        assertEquals(0, Byte.toUnsignedInt(encoded[0]) >>> 1 & 3);
+        assertArrayEquals(source, inflate(encoded));
+        assertTrue(encoded.length < source.length + 32);
+    }
+
+    /// Verifies matches spanning the retained-history boundary and overlapping source ranges.
+    @Test
+    void matchesAcrossBlocksAndOverlappingRanges() throws IOException {
+        byte[] pattern = new byte[32 * 1024];
+        new Random(0x1951_2026L).nextBytes(pattern);
+        byte[] source = new byte[3 * pattern.length + 4 * 1024];
+        System.arraycopy(pattern, 0, source, 0, pattern.length);
+        System.arraycopy(pattern, 0, source, pattern.length, pattern.length);
+        System.arraycopy(pattern, 0, source, 2 * pattern.length, pattern.length);
+        Arrays.fill(source, 3 * pattern.length, source.length, (byte) 'A');
+
+        byte[] encoded = encode(source, options(9, CompressionStrategy.DEFAULT));
+
+        assertArrayEquals(source, inflate(encoded));
+        assertTrue(encoded.length < source.length / 2);
     }
 
     /// Verifies all advertised strategy values reach the pure Java encoder and produce interoperable streams.

@@ -11,9 +11,12 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -61,6 +64,51 @@ final class DeflateDecoderFormatTest {
         assertArrayEquals(expected, decode(writer.toByteArray()));
     }
 
+    /// Verifies bulk stored-block copying across a wrapped history window and an exact stream boundary.
+    @Test
+    void decodesStoredBlockInBulkAndPreservesTrailingInput() throws IOException {
+        byte[] content = new byte[50_000];
+        new Random(0x5702edL).nextBytes(content);
+        BitWriter writer = new BitWriter();
+        writer.writeStoredBlock(true, content);
+        byte[] compressed = writer.toByteArray();
+        byte[] trailing = {11, 22, 33, 44};
+
+        ByteBuffer source = ByteBuffer.allocateDirect(compressed.length + trailing.length);
+        source.put(compressed).put(trailing).flip();
+        ByteBuffer target = ByteBuffer.allocateDirect(content.length + 1);
+        try (CompressionDecoder decoder = new DeflateDecoder(null)) {
+            assertEquals(CodecOutcome.FINISHED, decoder.decode(source, target, false));
+        }
+
+        assertEquals(compressed.length, source.position());
+        target.flip();
+        byte[] decoded = new byte[target.remaining()];
+        target.get(decoded);
+        assertArrayEquals(content, decoded);
+    }
+
+    /// Verifies bulk match copying when each copied range becomes history for the following range.
+    @Test
+    void decodesOverlappingMatchInBulk() throws IOException {
+        BitWriter writer = new BitWriter();
+        writer.writeFixedBlockHeader();
+        byte[] prefix = "0123456789abcdefghijklmnopqrstuv".getBytes(StandardCharsets.US_ASCII);
+        for (byte value : prefix) {
+            writer.writeFixedLiteralLength(Byte.toUnsignedInt(value));
+        }
+        writer.writeFixedLiteralLength(285);
+        writer.writeFixedDistance(9);
+        writer.writeBits(7, 3);
+        writer.writeFixedLiteralLength(256);
+
+        byte[] expected = new byte[prefix.length + 258];
+        for (int index = 0; index < expected.length; index++) {
+            expected[index] = prefix[index % prefix.length];
+        }
+        assertArrayEquals(expected, decodeInOneOperation(writer.toByteArray(), expected.length));
+    }
+
     /// Verifies that Deflate64-only distance symbols remain reserved in RFC 1951 streams.
     @Test
     void rejectsDeflate64DistanceSymbols() {
@@ -73,6 +121,17 @@ final class DeflateDecoderFormatTest {
         IOException exception = assertThrows(IOException.class, () -> decode(writer.toByteArray()));
 
         assertTrue(exception.getMessage().contains("distance symbol 30"));
+    }
+
+    /// Decodes one complete raw stream with enough target space to exercise bulk output paths.
+    private static byte[] decodeInOneOperation(byte[] compressed, int expectedSize) throws IOException {
+        ByteBuffer source = ByteBuffer.wrap(compressed);
+        ByteBuffer target = ByteBuffer.allocate(expectedSize + 1);
+        try (CompressionDecoder decoder = new DeflateDecoder(null)) {
+            assertEquals(CodecOutcome.FINISHED, decoder.decode(source, target, true));
+        }
+        assertEquals(compressed.length, source.position());
+        return Arrays.copyOf(target.array(), target.position());
     }
 
     /// Decodes a complete raw stream from fresh one-byte source buffers.
