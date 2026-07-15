@@ -32,6 +32,9 @@ public final class LZMACodec implements CompressionCodec {
     /// The stable LZMA codec name.
     public static final String NAME = "lzma";
 
+    /// The default immutable LZMA-alone codec configuration.
+    public static final LZMACodec DEFAULT = new LZMACodec();
+
     /// Selects the LZMA dictionary size in bytes.
     ///
     /// This alias identifies the same option as `LZMAOptions.DICTIONARY_SIZE`.

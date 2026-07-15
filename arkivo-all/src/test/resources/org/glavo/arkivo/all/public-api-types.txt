@@ -89,6 +89,7 @@ org.glavo.arkivo.codec.CodecTransferResult
 org.glavo.arkivo.codec.CompressingWritableByteChannel
 org.glavo.arkivo.codec.CompressionCapabilities
 org.glavo.arkivo.codec.CompressionCodec
+org.glavo.arkivo.codec.CompressionCodecRegistry
 org.glavo.arkivo.codec.CompressionCodecs
 org.glavo.arkivo.codec.CompressionDecoder
 org.glavo.arkivo.codec.CompressionDictionary
@@ -120,6 +121,7 @@ org.glavo.arkivo.codec.ppmd.PPMdCodecOptions
 org.glavo.arkivo.codec.spi.CodecChannelAdapters
 org.glavo.arkivo.codec.spi.CodecChannelAdapters$DecoderFactory
 org.glavo.arkivo.codec.spi.CodecChannelAdapters$EncoderFactory
+org.glavo.arkivo.codec.spi.CompressionCodecProvider
 org.glavo.arkivo.codec.spi.OwnedChannelCloser
 org.glavo.arkivo.codec.spi.StandardCodecOptionSupport
 org.glavo.arkivo.codec.spi.StreamCodecAdapters

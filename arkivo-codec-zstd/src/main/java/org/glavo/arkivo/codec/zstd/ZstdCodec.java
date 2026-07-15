@@ -40,6 +40,9 @@ public final class ZstdCodec implements CompressionCodec {
     /// The stable Zstandard codec name.
     public static final String NAME = "zstd";
 
+    /// The default immutable Zstandard codec configuration.
+    public static final ZstdCodec DEFAULT = new ZstdCodec();
+
     /// The sentinel compression level that asks Zstandard to use its default level.
     public static final long DEFAULT_COMPRESSION_LEVEL = Long.MIN_VALUE;
 

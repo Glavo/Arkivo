@@ -1,4 +1,0 @@
-org.glavo.arkivo.codec.deflate.DeflateCodec
-org.glavo.arkivo.codec.deflate.Deflate64Codec
-org.glavo.arkivo.codec.deflate.GzipCodec
-org.glavo.arkivo.codec.deflate.ZlibCodec

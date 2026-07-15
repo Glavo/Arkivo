@@ -34,6 +34,9 @@ public final class RawLZMACodec implements CompressionCodec {
     /// The stable raw LZMA codec name.
     public static final String NAME = "lzma-raw";
 
+    /// The default immutable raw LZMA codec configuration.
+    public static final RawLZMACodec DEFAULT = new RawLZMACodec();
+
     /// The default dictionary size used for raw LZMA compression.
     public static final long DEFAULT_DICTIONARY_SIZE = 1L << 20;
 

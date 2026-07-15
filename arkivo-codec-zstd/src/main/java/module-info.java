@@ -9,5 +9,6 @@ module org.glavo.arkivo.codec.zstd {
 
     exports org.glavo.arkivo.codec.zstd;
 
-    provides org.glavo.arkivo.codec.CompressionCodec with org.glavo.arkivo.codec.zstd.ZstdCodec;
+    provides org.glavo.arkivo.codec.spi.CompressionCodecProvider with
+            org.glavo.arkivo.codec.zstd.internal.ZstdCodecProvider;
 }

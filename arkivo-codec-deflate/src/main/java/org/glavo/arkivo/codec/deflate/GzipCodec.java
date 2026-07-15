@@ -35,6 +35,9 @@ public final class GzipCodec implements CompressionCodec {
     /// The stable gzip codec name.
     public static final String NAME = "gzip";
 
+    /// The default immutable gzip codec configuration.
+    public static final GzipCodec DEFAULT = new GzipCodec();
+
     /// The supported gzip operations.
     private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(
             Set.of(

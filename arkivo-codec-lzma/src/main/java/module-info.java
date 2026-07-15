@@ -11,8 +11,8 @@ module org.glavo.arkivo.codec.lzma {
     exports org.glavo.arkivo.codec.lzma.internal to
             org.glavo.arkivo.codec.xz;
 
-    provides org.glavo.arkivo.codec.CompressionCodec with
-            org.glavo.arkivo.codec.lzma.LZMACodec,
-            org.glavo.arkivo.codec.lzma.RawLZMACodec,
-            org.glavo.arkivo.codec.lzma.LZMA2Codec;
+    provides org.glavo.arkivo.codec.spi.CompressionCodecProvider with
+            org.glavo.arkivo.codec.lzma.internal.LZMACodecProvider,
+            org.glavo.arkivo.codec.lzma.internal.RawLZMACodecProvider,
+            org.glavo.arkivo.codec.lzma.internal.LZMA2CodecProvider;
 }

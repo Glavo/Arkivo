@@ -35,35 +35,19 @@ public final class CompressionCodecs {
 
     /// Returns all compression codecs visible to the current class loader.
     public static @Unmodifiable List<CompressionCodec> installed() {
-        ArrayList<CompressionCodec> codecs = new ArrayList<>();
-        for (CompressionCodec codec : ServiceLoader.load(CompressionCodec.class)) {
-            codecs.add(codec);
-        }
-        return List.copyOf(codecs);
+        return CompressionCodecRegistry.load().codecs();
     }
 
     /// Returns the first compression codec with the given stable name or alias, ignoring ASCII case.
     public static @Nullable CompressionCodec find(String name) {
-        Objects.requireNonNull(name, "name");
-        for (CompressionCodec codec : ServiceLoader.load(CompressionCodec.class)) {
-            if (codec.name().equalsIgnoreCase(name)) {
-                return codec;
-            }
-            for (String alias : codec.aliases()) {
-                if (alias.equalsIgnoreCase(name)) {
-                    return codec;
-                }
-            }
-        }
-        return null;
+        return CompressionCodecRegistry.load().find(name);
     }
 
     /// Returns the first installed codec matching the remaining prefix bytes.
     ///
     /// The supplied buffer is not modified.
     public static @Nullable CompressionCodec detect(ByteBuffer prefix) {
-        Objects.requireNonNull(prefix, "prefix");
-        return detect(prefix, installed());
+        return CompressionCodecRegistry.load().detect(prefix);
     }
 
     /// Detects an installed codec from a forward-only channel while preserving every source byte for later reads.
@@ -100,8 +84,8 @@ public final class CompressionCodecs {
             );
         }
         try {
-            @Unmodifiable List<CompressionCodec> codecs = installed();
-            int probeSize = Math.max(Math.toIntExact(minimumPrefixSize), maxProbeSize(codecs));
+            CompressionCodecRegistry registry = CompressionCodecRegistry.load();
+            int probeSize = Math.max(Math.toIntExact(minimumPrefixSize), registry.probeSize());
             ByteBuffer prefix = ByteBuffer.allocate(probeSize);
             while (prefix.hasRemaining()) {
                 int read = source.read(prefix);
@@ -113,7 +97,7 @@ public final class CompressionCodecs {
                 }
             }
             prefix.flip();
-            @Nullable CompressionCodec codec = detect(prefix, codecs);
+            @Nullable CompressionCodec codec = registry.detect(prefix);
             return new CompressionProbeResult(
                     codec,
                     prefix.asReadOnlyBuffer(),
@@ -132,8 +116,8 @@ public final class CompressionCodecs {
     /// The channel position is restored before this method returns or throws.
     public static @Nullable CompressionCodec detect(SeekableByteChannel channel) throws IOException {
         Objects.requireNonNull(channel, "channel");
-        @Unmodifiable List<CompressionCodec> codecs = installed();
-        int probeSize = maxProbeSize(codecs);
+        CompressionCodecRegistry registry = CompressionCodecRegistry.load();
+        int probeSize = registry.probeSize();
         long originalPosition = channel.position();
         @Nullable Throwable failure = null;
         try {
@@ -148,7 +132,7 @@ public final class CompressionCodecs {
                 }
             }
             prefix.flip();
-            return detect(prefix, codecs);
+            return registry.detect(prefix);
         } catch (IOException | RuntimeException | Error exception) {
             failure = exception;
             throw exception;
@@ -497,31 +481,6 @@ public final class CompressionCodecs {
         return codec;
     }
 
-    /// Returns the first codec matching a protected view of the prefix.
-    private static @Nullable CompressionCodec detect(
-            ByteBuffer prefix,
-            @Unmodifiable List<CompressionCodec> codecs
-    ) {
-        for (CompressionCodec codec : codecs) {
-            if (codec.matches(prefix.asReadOnlyBuffer())) {
-                return codec;
-            }
-        }
-        return null;
-    }
-
-    /// Returns the largest preferred probe size declared by the installed codecs.
-    private static int maxProbeSize(@Unmodifiable List<CompressionCodec> codecs) {
-        int maximum = 0;
-        for (CompressionCodec codec : codecs) {
-            int size = codec.probeSize();
-            if (size < 0) {
-                throw new IllegalStateException("Compression codec probe size must not be negative: " + codec.name());
-            }
-            maximum = Math.max(maximum, size);
-        }
-        return maximum;
-    }
 
     /// Closes one still-open channel after context setup fails without hiding the primary failure.
     private static void closeAfterOpenFailure(Channel channel, Throwable failure) {

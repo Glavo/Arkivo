@@ -9,5 +9,6 @@ module org.glavo.arkivo.codec.bzip2 {
 
     exports org.glavo.arkivo.codec.bzip2;
 
-    provides org.glavo.arkivo.codec.CompressionCodec with org.glavo.arkivo.codec.bzip2.BZip2Codec;
+    provides org.glavo.arkivo.codec.spi.CompressionCodecProvider with
+            org.glavo.arkivo.codec.bzip2.internal.BZip2CodecProvider;
 }

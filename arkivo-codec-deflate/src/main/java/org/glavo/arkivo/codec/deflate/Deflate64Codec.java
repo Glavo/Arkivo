@@ -32,6 +32,9 @@ public final class Deflate64Codec implements CompressionCodec {
     /// The stable Deflate64 codec name.
     public static final String NAME = "deflate64";
 
+    /// The default immutable Deflate64 codec configuration.
+    public static final Deflate64Codec DEFAULT = new Deflate64Codec();
+
     /// The supported Deflate64 operations.
     private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(Set.of(
             CompressionFeature.COMPRESSION,

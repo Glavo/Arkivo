@@ -32,6 +32,9 @@ public final class PPMdCodec implements CompressionCodec {
     /// The stable PPMd codec name.
     public static final String NAME = "ppmd";
 
+    /// The default immutable PPMd7 codec configuration.
+    public static final PPMdCodec DEFAULT = new PPMdCodec();
+
     /// The maximum context order used by default for compression.
     private static final long DEFAULT_MAXIMUM_ORDER = 6L;
 

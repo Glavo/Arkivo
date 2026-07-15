@@ -34,6 +34,9 @@ public final class BZip2Codec implements CompressionCodec {
     /// The stable BZip2 codec name.
     public static final String NAME = "bzip2";
 
+    /// The default immutable BZip2 codec configuration.
+    public static final BZip2Codec DEFAULT = new BZip2Codec();
+
     /// The supported BZip2 operations.
     private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(Set.of(
             CompressionFeature.COMPRESSION,

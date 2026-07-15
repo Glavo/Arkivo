@@ -28,6 +28,9 @@ public final class DeflateCodec implements CompressionCodec {
     /// The stable raw Deflate codec name.
     public static final String NAME = "deflate";
 
+    /// The default immutable raw Deflate codec configuration.
+    public static final DeflateCodec DEFAULT = new DeflateCodec();
+
     /// The supported raw Deflate operations.
     private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(
             Set.of(

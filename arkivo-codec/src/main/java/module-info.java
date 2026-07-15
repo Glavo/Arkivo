@@ -9,5 +9,5 @@ module org.glavo.arkivo.codec {
     exports org.glavo.arkivo.codec.spi;
     exports org.glavo.arkivo.codec.transform;
 
-    uses org.glavo.arkivo.codec.CompressionCodec;
+    uses org.glavo.arkivo.codec.spi.CompressionCodecProvider;
 }

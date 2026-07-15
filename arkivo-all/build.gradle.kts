@@ -250,22 +250,22 @@ val moduleJarFiles = moduleJarTasks.map { jarTask ->
     jarTask.flatMap { it.archiveFile }
 }
 
-val fileSystemProviderDiscoveryProbe = "org.glavo.arkivo.all.FileSystemProviderDiscoveryProbe"
+val serviceProviderDiscoveryProbe = "org.glavo.arkivo.all.ServiceProviderDiscoveryProbe"
 
-val verifyFileSystemProvidersOnClasspath by tasks.registering(JavaExec::class) {
+val verifyServiceProvidersOnClasspath by tasks.registering(JavaExec::class) {
     group = "verification"
-    description = "Verifies FileSystemProvider discovery from the published Arkivo JARs on the classpath."
+    description = "Verifies Arkivo service discovery from the published JARs on the classpath."
     dependsOn(tasks.named("testClasses"), moduleJarTasks)
     classpath = files(sourceSets.test.get().output, moduleJarFiles)
-    mainClass.set(fileSystemProviderDiscoveryProbe)
+    mainClass.set(serviceProviderDiscoveryProbe)
 }
 
-val verifyFileSystemProvidersOnModulePath by tasks.registering(JavaExec::class) {
+val verifyServiceProvidersOnModulePath by tasks.registering(JavaExec::class) {
     group = "verification"
-    description = "Verifies FileSystemProvider discovery from the published Arkivo modules."
+    description = "Verifies Arkivo service discovery from the published modules."
     dependsOn(tasks.named("testClasses"), moduleJarTasks)
     classpath = sourceSets.test.get().output
-    mainClass.set(fileSystemProviderDiscoveryProbe)
+    mainClass.set(serviceProviderDiscoveryProbe)
     doFirst {
         jvmArgs(
             "--module-path",
@@ -450,12 +450,12 @@ val verifyModuleDescriptors by tasks.registering {
         }
 
         val archiveFormatService = "org.glavo.arkivo.archive.ArkivoFormat"
-        val compressionCodecService = "org.glavo.arkivo.codec.CompressionCodec"
+        val compressionCodecProviderService = "org.glavo.arkivo.codec.spi.CompressionCodecProvider"
         val streamingSourceService = "org.glavo.arkivo.archive.spi.ArkivoStreamingSourceProvider"
         val fileSystemProviderService = "java.nio.file.spi.FileSystemProvider"
         val expectedUses = mapOf(
             archiveModule to setOf(archiveFormatService, streamingSourceService),
-            codecModule to setOf(compressionCodecService)
+            codecModule to setOf(compressionCodecProviderService)
         )
         descriptors.forEach { (moduleName, descriptor) ->
             val expected = expectedUses[moduleName].orEmpty()
@@ -503,33 +503,33 @@ val verifyModuleDescriptors by tasks.registering {
                 )
             ),
             "org.glavo.arkivo.codec.bzip2" to mapOf(
-                compressionCodecService to setOf("org.glavo.arkivo.codec.bzip2.BZip2Codec")
+                compressionCodecProviderService to setOf("org.glavo.arkivo.codec.bzip2.internal.BZip2CodecProvider")
             ),
             "org.glavo.arkivo.codec.deflate" to mapOf(
-                compressionCodecService to setOf(
-                    "org.glavo.arkivo.codec.deflate.DeflateCodec",
-                    "org.glavo.arkivo.codec.deflate.Deflate64Codec",
-                    "org.glavo.arkivo.codec.deflate.GzipCodec",
-                    "org.glavo.arkivo.codec.deflate.ZlibCodec"
+                compressionCodecProviderService to setOf(
+                    "org.glavo.arkivo.codec.deflate.internal.DeflateCodecProvider",
+                    "org.glavo.arkivo.codec.deflate.internal.Deflate64CodecProvider",
+                    "org.glavo.arkivo.codec.deflate.internal.GzipCodecProvider",
+                    "org.glavo.arkivo.codec.deflate.internal.ZlibCodecProvider"
                 )
             ),
 
             "org.glavo.arkivo.codec.lzma" to mapOf(
-                compressionCodecService to setOf(
-                    "org.glavo.arkivo.codec.lzma.LZMACodec",
-                    "org.glavo.arkivo.codec.lzma.RawLZMACodec",
-                    "org.glavo.arkivo.codec.lzma.LZMA2Codec"
+                compressionCodecProviderService to setOf(
+                    "org.glavo.arkivo.codec.lzma.internal.LZMACodecProvider",
+                    "org.glavo.arkivo.codec.lzma.internal.RawLZMACodecProvider",
+                    "org.glavo.arkivo.codec.lzma.internal.LZMA2CodecProvider"
                 )
             ),
             "org.glavo.arkivo.codec.ppmd" to mapOf(
-                compressionCodecService to setOf("org.glavo.arkivo.codec.ppmd.PPMdCodec")
+                compressionCodecProviderService to setOf("org.glavo.arkivo.codec.ppmd.internal.PPMdCodecProvider")
             ),
             "org.glavo.arkivo.codec.xz" to mapOf(
-                compressionCodecService to setOf("org.glavo.arkivo.codec.xz.XZCodec")
+                compressionCodecProviderService to setOf("org.glavo.arkivo.codec.xz.internal.XZCodecProvider")
             ),
 
             "org.glavo.arkivo.codec.zstd" to mapOf(
-                compressionCodecService to setOf("org.glavo.arkivo.codec.zstd.ZstdCodec")
+                compressionCodecProviderService to setOf("org.glavo.arkivo.codec.zstd.internal.ZstdCodecProvider")
             )
         )
         descriptors.forEach { (moduleName, descriptor) ->
@@ -547,8 +547,8 @@ val verifyModuleDescriptors by tasks.registering {
 tasks.named("check") {
     dependsOn(
         verifyModuleDescriptors,
-        verifyFileSystemProvidersOnClasspath,
-        verifyFileSystemProvidersOnModulePath,
+        verifyServiceProvidersOnClasspath,
+        verifyServiceProvidersOnModulePath,
         benchmarkSourceSet.classesTaskName
     )
 }

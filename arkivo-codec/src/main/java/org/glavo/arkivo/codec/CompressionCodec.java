@@ -19,7 +19,10 @@ import java.nio.channels.WritableByteChannel;
 import java.util.List;
 import java.util.Objects;
 
-/// Describes a compression algorithm and creates configured buffer engines and channel adapters.
+/// Describes an immutable compression algorithm configuration and creates buffer engines and channel adapters.
+///
+/// Implementations must be safe for concurrent use. Stateful encoding and decoding progress belongs exclusively to
+/// the engines and channel contexts created by a codec.
 @NotNullByDefault
 public interface CompressionCodec {
     /// The sentinel returned when a size cannot be calculated or is not known.

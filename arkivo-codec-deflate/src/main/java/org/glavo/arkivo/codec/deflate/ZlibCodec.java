@@ -31,6 +31,9 @@ public final class ZlibCodec implements CompressionCodec {
     /// The stable zlib codec name.
     public static final String NAME = "zlib";
 
+    /// The default immutable zlib codec configuration.
+    public static final ZlibCodec DEFAULT = new ZlibCodec();
+
     /// The supported zlib operations.
     private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(
             Set.of(

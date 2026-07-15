@@ -37,6 +37,9 @@ public final class XZCodec implements CompressionCodec {
     /// The stable XZ codec name.
     public static final String NAME = "xz";
 
+    /// The default immutable XZ codec configuration.
+    public static final XZCodec DEFAULT = new XZCodec();
+
     /// Selects the XZ LZMA2 dictionary size in bytes.
     public static final CodecOption<Long> DICTIONARY_SIZE =
             CodecOption.of("xz.dictionarySize", Long.class);

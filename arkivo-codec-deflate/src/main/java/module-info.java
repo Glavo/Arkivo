@@ -8,9 +8,9 @@ module org.glavo.arkivo.codec.deflate {
 
     exports org.glavo.arkivo.codec.deflate;
 
-    provides org.glavo.arkivo.codec.CompressionCodec with
-            org.glavo.arkivo.codec.deflate.DeflateCodec,
-            org.glavo.arkivo.codec.deflate.Deflate64Codec,
-            org.glavo.arkivo.codec.deflate.GzipCodec,
-            org.glavo.arkivo.codec.deflate.ZlibCodec;
+    provides org.glavo.arkivo.codec.spi.CompressionCodecProvider with
+            org.glavo.arkivo.codec.deflate.internal.DeflateCodecProvider,
+            org.glavo.arkivo.codec.deflate.internal.Deflate64CodecProvider,
+            org.glavo.arkivo.codec.deflate.internal.GzipCodecProvider,
+            org.glavo.arkivo.codec.deflate.internal.ZlibCodecProvider;
 }
