@@ -7,13 +7,15 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
-import org.glavo.arkivo.codec.zlib.internal.ZlibChannelDecoder;
-import org.glavo.arkivo.codec.zlib.internal.ZlibChannelEncoder;
+import org.glavo.arkivo.codec.zlib.internal.ZlibDecoder;
+import org.glavo.arkivo.codec.zlib.internal.ZlibEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -24,7 +26,7 @@ import java.nio.channels.WritableByteChannel;
 import java.util.Set;
 import java.util.zip.Deflater;
 
-/// Provides zlib compression and decompression channels.
+/// Provides zlib stream buffer engines and blocking channel adapters.
 @NotNullByDefault
 public final class ZlibCodec implements CompressionCodec {
     /// The stable zlib codec name.
@@ -39,7 +41,9 @@ public final class ZlibCodec implements CompressionCodec {
                     CompressionFeature.ONE_SHOT_DECOMPRESSION,
                     CompressionFeature.FLUSH,
                     CompressionFeature.DICTIONARY,
-                    CompressionFeature.DIRECT_BYTE_BUFFER
+                    CompressionFeature.DIRECT_BYTE_BUFFER,
+                    CompressionFeature.BUFFER_COMPRESSION,
+                    CompressionFeature.BUFFER_DECOMPRESSION
             ),
             Set.of(
                     StandardCodecOptions.COMPRESSION_LEVEL,
@@ -108,42 +112,50 @@ public final class ZlibCodec implements CompressionCodec {
                 && ((compressionMethodAndFlags << 8) + flags) % 31 == 0;
     }
 
-    /// Opens a configured zlib encoder over the target channel.
+    /// Creates a configured transport-independent zlib stream encoder.
     @Override
-    public CompressingWritableByteChannel openEncoder(
-            WritableByteChannel target,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
+    public CompressionEncoder newEncoder(CodecOptions options) {
         options.requireSupported(CAPABILITIES.compressionOptions(), "zlib compression");
-        return new ZlibChannelEncoder(
-                target,
-                ownership,
+        return new ZlibEncoder(
                 compressionLevel(options),
                 options.get(StandardCodecOptions.DICTIONARY),
                 StandardCodecOptionSupport.compressionStrategy(options)
         );
     }
 
-    /// Opens a configured zlib decoder over the source channel.
+    /// Opens the transport-independent zlib encoder through the shared blocking channel adapter.
+    @Override
+    public CompressingWritableByteChannel openEncoder(
+            WritableByteChannel target,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        return CompressionCodec.super.openEncoder(target, options, ownership);
+    }
+
+    /// Creates a configured transport-independent zlib stream decoder.
+    @Override
+    public CompressionDecoder newDecoder(CodecOptions options) throws IOException {
+        options.requireSupported(CAPABILITIES.decompressionOptions(), "zlib decompression");
+        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
+        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
+        return StandardCodecOptionSupport.limitOutput(
+                new ZlibDecoder(
+                        maximumWindowSize,
+                        options.get(StandardCodecOptions.DICTIONARY)
+                ),
+                maximumOutputSize
+        );
+    }
+
+    /// Opens the transport-independent zlib decoder through the shared blocking channel adapter.
     @Override
     public DecompressingReadableByteChannel openDecoder(
             ReadableByteChannel source,
             CodecOptions options,
             ChannelOwnership ownership
     ) throws IOException {
-        options.requireSupported(CAPABILITIES.decompressionOptions(), "zlib decompression");
-        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
-        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
-        return StandardCodecOptionSupport.limitOutput(
-                new ZlibChannelDecoder(
-                        source,
-                        ownership,
-                        maximumWindowSize,
-                        options.get(StandardCodecOptions.DICTIONARY)
-                ),
-                maximumOutputSize
-        );
+        return CompressionCodec.super.openDecoder(source, options, ownership);
     }
 
     /// Resolves and validates the compression level for one encoder context.
