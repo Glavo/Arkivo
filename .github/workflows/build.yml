@@ -45,5 +45,9 @@ jobs:
         with:
           cache-provider: basic
 
-      - name: Run quality gates
-        run: ./gradlew -g .gradle-user-home check javadoc --no-daemon --stacktrace
+      - name: Run tests
+        run: ./gradlew -g .gradle-user-home check -x verifyMavenPublications --no-daemon --stacktrace
+
+      - name: Verify Javadocs and Maven publications
+        if: matrix.java == 25
+        run: ./gradlew -g .gradle-user-home javadoc verifyMavenPublications --no-daemon --stacktrace
