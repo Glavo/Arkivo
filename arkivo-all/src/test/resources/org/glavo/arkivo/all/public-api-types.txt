@@ -101,6 +101,7 @@ org.glavo.arkivo.codec.DecompressingReadableByteChannel
 org.glavo.arkivo.codec.DecompressionLimitException
 org.glavo.arkivo.codec.DecompressionWindowLimitException
 org.glavo.arkivo.codec.EncodeDirective
+org.glavo.arkivo.codec.FramedCompressionEncoder
 org.glavo.arkivo.codec.StandardCodecOptions
 org.glavo.arkivo.codec.WorkerCount
 org.glavo.arkivo.codec.bcj.BCJTransforms

@@ -33,7 +33,7 @@ public final class DeflateBufferEngineTest {
     /// Shared raw Deflate codec under test.
     private static final DeflateCodec CODEC = new DeflateCodec();
 
-    /// Verifies fragmented caller-owned buffers and exact frame-boundary source positioning.
+    /// Verifies fragmented caller-owned buffers and exact stream-boundary source positioning.
     @Test
     public void fragmentedBuffersAndTrailingInput() throws IOException {
         byte[] input = testData();
@@ -49,8 +49,8 @@ public final class DeflateBufferEngineTest {
                 ByteBuffer target = ByteBuffer.allocateDirect(1);
                 outcome = decoder.decode(source, target, false);
                 drain(target, decoded);
-                assertTrue(outcome == CodecOutcome.NEEDS_OUTPUT || outcome == CodecOutcome.FRAME_FINISHED);
-            } while (outcome != CodecOutcome.FRAME_FINISHED);
+                assertTrue(outcome == CodecOutcome.NEEDS_OUTPUT || outcome == CodecOutcome.FINISHED);
+            } while (outcome != CodecOutcome.FINISHED);
         }
 
         assertArrayEquals(input, decoded.toByteArray());
@@ -70,7 +70,7 @@ public final class DeflateBufferEngineTest {
         try (CompressionDecoder decoder = CODEC.newDecoder()) {
             int offset = 0;
             CodecOutcome outcome = CodecOutcome.NEEDS_INPUT;
-            while (outcome != CodecOutcome.FRAME_FINISHED) {
+            while (outcome != CodecOutcome.FINISHED) {
                 int length = Math.min(3, encoded.length - offset);
                 ByteBuffer source = ByteBuffer.wrap(encoded, offset, length).slice();
                 boolean endOfInput = offset + length == encoded.length;
@@ -80,7 +80,7 @@ public final class DeflateBufferEngineTest {
                     drain(target, decoded);
                 } while (outcome == CodecOutcome.NEEDS_OUTPUT);
                 offset += source.position();
-                assertTrue(outcome == CodecOutcome.NEEDS_INPUT || outcome == CodecOutcome.FRAME_FINISHED);
+                assertTrue(outcome == CodecOutcome.NEEDS_INPUT || outcome == CodecOutcome.FINISHED);
             }
             assertEquals(encoded.length, offset);
         }
@@ -126,7 +126,7 @@ public final class DeflateBufferEngineTest {
         assertArrayEquals(expected, decode(encoded.toByteArray(), 2, CodecOptions.EMPTY));
     }
 
-    /// Verifies reset, idempotent completed-frame observation, and close-abort behavior.
+    /// Verifies reset, idempotent completed-stream observation, and close-abort behavior.
     @Test
     public void lifecycleStateIsExplicit() throws IOException {
         byte[] input = testData();
@@ -134,7 +134,7 @@ public final class DeflateBufferEngineTest {
         ByteArrayOutputStream first = new ByteArrayOutputStream();
         encodeSource(encoder, ByteBuffer.wrap(input), first, 4);
         finish(encoder, first, 1);
-        assertEquals(CodecOutcome.FRAME_FINISHED, encoder.finishFrame(ByteBuffer.allocate(1)));
+        assertEquals(CodecOutcome.FINISHED, encoder.finish(ByteBuffer.allocate(1)));
 
         encoder.reset();
         ByteArrayOutputStream second = new ByteArrayOutputStream();
@@ -172,7 +172,7 @@ public final class DeflateBufferEngineTest {
         assertTrue(CODEC.capabilities().supports(CompressionFeature.BUFFER_DECOMPRESSION));
     }
 
-    /// Encodes source fragments into one raw Deflate frame.
+    /// Encodes source fragments into one raw Deflate stream.
     private static byte[] encodeInFragments(
             byte[] input,
             int sourceFragmentSize,
@@ -225,13 +225,13 @@ public final class DeflateBufferEngineTest {
         CodecOutcome outcome;
         do {
             ByteBuffer target = ByteBuffer.allocate(targetSize);
-            outcome = encoder.finishFrame(target);
+            outcome = encoder.finish(target);
             drain(target, encoded);
         } while (outcome == CodecOutcome.NEEDS_OUTPUT);
-        assertEquals(CodecOutcome.FRAME_FINISHED, outcome);
+        assertEquals(CodecOutcome.FINISHED, outcome);
     }
 
-    /// Decodes one complete frame with bounded target buffers.
+    /// Decodes one complete stream with bounded target buffers.
     private static byte[] decode(byte[] encoded, int targetSize, CodecOptions options) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         ByteBuffer source = ByteBuffer.wrap(encoded);
@@ -242,7 +242,7 @@ public final class DeflateBufferEngineTest {
                 outcome = decoder.decode(source, target, true);
                 drain(target, decoded);
             } while (outcome == CodecOutcome.NEEDS_OUTPUT);
-            assertEquals(CodecOutcome.FRAME_FINISHED, outcome);
+            assertEquals(CodecOutcome.FINISHED, outcome);
             assertEquals(false, source.hasRemaining());
         }
         return decoded.toByteArray();

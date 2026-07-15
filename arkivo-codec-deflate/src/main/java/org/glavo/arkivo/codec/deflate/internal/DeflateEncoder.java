@@ -18,7 +18,7 @@ import java.nio.ByteBuffer;
 import java.util.Objects;
 import java.util.zip.Deflater;
 
-/// Incrementally encodes one raw Deflate frame without binding the codec state to an output channel.
+/// Incrementally encodes one raw Deflate stream without binding the codec state to an output channel.
 @NotNullByDefault
 public final class DeflateEncoder implements CompressionEncoder {
     /// Internal flush staging size used to make JDK flush completion observable with arbitrarily small caller targets.
@@ -48,7 +48,7 @@ public final class DeflateEncoder implements CompressionEncoder {
     /// Flush bytes waiting to be copied into caller-owned target buffers.
     private ByteBuffer pendingFlush = EMPTY_INPUT;
 
-    /// Creates a raw Deflate encoder with immutable frame configuration.
+    /// Creates a raw Deflate encoder with immutable stream configuration.
     ///
     /// @param compressionLevel JDK Deflate compression level
     /// @param dictionary preset dictionary, or null
@@ -105,13 +105,13 @@ public final class DeflateEncoder implements CompressionEncoder {
         }
     }
 
-    /// Flushes pending raw Deflate output without ending the frame.
+    /// Flushes pending raw Deflate output without ending the stream.
     @Override
     public CodecOutcome flush(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();
         if (state == State.FINISHING || state == State.FINISHED) {
-            throw new IllegalStateException("Cannot flush a finishing or finished raw Deflate frame");
+            throw new IllegalStateException("Cannot flush a finishing or finished raw Deflate stream");
         }
         if (state == State.ACTIVE) {
             pendingFlush = collectFlushOutput();
@@ -126,16 +126,16 @@ public final class DeflateEncoder implements CompressionEncoder {
         return CodecOutcome.FLUSHED;
     }
 
-    /// Finishes the raw Deflate frame without releasing the native context.
+    /// Finishes the raw Deflate stream without releasing the native context.
     @Override
-    public CodecOutcome finishFrame(ByteBuffer target) throws IOException {
+    public CodecOutcome finish(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();
         if (state == State.FLUSHING) {
-            throw new IllegalStateException("Complete the active flush before finishing the raw Deflate frame");
+            throw new IllegalStateException("Complete the active flush before finishing the raw Deflate stream");
         }
         if (state == State.FINISHED) {
-            return CodecOutcome.FRAME_FINISHED;
+            return CodecOutcome.FINISHED;
         }
         if (state == State.ACTIVE) {
             deflater.finish();
@@ -151,14 +151,14 @@ public final class DeflateEncoder implements CompressionEncoder {
             deflater.deflate(target, Deflater.NO_FLUSH);
             strategyUpdatePending = false;
             if (target.position() == targetPosition && !deflater.finished() && !applyingStrategy) {
-                throw new IOException("Raw deflate encoder could not finish the frame");
+                throw new IOException("Raw deflate encoder could not finish the stream");
             }
         }
         state = State.FINISHED;
-        return CodecOutcome.FRAME_FINISHED;
+        return CodecOutcome.FINISHED;
     }
 
-    /// Abandons the current frame and restores the configured Deflate state.
+    /// Abandons the current stream and restores the configured Deflate state.
     @Override
     public void reset() {
         requireOpen();
@@ -234,7 +234,7 @@ public final class DeflateEncoder implements CompressionEncoder {
         }
     }
 
-    /// Tracks the explicit raw Deflate frame lifecycle.
+    /// Tracks the explicit raw Deflate stream lifecycle.
     private enum State {
         /// The encoder accepts source bytes.
         ACTIVE,
@@ -242,10 +242,10 @@ public final class DeflateEncoder implements CompressionEncoder {
         /// A flush must complete before source bytes can be accepted again.
         FLUSHING,
 
-        /// Frame finalization has started and must be drained.
+        /// Stream finalization has started and must be drained.
         FINISHING,
 
-        /// The frame completed and may only be reset or closed.
+        /// The stream completed and may only be reset or closed.
         FINISHED,
 
         /// Native resources were released.

@@ -9,10 +9,11 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 
-/// Incrementally decodes one compression frame between caller-owned byte buffers.
+/// Incrementally decodes one compression stream between caller-owned byte buffers.
 ///
 /// Implementations are stateful and not safe for concurrent use. They must not retain a reference to a source or target
-/// buffer after an operation returns. A completed frame leaves trailing bytes unconsumed in the source buffer.
+/// buffer after an operation returns. A completed encoding leaves trailing bytes unconsumed when its boundary is
+/// detectable from the compressed data.
 @NotNullByDefault
 public interface CompressionDecoder extends AutoCloseable {
     /// Decodes compressed source bytes while allowing additional source bytes in a later operation.
@@ -20,9 +21,10 @@ public interface CompressionDecoder extends AutoCloseable {
         return decode(source, target, false);
     }
 
-    /// Decodes compressed source bytes until input, output space, a dictionary, or the frame boundary stops progress.
+    /// Decodes compressed source bytes until input, output space, a dictionary, or the encoding boundary stops progress.
     ///
-    /// When `endOfInput` is true, exhausting the source before a complete frame is an error. Buffer positions are the
+    /// When ndOfInput is true, exhausting the source before the encoding completes is an error. Buffer positions
+    /// are the
     /// authoritative record of bytes consumed and produced.
     ///
     /// @return the actionable reason this operation returned
@@ -44,7 +46,7 @@ public interface CompressionDecoder extends AutoCloseable {
         throw new UnsupportedOperationException("Late dictionary binding is not supported");
     }
 
-    /// Abandons the current frame and restores the decoder's original immutable configuration.
+    /// Abandons the current encoding and restores the decoder's original immutable configuration.
     void reset();
 
     /// Releases decoder resources without consuming additional input.

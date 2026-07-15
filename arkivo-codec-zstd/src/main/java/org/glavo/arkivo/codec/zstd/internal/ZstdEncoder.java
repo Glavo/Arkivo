@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.zstd.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.FramedCompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -14,9 +14,9 @@ import java.nio.channels.WritableByteChannel;
 import java.util.ArrayDeque;
 import java.util.Objects;
 
-/// Incrementally encodes one Zstandard frame without binding caller-visible state to a channel.
+/// Incrementally encodes a sequence of Zstandard frames without binding caller-visible state to a channel.
 @NotNullByDefault
-public final class ZstdEncoder implements CompressionEncoder {
+public final class ZstdEncoder implements FramedCompressionEncoder {
     /// Validated immutable encoder parameters.
     private final ZstdEncoderParameters parameters;
 
@@ -47,6 +47,13 @@ public final class ZstdEncoder implements CompressionEncoder {
     public CodecOutcome encode(ByteBuffer source, ByteBuffer target) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
+        requireOpen();
+        if (state == State.BETWEEN_FRAMES) {
+            if (!source.hasRemaining()) {
+                return CodecOutcome.NEEDS_INPUT;
+            }
+            state = State.ACTIVE;
+        }
         requireState(State.ACTIVE, "encode");
         drainOutput(target);
         if (output.hasRemaining()) {
@@ -74,8 +81,11 @@ public final class ZstdEncoder implements CompressionEncoder {
     public CodecOutcome flush(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();
-        if (state == State.FINISHING || state == State.FINISHED) {
-            throw new IllegalStateException("Cannot flush a finishing or finished Zstandard frame");
+        if (state == State.FINISHING_FRAME || state == State.FINISHING || state == State.FINISHED) {
+            throw new IllegalStateException("Cannot flush a finishing or finished Zstandard encoding");
+        }
+        if (state == State.BETWEEN_FRAMES) {
+            return CodecOutcome.FLUSHED;
         }
         if (state == State.ACTIVE) {
             encoder.flush();
@@ -89,16 +99,24 @@ public final class ZstdEncoder implements CompressionEncoder {
         return CodecOutcome.FLUSHED;
     }
 
-    /// Finishes the current frame and drains its final block and optional checksum.
+    /// Finishes the complete Zstandard encoding and drains its final frame output.
     @Override
-    public CodecOutcome finishFrame(ByteBuffer target) throws IOException {
+    public CodecOutcome finish(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();
         if (state == State.FLUSHING) {
-            throw new IllegalStateException("Complete the active flush before finishing the Zstandard frame");
+            throw new IllegalStateException("Complete the active flush before finishing the Zstandard encoding");
+        }
+        if (state == State.FINISHING_FRAME) {
+            throw new IllegalStateException("Complete the active frame boundary before finishing the Zstandard encoding");
         }
         if (state == State.FINISHED) {
-            return CodecOutcome.FRAME_FINISHED;
+            return CodecOutcome.FINISHED;
+        }
+        if (state == State.BETWEEN_FRAMES) {
+            encoder.abort();
+            state = State.FINISHED;
+            return CodecOutcome.FINISHED;
         }
         if (state == State.ACTIVE) {
             encoder.finishFrame();
@@ -109,7 +127,34 @@ public final class ZstdEncoder implements CompressionEncoder {
             return CodecOutcome.NEEDS_OUTPUT;
         }
         state = State.FINISHED;
-        return CodecOutcome.FRAME_FINISHED;
+        return CodecOutcome.FINISHED;
+    }
+
+    /// Finishes the current Zstandard frame and prepares the encoder for another frame.
+    @Override
+    public CodecOutcome finishFrame(ByteBuffer target) throws IOException {
+        Objects.requireNonNull(target, "target");
+        requireOpen();
+        if (state == State.FLUSHING) {
+            throw new IllegalStateException("Complete the active flush before finishing the Zstandard frame");
+        }
+        if (state == State.FINISHING || state == State.FINISHED) {
+            throw new IllegalStateException("Cannot finish a frame after terminal Zstandard finalization has started");
+        }
+        if (state == State.BETWEEN_FRAMES) {
+            return CodecOutcome.BOUNDARY_REACHED;
+        }
+        if (state == State.ACTIVE) {
+            encoder.finishFrame();
+            state = State.FINISHING_FRAME;
+        }
+        drainOutput(target);
+        if (output.hasRemaining()) {
+            return CodecOutcome.NEEDS_OUTPUT;
+        }
+        encoder = createEncoder();
+        state = State.BETWEEN_FRAMES;
+        return CodecOutcome.BOUNDARY_REACHED;
     }
 
     /// Abandons current frame state and creates a fresh encoder with the same immutable configuration.
@@ -223,10 +268,16 @@ public final class ZstdEncoder implements CompressionEncoder {
         /// A flush must be drained before more source bytes are accepted.
         FLUSHING,
 
-        /// Frame finalization has started and must be drained.
+        /// Non-terminal frame finalization has started and must be drained.
+        FINISHING_FRAME,
+
+        /// The previous frame completed and the next frame has not accepted input.
+        BETWEEN_FRAMES,
+
+        /// Terminal encoding finalization has started and must be drained.
         FINISHING,
 
-        /// The frame completed and may be reset or closed.
+        /// The complete encoding finished and may be reset or closed.
         FINISHED,
 
         /// Worker and frame resources were released.

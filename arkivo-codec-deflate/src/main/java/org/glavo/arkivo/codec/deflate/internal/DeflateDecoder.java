@@ -17,7 +17,7 @@ import java.util.Objects;
 import java.util.zip.DataFormatException;
 import java.util.zip.Inflater;
 
-/// Incrementally decodes one raw Deflate frame without binding the codec state to an input channel.
+/// Incrementally decodes one raw Deflate stream without binding the codec state to an input channel.
 @NotNullByDefault
 public final class DeflateDecoder implements CompressionDecoder {
     /// Empty input used to detach caller-owned buffers from the JDK context after every operation.
@@ -46,14 +46,14 @@ public final class DeflateDecoder implements CompressionDecoder {
         }
     }
 
-    /// Decodes source bytes until input, output space, a dictionary, or the frame boundary stops progress.
+    /// Decodes source bytes until input, output space, a dictionary, or the stream boundary stops progress.
     @Override
     public CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
         requireOpen();
         if (state == State.FINISHED) {
-            return CodecOutcome.FRAME_FINISHED;
+            return CodecOutcome.FINISHED;
         }
         if (state == State.NEEDS_DICTIONARY) {
             return CodecOutcome.NEEDS_DICTIONARY;
@@ -62,7 +62,7 @@ public final class DeflateDecoder implements CompressionDecoder {
         while (true) {
             if (inflater.finished()) {
                 state = State.FINISHED;
-                return CodecOutcome.FRAME_FINISHED;
+                return CodecOutcome.FINISHED;
             }
             if (inflater.needsDictionary()) {
                 state = State.NEEDS_DICTIONARY;
@@ -85,7 +85,7 @@ public final class DeflateDecoder implements CompressionDecoder {
 
             if (inflater.finished()) {
                 state = State.FINISHED;
-                return CodecOutcome.FRAME_FINISHED;
+                return CodecOutcome.FINISHED;
             }
             if (inflater.needsDictionary()) {
                 state = State.NEEDS_DICTIONARY;
@@ -119,7 +119,7 @@ public final class DeflateDecoder implements CompressionDecoder {
         state = State.ACTIVE;
     }
 
-    /// Abandons the current frame and restores the configured Inflate state.
+    /// Abandons the current stream and restores the configured Inflate state.
     @Override
     public void reset() {
         requireOpen();
@@ -152,7 +152,7 @@ public final class DeflateDecoder implements CompressionDecoder {
         }
     }
 
-    /// Tracks the explicit raw Deflate frame lifecycle.
+    /// Tracks the explicit raw Deflate stream lifecycle.
     private enum State {
         /// The decoder accepts compressed source bytes.
         ACTIVE,
@@ -160,7 +160,7 @@ public final class DeflateDecoder implements CompressionDecoder {
         /// Decoding is paused until a preset dictionary is supplied.
         NEEDS_DICTIONARY,
 
-        /// The frame completed and may only be reset or closed.
+        /// The stream completed and may only be reset or closed.
         FINISHED,
 
         /// Native resources were released.

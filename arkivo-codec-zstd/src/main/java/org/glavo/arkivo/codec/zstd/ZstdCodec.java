@@ -11,8 +11,8 @@ import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
+import org.glavo.arkivo.codec.FramedCompressionEncoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.WorkerCount;
@@ -459,13 +459,19 @@ public final class ZstdCodec implements CompressionCodec {
 
     /// Creates a configured transport-independent Zstandard encoder.
     @Override
-    public CompressionEncoder newEncoder(CodecOptions options) throws IOException {
+    public FramedCompressionEncoder newEncoder(CodecOptions options) throws IOException {
         options.requireSupported(CAPABILITIES.compressionOptions(), "Zstandard compression");
         long pledgedSourceSize = StandardCodecOptionSupport.pledgedSourceSize(options);
         return new ZstdEncoder(
                 createEncoderParameters(options, pledgedSourceSize),
                 frameFormat(options) == ZstdFrameFormat.MAGICLESS
         );
+    }
+
+    /// Creates a default transport-independent framed Zstandard encoder.
+    @Override
+    public FramedCompressionEncoder newEncoder() throws IOException {
+        return newEncoder(CodecOptions.EMPTY);
     }
 
     /// Creates a configured transport-independent Zstandard decoder.

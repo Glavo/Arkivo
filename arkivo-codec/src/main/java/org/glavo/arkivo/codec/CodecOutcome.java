@@ -8,7 +8,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 /// Identifies the actionable reason that a buffer-driven codec operation returned.
 @NotNullByDefault
 public enum CodecOutcome {
-    /// The supplied source was exhausted before the current frame completed.
+    /// The supplied source was exhausted before the current encoding completed.
     NEEDS_INPUT,
 
     /// The supplied target was filled while the codec still has work to perform.
@@ -17,9 +17,12 @@ public enum CodecOutcome {
     /// Decoding cannot continue until the requested preset dictionary is supplied.
     NEEDS_DICTIONARY,
 
-    /// Pending encoded output reached a decodable boundary without ending the frame.
+    /// Pending encoded output reached a decodable boundary without ending the encoding.
     FLUSHED,
 
-    /// The current frame completed and all of its output was written to the supplied target.
-    FRAME_FINISHED
+    /// A non-terminal format boundary completed and the codec can process a following unit.
+    BOUNDARY_REACHED,
+
+    /// The current encoding or decoding operation completed.
+    FINISHED
 }

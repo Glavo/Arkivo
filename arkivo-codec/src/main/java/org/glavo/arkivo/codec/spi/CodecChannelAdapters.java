@@ -12,6 +12,7 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.FramedCompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
@@ -222,8 +223,12 @@ public final class CodecChannelAdapters {
             if (!frameActive) {
                 return;
             }
-            finishEngineFrame();
-            encoder.reset();
+            if (encoder instanceof FramedCompressionEncoder framedEncoder) {
+                finishEngineFrame(framedEncoder);
+            } else {
+                finishEngine();
+                encoder.reset();
+            }
             frameActive = false;
         }
 
@@ -240,7 +245,7 @@ public final class CodecChannelAdapters {
             @Nullable Throwable failure = null;
             try {
                 if (frameActive) {
-                    finishEngineFrame();
+                    finishEngine();
                 }
             } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
@@ -277,17 +282,35 @@ public final class CodecChannelAdapters {
             finish();
         }
 
-        /// Drains one complete frame from the underlying encoder engine.
-        private void finishEngineFrame() throws IOException {
+        /// Drains terminal output from the underlying encoder engine.
+        private void finishEngine() throws IOException {
             while (true) {
                 output.clear();
-                CodecOutcome outcome = encoder.finishFrame(output);
+                CodecOutcome outcome = encoder.finish(output);
                 writeOutput();
-                if (outcome == CodecOutcome.FRAME_FINISHED) {
+                if (outcome == CodecOutcome.FINISHED) {
                     return;
                 }
                 if (outcome != CodecOutcome.NEEDS_OUTPUT) {
                     throw new IOException("Unexpected compression finish outcome: " + outcome);
+                }
+                if (output.position() == 0) {
+                    throw new IOException("Compression encoder requested output without producing bytes");
+                }
+            }
+        }
+
+        /// Drains one non-terminal frame boundary from a framed encoder engine.
+        private void finishEngineFrame(FramedCompressionEncoder framedEncoder) throws IOException {
+            while (true) {
+                output.clear();
+                CodecOutcome outcome = framedEncoder.finishFrame(output);
+                writeOutput();
+                if (outcome == CodecOutcome.BOUNDARY_REACHED) {
+                    return;
+                }
+                if (outcome != CodecOutcome.NEEDS_OUTPUT) {
+                    throw new IOException("Unexpected compression frame outcome: " + outcome);
                 }
                 if (output.position() == 0) {
                     throw new IOException("Compression encoder requested output without producing bytes");
@@ -433,7 +456,7 @@ public final class CodecChannelAdapters {
                 inputBytes += input.position() - inputPosition;
                 outputBytes += target.position() - outputPosition;
 
-                if (outcome == CodecOutcome.FRAME_FINISHED) {
+                if (outcome == CodecOutcome.FINISHED) {
                     if (!concatenatedFrames) {
                         frameFinished = true;
                         CodecStatus status = directive == DecodeDirective.STOP_AT_FRAME

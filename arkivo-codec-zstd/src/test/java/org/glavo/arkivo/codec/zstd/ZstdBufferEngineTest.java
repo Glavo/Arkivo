@@ -15,6 +15,7 @@ import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimitException;
+import org.glavo.arkivo.codec.FramedCompressionEncoder;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.WorkerCount;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -53,8 +54,8 @@ public final class ZstdBufferEngineTest {
                 ByteBuffer target = ByteBuffer.allocateDirect(1);
                 outcome = decoder.decode(source, target, false);
                 drain(target, decoded);
-                assertTrue(outcome == CodecOutcome.NEEDS_OUTPUT || outcome == CodecOutcome.FRAME_FINISHED);
-            } while (outcome != CodecOutcome.FRAME_FINISHED);
+                assertTrue(outcome == CodecOutcome.NEEDS_OUTPUT || outcome == CodecOutcome.FINISHED);
+            } while (outcome != CodecOutcome.FINISHED);
         }
 
         assertArrayEquals(input, decoded.toByteArray());
@@ -134,7 +135,7 @@ public final class ZstdBufferEngineTest {
                 outcome = decoder.decode(source, target, true);
                 drain(target, decoded);
             } while (outcome == CodecOutcome.NEEDS_OUTPUT);
-            assertEquals(CodecOutcome.FRAME_FINISHED, outcome);
+            assertEquals(CodecOutcome.FINISHED, outcome);
         }
 
         assertArrayEquals(input, decoded.toByteArray());
@@ -151,7 +152,7 @@ public final class ZstdBufferEngineTest {
         skippable.put(payload).put(tail).flip();
         try (CompressionDecoder decoder = CODEC.newDecoder()) {
             assertEquals(
-                    CodecOutcome.FRAME_FINISHED,
+                    CodecOutcome.FINISHED,
                     decoder.decode(skippable, ByteBuffer.allocate(1), false)
             );
         }
@@ -236,6 +237,40 @@ public final class ZstdBufferEngineTest {
         assertThrows(IllegalStateException.class, encoder::reset);
     }
 
+    /// Verifies explicit frame boundaries preserve the encoder and terminal finish emits no empty frame.
+    @Test
+    public void framedEncoderStartsFollowingFramesLazily() throws IOException {
+        byte[] first = testData(10_003);
+        byte[] second = testData(17_009);
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+
+        try (FramedCompressionEncoder encoder = CODEC.newEncoder()) {
+            encodeSource(encoder, ByteBuffer.wrap(first), encoded, 11);
+            finishFrame(encoder, encoded, 3);
+            int firstEnd = encoded.size();
+
+            encodeSource(encoder, ByteBuffer.wrap(second), encoded, 13);
+            finishFrame(encoder, encoded, 5);
+            int secondEnd = encoded.size();
+
+            assertEquals(
+                    CodecOutcome.NEEDS_INPUT,
+                    encoder.encode(ByteBuffer.allocate(0), ByteBuffer.allocate(1))
+            );
+            finish(encoder, encoded, 7);
+            assertEquals(secondEnd, encoded.size());
+
+            byte[] frames = encoded.toByteArray();
+            assertEquals(firstEnd, CODEC.frameCompressedSize(ByteBuffer.wrap(frames)));
+            assertEquals(
+                    secondEnd - firstEnd,
+                    CODEC.frameCompressedSize(ByteBuffer.wrap(frames, firstEnd, secondEnd - firstEnd).slice())
+            );
+            assertArrayEquals(first, decode(Arrays.copyOfRange(frames, 0, firstEnd), CodecOptions.EMPTY, 2));
+            assertArrayEquals(second, decode(Arrays.copyOfRange(frames, firstEnd, secondEnd), CodecOptions.EMPTY, 2));
+        }
+    }
+
     /// Encodes input fragments into one frame.
     private static byte[] encode(
             byte[] input,
@@ -287,16 +322,31 @@ public final class ZstdBufferEngineTest {
         assertEquals(CodecOutcome.FLUSHED, outcome);
     }
 
-    /// Drains one encoder frame-finalization operation.
-    private static void finish(CompressionEncoder encoder, ByteArrayOutputStream encoded, int targetSize)
-            throws IOException {
+    /// Drains one non-terminal Zstandard frame-finalization operation.
+    private static void finishFrame(
+            FramedCompressionEncoder encoder,
+            ByteArrayOutputStream encoded,
+            int targetSize
+    ) throws IOException {
         CodecOutcome outcome;
         do {
             ByteBuffer target = ByteBuffer.allocate(targetSize);
             outcome = encoder.finishFrame(target);
             drain(target, encoded);
         } while (outcome == CodecOutcome.NEEDS_OUTPUT);
-        assertEquals(CodecOutcome.FRAME_FINISHED, outcome);
+        assertEquals(CodecOutcome.BOUNDARY_REACHED, outcome);
+    }
+
+    /// Drains one terminal encoder-finalization operation.
+    private static void finish(CompressionEncoder encoder, ByteArrayOutputStream encoded, int targetSize)
+            throws IOException {
+        CodecOutcome outcome;
+        do {
+            ByteBuffer target = ByteBuffer.allocate(targetSize);
+            outcome = encoder.finish(target);
+            drain(target, encoded);
+        } while (outcome == CodecOutcome.NEEDS_OUTPUT);
+        assertEquals(CodecOutcome.FINISHED, outcome);
     }
 
     /// Decodes one frame from one complete source buffer.
@@ -310,7 +360,7 @@ public final class ZstdBufferEngineTest {
                 outcome = decoder.decode(source, target, true);
                 drain(target, decoded);
             } while (outcome == CodecOutcome.NEEDS_OUTPUT);
-            assertEquals(CodecOutcome.FRAME_FINISHED, outcome);
+            assertEquals(CodecOutcome.FINISHED, outcome);
         }
         return decoded.toByteArray();
     }
@@ -326,7 +376,7 @@ public final class ZstdBufferEngineTest {
         try (CompressionDecoder decoder = CODEC.newDecoder(options)) {
             int offset = 0;
             CodecOutcome outcome = CodecOutcome.NEEDS_INPUT;
-            while (outcome != CodecOutcome.FRAME_FINISHED) {
+            while (outcome != CodecOutcome.FINISHED) {
                 int length = Math.min(sourceFragmentSize, encoded.length - offset);
                 ByteBuffer source = ByteBuffer.wrap(encoded, offset, length).slice();
                 boolean endOfInput = offset + length == encoded.length;
@@ -336,7 +386,7 @@ public final class ZstdBufferEngineTest {
                     drain(target, decoded);
                 } while (outcome == CodecOutcome.NEEDS_OUTPUT);
                 offset += source.position();
-                assertTrue(outcome == CodecOutcome.NEEDS_INPUT || outcome == CodecOutcome.FRAME_FINISHED);
+                assertTrue(outcome == CodecOutcome.NEEDS_INPUT || outcome == CodecOutcome.FINISHED);
             }
             assertEquals(encoded.length, offset);
         }

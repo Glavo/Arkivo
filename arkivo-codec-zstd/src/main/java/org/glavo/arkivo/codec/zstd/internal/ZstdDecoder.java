@@ -114,7 +114,7 @@ public final class ZstdDecoder implements CompressionDecoder {
         Objects.requireNonNull(target, "target");
         requireOpen();
         if (state == State.FINISHED) {
-            return CodecOutcome.FRAME_FINISHED;
+            return CodecOutcome.FINISHED;
         }
         if (state == State.NEEDS_DICTIONARY) {
             return CodecOutcome.NEEDS_DICTIONARY;
@@ -129,7 +129,7 @@ public final class ZstdDecoder implements CompressionDecoder {
                 output = EMPTY_OUTPUT;
                 completeBlock();
                 if (state == State.FINISHED) {
-                    return CodecOutcome.FRAME_FINISHED;
+                    return CodecOutcome.FINISHED;
                 }
                 continue;
             }
@@ -150,7 +150,7 @@ public final class ZstdDecoder implements CompressionDecoder {
                     skippableBytes -= skipped;
                     if (skippableBytes == 0L) {
                         state = State.FINISHED;
-                        return CodecOutcome.FRAME_FINISHED;
+                        return CodecOutcome.FINISHED;
                     }
                     return requireMoreInput(endOfInput);
                 }
@@ -174,7 +174,7 @@ public final class ZstdDecoder implements CompressionDecoder {
                     }
                     completeBlock();
                     if (state == State.FINISHED) {
-                        return CodecOutcome.FRAME_FINISHED;
+                        return CodecOutcome.FINISHED;
                     }
                 }
                 case CHECKSUM -> {
@@ -183,13 +183,13 @@ public final class ZstdDecoder implements CompressionDecoder {
                     }
                     verifyChecksum();
                     finishStandardFrame();
-                    return CodecOutcome.FRAME_FINISHED;
+                    return CodecOutcome.FINISHED;
                 }
                 case NEEDS_DICTIONARY -> {
                     return CodecOutcome.NEEDS_DICTIONARY;
                 }
                 case FINISHED -> {
-                    return CodecOutcome.FRAME_FINISHED;
+                    return CodecOutcome.FINISHED;
                 }
                 case CLOSED -> throw new AssertionError("Closed decoder passed requireOpen");
             }
@@ -252,7 +252,7 @@ public final class ZstdDecoder implements CompressionDecoder {
                     skippableBytes = skippable.payloadSize();
                     if (skippableBytes == 0L) {
                         state = State.FINISHED;
-                        return CodecOutcome.FRAME_FINISHED;
+                        return CodecOutcome.FINISHED;
                     }
                     state = State.SKIPPABLE_PAYLOAD;
                     return null;
