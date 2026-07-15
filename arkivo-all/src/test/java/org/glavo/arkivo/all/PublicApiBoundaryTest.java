@@ -65,13 +65,10 @@ public final class PublicApiBoundaryTest {
             Map.entry("org.glavo.arkivo.codec.bcj", "org.glavo.arkivo.codec.bcj"),
             Map.entry("org.glavo.arkivo.codec.bzip2", "org.glavo.arkivo.codec.bzip2"),
             Map.entry("org.glavo.arkivo.codec.deflate", "org.glavo.arkivo.codec.deflate"),
-            Map.entry("org.glavo.arkivo.codec.deflate64", "org.glavo.arkivo.codec.deflate64"),
             Map.entry("org.glavo.arkivo.codec.delta", "org.glavo.arkivo.codec.delta"),
-            Map.entry("org.glavo.arkivo.codec.gzip", "org.glavo.arkivo.codec.gzip"),
             Map.entry("org.glavo.arkivo.codec.lzma", "org.glavo.arkivo.codec.lzma"),
             Map.entry("org.glavo.arkivo.codec.ppmd", "org.glavo.arkivo.codec.ppmd"),
             Map.entry("org.glavo.arkivo.codec.xz", "org.glavo.arkivo.codec.xz"),
-            Map.entry("org.glavo.arkivo.codec.zlib", "org.glavo.arkivo.codec.zlib"),
             Map.entry("org.glavo.arkivo.codec.zstd", "org.glavo.arkivo.codec.zstd")
     );
 
@@ -88,13 +85,10 @@ public final class PublicApiBoundaryTest {
             Map.entry("org.glavo.arkivo.codec.bcj", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.bzip2", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.deflate", Set.of("org.glavo.arkivo.codec")),
-            Map.entry("org.glavo.arkivo.codec.deflate64", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.delta", Set.of("org.glavo.arkivo.codec")),
-            Map.entry("org.glavo.arkivo.codec.gzip", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.lzma", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.ppmd", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.xz", Set.of("org.glavo.arkivo.codec")),
-            Map.entry("org.glavo.arkivo.codec.zlib", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.zstd", Set.of("org.glavo.arkivo.codec"))
     );
 

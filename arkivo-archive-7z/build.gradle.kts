@@ -8,7 +8,6 @@ dependencies {
     implementation(project(":arkivo-codec-delta"))
     testImplementation(project(":arkivo-codec-bzip2"))
     testImplementation(project(":arkivo-codec-deflate"))
-    testImplementation(project(":arkivo-codec-deflate64"))
     testImplementation(project(":arkivo-codec-lzma"))
     testImplementation(project(":arkivo-codec-ppmd"))
     testImplementation(project(":arkivo-codec-zstd"))
@@ -47,7 +46,7 @@ val verifyOptionalCompressionCodecs by tasks.registering(JavaExec::class) {
 
     classpath = sourceSets.test.get().runtimeClasspath.filter { file ->
         val path = file.invariantSeparatorsPath
-        sequenceOf("bzip2", "deflate", "deflate64", "lzma", "ppmd", "zstd").none { codecName ->
+        sequenceOf("bzip2", "deflate", "lzma", "ppmd", "zstd").none { codecName ->
             path.contains("/arkivo-codec-$codecName/")
                     || file.name.startsWith("arkivo-codec-$codecName")
         }

@@ -5,28 +5,26 @@ package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 
-/// Provides the raw Deflate profile of the shared pure Java Deflate-family decoder.
+/// Provides the Deflate64 profile of the shared pure Java Deflate-family decoder.
 @NotNullByDefault
-public final class DeflateDecoder implements CompressionDecoder {
-    /// Shared grammar engine configured for RFC 1951 semantics.
-    private final DeflateDecoderEngine engine;
+public final class Deflate64Decoder implements CompressionDecoder {
+    /// Shared grammar engine configured for Deflate64 semantics.
+    private final DeflateDecoderEngine engine = new DeflateDecoderEngine(
+            DeflateDecoderEngine.Format.DEFLATE64,
+            null
+    );
 
-    /// Creates a raw Deflate decoder with an optional preset dictionary.
-    ///
-    /// @param dictionary preset history content, or null
-    public DeflateDecoder(@Nullable CompressionDictionary dictionary) {
-        engine = new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE, dictionary);
+    /// Creates a raw Deflate64 decoder.
+    public Deflate64Decoder() {
     }
 
-    /// Decodes source bytes until input, output space, or the raw stream boundary stops progress.
+    /// Decodes source bytes until input, output space, or the Deflate64 stream boundary stops progress.
     @Override
     public CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
         Objects.requireNonNull(source, "source");
@@ -34,7 +32,7 @@ public final class DeflateDecoder implements CompressionDecoder {
         return engine.decode(source, target, endOfInput);
     }
 
-    /// Abandons the current stream and restores configured dictionary history.
+    /// Abandons the current stream and restores empty Deflate64 history.
     @Override
     public void reset() {
         engine.reset();

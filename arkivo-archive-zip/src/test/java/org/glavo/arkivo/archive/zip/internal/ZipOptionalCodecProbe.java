@@ -18,7 +18,6 @@ public final class ZipOptionalCodecProbe {
     /// The codec providers excluded from this probe's runtime class path.
     private static final String @Unmodifiable [] OPTIONAL_CODEC_NAMES = {
             "bzip2",
-            "deflate64",
             "xz",
             "zstd"
     };
@@ -29,7 +28,7 @@ public final class ZipOptionalCodecProbe {
 
     /// Checks both entry directions without optional codec implementations on the runtime class path.
     public static void main(String @Unmodifiable [] arguments) throws Exception {
-        requireCoreDeflateCodec();
+        requireDeflateFamilyCodecs();
         for (String codecName : OPTIONAL_CODEC_NAMES) {
             requireMissingCodec(codecName, () -> ZipCompressionCodecs.openDecoder(
                     codecName,
@@ -53,13 +52,19 @@ public final class ZipOptionalCodecProbe {
         ));
     }
 
-    /// Requires the mandatory raw Deflate provider to remain available without optional codecs.
-    private static void requireCoreDeflateCodec() throws IOException {
+    /// Requires every codec bundled in the mandatory Deflate-family module.
+    private static void requireDeflateFamilyCodecs() throws IOException {
+        requireBundledCodec("deflate");
+        requireBundledCodec("deflate64");
+    }
+
+    /// Requires one bundled codec to open both directions.
+    private static void requireBundledCodec(String codecName) throws IOException {
         try (DecompressingReadableByteChannel ignoredDecoder = ZipCompressionCodecs.openDecoder(
-                "deflate",
+                codecName,
                 new ByteArrayInputStream(new byte[0])
         ); CompressingWritableByteChannel ignoredEncoder = ZipCompressionCodecs.openEncoder(
-                "deflate",
+                codecName,
                 new ByteArrayOutputStream()
         )) {
             // Opening both directions proves the provider remains in the stripped runtime image.

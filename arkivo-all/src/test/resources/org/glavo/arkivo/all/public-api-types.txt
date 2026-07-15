@@ -106,10 +106,11 @@ org.glavo.arkivo.codec.StandardCodecOptions
 org.glavo.arkivo.codec.WorkerCount
 org.glavo.arkivo.codec.bcj.BCJTransforms
 org.glavo.arkivo.codec.bzip2.BZip2Codec
+org.glavo.arkivo.codec.deflate.Deflate64Codec
 org.glavo.arkivo.codec.deflate.DeflateCodec
-org.glavo.arkivo.codec.deflate64.Deflate64Codec
+org.glavo.arkivo.codec.deflate.GzipCodec
+org.glavo.arkivo.codec.deflate.ZlibCodec
 org.glavo.arkivo.codec.delta.DeltaTransform
-org.glavo.arkivo.codec.gzip.GzipCodec
 org.glavo.arkivo.codec.lzma.LZMA2Codec
 org.glavo.arkivo.codec.lzma.LZMACodec
 org.glavo.arkivo.codec.lzma.LZMAOptions
@@ -136,7 +137,6 @@ org.glavo.arkivo.codec.xz.XZCodec
 org.glavo.arkivo.codec.xz.XZDeltaFilter
 org.glavo.arkivo.codec.xz.XZFilter
 org.glavo.arkivo.codec.xz.XZFilterChain
-org.glavo.arkivo.codec.zlib.ZlibCodec
 org.glavo.arkivo.codec.zstd.ZstdCodec
 org.glavo.arkivo.codec.zstd.ZstdDictionaryTrainer
 org.glavo.arkivo.codec.zstd.ZstdDictionaryTrainingException

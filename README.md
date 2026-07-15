@@ -46,7 +46,7 @@ The main module choices are:
 | `arkivo-archive` | Archive contracts, discovery, storage, and NIO support |
 | `arkivo-codec` | Codec contracts, options, discovery, and adapters |
 | `arkivo-archive-<format>` | One archive implementation, such as `zip`, `tar`, or `7z` |
-| `arkivo-codec-<codec>` | One codec implementation, such as `zstd`, `xz`, or `gzip` |
+| `arkivo-codec-<family>` | One codec family, such as `zstd`, `xz`, or `deflate` |
 
 JPMS applications using the aggregate artifact can require the matching aggregate module:
 
@@ -116,7 +116,7 @@ Archive modules currently cover:
 - 7z file systems and streaming writers, with mutation, solid archives, encryption, and split-volume support.
 - Read-only RAR4 and RAR5 file systems and streaming readers.
 
-Compression modules currently cover BZip2, raw Deflate, Deflate64, gzip, raw LZMA, LZMA-alone, LZMA2, PPMd7, XZ,
+Compression support currently covers BZip2, raw Deflate, Deflate64, gzip, raw LZMA, LZMA-alone, LZMA2, PPMd7, XZ,
 zlib, and Zstandard. The codec layer also provides Delta and BCJ executable transforms. All compression implementations
 are pure Java.
 

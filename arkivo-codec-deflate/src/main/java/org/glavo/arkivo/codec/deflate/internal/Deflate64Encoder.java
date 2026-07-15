@@ -4,36 +4,28 @@
 package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
-import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
-/// Exposes the shared pure Java Deflate encoder under the raw Deflate module's internal type.
+/// Exposes the shared pure Java Deflate encoder under the Deflate64 module's internal type.
 @NotNullByDefault
-public final class DeflateEncoder implements CompressionEncoder {
+public final class Deflate64Encoder implements CompressionEncoder {
     /// Shared format-parameterized encoder implementation.
     private final DeflateEncoderEngine engine;
 
-    /// Creates a raw Deflate encoder with immutable stream configuration.
+    /// Creates an encoder at the requested compression level from zero through nine.
     ///
-    /// @param compressionLevel bounded match-search level from zero through nine
-    /// @param dictionary preset dictionary, or null
-    /// @param strategy compression strategy
-    public DeflateEncoder(
-            int compressionLevel,
-            @Nullable CompressionDictionary dictionary,
-            CompressionStrategy strategy
-    ) {
+    /// @param compressionLevel bounded match-search level
+    public Deflate64Encoder(int compressionLevel) {
         this.engine = new DeflateEncoderEngine(
-                DeflateEncoderEngine.Format.DEFLATE,
+                DeflateEncoderEngine.Format.DEFLATE64,
                 compressionLevel,
-                dictionary,
-                strategy
+                null,
+                CompressionStrategy.DEFAULT
         );
     }
 
@@ -43,19 +35,19 @@ public final class DeflateEncoder implements CompressionEncoder {
         return engine.encode(source, target);
     }
 
-    /// Flushes pending raw Deflate output without ending the stream.
+    /// Flushes pending Deflate64 output without ending the stream.
     @Override
-    public CodecOutcome flush(ByteBuffer target) throws IOException {
+    public CodecOutcome flush(ByteBuffer target) {
         return engine.flush(target);
     }
 
-    /// Finishes the raw Deflate stream without releasing encoder-owned state.
+    /// Finishes the Deflate64 stream without releasing encoder-owned state.
     @Override
-    public CodecOutcome finish(ByteBuffer target) throws IOException {
+    public CodecOutcome finish(ByteBuffer target) {
         return engine.finish(target);
     }
 
-    /// Abandons the current stream and restores the configured initial history.
+    /// Abandons the current stream and restores a fresh Deflate64 session.
     @Override
     public void reset() {
         engine.reset();

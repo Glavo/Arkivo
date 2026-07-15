@@ -24,12 +24,9 @@ arkivo-codec-all
 arkivo-codec-bcj
 arkivo-codec-bzip2
 arkivo-codec-deflate
-arkivo-codec-deflate64
 arkivo-codec-delta
-arkivo-codec-gzip
 arkivo-codec-lzma
 arkivo-codec-ppmd
-arkivo-codec-zlib
 arkivo-codec-xz
 arkivo-codec-zstd
 arkivo-archive-all
@@ -47,7 +44,7 @@ arkivo-all
 
 `arkivo-codec` should contain codec APIs, service discovery, reusable byte-transform support, and codec-oriented NIO utilities without depending on archive modules.
 
-`arkivo-codec-*` modules should implement individual codecs and reversible byte transforms.
+`arkivo-codec-*` modules should implement cohesive codec families and reversible byte transforms.
 
 `arkivo-codec-all` should aggregate all official codec modules.
 
@@ -503,7 +500,7 @@ Each archive format should define only the attribute interfaces it needs, such a
 1. Convert the repository to a Gradle multi-module project.
 2. Implement `arkivo-archive` with archive-format discovery, `FileSystem` support contracts, password and volume-source contracts, and archive-oriented buffer utilities.
 3. Implement `arkivo-codec` with independent codec contracts, service discovery, and byte-transform support.
-4. Implement gzip, zlib, and raw Deflate codec modules to validate the buffer-first compression API.
+4. Implement the raw Deflate, Deflate64, gzip, and zlib codec family module to validate the buffer-first compression API.
 5. Define archive file system environment keys, password provider contracts, and split archive source abstractions.
 6. Implement `ZipArkivoFileSystem` inside `arkivo-archive-zip`.
 7. Implement ZIP-specific entry attribute views.
