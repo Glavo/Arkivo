@@ -5,6 +5,7 @@ package org.glavo.arkivo.codec.gzip.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.internal.deflate.DeflateDecoderEngine;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.EOFException;
@@ -12,8 +13,6 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 import java.util.zip.CRC32;
-import java.util.zip.DataFormatException;
-import java.util.zip.Inflater;
 
 /// Incrementally decodes and validates one gzip member without binding codec state to an input channel.
 @NotNullByDefault
@@ -33,11 +32,11 @@ public final class GzipDecoder implements CompressionDecoder {
     /// Reserved gzip flag bits rejected by the format.
     private static final int RESERVED_FLAGS = 0xe0;
 
-    /// Empty input used to detach caller-owned buffers from the JDK context after every operation.
-    private static final ByteBuffer EMPTY_INPUT = ByteBuffer.allocate(0);
-
-    /// JDK raw Inflate context used for the member body.
-    private final Inflater inflater = new Inflater(true);
+    /// Shared pure Java raw Deflate decoder used for the member body.
+    private final DeflateDecoderEngine body = new DeflateDecoderEngine(
+            DeflateDecoderEngine.Format.DEFLATE,
+            null
+    );
 
     /// CRC-32 of the complete encoded member header.
     private final CRC32 headerChecksum = new CRC32();
@@ -101,52 +100,23 @@ public final class GzipDecoder implements CompressionDecoder {
             }
 
             if (state == State.BODY) {
-                if (inflater.finished()) {
-                    state = State.TRAILER;
-                    continue;
-                }
-                if (!target.hasRemaining()) {
-                    return CodecOutcome.NEEDS_OUTPUT;
-                }
-                if (!source.hasRemaining()) {
-                    if (endOfInput) {
-                        throw new EOFException("Unexpected end of gzip member data");
-                    }
-                    return CodecOutcome.NEEDS_INPUT;
-                }
-
-                int sourcePosition = source.position();
                 int targetPosition = target.position();
-                inflater.setInput(source);
+                CodecOutcome outcome;
                 try {
-                    inflater.inflate(target);
-                } catch (DataFormatException exception) {
+                    outcome = body.decode(source, target, endOfInput);
+                } catch (EOFException exception) {
+                    EOFException translated = new EOFException("Unexpected end of gzip member data");
+                    translated.initCause(exception);
+                    throw translated;
+                } catch (IOException exception) {
                     throw new IOException("Invalid gzip deflate data", exception);
-                } finally {
-                    inflater.setInput(EMPTY_INPUT);
                 }
                 updateContentChecksum(target, targetPosition);
-
-                if (inflater.finished()) {
+                if (outcome == CodecOutcome.FINISHED) {
                     state = State.TRAILER;
                     continue;
                 }
-                if (inflater.needsDictionary()) {
-                    throw new IOException("Gzip member requires an unsupported preset dictionary");
-                }
-                if (!target.hasRemaining()) {
-                    return CodecOutcome.NEEDS_OUTPUT;
-                }
-                if (source.position() != sourcePosition || target.position() != targetPosition) {
-                    continue;
-                }
-                if (!source.hasRemaining()) {
-                    if (endOfInput) {
-                        throw new EOFException("Unexpected end of gzip member data");
-                    }
-                    return CodecOutcome.NEEDS_INPUT;
-                }
-                throw new IOException("Gzip decoder made no progress");
+                return outcome;
             }
 
             if (state == State.TRAILER) {
@@ -168,11 +138,11 @@ public final class GzipDecoder implements CompressionDecoder {
         }
     }
 
-    /// Abandons the current member and restores a fresh gzip parser and Inflate context.
+    /// Abandons the current member and restores a fresh gzip parser and Deflate context.
     @Override
     public void reset() {
         requireOpen();
-        inflater.reset();
+        body.reset();
         headerChecksum.reset();
         contentChecksum.reset();
         fixedHeaderBytes = 0;
@@ -187,12 +157,12 @@ public final class GzipDecoder implements CompressionDecoder {
         state = State.HEADER_FIXED;
     }
 
-    /// Releases the JDK Inflate context without consuming additional input.
+    /// Releases decoder-owned state without consuming additional input.
     @Override
     public void close() {
         if (state != State.CLOSED) {
+            body.close();
             state = State.CLOSED;
-            inflater.end();
         }
     }
 
@@ -334,7 +304,7 @@ public final class GzipDecoder implements CompressionDecoder {
         return value;
     }
 
-    /// Updates member accounting for the target range produced by the last Inflate invocation.
+    /// Updates member accounting for the target range produced by the Deflate engine.
     private void updateContentChecksum(ByteBuffer target, int start) {
         int end = target.position();
         if (start == end) {
@@ -377,7 +347,7 @@ public final class GzipDecoder implements CompressionDecoder {
         };
     }
 
-    /// Requires the native context to remain available.
+    /// Requires this decoder to remain open.
     private void requireOpen() {
         if (state == State.CLOSED) {
             throw new IllegalStateException("Gzip decoder is closed");

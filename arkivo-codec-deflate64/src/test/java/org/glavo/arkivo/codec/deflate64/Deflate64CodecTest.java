@@ -33,6 +33,8 @@ final class Deflate64CodecTest {
 
         assertTrue(codec.canCompress());
         assertTrue(codec.canDecompress());
+        assertTrue(codec.capabilities().supports(CompressionFeature.BUFFER_COMPRESSION));
+        assertTrue(codec.capabilities().supports(CompressionFeature.BUFFER_DECOMPRESSION));
         assertEquals(0L, codec.minimumCompressionLevel());
         assertEquals(9L, codec.maximumCompressionLevel());
         assertEquals(6L, codec.defaultCompressionLevel());

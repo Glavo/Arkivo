@@ -8,6 +8,7 @@ import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.DecodeDirective;
@@ -23,7 +24,7 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
-/// Adapts compression codec channel operations to bounded and allocating ByteBuffer operations.
+/// Drives buffer engines directly when available and adapts channel-only codecs to ByteBuffer operations.
 @NotNullByDefault
 public final class ByteBufferCodecSupport {
     /// The minimum nonempty capacity used by allocating operations.
@@ -45,6 +46,9 @@ public final class ByteBufferCodecSupport {
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
+        if (codec.capabilities().supports(CompressionFeature.BUFFER_COMPRESSION)) {
+            return DirectByteBufferCodecSupport.compressAllocating(codec, source, options);
+        }
 
         int initialCapacity = compressionInitialCapacity(codec, source.remaining());
         GrowingByteBuffer bytes = new GrowingByteBuffer(initialCapacity, Integer.MAX_VALUE);
@@ -78,6 +82,14 @@ public final class ByteBufferCodecSupport {
         if (maximumOutputSize < 0L || maximumOutputSize > Integer.MAX_VALUE) {
             throw new IllegalArgumentException(
                     "maximumOutputSize must be between zero and " + Integer.MAX_VALUE
+            );
+        }
+        if (codec.capabilities().supports(CompressionFeature.BUFFER_DECOMPRESSION)) {
+            return DirectByteBufferCodecSupport.decompressAllocating(
+                    codec,
+                    source,
+                    (int) maximumOutputSize,
+                    options
             );
         }
 
@@ -132,6 +144,14 @@ public final class ByteBufferCodecSupport {
         if (maximumOutputSize < 0L || maximumOutputSize > Integer.MAX_VALUE) {
             throw new IllegalArgumentException(
                     "maximumOutputSize must be between zero and " + Integer.MAX_VALUE
+            );
+        }
+        if (codec.capabilities().supports(CompressionFeature.BUFFER_DECOMPRESSION)) {
+            return DirectByteBufferCodecSupport.decompressFrameAllocating(
+                    codec,
+                    source,
+                    (int) maximumOutputSize,
+                    options
             );
         }
 
@@ -195,7 +215,7 @@ public final class ByteBufferCodecSupport {
         return (int) Math.min(maximumCapacity, suggested);
     }
 
-    /// Compresses all remaining source bytes through the codec's channel API.
+    /// Compresses all remaining source bytes through the codec's preferred ByteBuffer path.
     public static void compress(CompressionCodec codec, ByteBuffer source, ByteBuffer target) throws IOException {
         compress(codec, source, target, CodecOptions.EMPTY);
     }
@@ -210,6 +230,10 @@ public final class ByteBufferCodecSupport {
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(options, "options");
         validateBuffers(source, target);
+        if (codec.capabilities().supports(CompressionFeature.BUFFER_COMPRESSION)) {
+            DirectByteBufferCodecSupport.compress(codec, source, target, options);
+            return;
+        }
 
         try (ByteBufferWritableChannel output = new ByteBufferWritableChannel(target);
              CompressingWritableByteChannel compressor = codec.openEncoder(output, options, ChannelOwnership.RETAIN)) {
@@ -223,7 +247,7 @@ public final class ByteBufferCodecSupport {
         }
     }
 
-    /// Decompresses all remaining source bytes through the codec's channel API.
+    /// Decompresses all remaining source bytes through the codec's preferred ByteBuffer path.
     public static void decompress(CompressionCodec codec, ByteBuffer source, ByteBuffer target) throws IOException {
         decompress(codec, source, target, CodecOptions.EMPTY);
     }
@@ -238,6 +262,10 @@ public final class ByteBufferCodecSupport {
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(options, "options");
         validateBuffers(source, target);
+        if (codec.capabilities().supports(CompressionFeature.BUFFER_DECOMPRESSION)) {
+            DirectByteBufferCodecSupport.decompress(codec, source, target, options);
+            return;
+        }
 
         ByteBufferReadableChannel input = new ByteBufferReadableChannel(source);
         DecompressingReadableByteChannel decompressor = openDecoder(codec, source, input, options);
@@ -278,6 +306,10 @@ public final class ByteBufferCodecSupport {
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(options, "options");
         validateBuffers(source, target);
+        if (codec.capabilities().supports(CompressionFeature.BUFFER_DECOMPRESSION)) {
+            DirectByteBufferCodecSupport.decompressFrame(codec, source, target, options);
+            return;
+        }
 
         ByteBufferReadableChannel input = new ByteBufferReadableChannel(source);
         DecompressingReadableByteChannel decompressor = openDecoder(codec, source, input, options);

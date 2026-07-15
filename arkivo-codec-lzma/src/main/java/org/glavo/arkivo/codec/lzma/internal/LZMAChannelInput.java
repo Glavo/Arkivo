@@ -13,7 +13,7 @@ import java.util.Objects;
 
 /// Supplies buffered bytes from an LZMA compressed-data channel.
 @NotNullByDefault
-final class LZMAChannelInput {
+final class LZMAChannelInput implements LZMAInput {
     /// The compressed-data source.
     private final ReadableByteChannel source;
 
@@ -37,7 +37,8 @@ final class LZMAChannelInput {
     }
 
     /// Reads one byte or returns `-1` at end of input.
-    int read() throws IOException {
+    @Override
+    public int read() throws IOException {
         if (!buffer.hasRemaining()) {
             buffer.clear();
             int read = source.read(buffer);

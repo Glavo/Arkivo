@@ -108,7 +108,7 @@ final class Deflate64EncoderTest {
         assertArrayEquals(expected, decodeWithCommonsCompress(bytes.toByteArray()));
     }
 
-    /// Verifies literal-only level zero and match-search level nine produce valid distinct output.
+    /// Verifies stored-block level zero and match-search level nine produce valid distinct output.
     @Test
     void honorsCompressionLevel() throws IOException {
         byte[] input = "compression-level-search-depth".repeat(2_000).getBytes(StandardCharsets.UTF_8);

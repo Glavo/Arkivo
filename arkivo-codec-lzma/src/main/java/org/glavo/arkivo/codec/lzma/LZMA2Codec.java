@@ -7,12 +7,14 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.StandardCodecOptions;
-import org.glavo.arkivo.codec.lzma.internal.LZMA2ChannelDecoder;
-import org.glavo.arkivo.codec.lzma.internal.LZMA2ChannelEncoder;
+import org.glavo.arkivo.codec.lzma.internal.LZMA2Decoder;
+import org.glavo.arkivo.codec.lzma.internal.LZMA2Encoder;
 import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -36,6 +38,8 @@ public final class LZMA2Codec implements CompressionCodec {
             Set.of(
                     CompressionFeature.COMPRESSION,
                     CompressionFeature.DECOMPRESSION,
+                    CompressionFeature.BUFFER_COMPRESSION,
+                    CompressionFeature.BUFFER_DECOMPRESSION,
                     CompressionFeature.ONE_SHOT_COMPRESSION,
                     CompressionFeature.ONE_SHOT_DECOMPRESSION,
                     CompressionFeature.DIRECT_BYTE_BUFFER
@@ -69,29 +73,21 @@ public final class LZMA2Codec implements CompressionCodec {
         return CAPABILITIES;
     }
 
-    /// Opens a configured raw LZMA2 encoder over the target channel.
+    /// Creates a configured transport-independent raw LZMA2 encoder.
     @Override
-    public CompressingWritableByteChannel openEncoder(
-            WritableByteChannel target,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) {
+    public CompressionEncoder newEncoder(CodecOptions options) {
         options.requireSupported(CAPABILITIES.compressionOptions(), "LZMA2 compression");
         LZMAProperties properties = LZMAProperties.fromOptions(
                 options,
                 LZMAOptions.DICTIONARY_SIZE,
                 (int) DEFAULT_DICTIONARY_SIZE
         );
-        return new LZMA2ChannelEncoder(target, ownership, properties);
+        return new LZMA2Encoder(properties);
     }
 
-    /// Opens a configured raw LZMA2 decoder over the source channel.
+    /// Creates a configured transport-independent raw LZMA2 decoder.
     @Override
-    public DecompressingReadableByteChannel openDecoder(
-            ReadableByteChannel source,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
+    public CompressionDecoder newDecoder(CodecOptions options) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "LZMA2 decompression");
         if (options.get(LZMAOptions.DICTIONARY_SIZE) == null) {
             throw new IllegalArgumentException(
@@ -110,8 +106,32 @@ public final class LZMA2Codec implements CompressionCodec {
         );
         long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
         return StandardCodecOptionSupport.limitOutput(
-                new LZMA2ChannelDecoder(source, ownership, properties.dictionarySize()),
+                new LZMA2Decoder(properties.dictionarySize()),
                 maximumOutputSize
         );
+    }
+
+    /// Opens a configured encoder through the shared buffer-engine channel adapter.
+    @Override
+    public CompressingWritableByteChannel openEncoder(
+            WritableByteChannel target,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) {
+        try {
+            return CompressionCodec.super.openEncoder(target, options, ownership);
+        } catch (IOException exception) {
+            throw new AssertionError("LZMA2 buffer encoder creation unexpectedly failed", exception);
+        }
+    }
+
+    /// Opens a configured decoder through the shared buffer-engine channel adapter.
+    @Override
+    public DecompressingReadableByteChannel openDecoder(
+            ReadableByteChannel source,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        return CompressionCodec.super.openDecoder(source, options, ownership);
     }
 }

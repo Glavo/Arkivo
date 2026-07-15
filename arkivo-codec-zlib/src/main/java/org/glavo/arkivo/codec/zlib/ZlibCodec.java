@@ -24,9 +24,8 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.Set;
-import java.util.zip.Deflater;
 
-/// Provides zlib stream buffer engines and blocking channel adapters.
+/// Provides pure Java zlib stream buffer engines and blocking channel adapters.
 @NotNullByDefault
 public final class ZlibCodec implements CompressionCodec {
     /// The stable zlib codec name.
@@ -73,22 +72,22 @@ public final class ZlibCodec implements CompressionCodec {
         return CAPABILITIES;
     }
 
-    /// Returns the minimum JDK zlib compression level.
+    /// Returns the minimum zlib Deflate match-search level.
     @Override
     public long minimumCompressionLevel() {
-        return Deflater.NO_COMPRESSION;
+        return 0L;
     }
 
-    /// Returns the maximum JDK zlib compression level.
+    /// Returns the maximum zlib Deflate match-search level.
     @Override
     public long maximumCompressionLevel() {
-        return Deflater.BEST_COMPRESSION;
+        return 9L;
     }
 
-    /// Returns the default JDK zlib compression level.
+    /// Returns the default zlib Deflate match-search level.
     @Override
     public long defaultCompressionLevel() {
-        return Deflater.DEFAULT_COMPRESSION;
+        return 6L;
     }
 
     /// Returns the number of leading bytes used to identify zlib streams.
@@ -162,8 +161,7 @@ public final class ZlibCodec implements CompressionCodec {
     private int compressionLevel(CodecOptions options) {
         @Nullable Long requested = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
         long level = requested != null ? requested : defaultCompressionLevel();
-        if (level != defaultCompressionLevel()
-                && (level < minimumCompressionLevel() || level > maximumCompressionLevel())) {
+        if (level < minimumCompressionLevel() || level > maximumCompressionLevel()) {
             throw new IllegalArgumentException("Zlib compression level is out of range");
         }
         return Math.toIntExact(level);

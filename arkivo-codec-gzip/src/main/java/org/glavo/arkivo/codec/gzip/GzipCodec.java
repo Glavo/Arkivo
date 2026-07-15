@@ -28,9 +28,8 @@ import java.nio.channels.WritableByteChannel;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import java.util.zip.Deflater;
 
-/// Provides gzip member buffer engines and concatenated-member channel adapters.
+/// Provides pure Java gzip member buffer engines and concatenated-member channel adapters.
 @NotNullByDefault
 public final class GzipCodec implements CompressionCodec {
     /// The stable gzip codec name.
@@ -79,22 +78,22 @@ public final class GzipCodec implements CompressionCodec {
         return CAPABILITIES;
     }
 
-    /// Returns the minimum JDK gzip compression level.
+    /// Returns the minimum gzip Deflate match-search level.
     @Override
     public long minimumCompressionLevel() {
-        return Deflater.NO_COMPRESSION;
+        return 0L;
     }
 
-    /// Returns the maximum JDK gzip compression level.
+    /// Returns the maximum gzip Deflate match-search level.
     @Override
     public long maximumCompressionLevel() {
-        return Deflater.BEST_COMPRESSION;
+        return 9L;
     }
 
-    /// Returns the default JDK gzip compression level.
+    /// Returns the default gzip Deflate match-search level.
     @Override
     public long defaultCompressionLevel() {
-        return Deflater.DEFAULT_COMPRESSION;
+        return 6L;
     }
 
     /// Returns the number of leading bytes used to identify gzip streams.
@@ -165,8 +164,7 @@ public final class GzipCodec implements CompressionCodec {
     private int compressionLevel(CodecOptions options) {
         @Nullable Long requested = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
         long level = requested != null ? requested : defaultCompressionLevel();
-        if (level != defaultCompressionLevel()
-                && (level < minimumCompressionLevel() || level > maximumCompressionLevel())) {
+        if (level < minimumCompressionLevel() || level > maximumCompressionLevel()) {
             throw new IllegalArgumentException("Gzip compression level is out of range");
         }
         return Math.toIntExact(level);

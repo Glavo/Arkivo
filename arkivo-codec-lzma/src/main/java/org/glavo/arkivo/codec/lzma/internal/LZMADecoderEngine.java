@@ -168,7 +168,7 @@ final class LZMADecoderEngine {
     }
 
     /// Starts one range-coded raw stream or LZMA2 chunk.
-    void startChunk(LZMAChannelInput input, long expectedSize, boolean allowEndMarker) throws IOException {
+    void startChunk(LZMAInput input, long expectedSize, boolean allowEndMarker) throws IOException {
         Objects.requireNonNull(input, "input");
         if (expectedSize < -1L) {
             throw new IllegalArgumentException("LZMA expected size must be nonnegative or -1");
@@ -198,6 +198,48 @@ final class LZMADecoderEngine {
 
     /// Decodes one byte from the active range-coded chunk.
     int readByte() throws IOException {
+        if (chunkEnded || pendingLength > 0) {
+            return readByteCore();
+        }
+        LZMARangeDecoder range = Objects.requireNonNull(rangeDecoder, "rangeDecoder");
+        if (!range.transactional()) {
+            return readByteCore();
+        }
+
+        int savedState = state;
+        int savedRepetition0 = repetitions[0];
+        int savedRepetition1 = repetitions[1];
+        int savedRepetition2 = repetitions[2];
+        int savedRepetition3 = repetitions[3];
+        int savedPendingDistance = pendingDistance;
+        int savedPendingLength = pendingLength;
+        long savedChunkRemaining = chunkRemaining;
+        boolean savedChunkEnded = chunkEnded;
+        range.beginTransaction();
+        try {
+            int value = readByteCore();
+            range.commitTransaction();
+            return value;
+        } catch (LZMANeedInputException exception) {
+            range.rollbackTransaction();
+            state = savedState;
+            repetitions[0] = savedRepetition0;
+            repetitions[1] = savedRepetition1;
+            repetitions[2] = savedRepetition2;
+            repetitions[3] = savedRepetition3;
+            pendingDistance = savedPendingDistance;
+            pendingLength = savedPendingLength;
+            chunkRemaining = savedChunkRemaining;
+            chunkEnded = savedChunkEnded;
+            throw exception;
+        } catch (IOException | RuntimeException | Error exception) {
+            range.commitTransaction();
+            throw exception;
+        }
+    }
+
+    /// Decodes one byte without opening another range transaction.
+    private int readByteCore() throws IOException {
         if (chunkEnded) {
             return -1;
         }
@@ -306,7 +348,7 @@ final class LZMADecoderEngine {
         }
 
         chunkRemaining = -1L;
-        int extra = readByte();
+        int extra = readByteCore();
         if (extra >= 0) {
             throw new IOException("LZMA stream exceeds the expected output size");
         }

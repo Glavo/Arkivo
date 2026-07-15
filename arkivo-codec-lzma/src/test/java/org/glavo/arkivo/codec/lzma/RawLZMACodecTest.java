@@ -120,10 +120,14 @@ public final class RawLZMACodecTest {
                 decoded.write(buffer.array(), 0, buffer.remaining());
                 buffer.clear();
             }
-            assertEquals(compressed.length, decoder.sourceBytes());
+            assertEquals(compressed.length, decoder.inputBytes());
+            assertEquals(framed.length, decoder.sourceBytes());
+            ByteBuffer unconsumed = decoder.unconsumedInput();
+            assertEquals(1, unconsumed.remaining());
+            assertEquals(0x6a, Byte.toUnsignedInt(unconsumed.get()));
         }
         assertArrayEquals(content, decoded.toByteArray());
-        assertEquals(0x6a, source.read());
+        assertEquals(-1, source.read());
     }
 
     /// Verifies Arkivo's raw LZMA2 output with XZ for Java.

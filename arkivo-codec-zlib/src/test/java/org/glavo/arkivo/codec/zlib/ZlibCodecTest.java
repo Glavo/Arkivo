@@ -25,8 +25,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.zip.Adler32;
+import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
+import java.util.zip.Inflater;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -61,6 +63,9 @@ public final class ZlibCodecTest {
         ZlibCodec codec = new ZlibCodec();
         assertEquals(true, codec.matches(ByteBuffer.wrap(new byte[]{0x78, (byte) 0x9c})));
         assertEquals(false, codec.matches(ByteBuffer.wrap(new byte[]{0x78, 0x00})));
+        assertEquals(0L, codec.minimumCompressionLevel());
+        assertEquals(9L, codec.maximumCompressionLevel());
+        assertEquals(6L, codec.defaultCompressionLevel());
     }
 
     /// Verifies that the decoder derives its limit from the zlib header's declared window size.
@@ -107,7 +112,7 @@ public final class ZlibCodecTest {
 
     /// Verifies zlib preset dictionary negotiation, identifiers, and JDK interoperability.
     @Test
-    public void presetDictionaryInteroperability() throws IOException {
+    public void presetDictionaryInteroperability() throws IOException, DataFormatException {
         byte[] dictionaryBytes = (
                 "Arkivo zlib preset dictionary common phrase 0123456789;"
         ).repeat(128).getBytes(StandardCharsets.UTF_8);
@@ -127,6 +132,27 @@ public final class ZlibCodecTest {
                 Channels.newChannel(compressedByCodec),
                 options
         );
+        Inflater inflater = new Inflater();
+        try {
+            inflater.setInput(compressedByCodec.toByteArray());
+            ByteArrayOutputStream decodedByJdk = new ByteArrayOutputStream();
+            byte[] chunk = new byte[73];
+            while (!inflater.finished()) {
+                int produced = inflater.inflate(chunk);
+                if (produced > 0) {
+                    decodedByJdk.write(chunk, 0, produced);
+                } else if (inflater.needsDictionary()) {
+                    inflater.setDictionary(dictionaryBytes);
+                } else {
+                    assertEquals(false, inflater.needsInput());
+                    throw new AssertionError("JDK zlib inflater made no progress");
+                }
+            }
+            assertArrayEquals(input, decodedByJdk.toByteArray());
+        } finally {
+            inflater.end();
+        }
+
         ByteArrayOutputStream decodedByCodec = new ByteArrayOutputStream();
         codec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(compressedByCodec.toByteArray())),

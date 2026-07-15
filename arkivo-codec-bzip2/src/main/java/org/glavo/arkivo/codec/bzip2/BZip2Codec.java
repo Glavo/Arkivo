@@ -7,12 +7,15 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
-import org.glavo.arkivo.codec.bzip2.internal.BZip2ChannelDecoder;
+import org.glavo.arkivo.codec.bzip2.internal.BZip2Decoder;
+import org.glavo.arkivo.codec.bzip2.internal.BZip2Encoder;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2ChannelEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -25,7 +28,7 @@ import java.nio.channels.WritableByteChannel;
 import java.util.List;
 import java.util.Set;
 
-/// Provides BZip2 compression and decompression channels.
+/// Provides transport-independent BZip2 compression and decompression.
 @NotNullByDefault
 public final class BZip2Codec implements CompressionCodec {
     /// The stable BZip2 codec name.
@@ -35,6 +38,8 @@ public final class BZip2Codec implements CompressionCodec {
     private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(Set.of(
             CompressionFeature.COMPRESSION,
             CompressionFeature.DECOMPRESSION,
+            CompressionFeature.BUFFER_COMPRESSION,
+            CompressionFeature.BUFFER_DECOMPRESSION,
             CompressionFeature.ONE_SHOT_COMPRESSION,
             CompressionFeature.ONE_SHOT_DECOMPRESSION,
             CompressionFeature.DIRECT_BYTE_BUFFER,
@@ -110,34 +115,44 @@ public final class BZip2Codec implements CompressionCodec {
                 && blockSize <= '9';
     }
 
-    /// Opens a configured BZip2 encoder over the target channel.
+    /// Creates a configured transport-independent BZip2 encoder.
     @Override
-    public CompressingWritableByteChannel openEncoder(
-            WritableByteChannel target,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
+    public CompressionEncoder newEncoder(CodecOptions options) {
         options.requireSupported(CAPABILITIES.compressionOptions(), "BZip2 compression");
         @Nullable Long requested = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
         long level = requested != null ? requested : defaultCompressionLevel();
         if (level < minimumCompressionLevel() || level > maximumCompressionLevel()) {
             throw new IllegalArgumentException("BZip2 compression level must be between 1 and 9: " + level);
         }
-        return new BZip2ChannelEncoder(target, ownership, (int) level);
+        return new BZip2Encoder((int) level);
     }
 
-    /// Opens a configured BZip2 decoder over the source channel.
+    /// Opens a configured BZip2 encoder through the shared buffer-engine channel adapter.
+    @Override
+    public CompressingWritableByteChannel openEncoder(
+            WritableByteChannel target,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        return CompressionCodec.super.openEncoder(target, options, ownership);
+    }
+
+    /// Creates a configured transport-independent BZip2 decoder.
+    @Override
+    public CompressionDecoder newDecoder(CodecOptions options) {
+        options.requireSupported(CAPABILITIES.decompressionOptions(), "BZip2 decompression");
+        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
+        CompressionDecoder decoder = new BZip2Decoder();
+        return StandardCodecOptionSupport.limitOutput(decoder, maximumOutputSize);
+    }
+
+    /// Opens a configured BZip2 decoder through the shared buffer-engine channel adapter.
     @Override
     public DecompressingReadableByteChannel openDecoder(
             ReadableByteChannel source,
             CodecOptions options,
             ChannelOwnership ownership
     ) throws IOException {
-        options.requireSupported(CAPABILITIES.decompressionOptions(), "BZip2 decompression");
-        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
-        return StandardCodecOptionSupport.limitOutput(
-                new BZip2ChannelDecoder(source, ownership),
-                maximumOutputSize
-        );
+        return CompressionCodec.super.openDecoder(source, options, ownership);
     }
 }

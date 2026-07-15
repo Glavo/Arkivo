@@ -4,12 +4,14 @@
 package org.glavo.arkivo.codec.bzip2.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 import org.jetbrains.annotations.UnmodifiableView;
 
@@ -27,7 +29,7 @@ import java.util.Objects;
 /// inverse Burrows-Wheeler transform. The final run-length stage is produced lazily so a highly compressible block does
 /// not require an output-sized allocation.
 @NotNullByDefault
-public final class BZip2ChannelDecoder implements DecompressingReadableByteChannel {
+public class BZip2ChannelDecoder implements DecompressingReadableByteChannel {
     /// The BZip2 block marker.
     private static final long BLOCK_MAGIC = 0x314159265359L;
 
@@ -113,7 +115,7 @@ public final class BZip2ChannelDecoder implements DecompressingReadableByteChann
 
 
     /// Tracks closure of the owned compressed-data source.
-    private final OwnedChannelCloser sourceCloser;
+    private final @Nullable OwnedChannelCloser sourceCloser;
 
     /// The most-significant-bit-first reader over the compressed source.
     private final BitInput bits;
@@ -166,6 +168,9 @@ public final class BZip2ChannelDecoder implements DecompressingReadableByteChann
     /// Whether no further concatenated stream remains.
     private boolean endReached;
 
+    /// Whether the current stream header has been parsed.
+    private boolean frameHeaderRead;
+
     /// Whether this decoder has closed.
     private boolean closed;
 
@@ -179,10 +184,147 @@ public final class BZip2ChannelDecoder implements DecompressingReadableByteChann
         this.bits = new BitInput(source, 8192);
         try {
             readFrameHeader(bits.readBits(8));
+            frameHeaderRead = true;
         } catch (IOException | RuntimeException | Error exception) {
             sourceCloser.closeAfter(exception);
             throw exception;
         }
+    }
+
+    /// Creates a buffer-driven decoder core without an attached source channel.
+    BZip2ChannelDecoder() {
+        sourceCloser = null;
+        bits = new BitInput();
+    }
+
+    /// Decodes between caller-owned buffers through the shared block state.
+    protected final CodecOutcome decodeBuffers(
+            ByteBuffer source,
+            ByteBuffer target,
+            boolean endOfInput
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(target, "target");
+        ensureOpen();
+        if (!bits.isBufferDriven()) {
+            throw new IllegalStateException("BZip2 decoder is attached to a source channel");
+        }
+        if (frameBoundaryPending) {
+            return CodecOutcome.FINISHED;
+        }
+
+        while (true) {
+            while (blockActive && target.hasRemaining()) {
+                int value = readBufferedBlockByte();
+                if (value >= 0) {
+                    target.put((byte) value);
+                    outputBytes++;
+                }
+            }
+            if (blockActive) {
+                return CodecOutcome.NEEDS_OUTPUT;
+            }
+            if (frameBoundaryPending) {
+                return CodecOutcome.FINISHED;
+            }
+
+            boolean parsed = parseBufferedUnit(source, endOfInput, !frameHeaderRead);
+            if (!parsed) {
+                return CodecOutcome.NEEDS_INPUT;
+            }
+            if (!frameHeaderRead) {
+                frameHeaderRead = true;
+            }
+        }
+    }
+
+    /// Abandons buffer-driven decoding and restores the initial stream state.
+    protected final void resetBuffers() {
+        if (closed) {
+            throw new IllegalStateException("BZip2 decoder is closed");
+        }
+        if (!bits.isBufferDriven()) {
+            throw new IllegalStateException("BZip2 decoder is attached to a source channel");
+        }
+        blockSizeLimit = 0;
+        blockData = new byte[0];
+        blockPosition = 0;
+        expectedBlockCrc = 0;
+        blockCrc = BZip2CRC.initial();
+        combinedCrc = 0;
+        runByte = -1;
+        runLength = 0;
+        repeatRemaining = 0;
+        randomized = false;
+        randomPosition = 0;
+        randomRemaining = 0;
+        blockActive = false;
+        frameBoundaryPending = false;
+        lastFrameFinished = false;
+        endReached = false;
+        frameHeaderRead = false;
+        outputBytes = 0L;
+        bits.resetBuffer();
+    }
+
+    /// Releases buffer-driven decoder state without consuming more input.
+    protected final void closeBuffers() {
+        closed = true;
+        blockData = new byte[0];
+        bits.resetBuffer();
+    }
+
+    /// Emits one byte from the active inverse-BWT block or retires a completed block.
+    private int readBufferedBlockByte() throws IOException {
+        if (repeatRemaining > 0) {
+            repeatRemaining--;
+            return recordDecodedByte(runByte);
+        }
+        if (blockPosition >= blockData.length) {
+            finishBlock();
+            return -1;
+        }
+
+        int value = readBlockByte();
+        if (value == runByte) {
+            runLength++;
+        } else {
+            runByte = value;
+            runLength = 1;
+        }
+        if (runLength == 4) {
+            if (blockPosition >= blockData.length) {
+                throw new IOException("Truncated BZip2 run-length sequence");
+            }
+            repeatRemaining = readBlockByte();
+            runLength = 0;
+        }
+        return recordDecodedByte(value);
+    }
+
+    /// Transactionally parses one stream header, compressed block, or stream trailer.
+    private boolean parseBufferedUnit(
+            ByteBuffer source,
+            boolean endOfInput,
+            boolean header
+    ) throws IOException {
+        int appended = bits.append(source);
+        BitInput.Snapshot snapshot = bits.snapshot();
+        try {
+            if (header) {
+                readFrameHeader(bits.readBits(8));
+            } else {
+                openNextBlock();
+            }
+        } catch (NeedInputException exception) {
+            bits.restore(snapshot);
+            if (endOfInput) {
+                throw new EOFException("Truncated BZip2 stream");
+            }
+            return false;
+        }
+        bits.commit(source, appended);
+        return true;
     }
 
     /// Reads decoded bytes directly into the destination buffer.
@@ -273,7 +415,10 @@ public final class BZip2ChannelDecoder implements DecompressingReadableByteChann
     @Override
     public void close() throws IOException {
         closed = true;
-        sourceCloser.close();
+        @Nullable OwnedChannelCloser closer = sourceCloser;
+        if (closer != null) {
+            closer.close();
+        }
     }
 
     /// Reads and validates one BZip2 stream header.
@@ -588,11 +733,23 @@ public final class BZip2ChannelDecoder implements DecompressingReadableByteChann
     /// Reads BZip2 fields in most-significant-bit-first order without reading past the current byte.
     @NotNullByDefault
     private static final class BitInput {
-        /// The compressed source.
-        private final ReadableByteChannel source;
+        /// Initial owned staging capacity for buffer-driven decoding.
+        private static final int INITIAL_STAGING_CAPACITY = 8192;
 
-        /// The compressed-input staging buffer.
-        private final ByteBuffer inputBuffer;
+        /// The compressed channel source, or null for buffer-driven decoding.
+        private final @Nullable ReadableByteChannel source;
+
+        /// The channel compressed-input staging buffer, or null for buffer-driven decoding.
+        private final @Nullable ByteBuffer inputBuffer;
+
+        /// Owned bytes retained across incomplete buffer-driven block parses.
+        private byte[] stagedBytes = new byte[INITIAL_STAGING_CAPACITY];
+
+        /// The next owned staged byte to parse.
+        private int stagedPosition;
+
+        /// The position following the last owned staged byte.
+        private int stagedLimit;
 
         /// The unread low-order bits from source bytes already consumed.
         private long buffer;
@@ -606,11 +763,71 @@ public final class BZip2ChannelDecoder implements DecompressingReadableByteChann
         /// The number of compressed bytes obtained from the source.
         private long sourceByteCount;
 
-        /// Creates a bit reader over the given source.
+        /// Creates a bit reader over the given channel source.
         private BitInput(ReadableByteChannel source, int inputBufferSize) {
-            this.source = source;
+            this.source = Objects.requireNonNull(source, "source");
             inputBuffer = ByteBuffer.allocateDirect(inputBufferSize);
             inputBuffer.limit(0);
+        }
+
+        /// Creates a bit reader that accepts caller buffers transactionally.
+        private BitInput() {
+            source = null;
+            inputBuffer = null;
+        }
+
+        /// Returns whether this reader accepts caller-owned source buffers.
+        private boolean isBufferDriven() {
+            return source == null;
+        }
+
+        /// Appends all remaining caller bytes into owned staging and returns their count.
+        private int append(ByteBuffer input) {
+            if (!isBufferDriven()) {
+                throw new IllegalStateException("BZip2 bit input is attached to a source channel");
+            }
+            int length = input.remaining();
+            ensureStagingCapacity(length);
+            input.get(stagedBytes, stagedLimit, length);
+            stagedLimit += length;
+            return length;
+        }
+
+        /// Captures the transactional parse position while retaining appended bytes.
+        private Snapshot snapshot() {
+            return new Snapshot(stagedPosition, buffer, bitCount, byteCount);
+        }
+
+        /// Restores a transactional parse position after incomplete input.
+        private void restore(Snapshot snapshot) {
+            stagedPosition = snapshot.stagedPosition();
+            buffer = snapshot.buffer();
+            bitCount = snapshot.bitCount();
+            byteCount = snapshot.byteCount();
+        }
+
+        /// Commits a successful parse and returns unread bytes to the current caller source.
+        private void commit(ByteBuffer input, int appended) {
+            int unread = stagedLimit - stagedPosition;
+            if (unread < 0 || unread > appended) {
+                throw new AssertionError("BZip2 parser retained bytes from an earlier input fragment");
+            }
+            input.position(input.position() - unread);
+            stagedLimit -= unread;
+            compactStaging();
+        }
+
+        /// Clears all buffer-driven input and bit state.
+        private void resetBuffer() {
+            if (!isBufferDriven()) {
+                throw new IllegalStateException("BZip2 bit input is attached to a source channel");
+            }
+            stagedPosition = 0;
+            stagedLimit = 0;
+            buffer = 0L;
+            bitCount = 0;
+            byteCount = 0L;
+            sourceByteCount = 0L;
         }
 
         /// Validates zero padding and aligns after one complete BZip2 stream.
@@ -626,21 +843,7 @@ public final class BZip2ChannelDecoder implements DecompressingReadableByteChann
             if (bitCount != 0) {
                 throw new AssertionError("BZip2 stream boundary is not byte-aligned");
             }
-            if (!inputBuffer.hasRemaining()) {
-                inputBuffer.clear();
-                int read = source.read(inputBuffer);
-                if (read < 0) {
-                    inputBuffer.limit(0);
-                    return -1;
-                }
-                if (read == 0) {
-                    throw new IOException("BZip2 source channel made no progress");
-                }
-                sourceByteCount += read;
-                inputBuffer.flip();
-            }
-            byteCount++;
-            return Byte.toUnsignedInt(inputBuffer.get());
+            return readRawByte(true);
         }
 
         /// Reads one bit as a boolean value.
@@ -654,22 +857,9 @@ public final class BZip2ChannelDecoder implements DecompressingReadableByteChann
                 throw new IllegalArgumentException("Bit count must be between 0 and 32");
             }
             while (bitCount < count) {
-                if (!inputBuffer.hasRemaining()) {
-                    inputBuffer.clear();
-                    int read = source.read(inputBuffer);
-                    if (read < 0) {
-                        throw new EOFException("Truncated BZip2 stream");
-                    }
-                    if (read == 0) {
-                        throw new IOException("BZip2 source channel made no progress");
-                    }
-                    sourceByteCount += read;
-                    inputBuffer.flip();
-                }
-                int value = Byte.toUnsignedInt(inputBuffer.get());
+                int value = readRawByte(false);
                 buffer = (buffer << 8) | value;
                 bitCount += 8;
-                byteCount++;
             }
             int remaining = bitCount - count;
             long mask = count == 32 ? 0xffff_ffffL : (1L << count) - 1L;
@@ -695,9 +885,96 @@ public final class BZip2ChannelDecoder implements DecompressingReadableByteChann
             return sourceByteCount;
         }
 
-        /// Returns a read-only view of compressed bytes not yet consumed.
+        /// Returns a read-only view of channel bytes not yet consumed.
         private @UnmodifiableView ByteBuffer unconsumedInput() {
-            return inputBuffer.asReadOnlyBuffer();
+            ByteBuffer channelBuffer = Objects.requireNonNull(inputBuffer, "inputBuffer");
+            return channelBuffer.asReadOnlyBuffer();
+        }
+
+        /// Reads one raw byte from owned staging or the attached channel.
+        private int readRawByte(boolean optional) throws IOException {
+            if (isBufferDriven()) {
+                if (stagedPosition >= stagedLimit) {
+                    throw NeedInputException.INSTANCE;
+                }
+                byteCount++;
+                return Byte.toUnsignedInt(stagedBytes[stagedPosition++]);
+            }
+
+            ByteBuffer channelBuffer = Objects.requireNonNull(inputBuffer, "inputBuffer");
+            ReadableByteChannel channel = Objects.requireNonNull(source, "source");
+            if (!channelBuffer.hasRemaining()) {
+                channelBuffer.clear();
+                int read = channel.read(channelBuffer);
+                if (read < 0) {
+                    channelBuffer.limit(0);
+                    if (optional) {
+                        return -1;
+                    }
+                    throw new EOFException("Truncated BZip2 stream");
+                }
+                if (read == 0) {
+                    throw new IOException("BZip2 source channel made no progress");
+                }
+                sourceByteCount += read;
+                channelBuffer.flip();
+            }
+            byteCount++;
+            return Byte.toUnsignedInt(channelBuffer.get());
+        }
+
+        /// Ensures owned staging can accept another caller fragment.
+        private void ensureStagingCapacity(int additionalLength) {
+            int required = Math.addExact(stagedLimit, additionalLength);
+            if (required <= stagedBytes.length) {
+                return;
+            }
+            int capacity = stagedBytes.length;
+            while (capacity < required) {
+                capacity = Math.max(Math.addExact(capacity, capacity >>> 1), required);
+            }
+            stagedBytes = Arrays.copyOf(stagedBytes, capacity);
+        }
+
+        /// Removes raw bytes already incorporated into committed bit state.
+        private void compactStaging() {
+            int remaining = stagedLimit - stagedPosition;
+            if (remaining > 0) {
+                System.arraycopy(stagedBytes, stagedPosition, stagedBytes, 0, remaining);
+            }
+            stagedPosition = 0;
+            stagedLimit = remaining;
+        }
+
+        /// Captures the mutable fields changed by a speculative block parse.
+        ///
+        /// @param stagedPosition next owned raw byte
+        /// @param buffer unread bit value
+        /// @param bitCount number of unread bits
+        /// @param byteCount logical compressed bytes consumed
+        @NotNullByDefault
+        private record Snapshot(int stagedPosition, long buffer, int bitCount, long byteCount) {
+        }
+    }
+
+    /// Signals that a speculative buffer-driven parse needs another compressed byte.
+    @NotNullByDefault
+    private static final class NeedInputException extends IOException {
+        /// Serialization identifier.
+        private static final long serialVersionUID = 0L;
+
+        /// Shared stackless control-flow exception.
+        private static final NeedInputException INSTANCE = new NeedInputException();
+
+        /// Creates the shared stackless signal.
+        private NeedInputException() {
+            super("BZip2 buffer input is incomplete");
+        }
+
+        /// Avoids rebuilding a stack trace for expected incremental input boundaries.
+        @Override
+        public synchronized Throwable fillInStackTrace() {
+            return this;
         }
     }
 

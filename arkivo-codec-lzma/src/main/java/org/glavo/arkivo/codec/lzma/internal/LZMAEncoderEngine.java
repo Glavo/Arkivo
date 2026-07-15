@@ -169,6 +169,16 @@ final class LZMAEncoderEngine {
         }
     }
 
+    /// Encodes every currently buffered source byte without ending the range-coded stream.
+    void flush() throws IOException {
+        if (finished) {
+            throw new IOException("LZMA encoder has finished");
+        }
+        while (pendingSize > 0) {
+            encodeAtLeast(pendingSize);
+        }
+    }
+
     /// Finalizes all input, optionally writes an LZMA end marker, and flushes the range coder.
     void finish(boolean writeEndMarker) throws IOException {
         if (finished) {

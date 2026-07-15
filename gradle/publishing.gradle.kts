@@ -56,7 +56,7 @@ val publicationMetadata = mapOf(
     ),
     "arkivo-codec" to ArkivoPublicationMetadata(
         "Arkivo Codec API",
-        "Provides channel-first compression codec contracts, options, discovery, and byte transforms."
+        "Provides buffer-first compression codec contracts, channel adapters, options, discovery, and byte transforms."
     ),
     "arkivo-codec-all" to ArkivoPublicationMetadata(
         "Arkivo Compression Codecs",
@@ -72,11 +72,11 @@ val publicationMetadata = mapOf(
     ),
     "arkivo-codec-deflate" to ArkivoPublicationMetadata(
         "Arkivo Deflate Codec",
-        "Provides channel-first raw Deflate compression and decompression."
+        "Provides pure Java raw Deflate buffer engines and channel adapters."
     ),
     "arkivo-codec-deflate64" to ArkivoPublicationMetadata(
         "Arkivo Deflate64 Codec",
-        "Provides channel-first Deflate64 compression and decompression."
+        "Provides pure Java Deflate64 buffer engines and channel adapters."
     ),
     "arkivo-codec-delta" to ArkivoPublicationMetadata(
         "Arkivo Delta Codec",
@@ -84,7 +84,7 @@ val publicationMetadata = mapOf(
     ),
     "arkivo-codec-gzip" to ArkivoPublicationMetadata(
         "Arkivo Gzip Codec",
-        "Provides channel-first gzip compression and decompression."
+        "Provides pure Java gzip buffer engines and concatenated-member channel adapters."
     ),
     "arkivo-codec-lzma" to ArkivoPublicationMetadata(
         "Arkivo LZMA Codec",
@@ -92,7 +92,7 @@ val publicationMetadata = mapOf(
     ),
     "arkivo-codec-ppmd" to ArkivoPublicationMetadata(
         "Arkivo PPMd Codec",
-        "Provides channel-first raw PPMd7 decompression."
+        "Provides channel-first raw PPMd7 compression and decompression."
     ),
     "arkivo-codec-xz" to ArkivoPublicationMetadata(
         "Arkivo XZ Codec",
@@ -100,11 +100,11 @@ val publicationMetadata = mapOf(
     ),
     "arkivo-codec-zlib" to ArkivoPublicationMetadata(
         "Arkivo Zlib Codec",
-        "Provides channel-first zlib compression and decompression."
+        "Provides pure Java zlib buffer engines and channel adapters."
     ),
     "arkivo-codec-zstd" to ArkivoPublicationMetadata(
         "Arkivo Zstandard Codec",
-        "Provides channel-first Zstandard compression and decompression."
+        "Provides Zstandard buffer engines and channel adapters."
     )
 )
 

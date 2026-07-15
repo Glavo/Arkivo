@@ -7,13 +7,16 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
-import org.glavo.arkivo.codec.lzma.internal.LZMARawChannelDecoder;
-import org.glavo.arkivo.codec.lzma.internal.LZMARawChannelEncoder;
+
+import org.glavo.arkivo.codec.lzma.internal.LZMARawDecoder;
+import org.glavo.arkivo.codec.lzma.internal.LZMARawEncoder;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -39,6 +42,8 @@ public final class RawLZMACodec implements CompressionCodec {
             Set.of(
                     CompressionFeature.COMPRESSION,
                     CompressionFeature.DECOMPRESSION,
+                    CompressionFeature.BUFFER_COMPRESSION,
+                    CompressionFeature.BUFFER_DECOMPRESSION,
                     CompressionFeature.ONE_SHOT_COMPRESSION,
                     CompressionFeature.ONE_SHOT_DECOMPRESSION,
                     CompressionFeature.DIRECT_BYTE_BUFFER
@@ -90,13 +95,9 @@ public final class RawLZMACodec implements CompressionCodec {
         return CAPABILITIES;
     }
 
-    /// Opens a configured raw LZMA encoder over the target channel.
+    /// Creates a configured transport-independent raw LZMA encoder.
     @Override
-    public CompressingWritableByteChannel openEncoder(
-            WritableByteChannel target,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
+    public CompressionEncoder newEncoder(CodecOptions options) {
         options.requireSupported(CAPABILITIES.compressionOptions(), "raw LZMA compression");
         LZMAProperties properties = LZMAProperties.fromOptions(
                 options,
@@ -105,22 +106,26 @@ public final class RawLZMACodec implements CompressionCodec {
         );
         long pledgedSourceSize = StandardCodecOptionSupport.pledgedSourceSize(options);
         @Nullable Boolean requestedEndMarker = options.get(LZMAOptions.END_MARKER);
-        return new LZMARawChannelEncoder(
-                target,
-                ownership,
+        return new LZMARawEncoder(
                 properties,
                 pledgedSourceSize,
                 requestedEndMarker == null || requestedEndMarker
         );
     }
 
-    /// Opens a configured raw LZMA decoder over the source channel.
+    /// Opens a configured raw LZMA encoder through the shared buffer-engine channel adapter.
     @Override
-    public DecompressingReadableByteChannel openDecoder(
-            ReadableByteChannel source,
+    public CompressingWritableByteChannel openEncoder(
+            WritableByteChannel target,
             CodecOptions options,
             ChannelOwnership ownership
     ) throws IOException {
+        return CompressionCodec.super.openEncoder(target, options, ownership);
+    }
+
+    /// Creates a configured transport-independent raw LZMA decoder.
+    @Override
+    public CompressionDecoder newDecoder(CodecOptions options) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "raw LZMA decompression");
         if (options.get(LZMAOptions.DICTIONARY_SIZE) == null) {
             throw new IllegalArgumentException(
@@ -139,15 +144,17 @@ public final class RawLZMACodec implements CompressionCodec {
         }
         long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
         long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
-        return StandardCodecOptionSupport.limitOutput(
-                new LZMARawChannelDecoder(
-                        source,
-                        ownership,
-                        properties,
-                        decodedSize,
-                        maximumWindowSize
-                ),
-                maximumOutputSize
-        );
+        CompressionDecoder decoder = new LZMARawDecoder(properties, decodedSize, maximumWindowSize);
+        return StandardCodecOptionSupport.limitOutput(decoder, maximumOutputSize);
+    }
+
+    /// Opens a configured raw LZMA decoder through the shared buffer-engine channel adapter.
+    @Override
+    public DecompressingReadableByteChannel openDecoder(
+            ReadableByteChannel source,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        return CompressionCodec.super.openDecoder(source, options, ownership);
     }
 }

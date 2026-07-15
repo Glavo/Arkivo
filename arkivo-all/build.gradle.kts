@@ -443,6 +443,14 @@ val verifyModuleDescriptors by tasks.registering {
                 )
             ),
 
+            codecModule to mapOf(
+                "org.glavo.arkivo.codec.internal.deflate" to setOf(
+                    "org.glavo.arkivo.codec.deflate",
+                    "org.glavo.arkivo.codec.deflate64",
+                    "org.glavo.arkivo.codec.gzip",
+                    "org.glavo.arkivo.codec.zlib"
+                )
+            ),
             "org.glavo.arkivo.codec.lzma" to mapOf(
                 "org.glavo.arkivo.codec.lzma.internal" to setOf(
                     "org.glavo.arkivo.codec.xz"

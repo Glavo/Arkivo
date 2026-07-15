@@ -8,13 +8,16 @@ import org.glavo.arkivo.codec.CodecOption;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
-import org.glavo.arkivo.codec.lzma.internal.LZMAChannelDecoder;
-import org.glavo.arkivo.codec.lzma.internal.LZMAChannelEncoder;
+
+import org.glavo.arkivo.codec.lzma.internal.LZMADecoder;
+import org.glavo.arkivo.codec.lzma.internal.LZMAEncoder;
 import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -23,7 +26,7 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.Set;
 
-/// Provides LZMA compression and decompression channels.
+/// Provides transport-independent LZMA-alone compression and decompression.
 @NotNullByDefault
 public final class LZMACodec implements CompressionCodec {
     /// The stable LZMA codec name.
@@ -41,6 +44,8 @@ public final class LZMACodec implements CompressionCodec {
     private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(Set.of(
             CompressionFeature.COMPRESSION,
             CompressionFeature.DECOMPRESSION,
+            CompressionFeature.BUFFER_COMPRESSION,
+            CompressionFeature.BUFFER_DECOMPRESSION,
             CompressionFeature.ONE_SHOT_COMPRESSION,
             CompressionFeature.ONE_SHOT_DECOMPRESSION,
             CompressionFeature.DIRECT_BYTE_BUFFER
@@ -68,13 +73,9 @@ public final class LZMACodec implements CompressionCodec {
         return CAPABILITIES;
     }
 
-    /// Opens a configured LZMA encoder over the target channel.
+    /// Creates a configured transport-independent LZMA-alone encoder.
     @Override
-    public CompressingWritableByteChannel openEncoder(
-            WritableByteChannel target,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
+    public CompressionEncoder newEncoder(CodecOptions options) {
         options.requireSupported(CAPABILITIES.compressionOptions(), "LZMA compression");
         LZMAProperties properties = LZMAProperties.fromOptions(
                 options,
@@ -82,22 +83,36 @@ public final class LZMACodec implements CompressionCodec {
                 (int) DEFAULT_DICTIONARY_SIZE
         );
         long pledgedSourceSize = StandardCodecOptionSupport.pledgedSourceSize(options);
-        return new LZMAChannelEncoder(target, ownership, properties, pledgedSourceSize);
+        return new LZMAEncoder(properties, pledgedSourceSize);
     }
 
-    /// Opens a configured LZMA decoder over the source channel.
+    /// Opens a configured LZMA-alone encoder through the shared buffer-engine channel adapter.
+    @Override
+    public CompressingWritableByteChannel openEncoder(
+            WritableByteChannel target,
+            CodecOptions options,
+            ChannelOwnership ownership
+    ) throws IOException {
+        return CompressionCodec.super.openEncoder(target, options, ownership);
+    }
+
+    /// Creates a configured transport-independent LZMA-alone decoder.
+    @Override
+    public CompressionDecoder newDecoder(CodecOptions options) throws IOException {
+        options.requireSupported(CAPABILITIES.decompressionOptions(), "LZMA decompression");
+        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
+        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
+        CompressionDecoder decoder = new LZMADecoder(maximumWindowSize);
+        return StandardCodecOptionSupport.limitOutput(decoder, maximumOutputSize);
+    }
+
+    /// Opens a configured LZMA-alone decoder through the shared buffer-engine channel adapter.
     @Override
     public DecompressingReadableByteChannel openDecoder(
             ReadableByteChannel source,
             CodecOptions options,
             ChannelOwnership ownership
     ) throws IOException {
-        options.requireSupported(CAPABILITIES.decompressionOptions(), "LZMA decompression");
-        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
-        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
-        return StandardCodecOptionSupport.limitOutput(
-                new LZMAChannelDecoder(source, ownership, maximumWindowSize),
-                maximumOutputSize
-        );
+        return CompressionCodec.super.openDecoder(source, options, ownership);
     }
 }

@@ -62,6 +62,9 @@ public final class GzipCodecTest {
         assertEquals(java.util.List.of("gz", "gzip"), codec.fileExtensions());
         assertEquals(true, codec.matches(ByteBuffer.wrap(new byte[]{0x1f, (byte) 0x8b, 0x08})));
         assertEquals(false, codec.matches(ByteBuffer.wrap(new byte[]{0x1f})));
+        assertEquals(0L, codec.minimumCompressionLevel());
+        assertEquals(9L, codec.maximumCompressionLevel());
+        assertEquals(6L, codec.defaultCompressionLevel());
     }
 
     /// Verifies large gzip members interoperate in both directions with the JDK implementation.

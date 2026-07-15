@@ -117,7 +117,6 @@ org.glavo.arkivo.codec.lzma.RawLZMACodec
 org.glavo.arkivo.codec.spi.CodecChannelAdapters
 org.glavo.arkivo.codec.spi.CodecChannelAdapters$DecoderFactory
 org.glavo.arkivo.codec.spi.CodecChannelAdapters$EncoderFactory
-org.glavo.arkivo.codec.spi.DeflateStrategySupport
 org.glavo.arkivo.codec.spi.OwnedChannelCloser
 org.glavo.arkivo.codec.spi.StandardCodecOptionSupport
 org.glavo.arkivo.codec.spi.StreamCodecAdapters

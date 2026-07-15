@@ -80,6 +80,7 @@ public final class LZMARawChannelEncoder implements CompressingWritableByteChann
     @Override
     public void flush() throws IOException {
         ensureOpen();
+        encoder.flush();
         output.flush();
     }
 

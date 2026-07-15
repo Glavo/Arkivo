@@ -17,7 +17,6 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.util.Objects;
-import java.util.zip.Deflater;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -41,24 +40,6 @@ final class StandardCodecOptionSupportTest {
                             .build())
             );
         }
-    }
-
-    /// Verifies public strategies map to the corresponding JDK Deflater values.
-    @Test
-    void mapsDeflateStrategies() {
-        assertEquals(
-                Deflater.DEFAULT_STRATEGY,
-                DeflateStrategySupport.toJdkValue(CompressionStrategy.DEFAULT)
-        );
-        assertEquals(
-                Deflater.FILTERED,
-                DeflateStrategySupport.toJdkValue(CompressionStrategy.FILTERED)
-        );
-        assertEquals(
-                Deflater.HUFFMAN_ONLY,
-                DeflateStrategySupport.toJdkValue(CompressionStrategy.HUFFMAN_ONLY)
-        );
-        assertThrows(NullPointerException.class, () -> DeflateStrategySupport.toJdkValue(null));
     }
 
     /// Verifies absent, explicit, and invalid pledged source sizes.

@@ -98,6 +98,7 @@ public final class LZMAChannelEncoder implements CompressingWritableByteChannel 
     @Override
     public void flush() throws IOException {
         ensureOpen();
+        encoder.flush();
         output.flush();
     }
 

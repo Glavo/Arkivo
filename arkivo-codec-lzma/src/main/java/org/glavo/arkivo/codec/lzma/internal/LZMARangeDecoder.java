@@ -4,9 +4,11 @@
 package org.glavo.arkivo.codec.lzma.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.EOFException;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.Objects;
 
 /// Decodes the adaptive binary range coding used by LZMA probability models.
@@ -18,8 +20,14 @@ final class LZMARangeDecoder {
     /// The adaptive-probability movement shift.
     private static final int PROBABILITY_MOVE_BITS = 5;
 
+    /// Maximum adaptive probability updates made while parsing one LZMA symbol.
+    private static final int MAXIMUM_TRANSACTION_MUTATIONS = 64;
+
+    /// Shared non-null marker for unused transaction array slots.
+    private static final short @Unmodifiable [] EMPTY_PROBABILITIES = new short[0];
+
     /// The compressed range-coded source.
-    private final LZMAChannelInput input;
+    private final LZMAInput input;
 
     /// The current unsigned 32-bit range.
     private long range = 0xffff_ffffL;
@@ -27,8 +35,29 @@ final class LZMARangeDecoder {
     /// The current unsigned 32-bit code value.
     private long code;
 
+    /// Probability arrays changed by the active speculative symbol.
+    private final short[][] transactionProbabilityArrays = createTransactionProbabilityArrays();
+
+    /// Indices changed in the corresponding speculative probability arrays.
+    private final int[] transactionProbabilityIndices = new int[MAXIMUM_TRANSACTION_MUTATIONS];
+
+    /// Probability values preceding each speculative change.
+    private final short[] transactionPreviousProbabilities = new short[MAXIMUM_TRANSACTION_MUTATIONS];
+
+    /// Number of recorded speculative probability changes.
+    private int transactionMutationCount;
+
+    /// Range value preceding the active speculative symbol.
+    private long transactionRange;
+
+    /// Code value preceding the active speculative symbol.
+    private long transactionCode;
+
+    /// Whether one speculative symbol transaction is active.
+    private boolean transactionActive;
+
     /// Creates and initializes a range decoder from its five-byte prefix.
-    LZMARangeDecoder(LZMAChannelInput input) throws IOException {
+    LZMARangeDecoder(LZMAInput input) throws IOException {
         this.input = Objects.requireNonNull(input, "input");
         if (readRequiredByte() != 0) {
             throw new IOException("Invalid LZMA range coder prefix");
@@ -58,6 +87,7 @@ final class LZMARangeDecoder {
             probability -= probability >>> PROBABILITY_MOVE_BITS;
             bit = 1;
         }
+        recordProbabilityMutation(probabilities, index);
         probabilities[index] = (short) probability;
         normalize();
         return bit;
@@ -102,9 +132,90 @@ final class LZMARangeDecoder {
         return result;
     }
 
+    /// Returns whether the compressed input supports speculative symbol rollback.
+    boolean transactional() {
+        return input.transactional();
+    }
+
+    /// Begins one speculative range-coded symbol.
+    void beginTransaction() {
+        if (!transactional()) {
+            throw new IllegalStateException("LZMA input does not support transactions");
+        }
+        if (transactionActive) {
+            throw new IllegalStateException("An LZMA range transaction is already active");
+        }
+        input.beginTransaction();
+        transactionRange = range;
+        transactionCode = code;
+        transactionMutationCount = 0;
+        transactionActive = true;
+    }
+
+    /// Commits the active speculative symbol and its input position.
+    void commitTransaction() {
+        requireTransaction();
+        input.commitTransaction();
+        clearTransactionMutations();
+        transactionActive = false;
+    }
+
+    /// Restores the range coder, adaptive probabilities, and input position.
+    void rollbackTransaction() {
+        requireTransaction();
+        for (int index = transactionMutationCount - 1; index >= 0; index--) {
+            transactionProbabilityArrays[index][transactionProbabilityIndices[index]] =
+                    transactionPreviousProbabilities[index];
+        }
+        range = transactionRange;
+        code = transactionCode;
+        input.rollbackTransaction();
+        clearTransactionMutations();
+        transactionActive = false;
+    }
+
     /// Returns whether the final range code has been reduced to zero.
     boolean finished() {
         return code == 0L;
+    }
+
+    /// Records one adaptive-probability update for reverse-order rollback.
+    private void recordProbabilityMutation(short[] probabilities, int index) {
+        if (!transactionActive) {
+            return;
+        }
+        if (transactionMutationCount == transactionProbabilityArrays.length) {
+            throw new AssertionError("An LZMA symbol exceeded the probability transaction bound");
+        }
+        transactionProbabilityArrays[transactionMutationCount] = probabilities;
+        transactionProbabilityIndices[transactionMutationCount] = index;
+        transactionPreviousProbabilities[transactionMutationCount] = probabilities[index];
+        transactionMutationCount++;
+    }
+
+    /// Clears strong references recorded for the completed speculative symbol.
+    private void clearTransactionMutations() {
+        Arrays.fill(
+                transactionProbabilityArrays,
+                0,
+                transactionMutationCount,
+                EMPTY_PROBABILITIES
+        );
+        transactionMutationCount = 0;
+    }
+
+    /// Requires one active speculative symbol transaction.
+    private void requireTransaction() {
+        if (!transactionActive) {
+            throw new IllegalStateException("No LZMA range transaction is active");
+        }
+    }
+
+    /// Creates non-null transaction slots for explicit nullability.
+    private static short[][] createTransactionProbabilityArrays() {
+        short[][] arrays = new short[MAXIMUM_TRANSACTION_MUTATIONS][];
+        Arrays.fill(arrays, EMPTY_PROBABILITIES);
+        return arrays;
     }
 
     /// Reads another source byte whenever the range loses its high byte.

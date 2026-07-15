@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Random;
 import java.util.zip.Adler32;
 import java.util.zip.DataFormatException;
 import java.util.zip.Inflater;
@@ -164,6 +165,7 @@ public final class ZlibBufferEngineTest {
         System.arraycopy(first, 0, expected, 0, first.length);
         System.arraycopy(second, 0, expected, first.length, second.length);
         assertArrayEquals(expected, decode(encoded.toByteArray(), 2, CodecOptions.EMPTY));
+        assertArrayEquals(expected, inflateFlushedStream(encoded.toByteArray()));
     }
 
     /// Verifies declared-window enforcement without masking malformed zlib headers.
@@ -195,6 +197,24 @@ public final class ZlibBufferEngineTest {
                 )
         );
         assertFalse(malformed instanceof DecompressionWindowLimitException);
+    }
+
+    /// Verifies the Adler-32 trailer and the history limit declared by the zlib header.
+    @Test
+    public void checksumAndDeclaredDistanceValidation() throws IOException {
+        byte[] content = testData();
+        byte[] encoded = encodeInFragments(content, CodecOptions.EMPTY, 29, 7);
+        byte[] corrupted = encoded.clone();
+        corrupted[corrupted.length - 1] ^= 1;
+        assertThrows(IOException.class, () -> decode(corrupted, 3, CodecOptions.EMPTY));
+
+        byte[] distantMatch = new byte[1_280];
+        new Random(0x7a1bL).nextBytes(distantMatch);
+        System.arraycopy(distantMatch, 0, distantMatch, 1_024, 256);
+        byte[] limitedWindow = withMinimumWindowHeader(
+                encodeInFragments(distantMatch, CodecOptions.EMPTY, 113, 11)
+        );
+        assertThrows(IOException.class, () -> decode(limitedWindow, 5, CodecOptions.EMPTY));
     }
 
     /// Verifies output limiting, reset, terminal state, and non-framed engine capabilities.

@@ -26,7 +26,7 @@ import java.nio.channels.Channels;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 
-/// Measures channel-first compression and decompression throughput for representative codecs.
+/// Measures compression and decompression throughput through the public channel adapters.
 @NotNullByDefault
 @State(Scope.Benchmark)
 @BenchmarkMode(Mode.Throughput)
@@ -39,7 +39,7 @@ public class CodecThroughputBenchmark {
     private static final int SOURCE_SIZE = 4 * 1024 * 1024;
 
     /// The stable codec name selected for the current benchmark trial.
-    @Param({"gzip", "zstd"})
+    @Param({"deflate", "deflate64", "gzip", "zlib", "zstd"})
     public String codecName = "gzip";
 
     /// The deterministic compressible source bytes.
@@ -64,14 +64,14 @@ public class CodecThroughputBenchmark {
         }
     }
 
-    /// Compresses one fixed-size source through the public channel-first API.
+    /// Compresses one fixed-size source through the public channel adapter API.
     @Benchmark
     @OperationsPerInvocation(SOURCE_SIZE)
     public byte[] compress() throws IOException {
         return compress(codecName, source);
     }
 
-    /// Decompresses one frame through the public channel-first API.
+    /// Decompresses one encoding through the public channel adapter API.
     @Benchmark
     @OperationsPerInvocation(SOURCE_SIZE)
     public byte[] decompress() throws IOException {

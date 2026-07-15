@@ -23,9 +23,8 @@ public interface CompressionDecoder extends AutoCloseable {
 
     /// Decodes compressed source bytes until input, output space, a dictionary, or the encoding boundary stops progress.
     ///
-    /// When ndOfInput is true, exhausting the source before the encoding completes is an error. Buffer positions
-    /// are the
-    /// authoritative record of bytes consumed and produced.
+    /// When `endOfInput` is true, exhausting the source before the encoding completes is an error. Buffer positions
+    /// are the authoritative record of bytes consumed and produced.
     ///
     /// @return the actionable reason this operation returned
     CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException;

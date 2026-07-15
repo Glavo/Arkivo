@@ -18,9 +18,8 @@ import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.util.Set;
-import java.util.zip.Deflater;
 
-/// Provides raw Deflate buffer engines and channel adapters.
+/// Provides pure Java raw Deflate buffer engines and shared channel adapters.
 ///
 /// Raw Deflate carries no dictionary identifier or content checksum, so callers must supply the exact dictionary used
 /// by the encoder; a different dictionary is not always detectable.
@@ -73,22 +72,22 @@ public final class DeflateCodec implements CompressionCodec {
         return CAPABILITIES;
     }
 
-    /// Returns the minimum JDK Deflate compression level.
+    /// Returns the minimum raw Deflate match-search level.
     @Override
     public long minimumCompressionLevel() {
-        return Deflater.NO_COMPRESSION;
+        return 0L;
     }
 
-    /// Returns the maximum JDK Deflate compression level.
+    /// Returns the maximum raw Deflate match-search level.
     @Override
     public long maximumCompressionLevel() {
-        return Deflater.BEST_COMPRESSION;
+        return 9L;
     }
 
-    /// Returns the default JDK Deflate compression level.
+    /// Returns the default raw Deflate match-search level.
     @Override
     public long defaultCompressionLevel() {
-        return Deflater.DEFAULT_COMPRESSION;
+        return 6L;
     }
 
     /// Creates a configured transport-independent raw Deflate encoder.
@@ -120,8 +119,7 @@ public final class DeflateCodec implements CompressionCodec {
     private int compressionLevel(CodecOptions options) {
         @Nullable Long requested = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
         long level = requested != null ? requested : defaultCompressionLevel();
-        if (level != defaultCompressionLevel()
-                && (level < minimumCompressionLevel() || level > maximumCompressionLevel())) {
+        if (level < minimumCompressionLevel() || level > maximumCompressionLevel()) {
             throw new IllegalArgumentException("Raw Deflate compression level is out of range");
         }
         return Math.toIntExact(level);

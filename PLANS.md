@@ -170,22 +170,20 @@ Format detection and implementation lookup should use a service registration mod
 
 Compression formats operate on a single byte stream.
 
-The primary API should accept and return NIO channels:
+The primary incremental API uses caller-owned `ByteBuffer` pairs through `CompressionEncoder` and
+`CompressionDecoder`. Implementations consume and produce bytes by advancing buffer positions and must not retain source
+or target buffers after an operation returns. Shared adapters expose the same engines as `ReadableByteChannel` and
+`WritableByteChannel` contexts with explicit endpoint ownership.
 
-```java
-ReadableByteChannel
-WritableByteChannel
-ByteChannel
-```
+Deflate, Deflate64, gzip, and zlib share pure Java format-parameterized buffer engines. BZip2, Zstandard, raw LZMA,
+LZMA-alone, and raw LZMA2 also provide transport-independent buffer engines. XZ and PPMd currently provide
+channel-first contexts, while their stream convenience methods still use shared adapters rather than separate format implementations.
 
-Convenience methods may support `InputStream` and `OutputStream`, but these should be adapters over the channel-based
-implementation. Arkivo's pure-Java BZip2, Deflate64, XZ, LZMA-family, PPMd, and Zstandard codecs maintain only
-channel-first encoder and decoder state machines; their stream convenience methods use the shared codec adapters rather
-than separate format implementations.
-
-Fixed `ByteBuffer` operations accept heap and direct buffers in any source and target combination, including
-read-only sources and nonzero buffer ranges. Targets must be writable, and one buffer instance cannot serve as both
-source and target. Configured and unconfigured overloads follow the same validation and exception contract.
+Allocating and fixed `ByteBuffer` operations drive transport-independent engines directly when advertised and fall back
+to channel contexts only for channel-first codecs. They accept heap and direct buffers in any source and target
+combination, including read-only sources and nonzero buffer ranges. Targets must be writable, and one buffer instance
+cannot serve as both source and target. Configured and unconfigured overloads follow the same validation and exception
+contract.
 
 `CompressionCodecs` should open encoder and decoder contexts by stable codec name and should automatically open decoders for streams with reliable signatures. Context factories should apply explicit channel ownership consistently during lookup, detection, setup, and close. Named channel transfers should retain caller endpoints, while stream adapters should own their input or output stream.
 
@@ -455,9 +453,9 @@ Important rules:
 
 Public APIs should remain clear and immutable, but internal data structures may use compact records and lazily parsed views.
 
-The aggregate benchmark source set uses JMH for channel-first codec throughput, ZIP and 7z indexing, and concurrent
-random-entry reads. Benchmarks are compiled by the normal quality gate but run separately so machine-dependent timing
-does not make builds flaky. Deterministic gates verify that 50,000 ZIP entries can be indexed with a 48 MiB maximum
+The aggregate benchmark source set uses JMH for transport-independent buffer engines, channel-adapter codec
+throughput, ZIP and 7z indexing, and concurrent random-entry reads. Benchmarks are compiled by the normal quality
+gate but run separately so machine-dependent timing does not make builds flaky. Deterministic gates verify that 50,000 ZIP entries can be indexed with a 48 MiB maximum
 heap, that 80 MiB decoded ZIP and 7z entries and a 64 MiB RAR entry can be opened and randomly read with a 32 MiB
 maximum heap through hybrid `ArkivoEditStorage` staging, and that ZIP and solid 7z entries can be repeatedly read from
 eight concurrent tasks without corruption. The RAR probe also verifies that metadata-only file-system opening stages no
@@ -506,7 +504,7 @@ Each archive format should define only the attribute interfaces it needs, such a
 1. Convert the repository to a Gradle multi-module project.
 2. Implement `arkivo-archive` with archive-format discovery, `FileSystem` support contracts, password and volume-source contracts, and archive-oriented buffer utilities.
 3. Implement `arkivo-codec` with independent codec contracts, service discovery, and byte-transform support.
-4. Implement gzip, zlib, and raw deflate codec modules to validate the channel-first compression API.
+4. Implement gzip, zlib, and raw Deflate codec modules to validate the buffer-first compression API.
 5. Define archive file system environment keys, password provider contracts, and split archive source abstractions.
 6. Implement `ZipArkivoFileSystem` inside `arkivo-archive-zip`.
 7. Implement ZIP-specific entry attribute views.
