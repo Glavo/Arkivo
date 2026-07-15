@@ -222,6 +222,22 @@ public final class ZstdChannelEncoder implements CompressingWritableByteChannel 
         finish();
     }
 
+    /// Abandons pending frame and worker state without finishing output or closing the retained target.
+    void abort() {
+        if (!open) {
+            return;
+        }
+        open = false;
+        for (Future<ZstdFrameEncoder.JobEncoding> pendingJob : pendingJobs) {
+            pendingJob.cancel(true);
+        }
+        pendingJobs.clear();
+        @Nullable ExecutorService blockExecutor = executor;
+        if (blockExecutor != null) {
+            blockExecutor.shutdownNow();
+        }
+    }
+
     /// Starts a fresh frame after an earlier explicit frame boundary.
     private void startFrame() {
         if (frameActive) {

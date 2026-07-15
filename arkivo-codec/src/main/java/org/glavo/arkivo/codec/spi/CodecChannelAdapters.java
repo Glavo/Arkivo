@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.codec.internal;
+package org.glavo.arkivo.codec.spi;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
@@ -12,7 +12,6 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
@@ -40,6 +39,16 @@ public final class CodecChannelAdapters {
             ChannelOwnership ownership,
             EncoderFactory factory
     ) throws IOException {
+        return openEncoder(target, ownership, false, factory);
+    }
+
+    /// Creates an encoding channel with explicit multiple-frame behavior.
+    public static CompressingWritableByteChannel openEncoder(
+            WritableByteChannel target,
+            ChannelOwnership ownership,
+            boolean multipleFrames,
+            EncoderFactory factory
+    ) throws IOException {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(ownership, "ownership");
         Objects.requireNonNull(factory, "factory");
@@ -51,13 +60,23 @@ public final class CodecChannelAdapters {
             targetCloser.closeAfter(exception);
             throw new AssertionError("unreachable");
         }
-        return new EncodingChannel(target, targetCloser, encoder);
+        return new EncodingChannel(target, targetCloser, encoder, multipleFrames);
     }
 
     /// Creates a decoding channel and applies source ownership when engine creation fails.
     public static DecompressingReadableByteChannel openDecoder(
             ReadableByteChannel source,
             ChannelOwnership ownership,
+            DecoderFactory factory
+    ) throws IOException {
+        return openDecoder(source, ownership, false, factory);
+    }
+
+    /// Creates a decoding channel with explicit concatenated-frame behavior.
+    public static DecompressingReadableByteChannel openDecoder(
+            ReadableByteChannel source,
+            ChannelOwnership ownership,
+            boolean concatenatedFrames,
             DecoderFactory factory
     ) throws IOException {
         Objects.requireNonNull(source, "source");
@@ -71,7 +90,7 @@ public final class CodecChannelAdapters {
             sourceCloser.closeAfter(exception);
             throw new AssertionError("unreachable");
         }
-        return new DecodingChannel(source, sourceCloser, decoder);
+        return new DecodingChannel(source, sourceCloser, decoder, concatenatedFrames);
     }
 
     /// Creates one transport-independent encoder.
@@ -100,6 +119,9 @@ public final class CodecChannelAdapters {
         /// Transport-independent encoder engine.
         private final CompressionEncoder encoder;
 
+        /// Whether explicit frame boundaries retain the channel for another frame.
+        private final boolean multipleFrames;
+
         /// Encoded output staging buffer.
         private final ByteBuffer output = ByteBuffer.allocateDirect(BUFFER_SIZE);
 
@@ -112,6 +134,9 @@ public final class CodecChannelAdapters {
         /// Whether engine finalization has been attempted.
         private boolean finished;
 
+        /// Whether the current frame contains or may emit encoded state.
+        private boolean frameActive = true;
+
         /// Whether the writable channel remains open for input.
         private boolean open = true;
 
@@ -119,11 +144,13 @@ public final class CodecChannelAdapters {
         private EncodingChannel(
                 WritableByteChannel target,
                 OwnedChannelCloser targetCloser,
-                CompressionEncoder encoder
+                CompressionEncoder encoder,
+                boolean multipleFrames
         ) {
             this.target = target;
             this.targetCloser = targetCloser;
             this.encoder = encoder;
+            this.multipleFrames = multipleFrames;
         }
 
         /// Drives source bytes through the encoder and writes all immediately produced output.
@@ -134,6 +161,7 @@ public final class CodecChannelAdapters {
             if (!source.hasRemaining()) {
                 return 0;
             }
+            frameActive = true;
 
             int sourceStart = source.position();
             try {
@@ -164,6 +192,9 @@ public final class CodecChannelAdapters {
         @Override
         public void flush() throws IOException {
             ensureOpen();
+            if (multipleFrames && !frameActive) {
+                return;
+            }
             while (true) {
                 output.clear();
                 CodecOutcome outcome = encoder.flush(output);
@@ -180,10 +211,20 @@ public final class CodecChannelAdapters {
             }
         }
 
-        /// Finishes the single frame and releases the channel context.
+        /// Finishes one frame, retaining multiple-frame channels for subsequent source bytes.
         @Override
         public void finishFrame() throws IOException {
-            finish();
+            ensureOpen();
+            if (!multipleFrames) {
+                finish();
+                return;
+            }
+            if (!frameActive) {
+                return;
+            }
+            finishEngineFrame();
+            encoder.reset();
+            frameActive = false;
         }
 
         /// Finishes encoded output, releases the engine, and applies target ownership exactly once.
@@ -198,19 +239,8 @@ public final class CodecChannelAdapters {
 
             @Nullable Throwable failure = null;
             try {
-                while (true) {
-                    output.clear();
-                    CodecOutcome outcome = encoder.finishFrame(output);
-                    writeOutput();
-                    if (outcome == CodecOutcome.FRAME_FINISHED) {
-                        break;
-                    }
-                    if (outcome != CodecOutcome.NEEDS_OUTPUT) {
-                        throw new IOException("Unexpected compression finish outcome: " + outcome);
-                    }
-                    if (output.position() == 0) {
-                        throw new IOException("Compression encoder requested output without producing bytes");
-                    }
+                if (frameActive) {
+                    finishEngineFrame();
                 }
             } catch (IOException | RuntimeException | Error exception) {
                 failure = exception;
@@ -245,6 +275,24 @@ public final class CodecChannelAdapters {
         @Override
         public void close() throws IOException {
             finish();
+        }
+
+        /// Drains one complete frame from the underlying encoder engine.
+        private void finishEngineFrame() throws IOException {
+            while (true) {
+                output.clear();
+                CodecOutcome outcome = encoder.finishFrame(output);
+                writeOutput();
+                if (outcome == CodecOutcome.FRAME_FINISHED) {
+                    return;
+                }
+                if (outcome != CodecOutcome.NEEDS_OUTPUT) {
+                    throw new IOException("Unexpected compression finish outcome: " + outcome);
+                }
+                if (output.position() == 0) {
+                    throw new IOException("Compression encoder requested output without producing bytes");
+                }
+            }
         }
 
         /// Flips and fully writes the encoded output staging buffer.
@@ -286,6 +334,9 @@ public final class CodecChannelAdapters {
         /// Transport-independent decoder engine.
         private final CompressionDecoder decoder;
 
+        /// Whether the channel decodes concatenated frames until physical input ends.
+        private final boolean concatenatedFrames;
+
         /// Buffered compressed input visible to the engine.
         private final ByteBuffer input = ByteBuffer.allocateDirect(BUFFER_SIZE);
 
@@ -304,6 +355,12 @@ public final class CodecChannelAdapters {
         /// Whether the single decoded frame completed.
         private boolean frameFinished;
 
+        /// Whether a completed frame must be reset before decoding more input.
+        private boolean betweenFrames;
+
+        /// Whether physical input ended after the final verified frame.
+        private boolean streamFinished;
+
         /// Whether this decoding channel remains open.
         private boolean open = true;
 
@@ -311,11 +368,13 @@ public final class CodecChannelAdapters {
         private DecodingChannel(
                 ReadableByteChannel source,
                 OwnedChannelCloser sourceCloser,
-                CompressionDecoder decoder
+                CompressionDecoder decoder,
+                boolean concatenatedFrames
         ) {
             this.source = source;
             this.sourceCloser = sourceCloser;
             this.decoder = decoder;
+            this.concatenatedFrames = concatenatedFrames;
             input.limit(0);
         }
 
@@ -344,6 +403,9 @@ public final class CodecChannelAdapters {
             ensureOpen();
             long inputStart = inputBytes;
             long outputStart = outputBytes;
+            if (streamFinished) {
+                return new CodecResult(0L, 0L, CodecStatus.END_OF_INPUT);
+            }
             if (frameFinished) {
                 CodecStatus status = directive == DecodeDirective.STOP_AT_FRAME
                         ? CodecStatus.FRAME_FINISHED
@@ -353,10 +415,17 @@ public final class CodecChannelAdapters {
             if (!target.hasRemaining()) {
                 return new CodecResult(0L, 0L, CodecStatus.ACTIVE);
             }
+            if (betweenFrames && !beginNextFrame()) {
+                return new CodecResult(0L, 0L, CodecStatus.END_OF_INPUT);
+            }
 
             while (true) {
                 if (!input.hasRemaining() && !endOfInput) {
                     readInput();
+                }
+                if (concatenatedFrames && endOfInput && !input.hasRemaining() && inputBytes == 0L) {
+                    streamFinished = true;
+                    return new CodecResult(0L, 0L, CodecStatus.END_OF_INPUT);
                 }
                 int inputPosition = input.position();
                 int outputPosition = target.position();
@@ -365,11 +434,36 @@ public final class CodecChannelAdapters {
                 outputBytes += target.position() - outputPosition;
 
                 if (outcome == CodecOutcome.FRAME_FINISHED) {
-                    frameFinished = true;
-                    CodecStatus status = directive == DecodeDirective.STOP_AT_FRAME
-                            ? CodecStatus.FRAME_FINISHED
-                            : CodecStatus.END_OF_INPUT;
-                    return new CodecResult(inputBytes - inputStart, outputBytes - outputStart, status);
+                    if (!concatenatedFrames) {
+                        frameFinished = true;
+                        CodecStatus status = directive == DecodeDirective.STOP_AT_FRAME
+                                ? CodecStatus.FRAME_FINISHED
+                                : CodecStatus.END_OF_INPUT;
+                        return new CodecResult(inputBytes - inputStart, outputBytes - outputStart, status);
+                    }
+                    betweenFrames = true;
+                    if (directive == DecodeDirective.STOP_AT_FRAME) {
+                        return new CodecResult(
+                                inputBytes - inputStart,
+                                outputBytes - outputStart,
+                                CodecStatus.FRAME_FINISHED
+                        );
+                    }
+                    if (!target.hasRemaining()) {
+                        return new CodecResult(
+                                inputBytes - inputStart,
+                                outputBytes - outputStart,
+                                CodecStatus.ACTIVE
+                        );
+                    }
+                    if (!beginNextFrame()) {
+                        return new CodecResult(
+                                inputBytes - inputStart,
+                                outputBytes - outputStart,
+                                CodecStatus.END_OF_INPUT
+                        );
+                    }
+                    continue;
                 }
                 if (outcome == CodecOutcome.NEEDS_DICTIONARY) {
                     throw new IOException("Compression decoder requires dictionary " + decoder.requiredDictionaryId());
@@ -391,7 +485,6 @@ public final class CodecChannelAdapters {
                 }
             }
         }
-
         /// Returns compressed bytes logically consumed by the engine.
         @Override
         public long inputBytes() {
@@ -437,6 +530,20 @@ public final class CodecChannelAdapters {
                 failure = exception;
             }
             sourceCloser.closeAfter(failure);
+        }
+
+        /// Resets the engine at a verified boundary and obtains input for the next frame.
+        private boolean beginNextFrame() throws IOException {
+            decoder.reset();
+            betweenFrames = false;
+            if (!input.hasRemaining() && !endOfInput) {
+                readInput();
+            }
+            boolean available = input.hasRemaining();
+            if (!available && endOfInput) {
+                streamFinished = true;
+            }
+            return available;
         }
 
         /// Refills the compressed input staging buffer or records physical EOF.

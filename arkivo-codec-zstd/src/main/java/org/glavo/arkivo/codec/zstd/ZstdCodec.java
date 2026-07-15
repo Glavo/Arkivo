@@ -9,16 +9,18 @@ import org.glavo.arkivo.codec.CodecOption;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.CompressingWritableByteChannel;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.StandardCodecOptions;
-import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.glavo.arkivo.codec.WorkerCount;
-import org.glavo.arkivo.codec.zstd.internal.ZstdChannelDecoder;
-import org.glavo.arkivo.codec.zstd.internal.ZstdChannelEncoder;
+import org.glavo.arkivo.codec.spi.CodecChannelAdapters;
+import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
+import org.glavo.arkivo.codec.zstd.internal.ZstdDecoder;
 import org.glavo.arkivo.codec.zstd.internal.ZstdDictionarySupport;
+import org.glavo.arkivo.codec.zstd.internal.ZstdEncoder;
 import org.glavo.arkivo.codec.zstd.internal.ZstdEncoderParameters;
 import org.glavo.arkivo.codec.zstd.internal.ZstdFrameHeader;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -28,12 +30,11 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
-import java.nio.channels.WritableByteChannel;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
-/// Provides Zstandard compression and decompression channels.
+/// Provides transport-independent Zstandard engines and channel adapters.
 @NotNullByDefault
 public final class ZstdCodec implements CompressionCodec {
     /// The stable Zstandard codec name.
@@ -180,6 +181,8 @@ public final class ZstdCodec implements CompressionCodec {
                     CompressionFeature.FLUSH,
                     CompressionFeature.DICTIONARY,
                     CompressionFeature.DIRECT_BYTE_BUFFER,
+                    CompressionFeature.BUFFER_COMPRESSION,
+                    CompressionFeature.BUFFER_DECOMPRESSION,
                     CompressionFeature.MULTI_FRAME,
                     CompressionFeature.CONCATENATED_FRAMES
             ),
@@ -454,26 +457,36 @@ public final class ZstdCodec implements CompressionCodec {
         return ZstdDictionarySupport.dictionaryId(dictionary);
     }
 
-    /// Opens a configured Zstandard encoder over the target channel.
+    /// Creates a configured transport-independent Zstandard encoder.
     @Override
-    public CompressingWritableByteChannel openEncoder(
-            WritableByteChannel target,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
+    public CompressionEncoder newEncoder(CodecOptions options) throws IOException {
         options.requireSupported(CAPABILITIES.compressionOptions(), "Zstandard compression");
-        Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(ownership, "ownership");
         long pledgedSourceSize = StandardCodecOptionSupport.pledgedSourceSize(options);
-        return new ZstdChannelEncoder(
-                target,
-                ownership,
+        return new ZstdEncoder(
                 createEncoderParameters(options, pledgedSourceSize),
                 frameFormat(options) == ZstdFrameFormat.MAGICLESS
         );
     }
 
-    /// Opens a configured Zstandard decoder over the source channel.
+    /// Creates a configured transport-independent Zstandard decoder.
+    @Override
+    public CompressionDecoder newDecoder(CodecOptions options) throws IOException {
+        options.requireSupported(CAPABILITIES.decompressionOptions(), "Zstandard decompression");
+        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
+        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
+        @Nullable ChecksumMode checksum = options.get(StandardCodecOptions.CHECKSUM);
+        return StandardCodecOptionSupport.limitOutput(
+                new ZstdDecoder(
+                        decoderDictionary(options),
+                        maximumWindowSize,
+                        frameFormat(options) == ZstdFrameFormat.MAGICLESS,
+                        checksum != ChecksumMode.DISABLED
+                ),
+                maximumOutputSize
+        );
+    }
+
+    /// Opens a configured concatenated-frame Zstandard decoder over the source channel.
     @Override
     public DecompressingReadableByteChannel openDecoder(
             ReadableByteChannel source,
@@ -486,17 +499,18 @@ public final class ZstdCodec implements CompressionCodec {
         long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
         long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
         @Nullable ChecksumMode checksum = options.get(StandardCodecOptions.CHECKSUM);
-        return StandardCodecOptionSupport.limitOutput(
-                new ZstdChannelDecoder(
-                        source,
-                        ownership,
+        DecompressingReadableByteChannel decoder = CodecChannelAdapters.openDecoder(
+                source,
+                ownership,
+                true,
+                () -> new ZstdDecoder(
                         decoderDictionary(options),
                         maximumWindowSize,
                         frameFormat(options) == ZstdFrameFormat.MAGICLESS,
                         checksum != ChecksumMode.DISABLED
-                ),
-                maximumOutputSize
+                )
         );
+        return StandardCodecOptionSupport.limitOutput(decoder, maximumOutputSize);
     }
 
     /// Resolves operation options into immutable pure Java encoder parameters.

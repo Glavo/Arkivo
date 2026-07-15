@@ -6,7 +6,7 @@ package org.glavo.arkivo.codec;
 import org.glavo.arkivo.codec.internal.ByteBufferCodecSupport;
 import org.glavo.arkivo.codec.internal.CodecTransferSupport;
 import org.glavo.arkivo.codec.internal.StreamChannelAdapters;
-import org.glavo.arkivo.codec.internal.CodecChannelAdapters;
+import org.glavo.arkivo.codec.spi.CodecChannelAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -140,7 +140,12 @@ public interface CompressionCodec {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(options, "options");
         Objects.requireNonNull(ownership, "ownership");
-        return CodecChannelAdapters.openEncoder(target, ownership, () -> newEncoder(options));
+        return CodecChannelAdapters.openEncoder(
+                target,
+                ownership,
+                capabilities().supports(CompressionFeature.MULTI_FRAME),
+                () -> newEncoder(options)
+        );
     }
 
     /// Opens a default encoder and retains ownership of the target channel.
@@ -157,7 +162,12 @@ public interface CompressionCodec {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
         Objects.requireNonNull(ownership, "ownership");
-        return CodecChannelAdapters.openDecoder(source, ownership, () -> newDecoder(options));
+        return CodecChannelAdapters.openDecoder(
+                source,
+                ownership,
+                capabilities().supports(CompressionFeature.CONCATENATED_FRAMES),
+                () -> newDecoder(options)
+        );
     }
 
     /// Opens a default decoder and retains ownership of the source channel.
