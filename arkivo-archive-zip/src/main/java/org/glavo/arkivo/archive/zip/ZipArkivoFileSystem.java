@@ -26,9 +26,14 @@ import java.util.Objects;
 ///
 /// Single-volume channel sources support complete-rewrite updates when `READ` and `WRITE` are supplied together.
 /// Such updates require an explicit `ArkivoFileSystem.COMMIT_TARGET`, preserve preamble and surviving local-record
-/// bytes, and leave the original source unchanged. Existing entries and completed replacement or added entries remain
-/// readable during the update session. General volume sources remain read-only through `open`; use `update` with an
-/// explicit transactional volume target and output split size for complete-rewrite mutation.
+/// bytes, and leave the original source unchanged. Existing entries, including an entry with an active replacement
+/// channel, expose their preceding state until replacement commit; completed replacement or added entries expose their
+/// new state. Compressed or encrypted seekable entry channels stage decoded bytes through
+/// `ArkivoFileSystem.EDIT_STORAGE`; the file system owns configured storage, while the default keeps entries up to
+/// 1 MiB in memory and uses temporary files beside a path-backed archive or in the system temporary directory for
+/// volume sources. General volume sources remain
+/// read-only through `open`; use `update` with an explicit transactional volume target and output split size for
+/// complete-rewrite mutation.
 @NotNullByDefault
 public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
         permits StreamingZipArkivoFileSystemImpl, ZipArkivoFileSystemImpl {
@@ -78,7 +83,7 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
     public static ZipArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
-        return ZipArkivoFileSystemProvider.instance().newFileSystem(path, environment);
+        return ZipArkivoFileSystemProvider.instance().openPath(path, environment);
     }
 
     /// Opens a read-only ZIP archive file system directly from one owned seekable channel.

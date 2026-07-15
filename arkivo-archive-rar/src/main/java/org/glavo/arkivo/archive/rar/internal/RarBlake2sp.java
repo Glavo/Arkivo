@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.rar.internal;
 
+import org.glavo.arkivo.internal.ByteArrayAccess;
+
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -245,7 +247,7 @@ final class RarBlake2sp {
 
             byte[] output = new byte[DIGEST_SIZE];
             for (int index = 0; index < state.length; index++) {
-                writeLittleEndianInt(state[index], output, index * Integer.BYTES);
+                ByteArrayAccess.writeIntLittleEndian(output, index * Integer.BYTES, state[index]);
             }
             Arrays.fill(block, (byte) 0);
             Arrays.fill(message, 0);
@@ -258,7 +260,7 @@ final class RarBlake2sp {
         /// Applies the ten-round BLAKE2s compression function to the current block.
         private void compress(boolean lastBlock) {
             for (int index = 0; index < message.length; index++) {
-                message[index] = readLittleEndianInt(block, index * Integer.BYTES);
+                message[index] = ByteArrayAccess.readIntLittleEndian(block, index * Integer.BYTES);
             }
             System.arraycopy(state, 0, work, 0, state.length);
             System.arraycopy(
@@ -305,20 +307,6 @@ final class RarBlake2sp {
             work[b] = Integer.rotateRight(work[b] ^ work[c], 7);
         }
 
-        /// Reads one little-endian 32-bit word.
-        private static int readLittleEndianInt(byte[] input, int offset) {
-            return Byte.toUnsignedInt(input[offset])
-                    | Byte.toUnsignedInt(input[offset + 1]) << 8
-                    | Byte.toUnsignedInt(input[offset + 2]) << 16
-                    | Byte.toUnsignedInt(input[offset + 3]) << 24;
-        }
-
-        /// Writes one little-endian 32-bit word.
-        private static void writeLittleEndianInt(int value, byte[] output, int offset) {
-            output[offset] = (byte) value;
-            output[offset + 1] = (byte) (value >>> 8);
-            output[offset + 2] = (byte) (value >>> 16);
-            output[offset + 3] = (byte) (value >>> 24);
-        }
     }
+
 }

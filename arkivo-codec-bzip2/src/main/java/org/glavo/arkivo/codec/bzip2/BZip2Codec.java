@@ -12,8 +12,8 @@ import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
-import org.glavo.arkivo.codec.bzip2.internal.BZip2InputStream;
-import org.glavo.arkivo.codec.bzip2.internal.BZip2OutputStream;
+import org.glavo.arkivo.codec.bzip2.internal.BZip2ChannelDecoder;
+import org.glavo.arkivo.codec.bzip2.internal.BZip2ChannelEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -85,7 +85,7 @@ public final class BZip2Codec implements CompressionCodec {
     /// Returns the default BZip2 block-size level.
     @Override
     public long defaultCompressionLevel() {
-        return BZip2OutputStream.DEFAULT_BLOCK_SIZE;
+        return BZip2ChannelEncoder.DEFAULT_BLOCK_SIZE;
     }
 
     /// Returns the number of leading bytes used to identify BZip2 streams.
@@ -123,7 +123,7 @@ public final class BZip2Codec implements CompressionCodec {
         if (level < minimumCompressionLevel() || level > maximumCompressionLevel()) {
             throw new IllegalArgumentException("BZip2 compression level must be between 1 and 9: " + level);
         }
-        return new BZip2OutputStream(target, ownership, (int) level);
+        return new BZip2ChannelEncoder(target, ownership, (int) level);
     }
 
     /// Opens a configured BZip2 decoder over the source channel.
@@ -136,7 +136,7 @@ public final class BZip2Codec implements CompressionCodec {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "BZip2 decompression");
         long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
         return StandardCodecOptionSupport.limitOutput(
-                new BZip2InputStream(source, ownership),
+                new BZip2ChannelDecoder(source, ownership),
                 maximumOutputSize
         );
     }

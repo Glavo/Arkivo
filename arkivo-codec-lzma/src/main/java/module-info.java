@@ -9,9 +9,10 @@ module org.glavo.arkivo.codec.lzma {
 
     exports org.glavo.arkivo.codec.lzma;
     exports org.glavo.arkivo.codec.lzma.internal to
-            org.glavo.arkivo.archive.sevenzip,
-            org.glavo.arkivo.archive.zip,
             org.glavo.arkivo.codec.xz;
 
-    provides org.glavo.arkivo.codec.CompressionCodec with org.glavo.arkivo.codec.lzma.LZMACodec;
+    provides org.glavo.arkivo.codec.CompressionCodec with
+            org.glavo.arkivo.codec.lzma.LZMACodec,
+            org.glavo.arkivo.codec.lzma.RawLZMACodec,
+            org.glavo.arkivo.codec.lzma.LZMA2Codec;
 }

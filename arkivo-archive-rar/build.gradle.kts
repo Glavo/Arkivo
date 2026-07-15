@@ -7,7 +7,8 @@ import java.util.zip.ZipFile
 
 dependencies {
     api(project(":arkivo-archive"))
-    api(project(":arkivo-codec-ppmd"))
+    implementation(project(":arkivo-base"))
+    implementation(project(":arkivo-codec-ppmd"))
 }
 
 val verifyPublishedRarModule by tasks.registering {
@@ -93,14 +94,16 @@ val lowHeapStorageProbe by tasks.registering(JavaExec::class) {
     maxHeapSize = "32m"
 }
 
-val baseJar = project(":arkivo-archive").tasks.named<Jar>("jar")
+val archiveJar = project(":arkivo-archive").tasks.named<Jar>("jar")
+val internalBaseJar = project(":arkivo-base").tasks.named<Jar>("jar")
 val codecJar = project(":arkivo-codec").tasks.named<Jar>("jar")
 val ppmdJar = project(":arkivo-codec-ppmd").tasks.named<Jar>("jar")
 
 tasks.named<Test>("test") {
-    dependsOn(lowHeapStorageProbe, tasks.jar, baseJar, codecJar, ppmdJar)
+    dependsOn(lowHeapStorageProbe, tasks.jar, archiveJar, internalBaseJar, codecJar, ppmdJar)
     inputs.file(tasks.jar.flatMap { it.archiveFile })
-    inputs.file(baseJar.flatMap { it.archiveFile })
+    inputs.file(archiveJar.flatMap { it.archiveFile })
+    inputs.file(internalBaseJar.flatMap { it.archiveFile })
     inputs.file(codecJar.flatMap { it.archiveFile })
     inputs.file(ppmdJar.flatMap { it.archiveFile })
     doFirst {
@@ -109,8 +112,12 @@ tasks.named<Test>("test") {
             tasks.jar.get().archiveFile.get().asFile.absolutePath
         )
         systemProperty(
-            "arkivo.base.jar",
-            baseJar.get().archiveFile.get().asFile.absolutePath
+            "arkivo.archive.jar",
+            archiveJar.get().archiveFile.get().asFile.absolutePath
+        )
+        systemProperty(
+            "arkivo.internal-base.jar",
+            internalBaseJar.get().archiveFile.get().asFile.absolutePath
         )
         systemProperty(
             "arkivo.codec.jar",

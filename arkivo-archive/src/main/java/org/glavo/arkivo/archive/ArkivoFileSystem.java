@@ -53,7 +53,7 @@ public abstract class ArkivoFileSystem extends FileSystem {
                     ArkivoFileSystem::openOptionsValue
             );
 
-    /// The common environment option for staging new and replacement archive entry content.
+    /// The common environment option for staging decoded, new, and replacement archive entry content.
     public static final ArkivoFileSystemOption<ArkivoEditStorage> EDIT_STORAGE =
             ArkivoFileSystemOption.of("arkivo", "editStorage", ArkivoEditStorage.class);
 

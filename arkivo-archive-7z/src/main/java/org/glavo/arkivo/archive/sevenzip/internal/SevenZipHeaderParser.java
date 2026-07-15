@@ -178,7 +178,7 @@ public final class SevenZipHeaderParser {
                 case K_MAIN_STREAMS_INFO -> streamsInfo = readStreamsInfo(input, externalData);
                 case K_FILES_INFO -> entries.addAll(readFilesInfo(input, streamsInfo, externalData));
                 case K_DUMMY -> skipDummyData(input);
-                default -> throw new UnsupportedOperationException(
+                default -> throw new IOException(
                         "Unsupported 7z header property: 0x" + Integer.toHexString(property)
                 );
             }
@@ -193,7 +193,7 @@ public final class SevenZipHeaderParser {
             ArkivoReadLimitTracker readLimits
     ) throws IOException {
         if (packedStreamOpener == null) {
-            throw new UnsupportedOperationException("7z encoded headers require archive stream access");
+            throw new IOException("7z encoded headers require archive stream access");
         }
 
         StreamsInfo streamsInfo = readStreamsInfo(input);
@@ -371,7 +371,7 @@ public final class SevenZipHeaderParser {
                     subStreamsInfo = readSubStreamsInfo(input, folders);
                 }
                 case K_DUMMY -> skipDummyData(input);
-                default -> throw new UnsupportedOperationException(
+                default -> throw new IOException(
                         "Unsupported 7z streams info property: 0x" + Integer.toHexString(property)
                 );
             }
@@ -431,7 +431,7 @@ public final class SevenZipHeaderParser {
                     crc32s = readSubStreamCrc32s(input, folders, counts);
                 }
                 case K_DUMMY -> skipDummyData(input);
-                default -> throw new UnsupportedOperationException(
+                default -> throw new IOException(
                         "Unsupported 7z substreams info property: 0x" + Integer.toHexString(property)
                 );
             }
@@ -575,7 +575,7 @@ public final class SevenZipHeaderParser {
                 }
                 case K_CRC -> packCrc32s = readDigests(input, streamCount);
                 case K_DUMMY -> skipDummyData(input);
-                default -> throw new UnsupportedOperationException(
+                default -> throw new IOException(
                         "Unsupported 7z pack info property: 0x" + Integer.toHexString(property)
                 );
             }
@@ -612,7 +612,7 @@ public final class SevenZipHeaderParser {
                     readFolderCrc32s(input, folders);
                 }
                 case K_DUMMY -> skipDummyData(input);
-                default -> throw new UnsupportedOperationException(
+                default -> throw new IOException(
                         "Unsupported 7z unpack info property: 0x" + Integer.toHexString(property)
                 );
             }
@@ -629,7 +629,7 @@ public final class SevenZipHeaderParser {
                 }
                 case K_CRC -> readFolderCrc32s(input, folders);
                 case K_DUMMY -> skipDummyData(input);
-                default -> throw new UnsupportedOperationException(
+                default -> throw new IOException(
                         "Unsupported 7z unpack info property after sizes: 0x" + Integer.toHexString(property)
                 );
             }
@@ -696,7 +696,7 @@ public final class SevenZipHeaderParser {
         for (int coderIndex = 0; coderIndex < coderCount; coderIndex++) {
             int flags = input.readUnsignedByte();
             if ((flags & 0xc0) != 0) {
-                throw new UnsupportedOperationException("Unsupported 7z coder flags: 0x" + Integer.toHexString(flags));
+                throw new IOException("Unsupported 7z coder flags: 0x" + Integer.toHexString(flags));
             }
 
             int methodIdSize = flags & 0x0f;
@@ -718,7 +718,7 @@ public final class SevenZipHeaderParser {
                 throw new IOException("7z coder stream counts must be positive");
             }
             if (!SevenZipLZMADecoder.isSupported(methodId)) {
-                throw new UnsupportedOperationException("Unsupported 7z coder method: " + Arrays.toString(methodId));
+                throw new IOException("Unsupported 7z coder method: " + Arrays.toString(methodId));
             }
             coders[coderIndex] = new CoderInfo(
                     methodId,
@@ -1410,7 +1410,7 @@ public final class SevenZipHeaderParser {
                 throw new IOException("7z external " + description + " reference a missing stream");
             }
             if (packedStreamOpener == null) {
-                throw new UnsupportedOperationException("7z external " + description + " require archive stream access");
+                throw new IOException("7z external " + description + " require archive stream access");
             }
             return new HeaderInput(decodeEncodedHeaderStream(
                     streamsInfo,

@@ -146,60 +146,6 @@ final class ZstdEntropy {
         return bits.finish();
     }
 
-    /// Encodes one normalized FSE distribution in forward bit order.
-    static byte[] encodeFseTableDescription(
-            int[] normalized,
-            int symbolCount,
-            int tableLog
-    ) {
-        if (symbolCount <= 0 || symbolCount > normalized.length || tableLog < 5 || tableLog > 15) {
-            throw new IllegalArgumentException("Invalid normalized Zstandard FSE distribution");
-        }
-        ForwardBitWriter bits = new ForwardBitWriter();
-        bits.writeBits(tableLog - 5, 4);
-
-        int remaining = (1 << tableLog) + 1;
-        int threshold = 1 << tableLog;
-        int numberOfBits = tableLog + 1;
-        boolean previousZero = false;
-        int symbol = 0;
-        while (remaining > 1 && symbol < symbolCount) {
-            if (previousZero) {
-                int start = symbol;
-                while (symbol < symbolCount && normalized[symbol] == 0) {
-                    symbol++;
-                }
-                int zeroRun = symbol - start;
-                while (zeroRun >= 24) {
-                    bits.writeBits(0xffff, 16);
-                    zeroRun -= 24;
-                }
-                while (zeroRun >= 3) {
-                    bits.writeBits(3, 2);
-                    zeroRun -= 3;
-                }
-                bits.writeBits(zeroRun, 2);
-            }
-
-            int count = normalized[symbol++];
-            int maximum = (threshold << 1) - 1 - remaining;
-            remaining -= Math.abs(count);
-            int encoded = count + 1;
-            if (encoded >= threshold) {
-                encoded += maximum;
-            }
-            bits.writeBits(encoded, numberOfBits - (encoded < maximum ? 1 : 0));
-            previousZero = count == 0;
-            while (remaining < threshold) {
-                numberOfBits--;
-                threshold >>>= 1;
-            }
-        }
-        if (remaining != 1) {
-            throw new IllegalArgumentException("Invalid normalized Zstandard FSE distribution");
-        }
-        return bits.finish();
-    }
 
     /// Reads a Huffman table description and returns the table and encoded byte count.
     static HuffmanParseResult readHuffmanTable(byte[] source, int offset, int limit) throws IOException {
@@ -272,7 +218,13 @@ final class ZstdEntropy {
         if (largestWeight > tableLog || weightOneCount < 2 || (weightOneCount & 1) != 0) {
             throw new IOException("Invalid Zstandard Huffman table");
         }
-        return new HuffmanParseResult(HuffmanTable.fromWeights(weights, weightCount, tableLog), bytesRead);
+        return new HuffmanParseResult(
+                HuffmanTable.fromWeights(weights, weightCount, tableLog),
+                Arrays.copyOf(weights, weightCount),
+                weightCount,
+                tableLog,
+                bytesRead
+        );
     }
 
     /// Decodes FSE-compressed Huffman weights.
@@ -319,6 +271,7 @@ final class ZstdEntropy {
         bits.requireFullyConsumed();
         return count;
     }
+
     /// Holds a parsed FSE table and its encoded size.
     record FseParseResult(FseTable table, int bytesRead) {
         /// Creates a parsed FSE result.
@@ -326,8 +279,20 @@ final class ZstdEntropy {
         }
     }
 
-    /// Holds a parsed Huffman table and its encoded size.
-    record HuffmanParseResult(HuffmanTable table, int bytesRead) {
+    /// Holds a parsed Huffman table and the canonical parameters needed to invert it.
+    ///
+    /// @param table decoding table
+    /// @param weights canonical Zstandard weights including the inferred final weight
+    /// @param symbolCount number of symbols represented by the table
+    /// @param tableLog decoding-table logarithm
+    /// @param bytesRead encoded table-description size
+    record HuffmanParseResult(
+            HuffmanTable table,
+            int @Unmodifiable [] weights,
+            int symbolCount,
+            int tableLog,
+            int bytesRead
+    ) {
         /// Creates a parsed Huffman result.
         HuffmanParseResult {
         }

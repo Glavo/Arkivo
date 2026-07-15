@@ -41,10 +41,10 @@ final class MalformedCodecRobustnessTest {
     private static final long MAX_OUTPUT_SIZE = 1L << 20;
 
     /// Maximum history window accepted from a damaged frame.
-    private static final long MAX_WINDOW_SIZE = 1L << 30;
+    private static final long MAX_WINDOW_SIZE = 64L << 20;
 
     /// Number of deterministic mutations applied to each valid frame.
-    private static final int MUTATION_COUNT = 48;
+    private static final int MUTATION_COUNT = 128;
 
     /// Reproducible seed for codec mutations.
     private static final long MUTATION_SEED = 0x434f4445434d5554L;
@@ -98,6 +98,7 @@ final class MalformedCodecRobustnessTest {
         if (codec.capabilities().decompressionOptions().contains(StandardCodecOptions.MAX_WINDOW_SIZE)) {
             builder.set(StandardCodecOptions.MAX_WINDOW_SIZE, MAX_WINDOW_SIZE);
         }
+        CodecContractOptions.addRequiredDecoderOptions(builder, codec, CONTENT.length);
         return builder.build();
     }
 
@@ -203,7 +204,7 @@ final class MalformedCodecRobustnessTest {
         assertDoesNotThrow(() -> {
             try {
                 operation.execute();
-            } catch (IOException | UnsupportedOperationException expected) {
+            } catch (IOException expected) {
                 // A damaged frame may be rejected during setup, decoding, validation, or close.
             }
         }, context);

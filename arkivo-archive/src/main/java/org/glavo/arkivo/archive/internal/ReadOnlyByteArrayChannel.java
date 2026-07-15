@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.archive.tar.internal;
+package org.glavo.arkivo.archive.internal;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -9,31 +9,35 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.util.Objects;
 
-/// Implements a read-only seekable byte channel over an immutable byte array snapshot.
+/// Exposes an immutable byte-array snapshot as a read-only seekable channel.
 @NotNullByDefault
-final class ByteArraySeekableByteChannel implements SeekableByteChannel {
+public final class ReadOnlyByteArrayChannel implements SeekableByteChannel {
     /// The immutable content snapshot.
     private final byte @Unmodifiable [] content;
 
     /// The current channel position.
     private int position;
 
-    /// Whether this channel is open.
+    /// Whether this channel remains open.
     private boolean open = true;
 
-    /// Creates a read-only channel over the given content.
-    ByteArraySeekableByteChannel(byte @Unmodifiable [] content) {
+    /// Creates a channel over a defensive copy of the given content.
+    public ReadOnlyByteArrayChannel(byte[] content) {
         this.content = Objects.requireNonNull(content, "content").clone();
     }
 
-    /// Reads bytes into the destination buffer.
+    /// Reads bytes from the current position.
     @Override
     public int read(ByteBuffer destination) throws IOException {
-        ensureOpen();
         Objects.requireNonNull(destination, "destination");
+        ensureOpen();
+        if (!destination.hasRemaining()) {
+            return 0;
+        }
         if (position >= content.length) {
             return -1;
         }
@@ -43,10 +47,12 @@ final class ByteArraySeekableByteChannel implements SeekableByteChannel {
         return count;
     }
 
-    /// Writes are not supported.
+    /// Rejects writes because the content snapshot is immutable.
     @Override
-    public int write(ByteBuffer source) {
-        throw new UnsupportedOperationException("TAR byte channels are read-only");
+    public int write(ByteBuffer source) throws IOException {
+        Objects.requireNonNull(source, "source");
+        ensureOpen();
+        throw new NonWritableChannelException();
     }
 
     /// Returns the current channel position.
@@ -60,27 +66,31 @@ final class ByteArraySeekableByteChannel implements SeekableByteChannel {
     @Override
     public SeekableByteChannel position(long newPosition) throws IOException {
         ensureOpen();
-        if (newPosition < 0 || newPosition > Integer.MAX_VALUE) {
-            throw new IllegalArgumentException("position is out of range");
+        if (newPosition < 0L || newPosition > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("newPosition is out of range");
         }
-        position = (int) newPosition;
+        position = Math.toIntExact(newPosition);
         return this;
     }
 
-    /// Returns the content size.
+    /// Returns the immutable content size.
     @Override
     public long size() throws IOException {
         ensureOpen();
         return content.length;
     }
 
-    /// Truncation is not supported.
+    /// Rejects truncation because the content snapshot is immutable.
     @Override
-    public SeekableByteChannel truncate(long size) {
-        throw new UnsupportedOperationException("TAR byte channels are read-only");
+    public SeekableByteChannel truncate(long size) throws IOException {
+        ensureOpen();
+        if (size < 0L) {
+            throw new IllegalArgumentException("size must not be negative");
+        }
+        throw new NonWritableChannelException();
     }
 
-    /// Returns whether this channel is open.
+    /// Returns whether this channel remains open.
     @Override
     public boolean isOpen() {
         return open;
@@ -92,7 +102,7 @@ final class ByteArraySeekableByteChannel implements SeekableByteChannel {
         open = false;
     }
 
-    /// Requires this channel to be open.
+    /// Requires this channel to remain open.
     private void ensureOpen() throws ClosedChannelException {
         if (!open) {
             throw new ClosedChannelException();

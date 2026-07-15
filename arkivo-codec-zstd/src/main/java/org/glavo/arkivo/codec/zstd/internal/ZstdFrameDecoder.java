@@ -35,6 +35,12 @@ final class ZstdFrameDecoder {
     /// Configured maximum frame window, or the unknown sentinel.
     private final long maximumWindowSize;
 
+    /// Whether standard frame magic is omitted.
+    private final boolean magicless;
+
+    /// Whether present frame checksums are verified.
+    private final boolean verifyChecksums;
+
     /// Current block decoder, or null at a frame boundary.
     private @Nullable ZstdBlockDecoder blockDecoder;
 
@@ -54,11 +60,15 @@ final class ZstdFrameDecoder {
     ZstdFrameDecoder(
             ZstdChannelInput input,
             ZstdDictionary dictionary,
-            long maximumWindowSize
+            long maximumWindowSize,
+            boolean magicless,
+            boolean verifyChecksums
     ) {
         this.input = input;
         this.dictionary = dictionary;
         this.maximumWindowSize = maximumWindowSize;
+        this.magicless = magicless;
+        this.verifyChecksums = verifyChecksums;
     }
 
     /// Decodes the next block or complete skippable frame.
@@ -109,20 +119,24 @@ final class ZstdFrameDecoder {
         if (first < 0) {
             return new Step(new byte[0], false, true);
         }
-        long magic = first
-                | (long) input.readRequired() << 8
-                | (long) input.readRequired() << 16
-                | (long) input.readRequired() << 24;
-        if ((magic & SKIPPABLE_MASK) == SKIPPABLE_MAGIC) {
-            long payloadSize = input.readLittleEndian(4);
-            input.skipFully(payloadSize);
-            return new Step(new byte[0], true, false);
+        int descriptor;
+        if (magicless) {
+            descriptor = first;
+        } else {
+            long magic = first
+                    | (long) input.readRequired() << 8
+                    | (long) input.readRequired() << 16
+                    | (long) input.readRequired() << 24;
+            if ((magic & SKIPPABLE_MASK) == SKIPPABLE_MAGIC) {
+                long payloadSize = input.readLittleEndian(4);
+                input.skipFully(payloadSize);
+                return new Step(new byte[0], true, false);
+            }
+            if (magic != FRAME_MAGIC) {
+                throw new IOException("Invalid Zstandard frame");
+            }
+            descriptor = input.readRequired();
         }
-        if (magic != FRAME_MAGIC) {
-            throw new IOException("Invalid Zstandard frame");
-        }
-
-        int descriptor = input.readRequired();
         if ((descriptor & 0x18) != 0) {
             throw new IOException("Reserved Zstandard frame descriptor bits are set");
         }
@@ -178,7 +192,7 @@ final class ZstdFrameDecoder {
             maximumBlockSize = 0;
         }
         blockDecoder = new ZstdBlockDecoder(windowSize, dictionary);
-        checksum = checksumPresent ? new ZstdXXHash64() : null;
+        checksum = checksumPresent && verifyChecksums ? new ZstdXXHash64() : null;
         return null;
     }
 
@@ -191,9 +205,11 @@ final class ZstdFrameDecoder {
         }
         if (checksumPresent) {
             long stored = input.readLittleEndian(4);
-            long actual = Objects.requireNonNull(checksum).digest() & 0xffff_ffffL;
-            if (stored != actual) {
-                throw new IOException("Zstandard frame checksum mismatch");
+            if (verifyChecksums) {
+                long actual = Objects.requireNonNull(checksum).digest() & 0xffff_ffffL;
+                if (stored != actual) {
+                    throw new IOException("Zstandard frame checksum mismatch");
+                }
             }
         }
         checksum = null;

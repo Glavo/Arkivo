@@ -7,9 +7,6 @@ import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.transform.TransformingOutputStream;
 import org.glavo.arkivo.codec.transform.ByteTransform;
 import org.glavo.arkivo.codec.delta.DeltaTransform;
-import org.glavo.arkivo.codec.lzma.internal.LZMA2OutputStream;
-import org.glavo.arkivo.codec.lzma.internal.LZMAOutputStream;
-import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.archive.sevenzip.SevenZipFilter;
@@ -137,6 +134,9 @@ final class SevenZipArchiveWriter implements AutoCloseable {
 
     /// The Deflate64 coder method ID.
     private static final byte @Unmodifiable [] DEFLATE64_METHOD_ID = new byte[]{0x04, 0x01, 0x09};
+
+    /// The PPMd7 Variant H coder method ID.
+    private static final byte @Unmodifiable [] PPMD_METHOD_ID = new byte[]{0x03, 0x04, 0x01};
 
     /// The Zstandard coder method ID.
     private static final byte @Unmodifiable [] ZSTANDARD_METHOD_ID = new byte[]{0x04, (byte) 0xf7, 0x11, 0x01};
@@ -449,6 +449,11 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                     SevenZipCompressionCodecs.openEncoder("deflate64", compression.parameter(), output),
                     new MethodDescriptor(DEFLATE64_METHOD_ID, new byte[0])
             );
+            case PPMD -> openPpmd(
+                    compression.parameter(),
+                    compression.secondaryParameter(),
+                    output
+            );
             case ZSTANDARD -> new CompressionOutput(
                     SevenZipCompressionCodecs.openEncoder("zstd", compression.parameter(), output),
                     new MethodDescriptor(ZSTANDARD_METHOD_ID, new byte[0])
@@ -457,16 +462,33 @@ final class SevenZipArchiveWriter implements AutoCloseable {
     }
 
 
+    /// Opens a raw PPMd7 encoder with explicit 7z coder properties.
+    private static CompressionOutput openPpmd(
+            int maximumOrder,
+            int memorySize,
+            OutputStream output
+    ) throws IOException {
+        byte[] properties = new byte[5];
+        properties[0] = (byte) maximumOrder;
+        ByteBuffer.wrap(properties, 1, Integer.BYTES)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .putInt(memorySize);
+        return new CompressionOutput(
+                SevenZipCompressionCodecs.openPpmdEncoder(maximumOrder, memorySize, output),
+                new MethodDescriptor(PPMD_METHOD_ID, properties)
+        );
+    }
+
+
     /// Opens a raw LZMA encoder with explicit 7z coder properties.
     private static CompressionOutput openLzma(int dictionarySize, OutputStream output) throws IOException {
-        LZMAProperties lzmaProperties = LZMAProperties.defaults(dictionarySize);
         byte[] properties = new byte[5];
-        properties[0] = (byte) lzmaProperties.propertyByte();
+        properties[0] = 0x5d;
         ByteBuffer.wrap(properties, 1, Integer.BYTES)
                 .order(ByteOrder.LITTLE_ENDIAN)
                 .putInt(dictionarySize);
         return new CompressionOutput(
-                new LZMAOutputStream(output, lzmaProperties, false),
+                SevenZipCompressionCodecs.openRawLZMAEncoder(dictionarySize, false, output),
                 new MethodDescriptor(LZMA_METHOD_ID, properties)
         );
     }
@@ -475,7 +497,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
     /// Opens a raw LZMA2 encoder with its compact dictionary property.
     private static CompressionOutput openLzma2(int dictionarySize, OutputStream output) throws IOException {
         return new CompressionOutput(
-                new LZMA2OutputStream(output, dictionarySize),
+                SevenZipCompressionCodecs.openLZMA2Encoder(dictionarySize, output),
                 new MethodDescriptor(LZMA2_METHOD_ID, new byte[]{lzma2Property(dictionarySize)})
         );
     }

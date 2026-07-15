@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.internal.ByteArrayAccess;
+
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.EOFException;
@@ -69,7 +71,7 @@ final class SevenZipBcj2Encoder {
 
             int probabilityIndex = current == 0xe8 ? previous + 2 : current == 0xe9 ? 1 : 0;
             int addressLength = readLookahead(input, address, sourceSize - position - 1L);
-            int relative = addressLength == ADDRESS_SIZE ? readLittleEndianInt(address) : 0;
+            int relative = addressLength == ADDRESS_SIZE ? ByteArrayAccess.readIntLittleEndian(address, 0) : 0;
             long instructionPointer = position + 1L;
             long target = instructionPointer + ADDRESS_SIZE + relative;
             int overlapBoundary = ((context + 0x20) >>> 5) & 1;
@@ -117,14 +119,6 @@ final class SevenZipBcj2Encoder {
             }
         }
         return count;
-    }
-
-    /// Reads one little-endian signed 32-bit relative address.
-    private static int readLittleEndianInt(byte[] bytes) {
-        return Byte.toUnsignedInt(bytes[0])
-                | (Byte.toUnsignedInt(bytes[1]) << 8)
-                | (Byte.toUnsignedInt(bytes[2]) << 16)
-                | (bytes[3] << 24);
     }
 
     /// Writes one unsigned 32-bit absolute address in BCJ2 big-endian order.

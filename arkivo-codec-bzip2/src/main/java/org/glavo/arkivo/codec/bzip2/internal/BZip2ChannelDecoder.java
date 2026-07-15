@@ -15,24 +15,19 @@ import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.EOFException;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.util.Arrays;
 import java.util.Objects;
 
-/// Decodes BZip2 streams, including legacy randomized blocks.
-///
-/// Channel-based instances accept concatenated streams. The legacy input-stream constructor stops after one stream so
-/// it does not consume caller-owned trailing bytes.
+/// Decodes concatenated BZip2 streams, including legacy randomized blocks.
 ///
 /// Each compressed block is expanded through Huffman decoding, run-length decoding, move-to-front decoding, and the
 /// inverse Burrows-Wheeler transform. The final run-length stage is produced lazily so a highly compressible block does
 /// not require an output-sized allocation.
 @NotNullByDefault
-public final class BZip2InputStream extends InputStream implements CompressionDecoder {
+public final class BZip2ChannelDecoder implements CompressionDecoder {
     /// The BZip2 block marker.
     private static final long BLOCK_MAGIC = 0x314159265359L;
 
@@ -123,9 +118,6 @@ public final class BZip2InputStream extends InputStream implements CompressionDe
     /// The most-significant-bit-first reader over the compressed source.
     private final BitInput bits;
 
-    /// Whether a validated stream may be followed by another BZip2 stream.
-    private final boolean concatenated;
-
     /// The maximum post-RLE block size declared by the current stream header.
     private int blockSizeLimit;
 
@@ -174,72 +166,23 @@ public final class BZip2InputStream extends InputStream implements CompressionDe
     /// Whether no further concatenated stream remains.
     private boolean endReached;
 
-    /// Whether this input stream has closed.
+    /// Whether this decoder has closed.
     private boolean closed;
 
     /// The number of uncompressed bytes returned through channel reads.
     private long outputBytes;
 
-    /// Creates a single-stream decoder and validates its BZip2 header.
-    public BZip2InputStream(InputStream input) throws IOException {
-        this(Channels.newChannel(Objects.requireNonNull(input, "input")), ChannelOwnership.CLOSE, 1, false);
-    }
-
     /// Creates a concatenated-stream decoder over a compressed channel with explicit ownership.
-    public BZip2InputStream(ReadableByteChannel source, ChannelOwnership ownership) throws IOException {
-        this(source, ownership, 8192, true);
-    }
-
-    /// Creates a decoder with the requested compressed-input staging size.
-    private BZip2InputStream(
-            ReadableByteChannel source,
-            ChannelOwnership ownership,
-            int inputBufferSize,
-            boolean concatenated
-    ) throws IOException {
+    public BZip2ChannelDecoder(ReadableByteChannel source, ChannelOwnership ownership) throws IOException {
         Objects.requireNonNull(source, "source");
         this.sourceCloser = new OwnedChannelCloser(source, ownership);
-        this.bits = new BitInput(source, inputBufferSize);
-        this.concatenated = concatenated;
+        this.bits = new BitInput(source, 8192);
         try {
             readFrameHeader(bits.readBits(8));
         } catch (IOException | RuntimeException | Error exception) {
             sourceCloser.closeAfter(exception);
             throw exception;
         }
-    }
-
-    /// Reads one decoded byte.
-    @Override
-    public int read() throws IOException {
-        ensureOpen();
-        int value = readDecodedByte(false);
-        if (value >= 0) {
-            outputBytes++;
-        }
-        return value;
-    }
-
-    /// Reads decoded bytes into the destination array.
-    @Override
-    public int read(byte[] bytes, int offset, int length) throws IOException {
-        Objects.checkFromIndexSize(offset, length, bytes.length);
-        ensureOpen();
-        if (length == 0) {
-            return 0;
-        }
-
-        int count = 0;
-        while (count < length) {
-            int value = readDecodedByte(false);
-            if (value < 0) {
-                break;
-            }
-            bytes[offset + count] = (byte) value;
-            count++;
-        }
-        outputBytes += count;
-        return count == 0 ? -1 : count;
     }
 
     /// Reads decoded bytes directly into the destination buffer.
@@ -296,41 +239,10 @@ public final class BZip2InputStream extends InputStream implements CompressionDe
         );
     }
 
-    /// Skips decoded bytes while preserving block CRC validation.
-    @Override
-    public long skip(long count) throws IOException {
-        ensureOpen();
-        if (count <= 0L) {
-            return 0L;
-        }
-        byte[] discard = new byte[(int) Math.min(8192L, count)];
-        long skipped = 0L;
-        while (skipped < count) {
-            int read = read(discard, 0, (int) Math.min(discard.length, count - skipped));
-            if (read < 0) {
-                break;
-            }
-            skipped += read;
-        }
-        return skipped;
-    }
-
-    /// Returns the number of decoded repeat bytes immediately available without parsing another block field.
-    @Override
-    public int available() throws IOException {
-        ensureOpen();
-        return repeatRemaining;
-    }
-
-    /// Returns the exact number of compressed source bytes consumed so far.
-    public long compressedByteCount() {
-        return bits.byteCount();
-    }
-
     /// Returns the exact number of compressed source bytes consumed so far.
     @Override
     public long inputBytes() {
-        return compressedByteCount();
+        return bits.byteCount();
     }
 
     /// Returns the number of compressed bytes obtained from the source.
@@ -448,11 +360,7 @@ public final class BZip2InputStream extends InputStream implements CompressionDe
             }
             bits.finishFrame();
             lastFrameFinished = true;
-            if (concatenated) {
-                frameBoundaryPending = true;
-            } else {
-                endReached = true;
-            }
+            frameBoundaryPending = true;
             return;
         }
         if (marker != BLOCK_MAGIC) {

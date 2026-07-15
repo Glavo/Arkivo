@@ -9,7 +9,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.io.IOException;
 import java.nio.file.Path;
 
-/// Stores new or replacement archive entry content while an editor transaction is open.
+/// Stores decoded snapshots and new or replacement entry content owned by an archive file system.
 @NotNullByDefault
 public interface ArkivoEditStorage extends AutoCloseable {
     /// The expected size value used when the entry size is not known before writing.

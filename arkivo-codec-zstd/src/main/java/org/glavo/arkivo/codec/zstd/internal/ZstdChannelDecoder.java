@@ -59,11 +59,15 @@ public final class ZstdChannelDecoder implements CompressionDecoder {
     /// @param ownership whether closing this decoder closes the source
     /// @param dictionary configured dictionary bytes, or null
     /// @param maximumWindowSize maximum permitted frame window, or the unknown-size sentinel
+    /// @param magicless whether standard frame magic is omitted
+    /// @param verifyChecksums whether present frame checksums are verified
     public ZstdChannelDecoder(
             ReadableByteChannel source,
             ChannelOwnership ownership,
             @Nullable CompressionDictionary dictionary,
-            long maximumWindowSize
+            long maximumWindowSize,
+            boolean magicless,
+            boolean verifyChecksums
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         this.sourceCloser = new OwnedChannelCloser(source, ownership);
@@ -71,7 +75,9 @@ public final class ZstdChannelDecoder implements CompressionDecoder {
         this.frameDecoder = new ZstdFrameDecoder(
                 input,
                 ZstdDictionary.parse(dictionary),
-                maximumWindowSize
+                maximumWindowSize,
+                magicless,
+                verifyChecksums
         );
     }
 

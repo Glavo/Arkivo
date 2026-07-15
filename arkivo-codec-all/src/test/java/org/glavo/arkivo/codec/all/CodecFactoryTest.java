@@ -64,7 +64,7 @@ final class CodecFactoryTest {
             try (CompressionDecoder decoder = CompressionCodecs.openDecoder(
                     codec.name(),
                     source,
-                    CodecOptions.EMPTY,
+                    CodecContractOptions.decoderOptions(codec, CONTENT.length),
                     ChannelOwnership.CLOSE
             )) {
                 assertArrayEquals(CONTENT, readAll(decoder), codec.name());
@@ -147,9 +147,14 @@ final class CodecFactoryTest {
             CodecTransferResult decompression = CompressionCodecs.decompress(
                     codec.name(),
                     encoded,
-                    decoded
+                    decoded,
+                    CodecContractOptions.decoderOptions(codec, CONTENT.length)
             );
-            assertEquals(compressed.bytes().length, decompression.inputBytes(), codec.name());
+            if (CodecContractOptions.requiresDecoderOptions(codec)) {
+                assertTrue(decompression.inputBytes() <= compressed.bytes().length, codec.name());
+            } else {
+                assertEquals(compressed.bytes().length, decompression.inputBytes(), codec.name());
+            }
             assertEquals(CONTENT.length, decompression.outputBytes(), codec.name());
             assertArrayEquals(CONTENT, decoded.bytes(), codec.name());
             assertTrue(encoded.isOpen(), codec.name());
@@ -200,7 +205,7 @@ final class CodecFactoryTest {
             try (InputStream input = CompressionCodecs.decompressFrom(
                     codec.name(),
                     encoded,
-                    CodecOptions.EMPTY
+                    CodecContractOptions.decoderOptions(codec, CONTENT.length)
             )) {
                 assertArrayEquals(CONTENT, input.readAllBytes(), codec.name());
             }

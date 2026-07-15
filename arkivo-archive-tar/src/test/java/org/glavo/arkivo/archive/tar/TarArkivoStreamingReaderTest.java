@@ -28,7 +28,9 @@ import java.nio.file.FileSystem;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.ProviderMismatchException;
 import java.nio.file.ReadOnlyFileSystemException;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -270,6 +272,7 @@ public final class TarArkivoStreamingReaderTest {
         byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
         Path archivePath = createTemporaryArchivePath("tar-fs-");
         Path copiedDirectory = archivePath.getParent().resolve("copied-dir");
+        Path copiedFile = archivePath.getParent().resolve("copied-file");
         Path existingFile = archivePath.getParent().resolve("existing-file");
         Set<PosixFilePermission> filePermissions = Set.of(
                 PosixFilePermission.OWNER_READ,
@@ -334,6 +337,13 @@ public final class TarArkivoStreamingReaderTest {
                 assertEquals(5678L, fileAttributes.groupId());
                 assertEquals(content.length, fileAttributes.size());
                 assertArrayEquals(content, Files.readAllBytes(file));
+                Files.copy(
+                        file,
+                        copiedFile,
+                        LinkOption.NOFOLLOW_LINKS,
+                        StandardCopyOption.COPY_ATTRIBUTES
+                );
+                assertArrayEquals(content, Files.readAllBytes(copiedFile));
 
                 PosixFileAttributes posixAttributes = Files.readAttributes(file, PosixFileAttributes.class);
                 assertEquals("fs-user", posixAttributes.owner().getName());
@@ -428,17 +438,23 @@ public final class TarArkivoStreamingReaderTest {
                 }
 
                 Path link = fileSystem.getPath("/link");
-                TarArkivoEntryAttributes linkAttributes = Files.readAttributes(link, TarArkivoEntryAttributes.class);
+                TarArkivoEntryAttributes linkAttributes = Files.readAttributes(
+                        link,
+                        TarArkivoEntryAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
                 assertEquals(true, linkAttributes.isSymbolicLink());
                 assertEquals(fileSystem.getPath("dir/hello.txt"), Files.readSymbolicLink(link));
 
                 Map<String, Object> linkNamedAttributes = Files.readAttributes(
                         link,
-                        "tar:isSymbolicLink,typeFlag,linkName"
+                        "tar:isSymbolicLink,typeFlag,linkName",
+                        LinkOption.NOFOLLOW_LINKS
                 );
                 assertEquals(true, linkNamedAttributes.get("isSymbolicLink"));
                 assertEquals((byte) '2', linkNamedAttributes.get("typeFlag"));
                 assertEquals("dir/hello.txt", linkNamedAttributes.get("linkName"));
+                assertArrayEquals(content, Files.readAllBytes(link));
 
                 assertThrows(UnsupportedOperationException.class, () -> Files.readAttributes(file, "zip:size"));
                 assertThrows(ReadOnlyFileSystemException.class, () -> Files.delete(file));
@@ -446,6 +462,7 @@ public final class TarArkivoStreamingReaderTest {
 
             assertThrows(ClosedFileSystemException.class, () -> fileSystem.getPath("/dir"));
         } finally {
+            Files.deleteIfExists(copiedFile);
             Files.deleteIfExists(existingFile);
             Files.deleteIfExists(copiedDirectory);
             deleteTemporaryArchive(archivePath);
@@ -526,12 +543,36 @@ public final class TarArkivoStreamingReaderTest {
                 assertEquals(channelFilePermissions, channelFilePosixAttributes.permissions());
 
                 Path link = fileSystem.getPath("/link");
-                TarArkivoEntryAttributes linkAttributes = Files.readAttributes(link, TarArkivoEntryAttributes.class);
-                PosixFileAttributes linkPosixAttributes = Files.readAttributes(link, PosixFileAttributes.class);
+                TarArkivoEntryAttributes linkAttributes = Files.readAttributes(
+                        link,
+                        TarArkivoEntryAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
+                PosixFileAttributes linkPosixAttributes = Files.readAttributes(
+                        link,
+                        PosixFileAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
                 assertEquals(true, linkAttributes.isSymbolicLink());
                 assertEquals(0754, linkAttributes.mode());
                 assertEquals(linkPermissions, linkPosixAttributes.permissions());
+                TarArkivoEntryAttributeView followedView = Objects.requireNonNull(
+                        Files.getFileAttributeView(link, TarArkivoEntryAttributeView.class)
+                );
+                TarArkivoEntryAttributeView linkView = Objects.requireNonNull(Files.getFileAttributeView(
+                        link,
+                        TarArkivoEntryAttributeView.class,
+                        LinkOption.NOFOLLOW_LINKS
+                ));
+                assertEquals(true, followedView.readAttributes().isRegularFile());
+                assertEquals(true, linkView.readAttributes().isSymbolicLink());
+                assertEquals(linkPermissions, Objects.requireNonNull(Files.getFileAttributeView(
+                        link,
+                        PosixFileAttributeView.class,
+                        LinkOption.NOFOLLOW_LINKS
+                )).readAttributes().permissions());
                 assertEquals(fileSystem.getPath("dir/hello.txt"), Files.readSymbolicLink(link));
+                assertArrayEquals(content, Files.readAllBytes(link));
 
                 Path hardLink = fileSystem.getPath("/hard-link");
                 TarArkivoEntryAttributes hardLinkAttributes =
@@ -553,6 +594,8 @@ public final class TarArkivoStreamingReaderTest {
         try {
             try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
                 writeStreamingFile(writer, "keep.txt", keepContent);
+                writer.beginSymbolicLink("link", "keep.txt");
+                writer.endEntry();
                 writeStreamingFile(writer, "remove.txt", "remove".getBytes(StandardCharsets.UTF_8));
                 writer.beginDirectory("dir");
                 writer.endEntry();
@@ -575,6 +618,11 @@ public final class TarArkivoStreamingReaderTest {
                 assertEquals(false, fileSystem.isReadOnly());
                 Path keep = fileSystem.getPath("/keep.txt");
                 assertArrayEquals(keepContent, Files.readAllBytes(keep));
+                assertThrows(
+                        ProviderMismatchException.class,
+                        () -> fileSystem.provider().move(keep, archivePath)
+                );
+                assertArrayEquals(keepContent, Files.readAllBytes(keep));
                 try (SeekableByteChannel channel = Files.newByteChannel(
                         keep,
                         Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
@@ -591,11 +639,18 @@ public final class TarArkivoStreamingReaderTest {
                 TarArkivoEntryAttributeView tarView =
                         Objects.requireNonNull(Files.getFileAttributeView(keep, TarArkivoEntryAttributeView.class));
                 tarView.setTimes(modifiedTime, modifiedTime, modifiedTime);
-                tarView.setUserId(1234L);
                 tarView.setGroupId(5678L);
                 tarView.setMode(0640);
                 tarView.setUserName("update-user");
                 tarView.setGroupName("update-group");
+                Path link = fileSystem.getPath("/link");
+                Objects.requireNonNull(Files.getFileAttributeView(link, TarArkivoEntryAttributeView.class))
+                        .setUserId(1234L);
+                Objects.requireNonNull(Files.getFileAttributeView(
+                        link,
+                        TarArkivoEntryAttributeView.class,
+                        LinkOption.NOFOLLOW_LINKS
+                )).setUserId(4321L);
                 Files.move(
                         fileSystem.getPath("/replacement.txt"),
                         fileSystem.getPath("/target.txt"),
@@ -618,6 +673,11 @@ public final class TarArkivoStreamingReaderTest {
                 assertEquals(0640, attributes.mode());
                 assertEquals("update-user", attributes.userName());
                 assertEquals("update-group", attributes.groupName());
+                assertEquals(4321L, Files.readAttributes(
+                        fileSystem.getPath("/link"),
+                        TarArkivoEntryAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                ).userId());
 
                 assertEquals(false, Files.exists(fileSystem.getPath("/remove.txt")));
                 assertEquals(false, Files.exists(fileSystem.getPath("/source.txt")));
@@ -662,6 +722,7 @@ public final class TarArkivoStreamingReaderTest {
             assertEquals(
                     List.of(
                             "keep.txt",
+                            "link",
                             "renamed/",
                             "renamed/child.txt",
                             "hard.txt",

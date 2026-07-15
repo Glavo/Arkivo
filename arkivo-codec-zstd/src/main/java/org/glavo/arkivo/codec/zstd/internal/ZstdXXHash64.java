@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 package org.glavo.arkivo.codec.zstd.internal;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -94,14 +95,14 @@ final class ZstdXXHash64 {
         int offset = 0;
         int remaining = pendingSize;
         while (remaining >= 8) {
-            long lane = round(0L, readLong(pending, offset));
+            long lane = round(0L, ByteArrayAccess.readLongLittleEndian(pending, offset));
             hash ^= lane;
             hash = Long.rotateLeft(hash, 27) * PRIME1 + PRIME4;
             offset += 8;
             remaining -= 8;
         }
         if (remaining >= 4) {
-            hash ^= Integer.toUnsignedLong(readInt(pending, offset)) * PRIME1;
+            hash ^= Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(pending, offset)) * PRIME1;
             hash = Long.rotateLeft(hash, 23) * PRIME2 + PRIME3;
             offset += 4;
             remaining -= 4;
@@ -120,10 +121,10 @@ final class ZstdXXHash64 {
 
     /// Processes one complete 32-byte stripe.
     private void processStripe(byte[] source, int offset) {
-        accumulator1 = round(accumulator1, readLong(source, offset));
-        accumulator2 = round(accumulator2, readLong(source, offset + 8));
-        accumulator3 = round(accumulator3, readLong(source, offset + 16));
-        accumulator4 = round(accumulator4, readLong(source, offset + 24));
+        accumulator1 = round(accumulator1, ByteArrayAccess.readLongLittleEndian(source, offset));
+        accumulator2 = round(accumulator2, ByteArrayAccess.readLongLittleEndian(source, offset + 8));
+        accumulator3 = round(accumulator3, ByteArrayAccess.readLongLittleEndian(source, offset + 16));
+        accumulator4 = round(accumulator4, ByteArrayAccess.readLongLittleEndian(source, offset + 24));
     }
 
     /// Mixes one input lane into an accumulator.
@@ -139,17 +140,4 @@ final class ZstdXXHash64 {
         return hash * PRIME1 + PRIME4;
     }
 
-    /// Reads a little-endian 64-bit value.
-    private static long readLong(byte[] source, int offset) {
-        return Integer.toUnsignedLong(readInt(source, offset))
-                | Integer.toUnsignedLong(readInt(source, offset + 4)) << 32;
-    }
-
-    /// Reads a little-endian 32-bit value.
-    private static int readInt(byte[] source, int offset) {
-        return Byte.toUnsignedInt(source[offset])
-                | Byte.toUnsignedInt(source[offset + 1]) << 8
-                | Byte.toUnsignedInt(source[offset + 2]) << 16
-                | source[offset + 3] << 24;
-    }
 }

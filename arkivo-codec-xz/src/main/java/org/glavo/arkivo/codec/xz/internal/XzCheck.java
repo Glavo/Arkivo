@@ -55,6 +55,19 @@ final class XzCheck {
         };
     }
 
+    /// Returns the format-defined field size for any valid XZ Check ID.
+    static int sizeOf(int type) throws IOException {
+        return switch (type) {
+            case 0 -> 0;
+            case 1, 2, 3 -> 4;
+            case 4, 5, 6 -> 8;
+            case 7, 8, 9 -> 16;
+            case 10, 11, 12 -> 32;
+            case 13, 14, 15 -> 64;
+            default -> throw new IOException("Invalid XZ integrity check type: " + type);
+        };
+    }
+
     /// Returns the encoded check size.
     int size() {
         return size;

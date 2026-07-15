@@ -28,6 +28,9 @@ public enum SevenZipCompressionMethod {
     /// Compresses each non-empty entry with raw Deflate64.
     DEFLATE64("deflate64"),
 
+    /// Compresses each non-empty entry with PPMd7 Variant H.
+    PPMD("ppmd"),
+
     /// Compresses each non-empty entry with Zstandard.
     ZSTANDARD("zstd");
 

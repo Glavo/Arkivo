@@ -17,6 +17,7 @@ The primary API surface should be based on Java NIO:
 The project should use a multi-module layout.
 
 ```text
+arkivo-base
 arkivo-archive
 arkivo-codec
 arkivo-codec-all
@@ -40,6 +41,8 @@ arkivo-archive-rar
 arkivo-all
 ```
 
+`arkivo-base` contains internal low-level primitives shared by implementation modules without exposing a public API.
+
 `arkivo-archive` should contain shared archive-format discovery, reusable `FileSystem` support, password and volume-source contracts, and archive-oriented NIO utilities.
 
 `arkivo-codec` should contain codec APIs, service discovery, reusable byte-transform support, and codec-oriented NIO utilities without depending on archive modules.
@@ -56,10 +59,21 @@ arkivo-all
 
 The core `FileSystem` abstractions and reusable support classes belong in `arkivo-archive`, while each concrete archive `FileSystem` implementation belongs in the corresponding format module.
 
+The qualified `org.glavo.arkivo.archive.internal` package centralizes reusable archive NIO state machines, including
+slash-separated paths, fixed directory streams, immutable byte-array channels, forward-only output channels, principal
+implementations, POSIX conversion, managed source adapters, and staged random-access body channels with shared access,
+append, change-tracking, and completion semantics. Indexed content storage also shares identity ownership, bounded
+transfers, empty-body adapters, default storage selection, and retryable open-failure cleanup. Format modules retain
+only behavior coupled to their container metadata, storage ownership, or encoding rules. Installed archive file system
+providers share nested-URI parsing, percent-decoded entry paths, atomic instance publication, duplicate-open rejection,
+stale-instance recovery, and close-driven unregistration across AR, TAR, ZIP, 7z, and RAR.
+
 Published JPMS descriptors mirror Gradle API exposure. Archive-format modules transitively expose `arkivo-archive`,
 codec implementation modules transitively expose `arkivo-codec`, and implementation-only dependencies remain
-non-transitive. Aggregate verification checks the exact public and qualified exports, transitive requirements, service
-uses, and service providers of every packaged Arkivo module.
+non-transitive. Staged Maven verification derives Arkivo dependency scopes from each packaged module descriptor, so
+`requires transitive` dependencies must use Maven `compile` scope while ordinary `requires` dependencies use `runtime`
+scope. Aggregate verification also checks the exact public and qualified exports, transitive requirements, service uses,
+and service providers of every packaged Arkivo module.
 
 The aggregate API boundary suite records the reviewed public type set and inspects every public and protected class,
 field, constructor, method, generic, record, exception, and sealed-type signature. Public signatures may use only JDK
@@ -164,9 +178,30 @@ WritableByteChannel
 ByteChannel
 ```
 
-Convenience methods may support `InputStream` and `OutputStream`, but these should be adapters over the channel-based implementation.
+Convenience methods may support `InputStream` and `OutputStream`, but these should be adapters over the channel-based
+implementation. Arkivo's pure-Java BZip2, Deflate64, XZ, LZMA-family, PPMd, and Zstandard codecs maintain only
+channel-first encoder and decoder state machines; their stream convenience methods use the shared codec adapters rather
+than separate format implementations.
+
+Fixed `ByteBuffer` operations accept heap and direct buffers in any source and target combination, including
+read-only sources and nonzero buffer ranges. Targets must be writable, and one buffer instance cannot serve as both
+source and target. Configured and unconfigured overloads follow the same validation and exception contract.
 
 `CompressionCodecs` should open encoder and decoder contexts by stable codec name and should automatically open decoders for streams with reliable signatures. Context factories should apply explicit channel ownership consistently during lookup, detection, setup, and close. Named channel transfers should retain caller endpoints, while stream adapters should own their input or output stream.
+
+Zstandard signature detection recognizes the standard frame magic and all sixteen skippable-frame identifiers without
+changing the probe buffer. Generic decoder factories accept streams beginning with skippable frames, and incremental
+`STOP_AT_FRAME` decoding reports each skippable frame as a distinct boundary while preserving prefetched later frames.
+The Zstandard codec also exposes explicit standard and magicless frame formats across channel, buffer, and frame-
+inspection APIs. Magicless streams require caller selection and do not participate in signature detection. Decoder
+checksum policy verifies XXH64 trailers by default or consumes them without verification when `ChecksumMode.DISABLED` is
+selected, preserving subsequent concatenated-frame boundaries in either physical format.
+
+XZ exposes the same decompression checksum policy for optional Block Checks. Default and enabled modes verify every
+supported Check, while disabled mode consumes the format-defined Check field without calculating it and can therefore
+decode future Check IDs whose algorithms are not yet implemented. Stream, Block Header, Index, and Footer CRC validation
+remains mandatory in every mode because those checks protect the container structure rather than optional content
+integrity.
 
 Initial compression formats:
 
@@ -186,6 +221,33 @@ Reading entry contents should use standard NIO operations such as `Files.newByte
 
 Writing and editing archive contents should use standard NIO operations such as `Files.write`, `Files.copy`, `Files.createDirectories`, `Files.delete`, and `Files.move`.
 
+Archive paths resolve symbolic links component by component in `Path.toRealPath()`, preserve the normalized lexical path
+when `NOFOLLOW_LINKS` is requested, detect link cycles, and use resolved paths for `Files.isSameFile` identity checks.
+Readable archive file systems follow symbolic links for input streams, read-only byte channels, directory streams, and
+typed or named attribute reads by default. Attribute reads with `NOFOLLOW_LINKS` expose the link itself, and
+`Files.readSymbolicLink` remains the link-target text API. File attribute views retain their link traversal policy and
+resolve links for each operation; writable view setters apply that same policy to the target or link entry. Forward-only
+write file systems do not imply readable entry bodies merely because their paths and metadata are visible.
+
+Archive file system providers share non-recursive copy behavior for regular files, directories, and symbolic links.
+Copies follow symbolic links by default, preserve links with `NOFOLLOW_LINKS`, honor `REPLACE_EXISTING`, and transfer
+basic timestamps with `COPY_ATTRIBUTES`. Writable archive targets receive supported timestamps while the entry header
+is created so local entry records and central metadata remain consistent.
+
+Moves within one writable archive file system rename complete entry subtrees and validate every collision before
+changing session state. ZIP complete-rewrite moves update both local and central header names while preserving the
+original compressed or encrypted payload bytes, descriptors, CRC values, comments, and unrelated extra fields.
+Ordinary cross-provider `Files.move` operations use the JDK copy-then-delete path, while `ATOMIC_MOVE` remains limited
+to one archive namespace.
+
+ZIP complete-rewrite update sessions persist last-modified timestamps, POSIX permissions, internal and external file
+attributes, and raw entry comments for both source entries and entries written during the session. Timestamp updates
+rewrite matching local and central header fields while retaining compressed or encrypted payload bytes exactly.
+Traditional encrypted entries using a timestamp-derived data-descriptor verification byte reject changes that would
+alter that byte, because preserving the encrypted body would otherwise make password verification fail.
+Compression, encryption, sizes, checksums, and raw extra fields remain write-time settings because changing them after
+an entry body is complete can require body re-encoding or invalidate generated ZIP64 and encryption metadata.
+
 Entry metadata should use standard NIO file attributes and format-specific attribute views:
 
 ```java
@@ -197,11 +259,12 @@ ZIP-specific attributes should expose both typed common ZIP properties and raw l
 
 ZIP file systems should expose the optional preamble bytes stored before the ZIP archive body, such as self-extracting executable stubs, through channel-based APIs instead of forcing the content into memory.
 
-ZIP BZip2, Deflate64, XZ, and Zstandard entry reading and writing use the general codec context API and discover
-optional providers at runtime. The ZIP module depends on `arkivo-codec` for contracts without depending directly on
-those codec implementations or their native dependencies. Streaming BZip2, XZ, and Zstandard entries with data
-descriptors preserve exact frame boundaries through decoder progress and unconsumed-input reporting. ZIP LZMA retains
-a container adapter because its property header and raw EOS framing differ from the LZMA-alone codec contract.
+ZIP Deflate, BZip2, Deflate64, raw LZMA, XZ, and Zstandard entry reading and writing use the general codec context API.
+The ZIP module has a non-transitive implementation dependency on `arkivo-codec-deflate` for its mandatory core method
+and depends on `arkivo-codec` while discovering the other codec providers at runtime. Streaming Deflate, BZip2,
+Deflate64, raw LZMA, XZ, and Zstandard entries with data descriptors preserve exact compressed-stream boundaries through
+decoder progress and unconsumed-input reporting. ZIP LZMA retains a container adapter for its property header while the
+raw EOS-framed payload uses the optional LZMA codec provider.
 
 Streaming archive APIs use channel-first reader and writer format contracts for forward-only access. AR, TAR, and ZIP expose streaming readers and writers; 7z exposes a streaming writer backed by seekable staging, while RAR exposes a read-only streaming reader.
 Common archive read options limit logical entry count, individual entry size, total logical entry size, and cumulative
@@ -210,6 +273,11 @@ before entry data is exposed; forward-only entries whose size is absent from met
 bytes, including skipped bytes. Fixed and variable metadata regions are charged before buffering or decoded expansion.
 Structured `ArkivoReadLimitException` failures remain sticky for the lifetime of a reader so parsing cannot resume
 after a configured boundary is exceeded.
+
+RAR file systems build a metadata-only index at open time and lazily decode each readable body through bounded edit
+storage on first access. Repeated reads and RAR5 content redirections share the materialized body by identity. Lazy
+solid-entry access rescans the owned repeatable volume source and reconstructs preceding compression history without
+retaining unrelated bodies; cached storage cleanup waits for active body channels and remains retryable after failures.
 
 AR, TAR, single-volume ZIP, and single-volume 7z complete-rewrite updates support both path-backed archives and arbitrary repeatable seekable channel sources. Non-path update sessions require an explicit commit target and can publish a derived archive without mutating the source; fixed path targets accept the absent source path while source-replacement targets reject it.
 
@@ -229,14 +297,18 @@ TAR channel-source updates preserve either the explicitly selected compression c
 
 ZIP channel-source updates borrow the source while indexing it, retain ownership through commit, preserve preamble bytes and surviving local records through exact range copies, and rebuild the central directory with relocated offsets. Complete-rewrite sessions retain a read-only companion for surviving entries and stage uncompressed bodies for immediate reads of completed replacements and additions. General volume sources remain read-only through `open`; explicit volume-source updates publish a complete replacement through a transactional volume target with a caller-selected split size and disk-relative local-header metadata.
 
+ZIP complete-rewrite entry channels stage uncompressed bodies through `ArkivoEditStorage` before emitting replacement
+local records. They support combined read/write access, random positioning, append, truncation, and standard create
+semantics while keeping direct creation and append-only output channels forward-only.
+
 7z channel-source updates stage decoded entry bodies through edit storage and re-encode surviving entries with the selected compression, filters, solid policy, password, and header-encryption policy. General volume sources remain read-only through the open API; explicit volume-source updates use a transactional volume target and a caller-selected split size.
 
 7z compression pipelines support ordered chains of Delta and BCJ executable filters, including x86, PowerPC, IA-64, ARM, ARM-Thumb, SPARC, ARM64, and RISC-V transforms. ARM64 and RISC-V use their modern single-byte 7z method IDs. BCJ readers and writers support optional unsigned 32-bit start offsets and enforce architecture-specific alignment. BCJ2 is exposed as a sole graph filter: output is split into MAIN, CALL, JUMP, and range branches, the first three branches use the selected compression, and every physical branch is encrypted independently when data encryption is enabled. BCJ2 folders use temporary-file staging to preserve contiguous physical streams with bounded heap use.
 
-7z Deflate, Deflate64, BZip2, and Zstandard coder reading and writing use the general codec context API and discover optional
+7z Deflate, Deflate64, BZip2, raw LZMA, LZMA2, and Zstandard coder reading and writing use the general codec context API and discover optional
 providers at runtime. PPMd7 reading uses the same optional codec discovery and passes the coder's model order, memory size,
 and exact unpack size as typed raw-stream options. Decoder contexts enforce the coder's declared unpack size. Raw LZMA and
-LZMA2 remain 7z-specific container adapters because their coder properties and framing differ from the standalone LZMA codec contract.
+LZMA2 properties remain 7z metadata while the payloads are handled by optional raw codec providers.
 
 7z entry attributes expose immutable structured coder graphs in declaration order, including raw coder properties, input and output stream ranges, bind pairs, physical packed-stream ordinals, per-output unpack sizes, and the final decoded output.
 
@@ -325,15 +397,19 @@ Concrete archive file systems should extend `ArkivoFileSystem`.
 Public archive file system classes may be sealed abstract API types, with concrete implementations kept in the
 format module's internal package so implementation state and helper methods are not exposed as public API.
 
-Formats may also register JDK `FileSystemProvider` implementations when the integration is useful:
+Every installed archive format module registers its JDK `FileSystemProvider` implementation for both JPMS and
+classpath service discovery:
 
 ```java
 FileSystems.newFileSystem(archivePath)
 ```
 
-The provider implementation and registration should live in the concrete format module, not in a shared filesystem module.
+The provider implementation and registration live in the concrete format module, while URI parsing, path format
+claiming, and registered instance lifecycle behavior remain shared archive infrastructure.
 
-A format module should not register an unfinished `FileSystemProvider` service, because an installed provider participates in global JDK provider discovery.
+Provider integration tests open AR, TAR, ZIP, 7z, and RAR through `FileSystems.newFileSystem(URI, ...)`, resolve entry
+URIs through `Path.of(URI)`, exercise content and extension routing through `FileSystems.newFileSystem(Path)`, and
+verify discovery from packaged JARs on both the classpath and module path.
 
 Provider URI schemes should use `arkivo+format`, such as `arkivo+zip`, to keep Arkivo providers distinct while making the concrete archive format visible in the scheme.
 
@@ -348,6 +424,16 @@ Read-only file systems should allow concurrent entry reads. Editable file system
 Reads should observe the entry state captured when the channel or attribute snapshot is opened. Entries that are currently being written should not be readable unless a concrete format implementation explicitly documents stronger behavior.
 
 Closing a file system should synchronize with active operations and prevent new operations from starting.
+
+The aggregate concurrency suite generates AR, TAR, ZIP, solid 7z, and stored RAR4 archives without binary fixtures,
+repeatedly reads them from eight simultaneous tasks, and verifies every default file system honors `CONCURRENT_READ`.
+The same suite proves real provider operations exclude close until an in-flight directory read finishes and verifies
+`STRICT` close invalidates open entry channels, input streams, and directory iterators for every format.
+
+The aggregate mutation suite verifies AR, TAR, ZIP, and 7z update sessions retain the state captured by open entry
+channels, directory streams, and attribute snapshots across replacement, deletion, move, addition, and metadata
+changes, then verifies the committed state after reopening. AR, TAR, and 7z reject new reads of an entry while its
+replacement channel is open; ZIP explicitly exposes the preceding committed state until that replacement commits.
 
 ## Performance Requirements
 
@@ -372,7 +458,10 @@ Public APIs should remain clear and immutable, but internal data structures may 
 The aggregate benchmark source set uses JMH for channel-first codec throughput, ZIP and 7z indexing, and concurrent
 random-entry reads. Benchmarks are compiled by the normal quality gate but run separately so machine-dependent timing
 does not make builds flaky. Deterministic gates verify that 50,000 ZIP entries can be indexed with a 48 MiB maximum
-heap and repeatedly read ZIP and solid 7z entries from eight concurrent tasks without corruption.
+heap, that 80 MiB decoded ZIP and 7z entries and a 64 MiB RAR entry can be opened and randomly read with a 32 MiB
+maximum heap through hybrid `ArkivoEditStorage` staging, and that ZIP and solid 7z entries can be repeatedly read from
+eight concurrent tasks without corruption. The RAR probe also verifies that metadata-only file-system opening stages no
+entry body before its first content access.
 
 Possible internal implementation types:
 
@@ -468,15 +557,16 @@ encrypted headers, split publication, and complete-rewrite updates. An optional 
 official 7-Zip CLI fully test generated BCJ2 archives without requiring a checked-in binary fixture.
 
 Deterministic malformed-input verification generates archive and codec fixtures at test time, applies representative
-truncations and fixed-seed bit mutations, and fully consumes every accepted entry under explicit output, metadata, and
-time bounds. The suite covers archive detection, random-access file systems, forward-only readers where supported, and
-all installed bidirectional codec decoders. Corrupt input must produce checked I/O failures rather than leaking parser
-indexing, argument-validation, or native-library runtime exceptions.
+truncations and 128 fixed-seed bit mutations per format, and fully consumes every accepted entry under explicit output,
+metadata, and time bounds. Generated AR, TAR, ZIP, 7z, and stored RAR4 archives cover detection, random-access file
+systems, and forward-only readers where supported; the same failure contract covers every installed bidirectional codec
+decoder. Corrupt input must produce checked I/O failures rather than leaking parser indexing, argument-validation,
+unsupported-capability, native-library, or resource-exhaustion runtime failures.
 
 Opt-in real-world tests resolve immutable upstream source releases and individual fixtures through a project-local
 content-addressed cache outside `build`, verify size and SHA-256 before use, and stage only reviewed data in disposable
 build outputs. The ordinary test and clean lifecycles do not access the network or delete the persistent cache. Zstandard
-pins the official 1.5.7 golden compression, decompression, malformed-frame, dictionary, and dictionary-input vectors;
+pins the official 1.5.7 golden compression, decompression, malformed-frame, dictionary, and dictionary-input vectors, including the zero-weight entropy-table regression;
 XZ pins the XZ Utils 5.8.3 valid, malformed, and unsupported XZ and LZMA_Alone decoder vectors; and BZip2 pins the
 official 1.0.8 reference samples for exact decoding, block-size boundary encoding, and concatenated streams. Valid
 decompression outputs are checked against upstream reference bytes or sizes and SHA-256 values produced by the

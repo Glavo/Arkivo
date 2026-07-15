@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.internal.ReadOnlyByteArrayChannel;
+
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -23,7 +25,7 @@ public final class SevenZipFileSliceChannelTest {
     @Test
     public void rejectsOverflowingAbsoluteReadPosition() throws IOException {
         try (SevenZipFileSliceChannel channel = new SevenZipFileSliceChannel(
-                new SevenZipByteChannel(new byte[]{1}),
+                new ReadOnlyByteArrayChannel(new byte[]{1}),
                 Long.MAX_VALUE - 1L,
                 Long.MAX_VALUE
         )) {
@@ -39,7 +41,7 @@ public final class SevenZipFileSliceChannelTest {
     @Test
     public void emptyReadAtEndOfSliceReturnsZero() throws IOException {
         try (SevenZipFileSliceChannel channel = new SevenZipFileSliceChannel(
-                new SevenZipByteChannel(new byte[]{1}),
+                new ReadOnlyByteArrayChannel(new byte[]{1}),
                 0,
                 1
         )) {
@@ -53,7 +55,7 @@ public final class SevenZipFileSliceChannelTest {
     @Test
     public void operationsAfterCloseAreRejectedAsClosed() throws IOException {
         SevenZipFileSliceChannel channel = new SevenZipFileSliceChannel(
-                new SevenZipByteChannel(new byte[]{1, 2, 3}),
+                new ReadOnlyByteArrayChannel(new byte[]{1, 2, 3}),
                 0,
                 3
         );

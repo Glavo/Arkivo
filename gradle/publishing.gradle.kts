@@ -1,3 +1,4 @@
+import java.lang.module.ModuleDescriptor
 import java.util.jar.JarFile
 import java.util.zip.ZipFile
 import javax.xml.parsers.DocumentBuilderFactory
@@ -337,7 +338,8 @@ val expectedDependencies = mapOf(
     "arkivo-archive-ar" to setOf("org.glavo:arkivo-archive:compile:$publicationVersion"),
     "arkivo-archive-rar" to setOf(
         "org.glavo:arkivo-archive:compile:$publicationVersion",
-        "org.glavo:arkivo-codec-ppmd:compile:$publicationVersion"
+        "org.glavo:arkivo-base:runtime:$publicationVersion",
+        "org.glavo:arkivo-codec-ppmd:runtime:$publicationVersion"
     ),
     "arkivo-archive-tar" to setOf(
         "org.glavo:arkivo-archive:compile:$publicationVersion",
@@ -345,10 +347,13 @@ val expectedDependencies = mapOf(
     ),
     "arkivo-archive-zip" to setOf(
         "org.glavo:arkivo-archive:compile:$publicationVersion",
-        "org.glavo:arkivo-codec:runtime:$publicationVersion"
+        "org.glavo:arkivo-base:runtime:$publicationVersion",
+        "org.glavo:arkivo-codec:runtime:$publicationVersion",
+        "org.glavo:arkivo-codec-deflate:runtime:$publicationVersion"
     ),
     "arkivo-archive-7z" to setOf(
         "org.glavo:arkivo-archive:compile:$publicationVersion",
+        "org.glavo:arkivo-base:runtime:$publicationVersion",
         "org.glavo:arkivo-codec:runtime:$publicationVersion",
         "org.glavo:arkivo-codec-bcj:runtime:$publicationVersion",
         "org.glavo:arkivo-codec-delta:runtime:$publicationVersion"
@@ -368,7 +373,10 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-codec-zlib:compile:$publicationVersion",
         "org.glavo:arkivo-codec-zstd:compile:$publicationVersion"
     ),
-    "arkivo-codec-bcj" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
+    "arkivo-codec-bcj" to setOf(
+        "org.glavo:arkivo-base:runtime:$publicationVersion",
+        "org.glavo:arkivo-codec:compile:$publicationVersion"
+    ),
     "arkivo-codec-bzip2" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
     "arkivo-codec-deflate" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
     "arkivo-codec-deflate64" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
@@ -383,7 +391,10 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-codec-lzma:runtime:$publicationVersion"
     ),
     "arkivo-codec-zlib" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
-    "arkivo-codec-zstd" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion")
+    "arkivo-codec-zstd" to setOf(
+        "org.glavo:arkivo-base:runtime:$publicationVersion",
+        "org.glavo:arkivo-codec:compile:$publicationVersion"
+    )
 )
 
 check(expectedDependencies.keys == publicationMetadata.keys) {
@@ -410,6 +421,36 @@ val verifyMavenPublications by tasks.registering {
             setFeature("http://xml.org/sax/features/external-parameter-entities", false)
         }
         val version = publicationVersion
+        fun readModuleDescriptor(file: File): ModuleDescriptor =
+            JarFile(file).use { archive ->
+                val entry = checkNotNull(archive.getJarEntry("module-info.class")) {
+                    "${file.name} does not contain module-info.class"
+                }
+                archive.getInputStream(entry).use { input -> ModuleDescriptor.read(input) }
+            }
+
+        val moduleNamesByArtifact = publicationMetadata.keys.associateWith { artifactId ->
+            val artifactDirectory = stagingDirectory.get().asFile.resolve(
+                "org/glavo/$artifactId/$version"
+            )
+            val mainJars = artifactDirectory.listFiles()?.filter { file ->
+                file.isFile &&
+                        file.name.endsWith(".jar") &&
+                        !file.name.endsWith("-sources.jar") &&
+                        !file.name.endsWith("-javadoc.jar")
+            }.orEmpty()
+            check(mainJars.size == 1) {
+                "$artifactId has ${mainJars.size} main JAR artifacts: ${mainJars.map { it.name }}"
+            }
+            readModuleDescriptor(mainJars.single()).name()
+        }
+        val artifactsByModuleName = moduleNamesByArtifact.entries.associate { (artifactId, moduleName) ->
+            moduleName to artifactId
+        }
+        check(artifactsByModuleName.size == moduleNamesByArtifact.size) {
+            "Published Arkivo modules must have unique JPMS names"
+        }
+
         publicationMetadata.forEach { (artifactId, metadata) ->
             val artifactDirectory = stagingDirectory.get().asFile.resolve(
                 "org/glavo/$artifactId/$version"
@@ -461,11 +502,7 @@ val verifyMavenPublications by tasks.registering {
                     }
                 }
             }
-            JarFile(mainJar).use { archive ->
-                check(archive.getEntry("module-info.class") != null) {
-                    "${mainJar.name} does not contain module-info.class"
-                }
-            }
+            val moduleDescriptor = readModuleDescriptor(mainJar)
             JarFile(sourcesJar).use { archive ->
                 check(archive.getEntry("module-info.java") != null) {
                     "${sourcesJar.name} does not contain module-info.java"
@@ -555,6 +592,29 @@ val verifyMavenPublications by tasks.registering {
             }
             check(actualDependencies.none { "annotations" in it || "junit" in it }) {
                 "$artifactId leaks build-only dependencies into its POM"
+            }
+
+            val actualArkivoDependencies = actualDependencies.mapNotNullTo(mutableSetOf()) { coordinate ->
+                val parts = coordinate.split(':')
+                if (parts[0] == "org.glavo" && parts[1] in moduleNamesByArtifact) {
+                    "${parts[1]}:${parts[2]}"
+                } else {
+                    null
+                }
+            }
+            val expectedArkivoDependencies = moduleDescriptor.requires().mapNotNullTo(mutableSetOf()) { requirement ->
+                val dependencyArtifact = artifactsByModuleName[requirement.name()]
+                    ?: return@mapNotNullTo null
+                val scope = if (ModuleDescriptor.Requires.Modifier.TRANSITIVE in requirement.modifiers()) {
+                    "compile"
+                } else {
+                    "runtime"
+                }
+                "$dependencyArtifact:$scope"
+            }
+            check(actualArkivoDependencies == expectedArkivoDependencies) {
+                "$artifactId publishes Arkivo dependency scopes $actualArkivoDependencies, but " +
+                        "module ${moduleDescriptor.name()} requires $expectedArkivoDependencies"
             }
         }
     }

@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.bcj;
 
 import org.glavo.arkivo.codec.transform.ByteTransform;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -52,38 +53,6 @@ public final class BCJTransforms {
     /// Creates a little-endian RISC-V BCJ transform.
     public static ByteTransform riscV(boolean encoder, int startOffset) {
         return new RiscVTransform(encoder, startOffset);
-    }
-
-    /// Returns a little-endian 32-bit value.
-    private static int readIntLittleEndian(byte[] buffer, int offset) {
-        return Byte.toUnsignedInt(buffer[offset])
-                | Byte.toUnsignedInt(buffer[offset + 1]) << 8
-                | Byte.toUnsignedInt(buffer[offset + 2]) << 16
-                | buffer[offset + 3] << 24;
-    }
-
-    /// Stores a little-endian 32-bit value.
-    private static void writeIntLittleEndian(byte[] buffer, int offset, int value) {
-        buffer[offset] = (byte) value;
-        buffer[offset + 1] = (byte) (value >>> 8);
-        buffer[offset + 2] = (byte) (value >>> 16);
-        buffer[offset + 3] = (byte) (value >>> 24);
-    }
-
-    /// Returns a big-endian 32-bit value.
-    private static int readIntBigEndian(byte[] buffer, int offset) {
-        return buffer[offset] << 24
-                | Byte.toUnsignedInt(buffer[offset + 1]) << 16
-                | Byte.toUnsignedInt(buffer[offset + 2]) << 8
-                | Byte.toUnsignedInt(buffer[offset + 3]);
-    }
-
-    /// Stores a big-endian 32-bit value.
-    private static void writeIntBigEndian(byte[] buffer, int offset, int value) {
-        buffer[offset] = (byte) (value >>> 24);
-        buffer[offset + 1] = (byte) (value >>> 16);
-        buffer[offset + 2] = (byte) (value >>> 8);
-        buffer[offset + 3] = (byte) value;
     }
 
     /// Converts x86 CALL and JMP relative addresses.
@@ -139,7 +108,7 @@ public final class BCJTransforms {
                 previousCandidate = cursor;
 
                 if (isSignExtensionByte(buffer[cursor + 4])) {
-                    int source = readIntLittleEndian(buffer, cursor + 1);
+                    int source = ByteArrayAccess.readIntLittleEndian(buffer, cursor + 1);
                     int converted;
                     while (true) {
                         int instructionPosition = streamPosition + cursor - offset;
@@ -154,7 +123,7 @@ public final class BCJTransforms {
                         source = converted ^ ((1 << (32 - bitIndex)) - 1);
                     }
                     converted = converted << 7 >> 7;
-                    writeIntLittleEndian(buffer, cursor + 1, converted);
+                    ByteArrayAccess.writeIntLittleEndian(buffer, cursor + 1, converted);
                     cursor += 4;
                 } else {
                     previousMask = previousMask << 1 | 1;
@@ -196,11 +165,11 @@ public final class BCJTransforms {
             int limit = offset + length - 4;
             for (cursor = offset; cursor <= limit; cursor += 4) {
                 if ((buffer[cursor] & 0xfc) == 0x48 && (buffer[cursor + 3] & 3) == 1) {
-                    int instruction = readIntBigEndian(buffer, cursor);
+                    int instruction = ByteArrayAccess.readIntBigEndian(buffer, cursor);
                     int position = streamPosition + cursor - offset;
                     int adjustment = encoder ? position : -position;
                     int converted = 0x48000001 | (instruction + adjustment & 0x03fffffc);
-                    writeIntBigEndian(buffer, cursor, converted);
+                    ByteArrayAccess.writeIntBigEndian(buffer, cursor, converted);
                 }
             }
             int processed = cursor - offset;
@@ -383,12 +352,12 @@ public final class BCJTransforms {
             for (cursor = offset; cursor <= limit; cursor += 4) {
                 if ((buffer[cursor] == 0x40 && (buffer[cursor + 1] & 0xc0) == 0)
                         || (buffer[cursor] == 0x7f && (buffer[cursor + 1] & 0xc0) == 0xc0)) {
-                    int instruction = readIntBigEndian(buffer, cursor);
+                    int instruction = ByteArrayAccess.readIntBigEndian(buffer, cursor);
                     int positionWords = (streamPosition + cursor - offset) >>> 2;
                     int converted = instruction + (encoder ? positionWords : -positionWords);
                     converted = converted << 9 >> 9;
                     converted = 0x40000000 | converted & 0x3fffffff;
-                    writeIntBigEndian(buffer, cursor, converted);
+                    ByteArrayAccess.writeIntBigEndian(buffer, cursor, converted);
                 }
             }
             int processed = cursor - offset;
@@ -421,12 +390,12 @@ public final class BCJTransforms {
                 int high = buffer[index + 3];
                 int instruction;
                 if ((high & 0xfc) == 0x94) {
-                    instruction = readIntLittleEndian(buffer, index);
+                    instruction = ByteArrayAccess.readIntLittleEndian(buffer, index);
                     int pc = (streamPosition + index - offset) >>> 2;
                     int adjusted = encoder ? instruction + pc : instruction - pc;
-                    writeIntLittleEndian(buffer, index, 0x9400_0000 | adjusted & 0x03ff_ffff);
+                    ByteArrayAccess.writeIntLittleEndian(buffer, index, 0x9400_0000 | adjusted & 0x03ff_ffff);
                 } else if ((high & 0x9f) == 0x90) {
-                    instruction = readIntLittleEndian(buffer, index);
+                    instruction = ByteArrayAccess.readIntLittleEndian(buffer, index);
                     int source = instruction >>> 29 & 3 | instruction >>> 3 & 0x001f_fffc;
                     if (((source + 0x0002_0000) & 0x001c_0000) != 0) {
                         continue;
@@ -437,7 +406,7 @@ public final class BCJTransforms {
                     instruction |= (destination & 3) << 29;
                     instruction |= (destination & 0x0003_fffc) << 3;
                     instruction |= -(destination & 0x0002_0000) & 0x00e0_0000;
-                    writeIntLittleEndian(buffer, index, instruction);
+                    ByteArrayAccess.writeIntLittleEndian(buffer, index, instruction);
                 }
             }
             int processed = index - offset;
@@ -480,7 +449,7 @@ public final class BCJTransforms {
                     }
                     index += 2;
                 } else if ((instruction & 0x7f) == 0x17) {
-                    int word = readIntLittleEndian(buffer, index);
+                    int word = ByteArrayAccess.readIntLittleEndian(buffer, index);
                     int consumed = encoder
                             ? encodeAuipc(buffer, offset, index, word)
                             : decodeAuipc(buffer, offset, index, word);
@@ -524,15 +493,15 @@ public final class BCJTransforms {
         /// Encodes one AUIPC candidate and returns the number of bytes that must be skipped.
         private int encodeAuipc(byte[] buffer, int offset, int index, int instruction) {
             if ((instruction & 0x0e80) != 0) {
-                int second = readIntLittleEndian(buffer, index + 4);
+                int second = ByteArrayAccess.readIntLittleEndian(buffer, index + 4);
                 if ((((instruction << 8) ^ second) & 0x000f_8003) != 3) {
                     return 6;
                 }
                 int address = (instruction & 0xffff_f000) + (second >> 20);
                 address += streamPosition + index - offset;
                 instruction = 0x17 | 2 << 7 | second << 12;
-                writeIntLittleEndian(buffer, index, instruction);
-                writeIntBigEndian(buffer, index + 4, address);
+                ByteArrayAccess.writeIntLittleEndian(buffer, index, instruction);
+                ByteArrayAccess.writeIntBigEndian(buffer, index + 4, address);
                 return 8;
             }
 
@@ -540,11 +509,11 @@ public final class BCJTransforms {
             if (((instruction - 0x3100) & 0x3f80) >= (sourceRegister & 0x1d)) {
                 return 4;
             }
-            int address = readIntLittleEndian(buffer, index + 4);
+            int address = ByteArrayAccess.readIntLittleEndian(buffer, index + 4);
             int second = instruction >>> 12 | address << 20;
             instruction = 0x17 | sourceRegister << 7 | address & 0xffff_f000;
-            writeIntLittleEndian(buffer, index, instruction);
-            writeIntLittleEndian(buffer, index + 4, second);
+            ByteArrayAccess.writeIntLittleEndian(buffer, index, instruction);
+            ByteArrayAccess.writeIntLittleEndian(buffer, index + 4, second);
             return 8;
         }
 
@@ -552,7 +521,7 @@ public final class BCJTransforms {
         private int decodeAuipc(byte[] buffer, int offset, int index, int instruction) {
             int second;
             if ((instruction & 0x0e80) != 0) {
-                second = readIntLittleEndian(buffer, index + 4);
+                second = ByteArrayAccess.readIntLittleEndian(buffer, index + 4);
                 if ((((instruction << 8) ^ second) & 0x000f_8003) != 3) {
                     return 6;
                 }
@@ -564,13 +533,13 @@ public final class BCJTransforms {
                 if (((instruction - 0x3100) & 0x3f80) >= (secondSourceRegister & 0x1d)) {
                     return 4;
                 }
-                int address = readIntBigEndian(buffer, index + 4);
+                int address = ByteArrayAccess.readIntBigEndian(buffer, index + 4);
                 address -= streamPosition + index - offset;
                 second = instruction >>> 12 | address << 20;
                 instruction = 0x17 | secondSourceRegister << 7 | address + 0x800 & 0xffff_f000;
             }
-            writeIntLittleEndian(buffer, index, instruction);
-            writeIntLittleEndian(buffer, index + 4, second);
+            ByteArrayAccess.writeIntLittleEndian(buffer, index, instruction);
+            ByteArrayAccess.writeIntLittleEndian(buffer, index + 4, second);
             return 8;
         }
     }

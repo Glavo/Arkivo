@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -27,6 +29,7 @@ public final class ZipOptionalCodecProbe {
 
     /// Checks both entry directions without optional codec implementations on the runtime class path.
     public static void main(String @Unmodifiable [] arguments) throws Exception {
+        requireCoreDeflateCodec();
         for (String codecName : OPTIONAL_CODEC_NAMES) {
             requireMissingCodec(codecName, () -> ZipCompressionCodecs.openDecoder(
                     codecName,
@@ -36,6 +39,30 @@ public final class ZipOptionalCodecProbe {
                     codecName,
                     new ByteArrayOutputStream()
             ));
+        }
+        requireMissingCodec("lzma-raw", () -> ZipCompressionCodecs.openRawLZMADecoder(
+                new ByteArrayInputStream(new byte[0]),
+                0x5d,
+                1L << 20,
+                0L
+        ));
+        requireMissingCodec("lzma-raw", () -> ZipCompressionCodecs.openRawLZMAEncoder(
+                1L << 20,
+                true,
+                new ByteArrayOutputStream()
+        ));
+    }
+
+    /// Requires the mandatory raw Deflate provider to remain available without optional codecs.
+    private static void requireCoreDeflateCodec() throws IOException {
+        try (CompressionDecoder ignoredDecoder = ZipCompressionCodecs.openDecoder(
+                "deflate",
+                new ByteArrayInputStream(new byte[0])
+        ); CompressionEncoder ignoredEncoder = ZipCompressionCodecs.openEncoder(
+                "deflate",
+                new ByteArrayOutputStream()
+        )) {
+            // Opening both directions proves the provider remains in the stripped runtime image.
         }
     }
 

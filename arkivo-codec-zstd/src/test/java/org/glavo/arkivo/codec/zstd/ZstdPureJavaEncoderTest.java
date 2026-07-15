@@ -85,37 +85,6 @@ public final class ZstdPureJavaEncoderTest {
 
         assertEquals(2, literals.type());
         assertEquals(1, literals.streamCount());
-        assertTrue(literals.regeneratedSize() > 512);
-        assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
-        assertArrayEquals(expected, codec.decompress(ByteBuffer.wrap(compressed), expected.length).array());
-    }
-
-    /// Verifies a large Huffman literal section uses four independently sized streams.
-    @Test
-    public void nativeDecoderReadsFourStreamHuffmanLiterals() throws IOException {
-        byte[] expected = huffmanFixture(100, 160, 0x4f75_7220_2026L);
-        ZstdCodec codec = new ZstdCodec();
-        byte[] compressed = compress(codec, expected, CodecOptions.EMPTY);
-        LiteralSectionInfo literals = firstLiteralSection(codec, compressed);
-
-        assertEquals(2, literals.type());
-        assertEquals(4, literals.streamCount());
-        assertTrue(literals.regeneratedSize() > 1023);
-        assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
-        assertArrayEquals(expected, codec.decompress(ByteBuffer.wrap(compressed), expected.length).array());
-        assertTrue(compressed.length < expected.length * 3 / 4);
-    }
-
-    /// Verifies a compact Huffman literal section uses one reverse bitstream.
-    @Test
-    public void nativeDecoderReadsSingleStreamHuffmanLiterals() throws IOException {
-        byte[] expected = huffmanFixture(6, 128, 0x51a9_2026L);
-        ZstdCodec codec = new ZstdCodec();
-        byte[] compressed = compress(codec, expected, CodecOptions.EMPTY);
-        LiteralSectionInfo literals = firstLiteralSection(codec, compressed);
-
-        assertEquals(2, literals.type());
-        assertEquals(1, literals.streamCount());
         assertTrue(literals.regeneratedSize() > 0 && literals.regeneratedSize() <= 1023);
         assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
         assertArrayEquals(expected, codec.decompress(ByteBuffer.wrap(compressed), expected.length).array());
@@ -178,37 +147,6 @@ public final class ZstdPureJavaEncoderTest {
         assertEquals(2, modes.length);
         assertTrue(hasSequenceMode(modes[0], 2));
         assertTrue(hasSequenceMode(modes[1], 3));
-        assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
-        assertArrayEquals(expected, codec.decompress(ByteBuffer.wrap(compressed), expected.length).array());
-        assertTrue(compressed.length < expected.length * 3 / 4);
-    }
-
-    /// Verifies a compact Huffman literal section uses one reverse bitstream.
-    @Test
-    public void nativeDecoderReadsSingleStreamHuffmanLiterals() throws IOException {
-        byte[] expected = huffmanFixture(6, 128, 0x51a9_2026L);
-        ZstdCodec codec = new ZstdCodec();
-        byte[] compressed = compress(codec, expected, CodecOptions.EMPTY);
-        LiteralSectionInfo literals = firstLiteralSection(codec, compressed);
-
-        assertEquals(2, literals.type());
-        assertEquals(1, literals.streamCount());
-        assertTrue(literals.regeneratedSize() > 512);
-        assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
-        assertArrayEquals(expected, codec.decompress(ByteBuffer.wrap(compressed), expected.length).array());
-    }
-
-    /// Verifies a large Huffman literal section uses four independently sized streams.
-    @Test
-    public void nativeDecoderReadsFourStreamHuffmanLiterals() throws IOException {
-        byte[] expected = huffmanFixture(100, 160, 0x4f75_7220_2026L);
-        ZstdCodec codec = new ZstdCodec();
-        byte[] compressed = compress(codec, expected, CodecOptions.EMPTY);
-        LiteralSectionInfo literals = firstLiteralSection(codec, compressed);
-
-        assertEquals(2, literals.type());
-        assertEquals(4, literals.streamCount());
-        assertTrue(literals.regeneratedSize() > 1023);
         assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
         assertArrayEquals(expected, codec.decompress(ByteBuffer.wrap(compressed), expected.length).array());
         assertTrue(compressed.length < expected.length * 3 / 4);
@@ -540,6 +478,29 @@ public final class ZstdPureJavaEncoderTest {
         assertArrayEquals(input, Zstd.decompress(enabled, input.length));
         assertArrayEquals(input, codec.decompress(ByteBuffer.wrap(enabled), input.length).array());
         assertTrue(enabled.length < disabled.length - blockSize / 2);
+    }
+
+    /// Verifies every public LDM tuning option reaches the matcher and remains native-compatible.
+    @Test
+    public void customLongDistanceParametersInteroperate() throws IOException {
+        byte[] input = longDistanceFixture();
+        ZstdCodec codec = new ZstdCodec();
+        CodecOptions options = CodecOptions.builder()
+                .set(ZstdCodec.LONG_DISTANCE_MATCHING, true)
+                .set(ZstdCodec.WINDOW_LOG, 20L)
+                .set(ZstdCodec.HASH_LOG, 18L)
+                .set(ZstdCodec.CHAIN_LOG, 17L)
+                .set(ZstdCodec.SEARCH_LOG, 6L)
+                .set(ZstdCodec.LDM_HASH_LOG, 18L)
+                .set(ZstdCodec.LDM_MIN_MATCH, 32L)
+                .set(ZstdCodec.LDM_BUCKET_SIZE_LOG, 4L)
+                .set(ZstdCodec.LDM_HASH_RATE_LOG, 2L)
+                .build();
+        byte[] compressed = compress(codec, input, options);
+
+        assertArrayEquals(new int[]{0, 0, 0, 0, 0, 2}, standardBlockTypes(codec, compressed));
+        assertArrayEquals(input, Zstd.decompress(compressed, input.length));
+        assertArrayEquals(input, codec.decompress(ByteBuffer.wrap(compressed), input.length).array());
     }
 
     /// Verifies long-distance candidates beyond the configured frame window are rejected.

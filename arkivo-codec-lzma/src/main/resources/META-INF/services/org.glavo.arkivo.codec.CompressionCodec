@@ -1,1 +1,3 @@
 org.glavo.arkivo.codec.lzma.LZMACodec
+org.glavo.arkivo.codec.lzma.RawLZMACodec
+org.glavo.arkivo.codec.lzma.LZMA2Codec

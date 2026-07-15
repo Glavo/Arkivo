@@ -61,6 +61,60 @@ public final class SevenZipHeaderParserTest {
         assertEquals("7z folders appeared after substreams", exception.getMessage());
     }
 
+    /// Verifies unknown top-level properties are rejected as checked input failures.
+    @Test
+    public void unknownHeaderPropertyIsCheckedFailure() {
+        IOException exception = assertThrows(
+                IOException.class,
+                () -> SevenZipHeaderParser.parseEntries(new byte[]{0x01, 0x7f})
+        );
+
+        assertEquals("Unsupported 7z header property: 0x7f", exception.getMessage());
+    }
+
+    /// Verifies encoded headers without archive stream access fail through the checked parser contract.
+    @Test
+    public void encodedHeaderWithoutArchiveAccessIsCheckedFailure() {
+        IOException exception = assertThrows(
+                IOException.class,
+                () -> SevenZipHeaderParser.parseEntries(new byte[]{0x17})
+        );
+
+        assertEquals("7z encoded headers require archive stream access", exception.getMessage());
+    }
+
+    /// Verifies coder flags and methods controlled by archive bytes cannot leak runtime failures.
+    @Test
+    public void unsupportedCoderMetadataIsCheckedFailure() {
+        IOException flagsFailure = assertThrows(
+                IOException.class,
+                () -> SevenZipHeaderParser.parseEntries(
+                        encodedHeaderWithCoder(0xc1, 0x00),
+                        (offset, size) -> new ByteArrayInputStream(new byte[0])
+                )
+        );
+        assertEquals("Unsupported 7z coder flags: 0xc1", flagsFailure.getMessage());
+
+        IOException methodFailure = assertThrows(
+                IOException.class,
+                () -> SevenZipHeaderParser.parseEntries(
+                        encodedHeaderWithCoder(0x01, 0x7e),
+                        (offset, size) -> new ByteArrayInputStream(new byte[0])
+                )
+        );
+        assertEquals("Unsupported 7z coder method: [126]", methodFailure.getMessage());
+    }
+
+    /// Returns an encoded-header descriptor with caller-selected coder bytes.
+    private static byte[] encodedHeaderWithCoder(int flags, int method) {
+        return new byte[]{
+                0x17,
+                0x06, 0x00, 0x01, 0x09, 0x01, 0x00,
+                0x07, 0x0b, 0x01, 0x00, 0x01, (byte) flags, (byte) method, 0x0c, 0x01, 0x00,
+                0x00
+        };
+    }
+
     /// Verifies that encoded-header read failures are not replaced by runtime cleanup failures.
     @Test
     public void encodedHeaderReadFailureSuppressesRuntimeCloseFailure() {

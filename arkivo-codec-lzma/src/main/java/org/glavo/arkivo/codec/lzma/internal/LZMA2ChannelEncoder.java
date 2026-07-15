@@ -13,6 +13,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
+import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
@@ -153,9 +154,11 @@ public final class LZMA2ChannelEncoder implements CompressionEncoder {
                 properties.positionBits(),
                 effectiveDictionarySize
         );
-        try (LZMAOutputStream encoder = new LZMAOutputStream(compressed, blockProperties, false)) {
-            encoder.write(block, 0, blockSize);
-        }
+        LZMAChannelOutput compressedOutput = new LZMAChannelOutput(Channels.newChannel(compressed));
+        LZMAEncoderEngine encoder = new LZMAEncoderEngine(compressedOutput, blockProperties);
+        encoder.write(block, 0, blockSize);
+        encoder.finish(false);
+        compressedOutput.flush();
 
         byte[] encoded = compressed.toByteArray();
         if (encoded.length <= 1 << 16 && encoded.length + 3 < blockSize) {

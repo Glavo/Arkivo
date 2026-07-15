@@ -2,14 +2,15 @@ import java.util.zip.ZipFile
 
 dependencies {
     api(project(":arkivo-archive"))
+    implementation(project(":arkivo-base"))
     implementation(project(":arkivo-codec"))
     implementation(project(":arkivo-codec-bcj"))
     implementation(project(":arkivo-codec-delta"))
-    compileOnly(project(":arkivo-codec-lzma"))
     testImplementation(project(":arkivo-codec-bzip2"))
     testImplementation(project(":arkivo-codec-deflate"))
     testImplementation(project(":arkivo-codec-deflate64"))
     testImplementation(project(":arkivo-codec-lzma"))
+    testImplementation(project(":arkivo-codec-ppmd"))
     testImplementation(project(":arkivo-codec-zstd"))
     testImplementation("org.tukaani:xz:1.12")
     testImplementation("org.apache.commons:commons-compress:1.28.0")
@@ -46,7 +47,7 @@ val verifyOptionalCompressionCodecs by tasks.registering(JavaExec::class) {
 
     classpath = sourceSets.test.get().runtimeClasspath.filter { file ->
         val path = file.invariantSeparatorsPath
-        sequenceOf("bzip2", "deflate", "deflate64", "ppmd", "zstd").none { codecName ->
+        sequenceOf("bzip2", "deflate", "deflate64", "lzma", "ppmd", "zstd").none { codecName ->
             path.contains("/arkivo-codec-$codecName/")
                     || file.name.startsWith("arkivo-codec-$codecName")
         }
@@ -67,6 +68,30 @@ val lowHeapUpdateProbe by tasks.registering(JavaExec::class) {
     maxHeapSize = "32m"
 }
 
+val decodedChannelScalabilityFixture =
+    layout.buildDirectory.file("performance/sevenzip-80m-decoded-entry.7z")
+
+val prepareDecodedChannelScalabilityFixture by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description = "Creates the 80 MiB decoded 7z entry used by the low-heap channel probe."
+    dependsOn(tasks.named("testClasses"))
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("org.glavo.arkivo.archive.sevenzip.internal.SevenZipDecodedChannelScalabilityProbe")
+    args("create", decodedChannelScalabilityFixture.get().asFile.absolutePath)
+    outputs.file(decodedChannelScalabilityFixture)
+}
+
+val lowHeapDecodedChannelScalabilityProbe by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description = "Opens and seeks through an 80 MiB decoded 7z entry with a 32 MiB maximum heap."
+    dependsOn(prepareDecodedChannelScalabilityFixture)
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("org.glavo.arkivo.archive.sevenzip.internal.SevenZipDecodedChannelScalabilityProbe")
+    args("verify", decodedChannelScalabilityFixture.get().asFile.absolutePath)
+    maxHeapSize = "32m"
+    inputs.file(decodedChannelScalabilityFixture)
+}
+
 tasks.named<Test>("test") {
-    dependsOn(lowHeapUpdateProbe)
+    dependsOn(lowHeapUpdateProbe, lowHeapDecodedChannelScalabilityProbe)
 }

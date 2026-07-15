@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 package org.glavo.arkivo.codec.zstd.internal;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.ByteArrayOutputStream;
@@ -45,6 +47,27 @@ public final class ZstdDictionaryBuilder {
     /// Bit mask for the bounded anchor-frequency sketch.
     private static final int FREQUENCY_TABLE_MASK = FREQUENCY_TABLE_SIZE - 1;
 
+    /// Number of offset-code symbols accepted by the dictionary format.
+    private static final int OFFSET_SYMBOL_COUNT = 32;
+
+    /// Number of match-length symbols accepted by the dictionary format.
+    private static final int MATCH_LENGTH_SYMBOL_COUNT = 53;
+
+    /// Number of literal-length symbols accepted by the dictionary format.
+    private static final int LITERAL_LENGTH_SYMBOL_COUNT = 36;
+
+    /// Dictionary offset-code FSE table logarithm.
+    private static final int OFFSET_TABLE_LOG = 5;
+
+    /// Dictionary match-length FSE table logarithm.
+    private static final int MATCH_LENGTH_TABLE_LOG = 6;
+
+    /// Dictionary literal-length FSE table logarithm.
+    private static final int LITERAL_LENGTH_TABLE_LOG = 6;
+
+    /// Number of offset symbols covered by the fallback table.
+    private static final int FALLBACK_OFFSET_SYMBOL_COUNT = 31;
+
     /// Builds one current or legacy-oriented formatted dictionary.
     ///
     /// @param samples packed sample bytes
@@ -67,36 +90,47 @@ public final class ZstdDictionaryBuilder {
             throw new IllegalArgumentException("Insufficient or inconsistent Zstandard training samples");
         }
 
-        ByteArrayOutputStream entropy = new ByteArrayOutputStream(160);
-        writeHuffmanTable(entropy);
-        writeFseTable(entropy, uniformDistribution(31, 5));
-        writeFseTable(entropy, uniformDistribution(53, 6));
-        writeFseTable(entropy, uniformDistribution(36, 6));
-        writeLittleEndianInt(entropy, 1L);
-        writeLittleEndianInt(entropy, 4L);
-        writeLittleEndianInt(entropy, 8L);
-
-        int contentCapacity = dictionaryCapacity - 8 - entropy.size();
-        if (contentCapacity < MINIMUM_SAMPLE_BYTES) {
-            throw new IllegalArgumentException("dictionaryCapacity cannot hold a formatted dictionary");
-        }
-        byte[] content = legacy
-                ? selectLegacyContent(samples, Math.min(contentCapacity, samples.length))
-                : selectCurrentContent(
-                        samples,
-                        sampleSizes,
-                        Math.min(contentCapacity, samples.length),
-                        compressionLevel
-                );
+        byte @Nullable [] huffmanDescription =
+                ZstdLiteralEncoder.buildTableDescription(samples);
+        SequenceFrequencies preliminaryFrequencies = collectSequenceFrequencies(
+                samples,
+                sampleSizes,
+                compressionLevel,
+                new byte[0]
+        );
+        byte[] preliminaryEntropy =
+                buildEntropySection(huffmanDescription, preliminaryFrequencies);
+        byte[] preliminaryContent = selectContent(
+                samples,
+                sampleSizes,
+                contentCapacity(dictionaryCapacity, preliminaryEntropy.length),
+                compressionLevel,
+                legacy
+        );
+        SequenceFrequencies trainedFrequencies = collectSequenceFrequencies(
+                samples,
+                sampleSizes,
+                compressionLevel,
+                preliminaryContent
+        );
+        byte[] entropy = buildEntropySection(huffmanDescription, trainedFrequencies);
+        byte[] content = selectContent(
+                samples,
+                sampleSizes,
+                contentCapacity(dictionaryCapacity, entropy.length),
+                compressionLevel,
+                legacy
+        );
         if (content.length < MINIMUM_SAMPLE_BYTES) {
             throw new IllegalArgumentException("Insufficient Zstandard dictionary content");
         }
 
         long dictionaryId = dictionaryId(content);
-        ByteArrayOutputStream dictionary = new ByteArrayOutputStream(8 + entropy.size() + content.length);
+        ByteArrayOutputStream dictionary =
+                new ByteArrayOutputStream(8 + entropy.length + content.length);
         writeLittleEndianInt(dictionary, DICTIONARY_MAGIC);
         writeLittleEndianInt(dictionary, dictionaryId);
-        dictionary.writeBytes(entropy.toByteArray());
+        dictionary.writeBytes(entropy);
         dictionary.writeBytes(content);
         return dictionary.toByteArray();
     }
@@ -111,6 +145,215 @@ public final class ZstdDictionaryBuilder {
             total = Math.addExact(total, sampleSize);
         }
         return total;
+    }
+
+    /// Builds the dictionary entropy section from Huffman metadata and sequence statistics.
+    private static byte[] buildEntropySection(
+            byte @Nullable [] huffmanDescription,
+            SequenceFrequencies sequenceFrequencies
+    ) {
+        ByteArrayOutputStream entropy = new ByteArrayOutputStream(160);
+        if (huffmanDescription != null) {
+            entropy.writeBytes(huffmanDescription);
+        } else {
+            writeFallbackHuffmanTable(entropy);
+        }
+        writeFseTable(entropy, trainedDistribution(
+                sequenceFrequencies.offsetCodes(),
+                FALLBACK_OFFSET_SYMBOL_COUNT,
+                OFFSET_TABLE_LOG
+        ));
+        writeFseTable(entropy, trainedDistribution(
+                sequenceFrequencies.matchLengthCodes(),
+                MATCH_LENGTH_SYMBOL_COUNT,
+                MATCH_LENGTH_TABLE_LOG
+        ));
+        writeFseTable(entropy, trainedDistribution(
+                sequenceFrequencies.literalLengthCodes(),
+                LITERAL_LENGTH_SYMBOL_COUNT,
+                LITERAL_LENGTH_TABLE_LOG
+        ));
+        writeLittleEndianInt(entropy, 1L);
+        writeLittleEndianInt(entropy, 4L);
+        writeLittleEndianInt(entropy, 8L);
+        return entropy.toByteArray();
+    }
+
+    /// Returns the space available for dictionary content after framing and entropy metadata.
+    private static int contentCapacity(int dictionaryCapacity, int entropySize) {
+        int contentCapacity = dictionaryCapacity - 8 - entropySize;
+        if (contentCapacity < MINIMUM_SAMPLE_BYTES) {
+            throw new IllegalArgumentException(
+                    "dictionaryCapacity cannot hold a formatted dictionary"
+            );
+        }
+        return contentCapacity;
+    }
+
+    /// Selects dictionary content for one known post-entropy capacity.
+    private static byte[] selectContent(
+            byte[] samples,
+            int[] sampleSizes,
+            int capacity,
+            int compressionLevel,
+            boolean legacy
+    ) {
+        int selectedCapacity = Math.min(capacity, samples.length);
+        return legacy
+                ? selectLegacyContent(samples, selectedCapacity)
+                : selectCurrentContent(
+                        samples,
+                        sampleSizes,
+                        selectedCapacity,
+                        compressionLevel
+                );
+    }
+
+    /// Collects sequence-code frequencies while preserving block-local and sample-local boundaries.
+    private static SequenceFrequencies collectSequenceFrequencies(
+            byte[] samples,
+            int[] sampleSizes,
+            int compressionLevel,
+            byte @Unmodifiable [] dictionaryContent
+    ) {
+        int[] offsetCodes = new int[OFFSET_SYMBOL_COUNT];
+        int[] matchLengthCodes = new int[MATCH_LENGTH_SYMBOL_COUNT];
+        int[] literalLengthCodes = new int[LITERAL_LENGTH_SYMBOL_COUNT];
+        ZstdEncoderParameters parameters =
+                ZstdEncoderParameters.forDictionaryTraining(compressionLevel);
+        int distanceLimit = ZstdBlockEncoder.matchDistanceLimit(parameters);
+        byte @Unmodifiable [] dictionaryHistory = dictionaryContent.length <= distanceLimit
+                ? dictionaryContent
+                : Arrays.copyOfRange(
+                        dictionaryContent,
+                        dictionaryContent.length - distanceLimit,
+                        dictionaryContent.length
+                );
+        int sampleOffset = 0;
+        for (int sampleSize : sampleSizes) {
+            byte @Unmodifiable [] history = dictionaryHistory;
+            ZstdBlockEncoder.RepeatedOffsets repeated =
+                    new ZstdBlockEncoder.RepeatedOffsets(1, 4, 8);
+            int samplePosition = 0;
+            while (samplePosition < sampleSize) {
+                int blockLength = Math.min(
+                        parameters.blockSize(),
+                        sampleSize - samplePosition
+                );
+                byte[] block = Arrays.copyOfRange(
+                        samples,
+                        sampleOffset + samplePosition,
+                        sampleOffset + samplePosition + blockLength
+                );
+                @Unmodifiable List<ZstdMatchParser.Match> matches =
+                        ZstdMatchParser.parse(
+                                block,
+                                blockLength,
+                                history,
+                                distanceLimit,
+                                parameters,
+                                List.of()
+                        );
+                int literalStart = 0;
+                for (ZstdMatchParser.Match match : matches) {
+                    int literalLength = match.position() - literalStart;
+                    literalLengthCodes[
+                            ZstdBlockEncoder.literalLengthCode(literalLength)
+                    ]++;
+                    matchLengthCodes[
+                            ZstdBlockEncoder.matchLengthCode(match.length())
+                    ]++;
+                    ZstdBlockEncoder.OffsetEncoding offset =
+                            ZstdBlockEncoder.selectOffset(
+                                    match.distance(),
+                                    literalLength,
+                                    repeated,
+                                    true
+                            );
+                    int offsetCode =
+                            Long.SIZE - 1 - Long.numberOfLeadingZeros(offset.value());
+                    if (offsetCode >= offsetCodes.length) {
+                        throw new IllegalStateException(
+                                "Dictionary sample produced an invalid Zstandard offset code"
+                        );
+                    }
+                    offsetCodes[offsetCode]++;
+                    repeated = offset.repeatedOffsets();
+                    literalStart = match.position() + match.length();
+                }
+                history = appendHistory(history, block, distanceLimit);
+                samplePosition += blockLength;
+            }
+            sampleOffset += sampleSize;
+        }
+        return new SequenceFrequencies(
+                offsetCodes,
+                matchLengthCodes,
+                literalLengthCodes
+        );
+    }
+
+    /// Appends one analyzed block to a bounded immutable sample-history suffix.
+    private static byte @Unmodifiable [] appendHistory(
+            byte @Unmodifiable [] history,
+            byte[] block,
+            int historyLimit
+    ) {
+        if (block.length >= historyLimit) {
+            return Arrays.copyOfRange(
+                    block,
+                    block.length - historyLimit,
+                    block.length
+            );
+        }
+        int retained = Math.min(history.length, historyLimit - block.length);
+        byte[] updated = new byte[retained + block.length];
+        System.arraycopy(
+                history,
+                history.length - retained,
+                updated,
+                0,
+                retained
+        );
+        System.arraycopy(block, 0, updated, retained, block.length);
+        return updated;
+    }
+
+    /// Normalizes observed sequence frequencies or returns the full-alphabet fallback table.
+    private static FseDistribution trainedDistribution(
+            int[] frequencies,
+            int fallbackSymbolCount,
+            int tableLog
+    ) {
+        int total = 0;
+        int maximumSymbol = -1;
+        int distinctSymbols = 0;
+        for (int symbol = 0; symbol < frequencies.length; symbol++) {
+            int frequency = frequencies[symbol];
+            total = Math.addExact(total, frequency);
+            if (frequency != 0) {
+                maximumSymbol = symbol;
+                distinctSymbols++;
+            }
+        }
+        if (total == 0) {
+            return uniformDistribution(fallbackSymbolCount, tableLog);
+        }
+        if (distinctSymbols > 1 << tableLog) {
+            throw new IllegalStateException(
+                    "Dictionary sequence alphabet exceeds its Zstandard FSE table"
+            );
+        }
+        int symbolCount = maximumSymbol + 1;
+        return new FseDistribution(
+                ZstdSequenceEntropy.normalize(
+                        frequencies,
+                        symbolCount,
+                        total,
+                        tableLog
+                ),
+                tableLog
+        );
     }
 
     /// Selects the packed suffix used by the legacy-oriented mode.
@@ -253,7 +496,7 @@ public final class ZstdDictionaryBuilder {
 
     /// Returns a bounded frequency-table index for an eight-byte anchor.
     private static int anchorIndex(byte[] source, int offset) {
-        long value = readLong(source, offset);
+        long value = ByteArrayAccess.readLongLittleEndian(source, offset);
         value ^= value >>> 33;
         value *= 0xff51_afd7_ed55_8ccdL;
         value ^= value >>> 33;
@@ -270,22 +513,8 @@ public final class ZstdDictionaryBuilder {
         return hash;
     }
 
-    /// Reads an unaligned little-endian long.
-    private static long readLong(byte[] source, int offset) {
-        return Integer.toUnsignedLong(readInt(source, offset))
-                | Integer.toUnsignedLong(readInt(source, offset + 4)) << 32;
-    }
-
-    /// Reads an unaligned little-endian integer.
-    private static int readInt(byte[] source, int offset) {
-        return Byte.toUnsignedInt(source[offset])
-                | Byte.toUnsignedInt(source[offset + 1]) << 8
-                | Byte.toUnsignedInt(source[offset + 2]) << 16
-                | source[offset + 3] << 24;
-    }
-
-    /// Writes a compact valid Huffman tree covering the complete ASCII range.
-    private static void writeHuffmanTable(ByteArrayOutputStream output) {
+    /// Writes a fallback Huffman tree covering the complete ASCII range.
+    private static void writeFallbackHuffmanTable(ByteArrayOutputStream output) {
         output.write(254);
         for (int index = 0; index < 63; index++) {
             output.write(0x11);
@@ -332,6 +561,18 @@ public final class ZstdDictionaryBuilder {
         /// Creates immutable distribution metadata.
         private FseDistribution {
         }
+    }
+
+    /// Holds sample-derived frequencies for all three sequence-code alphabets.
+    ///
+    /// @param offsetCodes offset-code frequencies
+    /// @param matchLengthCodes match-length-code frequencies
+    /// @param literalLengthCodes literal-length-code frequencies
+    private record SequenceFrequencies(
+            int @Unmodifiable [] offsetCodes,
+            int @Unmodifiable [] matchLengthCodes,
+            int @Unmodifiable [] literalLengthCodes
+    ) {
     }
 
     /// Describes one scored dictionary-content candidate.

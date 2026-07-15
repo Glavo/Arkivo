@@ -21,7 +21,7 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Map;
 import java.util.zip.CRC32;
 
-/// Verifies that a RAR file system caches a large stored entry outside the Java heap.
+/// Verifies that a RAR file system lazily caches a large stored entry outside the Java heap.
 @NotNullByDefault
 public final class RarLowHeapStorageProbe {
     /// The RAR4 archive signature.
@@ -104,13 +104,34 @@ public final class RarLowHeapStorageProbe {
             if (attributes.size() != ENTRY_SIZE) {
                 throw new AssertionError("Unexpected large RAR entry size: " + attributes.size());
             }
+            requireStorageFileCount(storageDirectory, 0);
             try (SeekableByteChannel channel = Files.newByteChannel(entry)) {
+                requireStorageFileCount(storageDirectory, 1);
                 channel.position(ENTRY_SIZE - 1L);
                 ByteBuffer value = ByteBuffer.allocate(1);
                 if (channel.read(value) != 1 || value.array()[0] != 0) {
                     throw new AssertionError("Unexpected large RAR entry tail byte");
                 }
             }
+        }
+    }
+
+    /// Requires temporary storage to contain exactly the expected number of files.
+    private static void requireStorageFileCount(Path storageDirectory, int expected) throws IOException {
+        if (!Files.exists(storageDirectory)) {
+            if (expected == 0) {
+                return;
+            }
+            throw new AssertionError("RAR cached content storage directory is missing");
+        }
+        int count = 0;
+        try (DirectoryStream<Path> files = Files.newDirectoryStream(storageDirectory)) {
+            for (Path ignored : files) {
+                count++;
+            }
+        }
+        if (count != expected) {
+            throw new AssertionError("Unexpected RAR cached content file count: " + count);
         }
     }
 

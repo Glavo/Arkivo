@@ -106,8 +106,10 @@ org.glavo.arkivo.codec.deflate.DeflateCodec
 org.glavo.arkivo.codec.deflate64.Deflate64Codec
 org.glavo.arkivo.codec.delta.DeltaTransform
 org.glavo.arkivo.codec.gzip.GzipCodec
+org.glavo.arkivo.codec.lzma.LZMA2Codec
 org.glavo.arkivo.codec.lzma.LZMACodec
 org.glavo.arkivo.codec.lzma.LZMAOptions
+org.glavo.arkivo.codec.lzma.RawLZMACodec
 org.glavo.arkivo.codec.spi.DeflateStrategySupport
 org.glavo.arkivo.codec.spi.OwnedChannelCloser
 org.glavo.arkivo.codec.spi.StandardCodecOptionSupport
@@ -130,6 +132,7 @@ org.glavo.arkivo.codec.zlib.ZlibCodec
 org.glavo.arkivo.codec.zstd.ZstdCodec
 org.glavo.arkivo.codec.zstd.ZstdDictionaryTrainer
 org.glavo.arkivo.codec.zstd.ZstdDictionaryTrainingException
+org.glavo.arkivo.codec.zstd.ZstdFrameFormat
 org.glavo.arkivo.codec.zstd.ZstdFrameInfo
 org.glavo.arkivo.codec.zstd.ZstdSkippableFrameInfo
 org.glavo.arkivo.codec.zstd.ZstdStandardFrameInfo

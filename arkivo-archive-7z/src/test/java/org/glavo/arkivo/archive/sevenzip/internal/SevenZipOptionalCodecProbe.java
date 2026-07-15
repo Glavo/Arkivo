@@ -45,6 +45,31 @@ public final class SevenZipOptionalCodecProbe {
                 1L << 20,
                 0L
         ));
+        requireMissingCodec("ppmd", () -> SevenZipCompressionCodecs.openPpmdEncoder(
+                4,
+                1L << 20,
+                new ByteArrayOutputStream()
+        ));
+        requireMissingCodec("lzma-raw", () -> SevenZipCompressionCodecs.openRawLZMADecoder(
+                new ByteArrayInputStream(new byte[0]),
+                0x5d,
+                1L << 20,
+                0L
+        ));
+        requireMissingCodec("lzma-raw", () -> SevenZipCompressionCodecs.openRawLZMAEncoder(
+                1L << 20,
+                false,
+                new ByteArrayOutputStream()
+        ));
+        requireMissingCodec("lzma2", () -> SevenZipCompressionCodecs.openLZMA2Decoder(
+                new ByteArrayInputStream(new byte[0]),
+                1L << 20,
+                0L
+        ));
+        requireMissingCodec("lzma2", () -> SevenZipCompressionCodecs.openLZMA2Encoder(
+                1L << 20,
+                new ByteArrayOutputStream()
+        ));
     }
 
     /// Requires one optional-codec operation to fail with the stable missing-codec diagnostic.

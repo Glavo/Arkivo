@@ -11,12 +11,15 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.FileSystem;
+import java.nio.file.FileSystemLoopException;
 import java.nio.file.LinkOption;
+import java.nio.file.NotLinkException;
 import java.nio.file.Path;
 import java.nio.file.ProviderMismatchException;
 import java.nio.file.WatchEvent;
 import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -27,6 +30,9 @@ import java.util.Objects;
 /// @param <F> the owning file system type
 @NotNullByDefault
 public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
+    /// The maximum number of symbolic links resolved by one real-path operation.
+    private static final int MAXIMUM_SYMBOLIC_LINKS = 40;
+
     /// The file system that owns this path.
     private final F fileSystem;
 
@@ -272,12 +278,63 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     @Override
     public final Path toRealPath(LinkOption... options) throws IOException {
         Objects.requireNonNull(options, "options");
+        boolean noFollowLinks = false;
         for (LinkOption option : options) {
             Objects.requireNonNull(option, "option");
+            if (option == LinkOption.NOFOLLOW_LINKS) {
+                noFollowLinks = true;
+            }
         }
-        Path realPath = toAbsolutePath().normalize();
-        fileSystem.provider().checkAccess(realPath);
-        return realPath;
+
+        Path unresolved = toAbsolutePath().normalize();
+        if (noFollowLinks) {
+            fileSystem.provider().readAttributes(
+                    unresolved,
+                    BasicFileAttributes.class,
+                    LinkOption.NOFOLLOW_LINKS
+            );
+            return unresolved;
+        }
+
+        int symbolicLinkCount = 0;
+        while (true) {
+            Path resolved = Objects.requireNonNull(unresolved.getRoot(), "absolute path root");
+            boolean restart = false;
+            for (int index = 0; index < unresolved.getNameCount(); index++) {
+                Path candidate = resolved.resolve(unresolved.getName(index));
+                final Path target;
+                try {
+                    target = fileSystem.provider().readSymbolicLink(candidate);
+                } catch (NotLinkException exception) {
+                    resolved = candidate;
+                    continue;
+                }
+
+                symbolicLinkCount++;
+                if (symbolicLinkCount > MAXIMUM_SYMBOLIC_LINKS) {
+                    throw new FileSystemLoopException(toString());
+                }
+
+                Path replacement = target.isAbsolute()
+                        ? target
+                        : Objects.requireNonNull(candidate.getParent(), "symbolic link parent").resolve(target);
+                if (index + 1 < unresolved.getNameCount()) {
+                    replacement = replacement.resolve(unresolved.subpath(index + 1, unresolved.getNameCount()));
+                }
+                unresolved = replacement.toAbsolutePath().normalize();
+                restart = true;
+                break;
+            }
+
+            if (!restart) {
+                fileSystem.provider().readAttributes(
+                        resolved,
+                        BasicFileAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
+                return resolved;
+            }
+        }
     }
 
     /// Rejects watch registration because archive file systems do not support watch services.

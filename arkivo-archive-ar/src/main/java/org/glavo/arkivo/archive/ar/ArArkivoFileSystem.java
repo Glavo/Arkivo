@@ -24,6 +24,8 @@ import java.util.Objects;
 /// change; callers that require a linker index must rebuild it with a platform tool such as `ranlib`.
 /// Indexed read and update sessions stage member bodies through `ArkivoFileSystem.EDIT_STORAGE`, using temporary files
 /// under the system temporary directory by default. The file system owns and closes the selected edit storage.
+/// A member being replaced through an open writable channel is hidden from new reads until that channel closes;
+/// channels and attribute snapshots opened before the replacement retain the preceding member state.
 /// Channel-source update sessions require an explicit `ArkivoFileSystem.COMMIT_TARGET` because they have no source
 /// path to replace. A fixed `ArkivoCommitTarget.writeTo(Path)` publishes a derived archive without mutating the source.
 @NotNullByDefault
@@ -45,7 +47,7 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
     public static ArArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
-        return ArArkivoFileSystemProvider.instance().newFileSystem(path, environment);
+        return ArArkivoFileSystemProvider.instance().openPath(path, environment);
     }
 
     /// Opens a read-only AR archive file system directly from one owned seekable channel.

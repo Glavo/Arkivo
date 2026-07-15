@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 
-/// Describes one standard Zstandard frame header.
+/// Describes one standard or explicitly selected magicless Zstandard frame header.
 ///
 /// @param headerSize complete frame-header size in bytes
 /// @param contentSize declared decompressed content size, CompressionCodec.UNKNOWN_SIZE when absent, or
@@ -28,7 +28,7 @@ public record ZstdStandardFrameInfo(
 
     /// Validates parsed frame-header fields.
     public ZstdStandardFrameInfo {
-        if (headerSize < 6 || headerSize > 18) {
+        if (headerSize < 2 || headerSize > 18) {
             throw new IllegalArgumentException("headerSize is out of range");
         }
         if (contentSize < CONTENT_SIZE_OVERFLOW) {

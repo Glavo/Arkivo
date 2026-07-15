@@ -266,7 +266,7 @@ final class ZstdSequenceEntropy {
     }
 
     /// Normalizes observed frequencies to one complete power-of-two FSE distribution.
-    private static int[] normalize(
+    static int[] normalize(
             int[] frequencies,
             int symbolCount,
             int total,

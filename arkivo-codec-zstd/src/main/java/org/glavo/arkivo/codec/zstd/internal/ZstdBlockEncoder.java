@@ -109,8 +109,8 @@ final class ZstdBlockEncoder {
 
     /// Resets frame-local state to the configured dictionary.
     void reset(ZstdEncoderParameters parameters) {
-        huffmanTable = null;
         ZstdDictionary dictionary = parameters.dictionary();
+        huffmanTable = dictionary.huffmanEncoding();
         literalLengthTable =
                 ZstdSequenceEntropy.invertLiteralLengths(dictionary.literalLengthTable());
         offsetTable = ZstdSequenceEntropy.invertOffsets(dictionary.offsetTable());
@@ -255,8 +255,8 @@ final class ZstdBlockEncoder {
                 new RepeatedOffsets(repeatedOffset1, repeatedOffset2, repeatedOffset3);
         for (int index = 0; index < sequences.size(); index++) {
             Sequence sequence = sequences.get(index);
-            int literalCode = lengthCode(sequence.literalLength(), LITERAL_BASELINES, LITERAL_BITS);
-            int matchCode = lengthCode(sequence.length(), MATCH_BASELINES, MATCH_BITS);
+            int literalCode = literalLengthCode(sequence.literalLength());
+            int matchCode = matchLengthCode(sequence.length());
             OffsetEncoding offsetEncoding = selectOffset(
                     sequence.distance(), sequence.literalLength(), repeated, contextualState
             );
@@ -388,7 +388,7 @@ final class ZstdBlockEncoder {
     }
 
     /// Returns the bounded distance retained by the current match finder.
-    private static int matchDistanceLimit(ZstdEncoderParameters parameters) {
+    static int matchDistanceLimit(ZstdEncoderParameters parameters) {
         int windowSize = parameters.windowLog() >= 30
                 ? Integer.MAX_VALUE
                 : 1 << parameters.windowLog();
@@ -411,6 +411,16 @@ final class ZstdBlockEncoder {
         System.arraycopy(history, history.length - retained, updated, 0, retained);
         System.arraycopy(source, 0, updated, retained, length);
         history = updated;
+    }
+
+    /// Selects the canonical literal-length code covering a value.
+    static int literalLengthCode(int value) {
+        return lengthCode(value, LITERAL_BASELINES, LITERAL_BITS);
+    }
+
+    /// Selects the canonical match-length code covering a value.
+    static int matchLengthCode(int value) {
+        return lengthCode(value, MATCH_BASELINES, MATCH_BITS);
     }
 
     /// Selects the canonical code covering a length value.

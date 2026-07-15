@@ -36,6 +36,9 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
     /// Validated encoder parameters.
     private final ZstdEncoderParameters parameters;
 
+    /// Whether standard frame magic is omitted.
+    private final boolean magicless;
+
     /// Stateful synchronous block encoder.
     private final ZstdBlockEncoder blockEncoder = new ZstdBlockEncoder();
 
@@ -95,14 +98,17 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
     /// @param target compressed-data target
     /// @param ownership whether this context closes the target
     /// @param parameters validated encoder parameters
+    /// @param magicless whether standard frame magic is omitted
     public ZstdChannelEncoder(
             WritableByteChannel target,
             ChannelOwnership ownership,
-            ZstdEncoderParameters parameters
+            ZstdEncoderParameters parameters,
+            boolean magicless
     ) {
         this.target = Objects.requireNonNull(target, "target");
         this.targetCloser = new OwnedChannelCloser(target, ownership);
         this.parameters = Objects.requireNonNull(parameters, "parameters");
+        this.magicless = magicless;
         this.blockEncoder.reset(parameters);
         this.longDistanceMatcher = parameters.longDistanceMatching()
                 ? new ZstdLongDistanceMatcher(parameters)
@@ -240,7 +246,7 @@ public final class ZstdChannelEncoder implements CompressionEncoder {
     /// Writes the active frame header once.
     private void writeHeader() throws IOException {
         if (!headerWritten) {
-            writeFully(ZstdFrameEncoder.header(parameters));
+            writeFully(ZstdFrameEncoder.header(parameters, magicless));
             headerWritten = true;
         }
     }

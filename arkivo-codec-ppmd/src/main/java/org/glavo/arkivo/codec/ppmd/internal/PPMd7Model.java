@@ -11,7 +11,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Objects;
 
-/// Decodes the PPMd Variant H context model shared by PPMd7 and RAR3 streams.
+/// Encodes and decodes the PPMd Variant H context model shared by PPMd7 and RAR3 streams.
 @NotNullByDefault
 public final class PPMd7Model {
     /// The sentinel returned when arithmetic decoding selects an escape interval.
@@ -66,7 +66,9 @@ public final class PPMd7Model {
     /// The context and history suballocator.
     private final PPMd7Allocator allocator = new PPMd7Allocator();
     /// The arithmetic range decoder.
-    private final PPMdRangeDecoder rangeDecoder;
+    private final @Nullable PPMdRangeDecoder rangeDecoder;
+    /// The arithmetic range encoder.
+    private final @Nullable PPMdRangeEncoder rangeEncoder;
     /// Symbol exclusion generations indexed by unsigned byte.
     private final byte[] symbolMasks = new byte[256];
     /// Binary probabilities indexed by frequency and context class.
@@ -101,6 +103,13 @@ public final class PPMd7Model {
     /// Creates an uninitialized PPMd model.
     public PPMd7Model(PPMdRangeDecoder rangeDecoder) {
         this.rangeDecoder = Objects.requireNonNull(rangeDecoder, "rangeDecoder");
+        this.rangeEncoder = null;
+    }
+
+    /// Creates an uninitialized PPMd encoding model.
+    PPMd7Model(PPMdRangeEncoder rangeEncoder) {
+        this.rangeDecoder = null;
+        this.rangeEncoder = Objects.requireNonNull(rangeEncoder, "rangeEncoder");
     }
 
     /// Invalidates model memory before a non-solid sequence.
@@ -132,6 +141,7 @@ public final class PPMd7Model {
 
     /// Decodes and updates one unsigned byte symbol.
     public int readByte() throws IOException {
+        if (rangeDecoder == null) throw new IOException("PPMd model is not configured for decoding");
         if (!initialized) throw new IOException("PPMd model is not initialized");
         if (currentContext == 0) restartModel();
 
@@ -154,6 +164,35 @@ public final class PPMd7Model {
         currentContext = updateModel(minimumContext, maximumContext, selectedState);
         previousSymbol = symbol;
         return symbol;
+    }
+
+    /// Encodes and updates one unsigned byte symbol.
+    public void writeByte(int symbol) throws IOException {
+        if (rangeEncoder == null) throw new IOException("PPMd model is not configured for encoding");
+        if (!initialized) throw new IOException("PPMd model is not initialized");
+        if (symbol < 0 || symbol > 0xff) throw new IOException("PPMd symbol is out of range");
+        if (currentContext == 0) restartModel();
+
+        int minimumContext = currentContext;
+        int maximumContext = minimumContext;
+        int selectedState = allocator.contextStateCount(minimumContext) == 1
+                ? encodeBinarySymbol(minimumContext, symbol)
+                : encodeFirstOrderSymbol(minimumContext, symbol);
+        while (selectedState == NO_STATE) {
+            int maskedStateCount = allocator.contextStateCount(minimumContext);
+            do {
+                orderFall++;
+                minimumContext = allocator.contextSuffix(minimumContext);
+                if (minimumContext == 0) throw new IOException("Corrupt PPMd suffix chain");
+            } while (allocator.contextStateCount(minimumContext) == maskedStateCount);
+            selectedState = encodeEscapedSymbol(minimumContext, maskedStateCount, symbol);
+        }
+
+        if (allocator.symbol(selectedState) != symbol) {
+            throw new IOException("PPMd encoder selected a different symbol");
+        }
+        currentContext = updateModel(minimumContext, maximumContext, selectedState);
+        previousSymbol = symbol;
     }
 
     /// Recreates root probabilities and allocator boundaries after reset or memory exhaustion.
@@ -224,6 +263,43 @@ public final class PPMd7Model {
         return NO_STATE;
     }
 
+    /// Encodes a symbol or escape from a one-state context.
+    private int encodeBinarySymbol(int context, int symbol) throws IOException {
+        PPMdRangeEncoder encoder = Objects.requireNonNull(rangeEncoder);
+        int state = allocator.contextStates(context);
+        int suffix = allocator.contextSuffix(context);
+        if (suffix == 0) throw new IOException("Corrupt PPMd binary context");
+        int suffixStateCount = allocator.contextStateCount(suffix);
+        int contextClass = previousSuccess
+                + (STATE_COUNT_TO_BINARY_INDEX[suffixStateCount - 1] & 0xff)
+                + (runLength >> 26 & 0x20);
+        if (previousSymbol >= 64) contextClass += 8;
+        if (allocator.symbol(state) >= 64) contextClass += 16;
+
+        int frequency = allocator.frequency(state);
+        if (frequency <= 0 || frequency > binaryProbabilities.length) {
+            throw new IOException("Corrupt PPMd binary frequency");
+        }
+        int probability = binaryProbabilities[frequency - 1][contextClass];
+        int mean = probability + (1 << PERIOD_BITS - 2) >> PERIOD_BITS;
+        if (allocator.symbol(state) == symbol) {
+            encoder.encodeBit(false, probability, BINARY_SCALE);
+            if (frequency < 128) allocator.addFrequency(state, 1);
+            binaryProbabilities[frequency - 1][contextClass] =
+                    probability + (1 << INTEGRAL_BITS) - mean;
+            previousSuccess = 1;
+            runLength++;
+            return state;
+        }
+        encoder.encodeBit(true, probability, BINARY_SCALE);
+        probability -= mean;
+        binaryProbabilities[frequency - 1][contextClass] = probability;
+        initialEscape = EXP_ESCAPE[probability >>> 10] & 0xff;
+        maskSymbol(allocator.symbol(state));
+        previousSuccess = 0;
+        return NO_STATE;
+    }
+
     /// Decodes from an unmasked multi-state context or selects its escape interval.
     private int decodeFirstOrderSymbol(int context) throws IOException {
         int scale = allocator.contextSumFrequency(context);
@@ -254,6 +330,44 @@ public final class PPMd7Model {
         }
         for (int offset = 0; offset < stateCount; offset++) maskSymbol(allocator.symbol(states + offset));
         rangeDecoder.decode(cumulative, scale);
+        return NO_STATE;
+    }
+
+    /// Encodes from an unmasked multi-state context or emits its escape interval.
+    private int encodeFirstOrderSymbol(int context, int symbol) throws IOException {
+        PPMdRangeEncoder encoder = Objects.requireNonNull(rangeEncoder);
+        int scale = allocator.contextSumFrequency(context);
+        if (scale == 0) throw new IOException("Corrupt PPMd zero-frequency context");
+        previousSuccess = 0;
+        int states = allocator.contextStates(context);
+        int stateCount = allocator.contextStateCount(context);
+        int cumulative = 0;
+        for (int offset = 0; offset < stateCount; offset++) {
+            int state = states + offset;
+            int frequency = allocator.frequency(state);
+            int highCount = cumulative + frequency;
+            if (allocator.symbol(state) != symbol) {
+                cumulative = highCount;
+                continue;
+            }
+            encoder.encode(cumulative, highCount, scale);
+            allocator.addFrequency(state, 4);
+            allocator.setContextSumFrequency(context, scale + 4);
+            if (offset == 0) {
+                if (2 * highCount > scale) {
+                    previousSuccess = 1;
+                    runLength++;
+                }
+            } else if (allocator.frequency(state) > allocator.frequency(state - 1)) {
+                allocator.swapStates(state - 1, state);
+                state--;
+            }
+            return rescaleContext(context, state);
+        }
+        for (int offset = 0; offset < stateCount; offset++) {
+            maskSymbol(allocator.symbol(states + offset));
+        }
+        encoder.encode(cumulative, scale, scale);
         return NO_STATE;
     }
 
@@ -292,6 +406,63 @@ public final class PPMd7Model {
         while (cumulative <= count) cumulative += allocator.frequency(stateIndexes[++selected]);
         int state = stateIndexes[selected];
         rangeDecoder.decode(cumulative - allocator.frequency(state), cumulative);
+        if (see != null) see.update();
+        escapeGeneration = escapeGeneration + 1 & 0xff;
+        runLength = initialRunLength;
+        allocator.addFrequency(state, 4);
+        allocator.addContextSumFrequency(context, 4);
+        return rescaleContext(context, state);
+    }
+
+    /// Encodes from a suffix context after excluding symbols escaped from higher orders.
+    private int encodeEscapedSymbol(
+            int context,
+            int maskedStateCount,
+            int symbol
+    ) throws IOException {
+        PPMdRangeEncoder encoder = Objects.requireNonNull(rangeEncoder);
+        @Nullable SeeContext see = selectSeeContext(context, maskedStateCount);
+        int escapeFrequency = see == null ? 1 : see.mean();
+        int states = allocator.contextStates(context);
+        int stateCount = allocator.contextStateCount(context);
+        int availableCount = stateCount - maskedStateCount;
+        if (availableCount <= 0) throw new IOException("Corrupt PPMd exclusion state");
+
+        int sourceOffset = 0;
+        int symbolFrequency = 0;
+        int selected = -1;
+        int selectedLowCount = 0;
+        for (int index = 0; index < availableCount; index++) {
+            while (sourceOffset < stateCount
+                    && isMasked(allocator.symbol(states + sourceOffset))) {
+                sourceOffset++;
+            }
+            if (sourceOffset >= stateCount) throw new IOException("Corrupt PPMd symbol mask");
+            int state = states + sourceOffset++;
+            stateIndexes[index] = state;
+            if (allocator.symbol(state) == symbol) {
+                selected = index;
+                selectedLowCount = symbolFrequency;
+            }
+            symbolFrequency += allocator.frequency(state);
+        }
+
+        int scale = escapeFrequency + symbolFrequency;
+        if (selected < 0) {
+            encoder.encode(symbolFrequency, scale, scale);
+            if (see != null) see.addToSum(scale);
+            for (int index = 0; index < availableCount; index++) {
+                maskSymbol(allocator.symbol(stateIndexes[index]));
+            }
+            return NO_STATE;
+        }
+
+        int state = stateIndexes[selected];
+        encoder.encode(
+                selectedLowCount,
+                selectedLowCount + allocator.frequency(state),
+                scale
+        );
         if (see != null) see.update();
         escapeGeneration = escapeGeneration + 1 & 0xff;
         runLength = initialRunLength;

@@ -57,6 +57,18 @@ public final class ZstdEncoderParameters {
     /// Whether frame-wide long-distance matching is enabled.
     private final boolean longDistanceMatching;
 
+    /// Effective long-distance hash-table logarithm.
+    private final int longDistanceHashLog;
+
+    /// Effective minimum long-distance match length.
+    private final int longDistanceMinimumMatch;
+
+    /// Effective long-distance collision-bucket logarithm.
+    private final int longDistanceBucketSizeLog;
+
+    /// Effective long-distance sampling-rate logarithm.
+    private final int longDistanceHashRateLog;
+
     /// Number of parallel job-compression workers, or zero for synchronous compression.
     private final int workerCount;
 
@@ -86,6 +98,10 @@ public final class ZstdEncoderParameters {
     /// @param contentSize whether a known pledged source size is emitted
     /// @param dictionaryId whether a known dictionary identifier is emitted
     /// @param longDistanceMatching whether long-distance matching was requested
+    /// @param longDistanceHashLog requested LDM hash-table logarithm, or zero for `windowLog - 7`
+    /// @param longDistanceMinimumMatch requested LDM minimum match length, or zero for 64
+    /// @param longDistanceBucketSizeLog requested LDM bucket-size logarithm, or zero for three
+    /// @param longDistanceHashRateLog requested LDM sampling-rate logarithm, or zero for an automatic value
     /// @param workerCount number of parallel job-compression workers, or zero for synchronous compression
     /// @param jobSize requested parallel job size in bytes, or zero for an encoder-selected value
     /// @param overlapLog requested worker overlap logarithm from zero through nine
@@ -104,6 +120,10 @@ public final class ZstdEncoderParameters {
             boolean contentSize,
             boolean dictionaryId,
             boolean longDistanceMatching,
+            int longDistanceHashLog,
+            int longDistanceMinimumMatch,
+            int longDistanceBucketSizeLog,
+            int longDistanceHashRateLog,
             int workerCount,
             int jobSize,
             int overlapLog,
@@ -125,12 +145,12 @@ public final class ZstdEncoderParameters {
             throw new IllegalArgumentException("Zstandard overlap log must be between zero and nine");
         }
         this.windowLog = windowLog != 0 ? windowLog : longDistanceMatching ? 27 : 17;
-        this.hashLog = hashLog != 0 ? Math.min(hashLog, 18) : defaultHashLog(compressionLevel);
+        this.hashLog = hashLog != 0 ? hashLog : defaultHashLog(compressionLevel);
         int effectiveChainLog = chainLog != 0 ? chainLog : defaultChainLog(compressionLevel);
-        this.chainLimit = 1 << Math.min(effectiveChainLog, 17);
+        this.chainLimit = 1 << effectiveChainLog;
         this.strategy = strategy != 0 ? strategy : defaultStrategy(compressionLevel);
         this.searchDepth = searchLog != 0
-                ? 1 << Math.min(searchLog, 10)
+                ? 1 << searchLog
                 : defaultSearchDepth(compressionLevel, this.strategy);
         this.minimumMatch = minimumMatch != 0 ? minimumMatch : compressionLevel < 0 ? 6 : 4;
         this.targetLength = targetLength;
@@ -138,6 +158,22 @@ public final class ZstdEncoderParameters {
         this.contentSize = contentSize;
         this.dictionaryId = dictionaryId;
         this.longDistanceMatching = longDistanceMatching;
+        this.longDistanceHashLog = longDistanceHashLog != 0
+                ? longDistanceHashLog
+                : Math.max(6, Math.min(20, this.windowLog - 7));
+        this.longDistanceMinimumMatch =
+                longDistanceMinimumMatch != 0 ? longDistanceMinimumMatch : 64;
+        int selectedBucketSizeLog =
+                longDistanceBucketSizeLog != 0 ? longDistanceBucketSizeLog : 3;
+        if (selectedBucketSizeLog > this.longDistanceHashLog) {
+            throw new IllegalArgumentException(
+                    "Zstandard LDM bucket-size log cannot exceed the LDM hash log"
+            );
+        }
+        this.longDistanceBucketSizeLog = selectedBucketSizeLog;
+        this.longDistanceHashRateLog = longDistanceHashRateLog != 0
+                ? longDistanceHashRateLog
+                : Math.max(0, this.windowLog - this.longDistanceHashLog);
         this.workerCount = workerCount;
         int targetJobLog = longDistanceMatching
                 ? Math.max(21, Math.min(effectiveChainLog, 17) + 3)
@@ -167,6 +203,40 @@ public final class ZstdEncoderParameters {
         this.dictionary = ZstdDictionary.parse(dictionary);
         if (this.dictionary.id() > 0xffff_ffffL) {
             throw new IllegalArgumentException("Zstandard dictionary identifier exceeds 32 bits");
+        }
+    }
+
+    /// Creates the ordinary single-threaded parameters used to analyze dictionary samples.
+    static ZstdEncoderParameters forDictionaryTraining(int compressionLevel) {
+        try {
+            return new ZstdEncoderParameters(
+                    compressionLevel,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    false,
+                    false,
+                    false,
+                    false,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    -1L,
+                    null
+            );
+        } catch (IOException exception) {
+            throw new AssertionError(
+                    "Dictionary-training parameters cannot contain an invalid dictionary",
+                    exception
+            );
         }
     }
 
@@ -223,6 +293,26 @@ public final class ZstdEncoderParameters {
     /// Returns whether frame-wide long-distance matching is enabled.
     boolean longDistanceMatching() {
         return longDistanceMatching;
+    }
+
+    /// Returns the effective long-distance hash-table logarithm.
+    int longDistanceHashLog() {
+        return longDistanceHashLog;
+    }
+
+    /// Returns the effective minimum long-distance match length.
+    int longDistanceMinimumMatch() {
+        return longDistanceMinimumMatch;
+    }
+
+    /// Returns the effective long-distance collision-bucket logarithm.
+    int longDistanceBucketSizeLog() {
+        return longDistanceBucketSizeLog;
+    }
+
+    /// Returns the effective long-distance sampling-rate logarithm.
+    int longDistanceHashRateLog() {
+        return longDistanceHashRateLog;
     }
 
     /// Returns the number of parallel job-compression workers.

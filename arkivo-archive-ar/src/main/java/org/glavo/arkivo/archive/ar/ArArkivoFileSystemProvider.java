@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.ar;
 
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemImpl;
+import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -18,14 +19,10 @@ import java.nio.file.CopyOption;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileStore;
 import java.nio.file.FileSystem;
-import java.nio.file.FileSystemAlreadyExistsException;
-import java.nio.file.FileSystemNotFoundException;
-import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.ProviderMismatchException;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileAttributeView;
@@ -33,7 +30,6 @@ import java.nio.file.spi.FileSystemProvider;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 /// Provides JDK file system provider entry points for AR archives.
 @NotNullByDefault
@@ -45,7 +41,8 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
     private static final ArArkivoFileSystemProvider INSTANCE = new ArArkivoFileSystemProvider();
 
     /// The file systems opened through URI entry points.
-    private final ConcurrentHashMap<URI, ArArkivoFileSystem> fileSystems = new ConcurrentHashMap<>();
+    private final ArkivoFileSystemProviderSupport.Registry<ArArkivoFileSystem> fileSystems =
+            new ArkivoFileSystemProviderSupport.Registry<>();
 
     /// Creates an AR file system provider.
     public ArArkivoFileSystemProvider() {
@@ -66,41 +63,27 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
     @Override
     public ArkivoFileSystem newFileSystem(URI uri, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(environment, "environment");
-        ParsedArUri parsedUri = ParsedArUri.parse(uri, false);
-
-        while (true) {
-            ArArkivoFileSystem existing = fileSystems.get(parsedUri.archiveUri);
-            if (existing != null) {
-                if (existing.isOpen()) {
-                    throw new FileSystemAlreadyExistsException(parsedUri.archiveUri.toString());
-                }
-                fileSystems.remove(parsedUri.archiveUri, existing);
-                continue;
-            }
-
-            ArArkivoFileSystem[] holder = new ArArkivoFileSystem[1];
-            Runnable closeAction = () -> {
-                ArArkivoFileSystem fileSystem = holder[0];
-                if (fileSystem != null) {
-                    fileSystems.remove(parsedUri.archiveUri, fileSystem);
-                }
-            };
-            ArArkivoFileSystem fileSystem =
-                    ArArkivoFileSystemImpl.open(this, parsedUri.archivePath, parsedUri.archiveUri, environment, closeAction);
-            holder[0] = fileSystem;
-
-            existing = fileSystems.putIfAbsent(parsedUri.archiveUri, fileSystem);
-            if (existing == null) {
-                return fileSystem;
-            }
-
-            fileSystem.close();
-        }
+        ArkivoFileSystemProviderSupport.ParsedUri parsedUri = parseUri(uri, false);
+        return fileSystems.open(parsedUri.archiveUri(), closeAction -> ArArkivoFileSystemImpl.open(
+                this,
+                parsedUri.archivePath(),
+                parsedUri.archiveUri(),
+                environment,
+                closeAction
+        ));
     }
 
     /// Opens an AR archive file system from an archive path.
     @Override
     public ArArkivoFileSystem newFileSystem(Path path, Map<String, ?> environment) throws IOException {
+        Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(environment, "environment");
+        ArkivoFileSystemProviderSupport.requirePathFormat(path, ArArkivoFormat.instance());
+        return openPath(path, environment);
+    }
+
+    /// Opens an AR archive path whose format has already been selected explicitly.
+    ArArkivoFileSystem openPath(Path path, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
         return ArArkivoFileSystemImpl.open(this, path, path.toUri().normalize(), environment, () -> {
@@ -110,14 +93,16 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
     /// Returns an open AR archive file system for a provider URI.
     @Override
     public FileSystem getFileSystem(URI uri) {
-        return requireFileSystem(ParsedArUri.parse(uri, false));
+        return fileSystems.require(parseUri(uri, false).archiveUri());
     }
 
     /// Returns a path inside an open AR archive file system.
     @Override
     public Path getPath(URI uri) {
-        ParsedArUri parsedUri = ParsedArUri.parse(uri, true);
-        return requireFileSystem(parsedUri).getPath(parsedUri.entryPath);
+        ArkivoFileSystemProviderSupport.ParsedUri parsedUri = parseUri(uri, true);
+        return fileSystems.require(parsedUri.archiveUri()).getPath(
+                Objects.requireNonNull(parsedUri.entryPath(), "entryPath")
+        );
     }
 
     /// Opens a byte channel for a path inside an AR archive file system.
@@ -127,13 +112,20 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
             Set<? extends OpenOption> options,
             FileAttribute<?>... attributes
     ) throws IOException {
-        return readFileSystem(path).newByteChannel(path, options, attributes);
+        return readFileSystem(path).newByteChannel(
+                ArkivoFileSystemProviderSupport.resolveReadChannelPath(path, options),
+                options,
+                attributes
+        );
     }
 
     /// Opens an input stream for a path inside an AR archive file system.
     @Override
     public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
-        return readFileSystem(path).newInputStream(path, options);
+        return readFileSystem(path).newInputStream(
+                ArkivoFileSystemProviderSupport.resolveReadPath(path, options),
+                options
+        );
     }
 
     /// Opens an output stream for a path inside a writable AR archive file system.
@@ -146,7 +138,10 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
     @Override
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter)
             throws IOException {
-        return readFileSystem(directory).newDirectoryStream(directory, filter);
+        return readFileSystem(directory).newDirectoryStream(
+                ArkivoFileSystemProviderSupport.resolveReadPath(directory),
+                filter
+        );
     }
 
     /// Creates a directory entry inside a writable AR archive file system.
@@ -170,50 +165,23 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
     /// Copies a path inside an AR archive file system to another file system.
     @Override
     public void copy(Path source, Path target, CopyOption... options) throws IOException {
-        boolean replaceExisting = false;
-        for (CopyOption option : options) {
-            if (option == StandardCopyOption.REPLACE_EXISTING) {
-                replaceExisting = true;
-            } else {
-                throw new UnsupportedOperationException("Unsupported AR copy option: " + option);
-            }
-        }
-
-        BasicFileAttributes attributes = readAttributes(source, BasicFileAttributes.class);
-        if (attributes.isDirectory()) {
-            if (Files.exists(target)) {
-                if (!replaceExisting) {
-                    throw new java.nio.file.FileAlreadyExistsException(target.toString());
-                }
-                if (Files.isDirectory(target)) {
-                    return;
-                }
-                Files.delete(target);
-            }
-            Files.createDirectories(target);
-            return;
-        }
-
-        try (InputStream input = newInputStream(source)) {
-            if (replaceExisting) {
-                Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
-            } else {
-                Files.copy(input, target);
-            }
-        }
+        readFileSystem(source);
+        ArkivoFileSystemProviderSupport.copy(source, target, options);
     }
 
     /// Moves a member inside an update-mode AR archive file system.
     @Override
     public void move(Path source, Path target, CopyOption... options) throws IOException {
-        readFileSystem(source).move(source, target, options);
+        ArArkivoFileSystemImpl fileSystem = readFileSystem(source);
+        ArkivoFileSystemProviderSupport.requireSameFileSystemMove(source, target);
+        fileSystem.move(source, target, options);
     }
 
     /// Returns whether two AR archive paths refer to the same file.
     @Override
     public boolean isSameFile(Path path, Path other) throws IOException {
-        readFileSystem(path).checkAccess(path);
-        return path.equals(other);
+        readFileSystem(path);
+        return ArkivoFileSystemProviderSupport.isSameFile(path, other);
     }
 
     /// Returns whether an AR archive path is hidden.
@@ -249,13 +217,21 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
     @Override
     public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, LinkOption... options)
             throws IOException {
-        return readFileSystem(path).readAttributes(path, type, options);
+        return readFileSystem(path).readAttributes(
+                ArkivoFileSystemProviderSupport.resolveReadPath(path, options),
+                type,
+                options
+        );
     }
 
     /// Reads named file attributes for an AR archive path.
     @Override
     public Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options) throws IOException {
-        return readFileSystem(path).readAttributes(path, attributes, options);
+        return readFileSystem(path).readAttributes(
+                ArkivoFileSystemProviderSupport.resolveReadPath(path, options),
+                attributes,
+                options
+        );
     }
 
     /// Reads a symbolic link target from an AR archive path.
@@ -279,80 +255,8 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
         throw new ProviderMismatchException();
     }
 
-    /// Returns the open file system registered for a parsed URI.
-    private ArArkivoFileSystem requireFileSystem(ParsedArUri parsedUri) {
-        ArArkivoFileSystem fileSystem = fileSystems.get(parsedUri.archiveUri);
-        if (fileSystem != null && fileSystem.isOpen()) {
-            return fileSystem;
-        }
-        if (fileSystem != null) {
-            fileSystems.remove(parsedUri.archiveUri, fileSystem);
-        }
-        throw new FileSystemNotFoundException(parsedUri.archiveUri.toString());
-    }
-
-    /// Requires a provider URI to use the AR Arkivo scheme.
-    private static void requireSupportedScheme(URI uri) {
-        Objects.requireNonNull(uri, "uri");
-        if (!SCHEME.equalsIgnoreCase(uri.getScheme())) {
-            throw new IllegalArgumentException("Unsupported URI scheme: " + uri);
-        }
-    }
-
-    /// Stores parsed components from an AR Arkivo provider URI.
-    @NotNullByDefault
-    private static final class ParsedArUri {
-        /// The nested archive URI.
-        private final URI archiveUri;
-
-        /// The archive path resolved from the nested archive URI.
-        private final Path archivePath;
-
-        /// The decoded entry path, or `null` when the URI identifies only an archive file system.
-        private final @Nullable String entryPath;
-
-        /// Creates parsed AR URI components.
-        private ParsedArUri(URI archiveUri, Path archivePath, @Nullable String entryPath) {
-            this.archiveUri = archiveUri;
-            this.archivePath = archivePath;
-            this.entryPath = entryPath;
-        }
-
-        /// Parses an AR Arkivo provider URI.
-        private static ParsedArUri parse(URI uri, boolean requireEntryPath) {
-            requireSupportedScheme(uri);
-            if (uri.getRawQuery() != null || uri.getRawFragment() != null) {
-                throw new IllegalArgumentException("AR Arkivo URI must not contain query or fragment: " + uri);
-            }
-
-            String schemeSpecificPart = uri.getRawSchemeSpecificPart();
-            int separator = schemeSpecificPart.indexOf("!/");
-            if (separator < 0 && requireEntryPath) {
-                throw new IllegalArgumentException("AR Arkivo entry URI must contain !/: " + uri);
-            }
-
-            String archivePart = separator >= 0
-                    ? schemeSpecificPart.substring(0, separator)
-                    : schemeSpecificPart;
-            if (archivePart.isEmpty()) {
-                throw new IllegalArgumentException("AR Arkivo URI must contain an archive URI: " + uri);
-            }
-
-            URI archiveUri = URI.create(archivePart).normalize();
-            Path archivePath = Path.of(archiveUri);
-            String entryPath = separator >= 0
-                    ? decodeEntryPath(schemeSpecificPart.substring(separator + 2))
-                    : null;
-            return new ParsedArUri(archiveUri, archivePath, entryPath);
-        }
-
-        /// Decodes a raw entry path from an AR Arkivo provider URI.
-        private static String decodeEntryPath(String rawEntryPath) {
-            if (rawEntryPath.isEmpty()) {
-                return "/";
-            }
-            String decodedPath = URI.create("arkivo-entry:/" + rawEntryPath).getPath();
-            return decodedPath != null ? decodedPath : "/";
-        }
+    /// Parses an AR provider URI through the shared archive URI grammar.
+    private static ArkivoFileSystemProviderSupport.ParsedUri parseUri(URI uri, boolean requireEntryPath) {
+        return ArkivoFileSystemProviderSupport.parseUri(uri, SCHEME, "AR", requireEntryPath);
     }
 }

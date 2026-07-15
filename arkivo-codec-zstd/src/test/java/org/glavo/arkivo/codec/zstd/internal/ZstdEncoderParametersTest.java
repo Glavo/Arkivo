@@ -57,7 +57,44 @@ public final class ZstdEncoderParametersTest {
 
         assertEquals(1 << 21, enabled.jobSize());
         assertTrue(enabled.longDistanceMatching());
+        assertEquals(10, enabled.longDistanceHashLog());
+        assertEquals(64, enabled.longDistanceMinimumMatch());
+        assertEquals(3, enabled.longDistanceBucketSizeLog());
+        assertEquals(7, enabled.longDistanceHashRateLog());
         assertFalse(parameters(2, 0, 0, 1, false).longDistanceMatching());
+    }
+
+    /// Verifies explicit long-distance controls survive parameter selection without truncation.
+    @Test
+    public void selectsExplicitLongDistanceParameters() throws IOException {
+        ZstdEncoderParameters parameters = new ZstdEncoderParameters(
+                3,
+                20,
+                18,
+                17,
+                6,
+                4,
+                0,
+                1,
+                false,
+                false,
+                false,
+                true,
+                15,
+                32,
+                4,
+                2,
+                0,
+                0,
+                0,
+                -1L,
+                null
+        );
+
+        assertEquals(15, parameters.longDistanceHashLog());
+        assertEquals(32, parameters.longDistanceMinimumMatch());
+        assertEquals(4, parameters.longDistanceBucketSizeLog());
+        assertEquals(2, parameters.longDistanceHashRateLog());
     }
 
     /// Verifies zero selects a level-derived strategy while explicit strategies remain unchanged.
@@ -96,6 +133,10 @@ public final class ZstdEncoderParametersTest {
                 false,
                 false,
                 longDistanceMatching,
+                0,
+                0,
+                0,
+                0,
                 workerCount,
                 jobSize,
                 overlapLog,

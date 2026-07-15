@@ -27,7 +27,9 @@ import java.nio.file.FileSystem;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.ProviderMismatchException;
 import java.nio.file.ReadOnlyFileSystemException;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -457,6 +459,7 @@ public final class ArArkivoStreamingReaderTest {
         );
         Path archivePath = createTemporaryArchivePath("ar-fs-");
         Path copiedDirectory = archivePath.getParent().resolve("copied-dir");
+        Path copiedFile = archivePath.getParent().resolve("copied-file");
         Path existingFile = archivePath.getParent().resolve("existing-file");
         try {
             try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
@@ -507,13 +510,24 @@ public final class ArArkivoStreamingReaderTest {
                 assertEquals(0100640, fileAttributes.mode());
                 assertEquals(content.length, fileAttributes.size());
                 assertArrayEquals(content, Files.readAllBytes(file));
+                Files.copy(
+                        file,
+                        copiedFile,
+                        LinkOption.NOFOLLOW_LINKS,
+                        StandardCopyOption.COPY_ATTRIBUTES
+                );
+                assertArrayEquals(content, Files.readAllBytes(copiedFile));
 
                 Path link = fileSystem.getPath("/dir/link");
-                ArArkivoEntryAttributes linkAttributes = Files.readAttributes(link, ArArkivoEntryAttributes.class);
+                ArArkivoEntryAttributes linkAttributes = Files.readAttributes(
+                        link,
+                        ArArkivoEntryAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
                 assertEquals(true, linkAttributes.isSymbolicLink());
                 assertEquals(false, linkAttributes.isRegularFile());
                 assertEquals(0120777, linkAttributes.mode());
-                assertEquals("hello.txt", Files.readString(link));
+                assertArrayEquals(content, Files.readAllBytes(link));
                 assertEquals("hello.txt", Files.readSymbolicLink(link).toString());
 
                 PosixFileAttributes posixAttributes = Files.readAttributes(file, PosixFileAttributes.class);
@@ -603,6 +617,7 @@ public final class ArArkivoStreamingReaderTest {
 
             assertThrows(ClosedFileSystemException.class, () -> fileSystem.getPath("/dir"));
         } finally {
+            Files.deleteIfExists(copiedFile);
             Files.deleteIfExists(existingFile);
             Files.deleteIfExists(copiedDirectory);
             deleteTemporaryArchive(archivePath);
@@ -682,13 +697,36 @@ public final class ArArkivoStreamingReaderTest {
                 assertEquals(channelFilePermissions, channelFilePosixAttributes.permissions());
 
                 Path link = fileSystem.getPath("/dir/link");
-                ArArkivoEntryAttributes linkAttributes = Files.readAttributes(link, ArArkivoEntryAttributes.class);
-                PosixFileAttributes linkPosixAttributes = Files.readAttributes(link, PosixFileAttributes.class);
+                ArArkivoEntryAttributes linkAttributes = Files.readAttributes(
+                        link,
+                        ArArkivoEntryAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
+                PosixFileAttributes linkPosixAttributes = Files.readAttributes(
+                        link,
+                        PosixFileAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
                 assertEquals(true, linkAttributes.isSymbolicLink());
                 assertEquals(0120754, linkAttributes.mode());
                 assertEquals(linkPermissions, linkPosixAttributes.permissions());
+                ArArkivoEntryAttributeView followedView = Objects.requireNonNull(
+                        Files.getFileAttributeView(link, ArArkivoEntryAttributeView.class)
+                );
+                ArArkivoEntryAttributeView linkView = Objects.requireNonNull(Files.getFileAttributeView(
+                        link,
+                        ArArkivoEntryAttributeView.class,
+                        LinkOption.NOFOLLOW_LINKS
+                ));
+                assertEquals(true, followedView.readAttributes().isRegularFile());
+                assertEquals(true, linkView.readAttributes().isSymbolicLink());
+                assertEquals(linkPermissions, Objects.requireNonNull(Files.getFileAttributeView(
+                        link,
+                        PosixFileAttributeView.class,
+                        LinkOption.NOFOLLOW_LINKS
+                )).readAttributes().permissions());
                 assertEquals("hello.txt", Files.readSymbolicLink(link).toString());
-                assertEquals("hello.txt", Files.readString(link));
+                assertArrayEquals(content, Files.readAllBytes(link));
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -766,6 +804,11 @@ public final class ArArkivoStreamingReaderTest {
                 assertEquals(false, fileSystem.isReadOnly());
                 Path keep = fileSystem.getPath("/keep.txt");
                 assertArrayEquals(keepContent, Files.readAllBytes(keep));
+                assertThrows(
+                        ProviderMismatchException.class,
+                        () -> fileSystem.provider().move(keep, archivePath)
+                );
+                assertArrayEquals(keepContent, Files.readAllBytes(keep));
                 try (SeekableByteChannel channel = Files.newByteChannel(
                         keep,
                         Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
@@ -782,9 +825,16 @@ public final class ArArkivoStreamingReaderTest {
                 ArArkivoEntryAttributeView arView =
                         Objects.requireNonNull(Files.getFileAttributeView(keep, ArArkivoEntryAttributeView.class));
                 arView.setTimes(modifiedTime, null, null);
-                arView.setUserId(1234L);
                 arView.setGroupId(5678L);
                 arView.setMode(0100640);
+                Path link = fileSystem.getPath("/link");
+                Objects.requireNonNull(Files.getFileAttributeView(link, ArArkivoEntryAttributeView.class))
+                        .setUserId(1234L);
+                Objects.requireNonNull(Files.getFileAttributeView(
+                        link,
+                        ArArkivoEntryAttributeView.class,
+                        LinkOption.NOFOLLOW_LINKS
+                )).setUserId(4321L);
 
                 Files.move(
                         fileSystem.getPath("/replacement.txt"),
@@ -805,6 +855,11 @@ public final class ArArkivoStreamingReaderTest {
                 assertEquals(1234L, attributes.userId());
                 assertEquals(5678L, attributes.groupId());
                 assertEquals(0100640, attributes.mode());
+                assertEquals(4321L, Files.readAttributes(
+                        fileSystem.getPath("/link"),
+                        ArArkivoEntryAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                ).userId());
 
                 assertEquals(false, Files.exists(fileSystem.getPath("/remove.txt")));
                 assertEquals(

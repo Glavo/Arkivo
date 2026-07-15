@@ -27,6 +27,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ReadOnlyBufferException;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
@@ -79,7 +80,11 @@ final class CodecChannelContractTest {
                     new ByteArrayInputStream(compressedBytes.toByteArray())
             );
             WritableByteChannel decodedTarget = Channels.newChannel(decodedBytes);
-            CodecTransferResult decompression = codec.decompress(compressedSource, decodedTarget);
+            CodecTransferResult decompression = codec.decompress(
+                    compressedSource,
+                    decodedTarget,
+                    CodecContractOptions.decoderOptions(codec, input.length)
+            );
 
             assertEquals(input.length, decompression.outputBytes(), codec.name());
             assertTrue(compressedSource.isOpen(), codec.name());
@@ -102,7 +107,9 @@ final class CodecChannelContractTest {
 
             byte[] compressed = compressFrame(codec, content);
             try (CompressionDecoder decoder = codec.openDecoder(
-                    Channels.newChannel(new ByteArrayInputStream(compressed))
+                    Channels.newChannel(new ByteArrayInputStream(compressed)),
+                    CodecContractOptions.decoderOptions(codec, content.length),
+                    ChannelOwnership.RETAIN
             )) {
                 assertUnconsumedInput(decoder, compressed, codec.name());
                 ByteBuffer target = ByteBuffer.allocate(7);
@@ -116,7 +123,11 @@ final class CodecChannelContractTest {
                     assertTrue(read > 0, codec.name());
                 }
 
-                assertEquals(compressed.length, decoder.inputBytes(), codec.name());
+                if (CodecContractOptions.requiresDecoderOptions(codec)) {
+                    assertTrue(decoder.inputBytes() <= compressed.length, codec.name());
+                } else {
+                    assertEquals(compressed.length, decoder.inputBytes(), codec.name());
+                }
                 assertEquals(compressed.length, decoder.sourceBytes(), codec.name());
                 assertEquals(content.length, decoder.outputBytes(), codec.name());
             }
@@ -437,8 +448,16 @@ final class CodecChannelContractTest {
             assertEquals(0, compressed.position(), codec.name());
             assertTrue(compressed.hasRemaining(), codec.name());
 
-            ByteBuffer decoded = codec.decompress(compressed, input.length);
-            assertEquals(compressed.limit(), compressed.position(), codec.name());
+            ByteBuffer decoded = codec.decompress(
+                    compressed,
+                    input.length,
+                    CodecContractOptions.decoderOptions(codec, input.length)
+            );
+            if (CodecContractOptions.requiresDecoderOptions(codec)) {
+                assertTrue(compressed.position() <= compressed.limit(), codec.name());
+            } else {
+                assertEquals(compressed.limit(), compressed.position(), codec.name());
+            }
             assertEquals(0, decoded.position(), codec.name());
             byte[] actual = new byte[decoded.remaining()];
             decoded.get(actual);
@@ -447,12 +466,20 @@ final class CodecChannelContractTest {
             ByteBuffer overflowSource = codec.compress(ByteBuffer.wrap(input));
             assertThrows(
                     DecompressionLimitException.class,
-                    () -> codec.decompress(overflowSource, input.length - 1L),
+                    () -> codec.decompress(
+                            overflowSource,
+                            input.length - 1L,
+                            CodecContractOptions.decoderOptions(codec, input.length)
+                    ),
                     codec.name()
             );
 
             ByteBuffer emptyCompressed = codec.compress(ByteBuffer.allocate(0));
-            ByteBuffer emptyDecoded = codec.decompress(emptyCompressed, 0L);
+            ByteBuffer emptyDecoded = codec.decompress(
+                    emptyCompressed,
+                    0L,
+                    CodecContractOptions.decoderOptions(codec, 0L)
+            );
             assertEquals(0, emptyDecoded.remaining(), codec.name());
         }
     }
@@ -469,6 +496,9 @@ final class CodecChannelContractTest {
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
             if (!codec.canCompress() || !codec.canDecompress()) {
+                continue;
+            }
+            if (CodecContractOptions.requiresDecoderOptions(codec)) {
                 continue;
             }
 
@@ -527,31 +557,125 @@ final class CodecChannelContractTest {
         }
     }
 
-    /// Verifies direct-buffer one-shot operations for every codec advertising a specialized path.
+    /// Verifies fixed-buffer operations across heap, direct, sliced, and read-only endpoint combinations.
     @Test
-    void roundTripsDirectBuffersForEveryAdvertisingCodec() throws IOException {
-        byte[] input = ("direct codec buffers " + "abcdef".repeat(256)).getBytes(StandardCharsets.UTF_8);
+    void roundTripsHeapAndDirectFixedBuffersAcrossEveryCodec() throws IOException {
+        byte[] input = ("fixed codec buffers " + "abcdef".repeat(256)).getBytes(StandardCharsets.UTF_8);
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.capabilities().supports(CompressionFeature.DIRECT_BYTE_BUFFER)
-                    || !codec.canCompressBuffers()
+            if (!codec.canCompressBuffers()
                     || !codec.canDecompressBuffers()) {
                 continue;
             }
 
-            ByteBuffer source = ByteBuffer.allocateDirect(input.length);
-            source.put(input).flip();
-            ByteBuffer compressed = ByteBuffer.allocateDirect(input.length * 2 + 512);
-            codec.compress(source, compressed);
-            compressed.flip();
+            assertFixedBufferRoundTrip(codec, input, false, false, false, false);
+            assertFixedBufferRoundTrip(codec, input, false, true, true, true);
+            assertFixedBufferRoundTrip(codec, input, true, false, true, false);
+            assertFixedBufferRoundTrip(codec, input, true, true, false, true);
 
-            ByteBuffer decoded = ByteBuffer.allocateDirect(input.length);
-            codec.decompress(compressed, decoded);
-            decoded.flip();
-            byte[] output = new byte[decoded.remaining()];
-            decoded.get(output);
-            assertArrayEquals(input, output, codec.name());
+            ByteBuffer compressionSource = ByteBuffer.wrap(input);
+            ByteBuffer readOnlyCompressionTarget = ByteBuffer.allocate(input.length * 4 + 8_192)
+                    .asReadOnlyBuffer();
+            assertThrows(
+                    ReadOnlyBufferException.class,
+                    () -> codec.compress(compressionSource, readOnlyCompressionTarget),
+                    codec.name()
+            );
+            assertEquals(0, compressionSource.position(), codec.name());
+
+            ByteBuffer compressed = codec.compress(ByteBuffer.wrap(input));
+            int compressedPosition = compressed.position();
+            ByteBuffer readOnlyDecompressionTarget = ByteBuffer.allocate(input.length).asReadOnlyBuffer();
+            assertThrows(
+                    ReadOnlyBufferException.class,
+                    () -> decompressFixed(codec, compressed, readOnlyDecompressionTarget, input.length),
+                    codec.name()
+            );
+            assertEquals(compressedPosition, compressed.position(), codec.name());
+
+            ByteBuffer sameCompressionBuffer = ByteBuffer.allocate(input.length + 8_192);
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> codec.compress(sameCompressionBuffer, sameCompressionBuffer),
+                    codec.name()
+            );
+            ByteBuffer sameDecompressionBuffer = codec.compress(ByteBuffer.wrap(input));
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> decompressFixed(codec, sameDecompressionBuffer, sameDecompressionBuffer, input.length),
+                    codec.name()
+            );
         }
+    }
+
+    /// Verifies one fixed-buffer layout while preserving nonzero source and target range offsets.
+    private static void assertFixedBufferRoundTrip(
+            CompressionCodec codec,
+            byte[] input,
+            boolean directSource,
+            boolean directCompressed,
+            boolean directDecoded,
+            boolean readOnlySources
+    ) throws IOException {
+        int sourceOffset = 3;
+        ByteBuffer sourceStorage = allocateBuffer(directSource, sourceOffset + input.length + 5);
+        sourceStorage.position(sourceOffset);
+        sourceStorage.put(input);
+        sourceStorage.flip();
+        sourceStorage.position(sourceOffset);
+        ByteBuffer source = readOnlySources ? sourceStorage.asReadOnlyBuffer() : sourceStorage;
+
+        int compressedOffset = 5;
+        int compressedCapacity = input.length * 4 + 8_192;
+        ByteBuffer compressed = allocateBuffer(
+                directCompressed,
+                compressedOffset + compressedCapacity + 7
+        );
+        compressed.position(compressedOffset);
+        compressed.limit(compressedOffset + compressedCapacity);
+        codec.compress(source, compressed);
+        assertEquals(source.limit(), source.position(), codec.name());
+
+        int compressedEnd = compressed.position();
+        ByteBuffer compressedSource = compressed.duplicate();
+        compressedSource.position(compressedOffset);
+        compressedSource.limit(compressedEnd);
+        if (readOnlySources) {
+            compressedSource = compressedSource.asReadOnlyBuffer();
+        }
+
+        int decodedOffset = 7;
+        ByteBuffer decoded = allocateBuffer(directDecoded, decodedOffset + input.length + 3);
+        decoded.position(decodedOffset);
+        decoded.limit(decodedOffset + input.length);
+        decompressFixed(codec, compressedSource, decoded, input.length);
+        assertEquals(decoded.limit(), decoded.position(), codec.name());
+
+        ByteBuffer output = decoded.duplicate();
+        output.position(decodedOffset);
+        output.limit(decodedOffset + input.length);
+        byte[] outputBytes = new byte[output.remaining()];
+        output.get(outputBytes);
+        assertArrayEquals(input, outputBytes, codec.name());
+    }
+
+    /// Decompresses through the unconfigured overload unless the raw codec requires external metadata.
+    private static void decompressFixed(
+            CompressionCodec codec,
+            ByteBuffer source,
+            ByteBuffer target,
+            long decodedSize
+    ) throws IOException {
+        if (CodecContractOptions.requiresDecoderOptions(codec)) {
+            codec.decompress(source, target, CodecContractOptions.decoderOptions(codec, decodedSize));
+        } else {
+            codec.decompress(source, target);
+        }
+    }
+
+    /// Allocates one heap or direct buffer with the requested capacity.
+    private static ByteBuffer allocateBuffer(boolean direct, int capacity) {
+        return direct ? ByteBuffer.allocateDirect(capacity) : ByteBuffer.allocate(capacity);
     }
 
     /// Verifies every advertised compression-level option can open and complete an encoder.
@@ -760,7 +884,7 @@ final class CodecChannelContractTest {
     /// Verifies pledged source sizes are advertised, encoded, and enforced consistently.
     @Test
     void enforcesAdvertisedPledgedSourceSizes() throws IOException {
-        Set<String> pledgedSizeCodecs = Set.of("lzma", "zstd");
+        Set<String> pledgedSizeCodecs = Set.of("lzma", "lzma-raw", "zstd");
         byte[] input = (
                 "pledged source size contract 0123456789abcdef;"
         ).repeat(512).getBytes(StandardCharsets.UTF_8);
@@ -801,7 +925,8 @@ final class CodecChannelContractTest {
             ByteArrayOutputStream decoded = new ByteArrayOutputStream();
             codec.decompress(
                     Channels.newChannel(new ByteArrayInputStream(compressed.toByteArray())),
-                    Channels.newChannel(decoded)
+                    Channels.newChannel(decoded),
+                    CodecContractOptions.decoderOptions(codec, input.length)
             );
             assertArrayEquals(input, decoded.toByteArray(), codec.name());
 
@@ -825,16 +950,7 @@ final class CodecChannelContractTest {
     void enforcesMaximumOutputSizeAcrossAllCodecs() throws IOException {
         byte[] input = ("bounded decompression output " + "0123456789abcdef".repeat(256))
                 .getBytes(StandardCharsets.UTF_8);
-        CodecOptions exactOptions = CodecOptions.builder()
-                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, (long) input.length)
-                .build();
         long smallerLimit = input.length - 1L;
-        CodecOptions smallerOptions = CodecOptions.builder()
-                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, smallerLimit)
-                .build();
-        CodecOptions invalidOptions = CodecOptions.builder()
-                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, -1L)
-                .build();
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
             if (!codec.canCompress() || !codec.canDecompress()) {
@@ -844,6 +960,19 @@ final class CodecChannelContractTest {
                     codec.capabilities().decompressionOptions().contains(StandardCodecOptions.MAX_OUTPUT_SIZE),
                     codec.name()
             );
+
+            CodecOptions.Builder exactBuilder = CodecOptions.builder()
+                    .set(StandardCodecOptions.MAX_OUTPUT_SIZE, (long) input.length);
+            CodecContractOptions.addRequiredDecoderOptions(exactBuilder, codec, input.length);
+            CodecOptions exactOptions = exactBuilder.build();
+            CodecOptions.Builder smallerBuilder = CodecOptions.builder()
+                    .set(StandardCodecOptions.MAX_OUTPUT_SIZE, smallerLimit);
+            CodecContractOptions.addRequiredDecoderOptions(smallerBuilder, codec, input.length);
+            CodecOptions smallerOptions = smallerBuilder.build();
+            CodecOptions.Builder invalidBuilder = CodecOptions.builder()
+                    .set(StandardCodecOptions.MAX_OUTPUT_SIZE, -1L);
+            CodecContractOptions.addRequiredDecoderOptions(invalidBuilder, codec, input.length);
+            CodecOptions invalidOptions = invalidBuilder.build();
 
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
             codec.compress(
@@ -871,7 +1000,11 @@ final class CodecChannelContractTest {
                     codec.name()
             );
             assertEquals(smallerLimit, exception.maximumOutputSize(), codec.name());
-            assertEquals(smallerLimit, limitedBytes.size(), codec.name());
+            assertEquals(
+                    "ppmd".equals(codec.name()) ? 0L : smallerLimit,
+                    limitedBytes.size(),
+                    codec.name()
+            );
             assertTrue(limitedSource.isOpen(), codec.name());
             assertTrue(limitedTarget.isOpen(), codec.name());
 
@@ -953,19 +1086,19 @@ final class CodecChannelContractTest {
     /// Verifies applicable codecs enforce fixed and declared decoding-window limits before producing output.
     @Test
     void enforcesMaximumWindowSizeAcrossApplicableCodecs() throws IOException {
-        Set<String> windowCodecs = Set.of("deflate", "deflate64", "gzip", "lzma", "xz", "zlib", "zstd");
+        Set<String> windowCodecs = Set.of(
+                "deflate",
+                "deflate64",
+                "gzip",
+                "lzma",
+                "lzma-raw",
+                "lzma2",
+                "xz",
+                "zlib",
+                "zstd"
+        );
         byte[] input = ("bounded decoding window " + "abcdefghijklmnop".repeat(256))
                 .getBytes(StandardCharsets.UTF_8);
-        CodecOptions unlimitedOptions = CodecOptions.builder()
-                .set(StandardCodecOptions.MAX_WINDOW_SIZE, Long.MAX_VALUE)
-                .build();
-        CodecOptions zeroOptions = CodecOptions.builder()
-                .set(StandardCodecOptions.MAX_WINDOW_SIZE, 0L)
-                .build();
-        CodecOptions invalidOptions = CodecOptions.builder()
-                .set(StandardCodecOptions.MAX_WINDOW_SIZE, -1L)
-                .build();
-
         for (CompressionCodec codec : CompressionCodecs.installed()) {
             if (!codec.canCompress() || !codec.canDecompress()) {
                 continue;
@@ -982,6 +1115,18 @@ final class CodecChannelContractTest {
                     Channels.newChannel(new ByteArrayInputStream(input)),
                     Channels.newChannel(compressedBytes)
             );
+            CodecOptions.Builder unlimitedBuilder = CodecOptions.builder()
+                    .set(StandardCodecOptions.MAX_WINDOW_SIZE, Long.MAX_VALUE);
+            CodecContractOptions.addRequiredDecoderOptions(unlimitedBuilder, codec, input.length);
+            CodecOptions unlimitedOptions = unlimitedBuilder.build();
+            CodecOptions.Builder zeroBuilder = CodecOptions.builder()
+                    .set(StandardCodecOptions.MAX_WINDOW_SIZE, 0L);
+            CodecContractOptions.addRequiredDecoderOptions(zeroBuilder, codec, input.length);
+            CodecOptions zeroOptions = zeroBuilder.build();
+            CodecOptions.Builder invalidBuilder = CodecOptions.builder()
+                    .set(StandardCodecOptions.MAX_WINDOW_SIZE, -1L);
+            CodecContractOptions.addRequiredDecoderOptions(invalidBuilder, codec, input.length);
+            CodecOptions invalidOptions = invalidBuilder.build();
             if (!expected) {
                 assertThrows(
                         UnsupportedOperationException.class,

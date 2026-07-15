@@ -9,7 +9,6 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.ppmd.PPMdCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -78,7 +77,7 @@ final class CodecCloseRetryContractTest {
             FailingCloseReadableChannel source = new FailingCloseReadableChannel(compress(codec, CONTENT));
             CompressionDecoder decoder = codec.openDecoder(
                     source,
-                    CodecOptions.EMPTY,
+                    CodecContractOptions.decoderOptions(codec, CONTENT.length),
                     ChannelOwnership.CLOSE
             );
 
@@ -176,14 +175,7 @@ final class CodecCloseRetryContractTest {
 
     /// Returns the minimum valid setup options for codecs whose raw streams are not self-describing.
     private static CodecOptions decompressionOptions(CompressionCodec codec) {
-        if (!"ppmd".equals(codec.name())) {
-            return CodecOptions.EMPTY;
-        }
-        return CodecOptions.builder()
-                .set(PPMdCodecOptions.MAXIMUM_ORDER, 4L)
-                .set(PPMdCodecOptions.MEMORY_SIZE, 1L << 20)
-                .set(PPMdCodecOptions.DECODED_SIZE, 0L)
-                .build();
+        return CodecContractOptions.decoderOptions(codec, 0L);
     }
 
     /// Verifies OutputStream convenience adapters retry caller-stream closure without re-finalizing frames.
@@ -193,7 +185,6 @@ final class CodecCloseRetryContractTest {
             if (!codec.canCompress() || !codec.canDecompress()) {
                 continue;
             }
-
             FailingCloseOutputStream target = new FailingCloseOutputStream();
             OutputStream output = codec.compressTo(target);
             output.write(CONTENT);
@@ -214,6 +205,9 @@ final class CodecCloseRetryContractTest {
     void retriesConvenienceInputStreamClosure() throws IOException {
         for (CompressionCodec codec : CompressionCodecs.installed()) {
             if (!codec.canCompress() || !codec.canDecompress()) {
+                continue;
+            }
+            if (CodecContractOptions.requiresDecoderOptions(codec)) {
                 continue;
             }
 
@@ -244,7 +238,8 @@ final class CodecCloseRetryContractTest {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         codec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(input)),
-                Channels.newChannel(output)
+                Channels.newChannel(output),
+                CodecContractOptions.decoderOptions(codec, CONTENT.length)
         );
         return output.toByteArray();
     }

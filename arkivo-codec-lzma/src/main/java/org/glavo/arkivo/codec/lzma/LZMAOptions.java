@@ -31,6 +31,18 @@ public final class LZMAOptions {
     public static final CodecOption<Long> POSITION_BITS =
             CodecOption.of("lzma.positionBits", Long.class);
 
+    /// Selects whether a raw LZMA encoder writes an end marker.
+    ///
+    /// The default is `true`. Containers that carry an exact decoded size may disable the marker.
+    public static final CodecOption<Boolean> END_MARKER =
+            CodecOption.of("lzma.endMarker", Boolean.class);
+
+    /// Supplies the exact decoded size of a raw LZMA stream.
+    ///
+    /// When absent, a raw decoder requires an end marker to terminate the stream.
+    public static final CodecOption<Long> DECODED_SIZE =
+            CodecOption.of("lzma.decodedSize", Long.class);
+
     /// Creates no instances.
     private LZMAOptions() {
     }

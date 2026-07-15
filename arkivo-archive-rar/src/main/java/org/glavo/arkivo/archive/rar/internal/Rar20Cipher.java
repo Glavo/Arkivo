@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 package org.glavo.arkivo.archive.rar.internal;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -120,10 +121,10 @@ final class Rar20Cipher implements RarLegacyCipher {
 
     /// Runs the word recurrence in ascending order for setup or descending order for decryption.
     private void transformBlock(byte[] data, int offset, int firstRound, int roundStep) {
-        int first = readInt32(data, offset) ^ keys[0];
-        int second = readInt32(data, offset + 4) ^ keys[1];
-        int third = readInt32(data, offset + 8) ^ keys[2];
-        int fourth = readInt32(data, offset + 12) ^ keys[3];
+        int first = ByteArrayAccess.readIntLittleEndian(data, offset) ^ keys[0];
+        int second = ByteArrayAccess.readIntLittleEndian(data, offset + 4) ^ keys[1];
+        int third = ByteArrayAccess.readIntLittleEndian(data, offset + 8) ^ keys[2];
+        int fourth = ByteArrayAccess.readIntLittleEndian(data, offset + 12) ^ keys[3];
         int round = firstRound;
         for (int count = 0; count < ROUND_COUNT; count++, round += roundStep) {
             int roundKey = keys[round & 3];
@@ -134,10 +135,10 @@ final class Rar20Cipher implements RarLegacyCipher {
             third = nextThird;
             fourth = nextFourth;
         }
-        writeInt32(data, offset, third ^ keys[0]);
-        writeInt32(data, offset + 4, fourth ^ keys[1]);
-        writeInt32(data, offset + 8, first ^ keys[2]);
-        writeInt32(data, offset + 12, second ^ keys[3]);
+        ByteArrayAccess.writeIntLittleEndian(data, offset, third ^ keys[0]);
+        ByteArrayAccess.writeIntLittleEndian(data, offset + 4, fourth ^ keys[1]);
+        ByteArrayAccess.writeIntLittleEndian(data, offset + 8, first ^ keys[2]);
+        ByteArrayAccess.writeIntLittleEndian(data, offset + 12, second ^ keys[3]);
     }
 
     /// XORs four CRC words into the key selected by each byte position.
@@ -158,22 +159,6 @@ final class Rar20Cipher implements RarLegacyCipher {
     /// Returns a byte count rounded up to a complete cipher block.
     private static int alignedLength(int length) {
         return length + BLOCK_SIZE - 1 & -BLOCK_SIZE;
-    }
-
-    /// Reads one little-endian 32-bit word.
-    private static int readInt32(byte[] data, int offset) {
-        return Byte.toUnsignedInt(data[offset])
-                | Byte.toUnsignedInt(data[offset + 1]) << 8
-                | Byte.toUnsignedInt(data[offset + 2]) << 16
-                | Byte.toUnsignedInt(data[offset + 3]) << 24;
-    }
-
-    /// Writes one little-endian 32-bit word.
-    private static void writeInt32(byte[] data, int offset, int value) {
-        data[offset] = (byte) value;
-        data[offset + 1] = (byte) (value >>> 8);
-        data[offset + 2] = (byte) (value >>> 16);
-        data[offset + 3] = (byte) (value >>> 24);
     }
 
     /// Rejects use after state destruction.

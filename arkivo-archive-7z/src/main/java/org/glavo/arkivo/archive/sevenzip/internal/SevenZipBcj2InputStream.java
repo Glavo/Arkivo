@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.internal.ByteArrayAccess;
+
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -341,7 +343,7 @@ final class SevenZipBcj2InputStream extends InputStream {
         if (rangeHeader[0] != 0) {
             throw new IOException("Invalid 7z BCJ2 range stream header");
         }
-        code = readUnsignedBigEndianInt(rangeHeader, 1);
+        code = Integer.toUnsignedLong(ByteArrayAccess.readIntBigEndian(rangeHeader, 1));
         if (code == INITIAL_RANGE) {
             throw new IOException("Invalid 7z BCJ2 range stream code");
         }
@@ -405,7 +407,7 @@ final class SevenZipBcj2InputStream extends InputStream {
             }
         }
 
-        int absoluteAddress = (int) readUnsignedBigEndianInt(branchAddress, 0);
+        int absoluteAddress = ByteArrayAccess.readIntBigEndian(branchAddress, 0);
         int relativeAddress = absoluteAddress - (instructionPointer + 4);
         convertedAddress[0] = (byte) relativeAddress;
         convertedAddress[1] = (byte) (relativeAddress >>> 8);
@@ -526,14 +528,6 @@ final class SevenZipBcj2InputStream extends InputStream {
             throw new EOFException(failureMessage);
         }
         return value;
-    }
-
-    /// Reads an unsigned big-endian 32-bit integer into a long.
-    private static long readUnsignedBigEndianInt(byte[] bytes, int offset) {
-        return ((long) Byte.toUnsignedInt(bytes[offset]) << 24)
-                | ((long) Byte.toUnsignedInt(bytes[offset + 1]) << 16)
-                | ((long) Byte.toUnsignedInt(bytes[offset + 2]) << 8)
-                | Byte.toUnsignedInt(bytes[offset + 3]);
     }
 
     /// Closes one input and appends any failure to the current primary failure.

@@ -20,18 +20,22 @@ import java.util.Map;
 import java.util.Objects;
 
 /// Opens RAR archives as read-only NIO file systems.
-/// Readable entry bodies are cached through `ArkivoFileSystem.EDIT_STORAGE`, using temporary files under the system
-/// temporary directory by default. The file system owns and closes the selected edit storage. RAR4 compression methods 0
-/// through 5 with extraction versions 15, 20, 26, 29, and 36 are readable, including legacy LZ modes, RAR 2.x adaptive
-/// audio, RAR3 PPMd blocks, and RAR3 virtual-machine filters. RAR5 compression methods 0 through 5 with algorithm versions
-/// 0 and 1 and dictionaries up to 768 MiB are also readable. Both formats support solid and split compressed entries.
+/// Opening a file system indexes entry metadata without retaining decoded bodies. A readable body is decoded and cached
+/// through `ArkivoFileSystem.EDIT_STORAGE` on its first content access, and later accesses share that cache. The file
+/// system owns and closes the selected edit storage, deferring cached-body cleanup while a channel still uses it. An
+/// uncached body requires the owned archive source to remain reopenable; reaching a solid entry may decode preceding
+/// solid members again to reconstruct its dictionary.
+///
+/// RAR4 compression methods 0 through 5 with extraction versions 15, 20, 26, 29, and 36 are readable, including legacy
+/// LZ modes, RAR 2.x adaptive audio, RAR3 PPMd blocks, and RAR3 virtual-machine filters. RAR5 compression methods 0 through
+/// 5 with algorithm versions 0 and 1 and dictionaries up to 768 MiB are also readable. Both formats support solid and
+/// split compressed entries.
 /// RAR 3.x AES-128 and RAR5 AES-256 encrypted headers and supported entries, including split entries, use
 /// `PASSWORD_PROVIDER`. Legacy RAR 1.3, 1.5, and 2.x file-data encryption is also readable for otherwise supported entries.
-/// Cached readable bodies validate available CRC32 values and RAR5 BLAKE2sp hashes over unpacked plaintext, including
-/// password-dependent checksums on encrypted entries.
+/// Materialized bodies validate available CRC32 values and RAR5 BLAKE2sp hashes over unpacked plaintext, including
+/// password-dependent checksums on encrypted entries. RAR5 hard-link and file-copy records targeting an indexed regular
+/// file retain their own metadata while sharing the target's lazily materialized content.
 @NotNullByDefault
-/// RAR5 hard-link and file-copy records targeting an earlier regular file expose the target's cached content while
-/// retaining their own entry metadata.
 public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permits RarArkivoFileSystemImpl {
     /// The environment option for an `ArkivoPasswordProvider` whose archive-level password decrypts RAR data.
     ///
@@ -52,12 +56,12 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
 
     /// Opens a RAR archive file system with environment options.
     ///
-    /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for cached readable entry bodies. `PASSWORD_PROVIDER` supplies
-    /// passwords for encrypted RAR headers and readable entries.
+    /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for readable entry bodies materialized on first access.
+    /// `PASSWORD_PROVIDER` supplies passwords for encrypted RAR headers and readable entries.
     public static RarArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
-        return RarArkivoFileSystemProvider.instance().newFileSystem(path, environment);
+        return RarArkivoFileSystemProvider.instance().openPath(path, environment);
     }
 
     /// Opens a read-only RAR archive file system directly from one owned seekable channel.
@@ -77,6 +81,7 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
         Objects.requireNonNull(environment, "environment");
         return SeekableChannelSources.open(source, channelSource -> open(channelSource, environment));
     }
+
     /// Opens a read-only RAR archive file system from a repeatable seekable channel source.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
@@ -87,8 +92,8 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// Opens a read-only RAR archive file system from a repeatable seekable channel source with environment options.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
-    /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for cached readable entry bodies. `PASSWORD_PROVIDER` supplies
-    /// passwords for encrypted RAR headers and readable entries.
+    /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for readable entry bodies materialized on first access.
+    /// `PASSWORD_PROVIDER` supplies passwords for encrypted RAR headers and readable entries.
     public static RarArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
             Map<String, ?> environment
@@ -105,8 +110,8 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// Opens a multi-volume RAR archive file system with environment options.
     ///
     /// The returned file system owns the volume source and selected edit storage after this method returns successfully.
-    /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for cached readable entry bodies. `PASSWORD_PROVIDER` supplies
-    /// the archive-level password for encrypted RAR headers and readable entries.
+    /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for readable entry bodies materialized on first access.
+    /// `PASSWORD_PROVIDER` supplies the archive-level password for encrypted RAR headers and readable entries.
     public static RarArkivoFileSystem open(ArkivoVolumeSource volumes, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(volumes, "volumes");
         Objects.requireNonNull(environment, "environment");

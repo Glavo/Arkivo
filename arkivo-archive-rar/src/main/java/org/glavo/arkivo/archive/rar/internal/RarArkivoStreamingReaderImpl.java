@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.rar.internal;
 
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes;
@@ -304,6 +305,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// The common archive read-limit tracker.
     private final ArkivoReadLimitTracker readLimits;
 
+    /// Whether bodies skipped during entry iteration must be integrity-checked.
+    private final boolean validateSkippedBodies;
+
     /// The CRC32 calculator reused for header validation.
     private final CRC32 headerCrc32 = new CRC32();
 
@@ -438,9 +442,20 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             @Nullable ArkivoPasswordProvider passwordProvider,
             Map<String, ?> environment
     ) {
+        this(source, passwordProvider, environment, true);
+    }
+
+    /// Creates a configured reader with explicit skipped-body validation behavior.
+    RarArkivoStreamingReaderImpl(
+            InputStream source,
+            @Nullable ArkivoPasswordProvider passwordProvider,
+            Map<String, ?> environment,
+            boolean validateSkippedBodies
+    ) {
         this.source = Objects.requireNonNull(source, "source");
         this.passwordProvider = passwordProvider;
         this.readLimits = ArkivoReadLimitTracker.fromEnvironment(environment);
+        this.validateSkippedBodies = validateSkippedBodies;
     }
 
     /// Advances to the next RAR file entry and returns whether an entry is available.
@@ -2343,7 +2358,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             } else {
                 while (true) {
                     if (currentPackedRemaining > 0) {
-                        if (currentCrcActive || currentBlake2spActive) {
+                        if (validateSkippedBodies && (currentCrcActive || currentBlake2spActive)) {
                             consumeStoredDataWithIntegrity(currentPackedRemaining);
                         } else {
                             skipFully(currentPackedRemaining);
@@ -2356,7 +2371,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
                 }
                 invalidateSkippedCompressionHistory();
             }
-            verifyCurrentIntegrityIfComplete();
+            if (validateSkippedBodies || currentBodyOpened) {
+                verifyCurrentIntegrityIfComplete();
+            }
         } finally {
             clearCurrentBodyState();
             currentBodyOpened = false;
@@ -2712,16 +2729,12 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Reads a little-endian unsigned 32-bit integer from a byte array.
     private static long littleEndianUInt32(byte[] data, int offset) {
-        return (long) Byte.toUnsignedInt(data[offset])
-                | (long) Byte.toUnsignedInt(data[offset + 1]) << 8
-                | (long) Byte.toUnsignedInt(data[offset + 2]) << 16
-                | (long) Byte.toUnsignedInt(data[offset + 3]) << 24;
+        return Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(data, offset));
     }
 
     /// Reads a little-endian unsigned 16-bit integer from a byte array.
     private static int littleEndianUInt16(byte[] data, int offset) {
-        return Byte.toUnsignedInt(data[offset])
-                | Byte.toUnsignedInt(data[offset + 1]) << 8;
+        return Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(data, offset));
     }
 
     /// Requires this reader to be open.

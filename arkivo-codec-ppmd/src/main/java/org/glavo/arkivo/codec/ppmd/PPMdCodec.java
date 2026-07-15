@@ -12,6 +12,7 @@ import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.ppmd.internal.PPMd7ChannelEncoder;
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7ChannelDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -23,20 +24,31 @@ import java.nio.channels.WritableByteChannel;
 import java.util.List;
 import java.util.Set;
 
-/// Provides raw PPMd7 decompression configured by explicit model and output-size parameters.
+/// Provides raw PPMd7 compression and decompression with configurable model parameters.
 @NotNullByDefault
 public final class PPMdCodec implements CompressionCodec {
     /// The stable PPMd codec name.
     public static final String NAME = "ppmd";
 
+    /// The maximum context order used by default for compression.
+    private static final long DEFAULT_MAXIMUM_ORDER = 6L;
+
+    /// The model arena size used by default for compression.
+    private static final long DEFAULT_MEMORY_SIZE = 16L << 20;
+
     /// The supported PPMd operations and options.
     private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(
             Set.of(
+                    CompressionFeature.COMPRESSION,
                     CompressionFeature.DECOMPRESSION,
+                    CompressionFeature.ONE_SHOT_COMPRESSION,
                     CompressionFeature.ONE_SHOT_DECOMPRESSION,
                     CompressionFeature.DIRECT_BYTE_BUFFER
             ),
-            Set.of(),
+            Set.of(
+                    PPMdCodecOptions.MAXIMUM_ORDER,
+                    PPMdCodecOptions.MEMORY_SIZE
+            ),
             Set.of(
                     PPMdCodecOptions.MAXIMUM_ORDER,
                     PPMdCodecOptions.MEMORY_SIZE,
@@ -73,14 +85,27 @@ public final class PPMdCodec implements CompressionCodec {
         return CAPABILITIES;
     }
 
-    /// Rejects compression because this module currently implements PPMd7 decompression only.
+    /// Opens a raw PPMd7 encoder over the target channel.
     @Override
     public CompressionEncoder openEncoder(
             WritableByteChannel target,
             CodecOptions options,
             ChannelOwnership ownership
-    ) {
-        throw new UnsupportedOperationException("PPMd compression is not supported");
+    ) throws IOException {
+        options.requireSupported(CAPABILITIES.compressionOptions(), "PPMd compression");
+        long maximumOrder = selectedNonNegative(
+                options,
+                PPMdCodecOptions.MAXIMUM_ORDER,
+                DEFAULT_MAXIMUM_ORDER
+        );
+        long memorySize = selectedNonNegative(
+                options,
+                PPMdCodecOptions.MEMORY_SIZE,
+                DEFAULT_MEMORY_SIZE
+        );
+        validateMaximumOrder(maximumOrder);
+        validateMemorySize(memorySize);
+        return new PPMd7ChannelEncoder(target, ownership, (int) maximumOrder, memorySize);
     }
 
     /// Opens a configured raw PPMd7 decoder over the source channel.
@@ -94,12 +119,8 @@ public final class PPMdCodec implements CompressionCodec {
         long maximumOrder = requiredNonNegative(options, PPMdCodecOptions.MAXIMUM_ORDER);
         long memorySize = requiredNonNegative(options, PPMdCodecOptions.MEMORY_SIZE);
         long decodedSize = requiredNonNegative(options, PPMdCodecOptions.DECODED_SIZE);
-        if (maximumOrder < 2L || maximumOrder > 64L) {
-            throw new IllegalArgumentException("PPMd maximum order must be between 2 and 64: " + maximumOrder);
-        }
-        if (memorySize < 1L << 11 || memorySize > 256L << 20) {
-            throw new IllegalArgumentException("PPMd memory size must be between 2 KiB and 256 MiB: " + memorySize);
-        }
+        validateMaximumOrder(maximumOrder);
+        validateMemorySize(memorySize);
         @Nullable Long maximumOutputSize = options.get(StandardCodecOptions.MAX_OUTPUT_SIZE);
         if (maximumOutputSize != null) {
             if (maximumOutputSize < 0L) {
@@ -128,5 +149,35 @@ public final class PPMdCodec implements CompressionCodec {
             throw new IllegalArgumentException(option.name() + " must not be negative: " + value);
         }
         return value;
+    }
+
+    /// Returns a selected non-negative option or its operation default.
+    private static long selectedNonNegative(
+            CodecOptions options,
+            org.glavo.arkivo.codec.CodecOption<Long> option,
+            long defaultValue
+    ) {
+        @Nullable Long value = options.get(option);
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value < 0L) {
+            throw new IllegalArgumentException(option.name() + " must not be negative: " + value);
+        }
+        return value;
+    }
+
+    /// Validates a PPMd maximum context order.
+    private static void validateMaximumOrder(long maximumOrder) {
+        if (maximumOrder < 2L || maximumOrder > 64L) {
+            throw new IllegalArgumentException("PPMd maximum order must be between 2 and 64: " + maximumOrder);
+        }
+    }
+
+    /// Validates a PPMd model arena size.
+    private static void validateMemorySize(long memorySize) {
+        if (memorySize < 1L << 11 || memorySize > 256L << 20) {
+            throw new IllegalArgumentException("PPMd memory size must be between 2 KiB and 256 MiB: " + memorySize);
+        }
     }
 }

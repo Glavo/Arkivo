@@ -4,17 +4,21 @@
 package org.glavo.arkivo.archive.zip.internal;
 
 
-import org.glavo.arkivo.codec.lzma.internal.LZMAInputStream;
 
 
+import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoVolumeChannel;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 
 import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
+import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
+import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
+import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
@@ -42,6 +46,7 @@ import java.nio.file.DirectoryIteratorException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileStore;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.NotLinkException;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.OpenOption;
@@ -69,8 +74,6 @@ import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.zip.CRC32;
-import java.util.zip.Inflater;
-import java.util.zip.InflaterInputStream;
 
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.CENTRAL_DIRECTORY_HEADER_SIGNATURE;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.DATA_DESCRIPTOR_FLAG;
@@ -94,6 +97,9 @@ import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.readUnsigned
 /// Implements ZIP archive file system state and operations.
 @NotNullByDefault
 public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
+    /// The maximum decoded entry size retained in memory by default.
+    private static final long DEFAULT_DECODED_ENTRY_MEMORY_THRESHOLD = 1024L * 1024L;
+
     /// The minimum ZIP local file header size.
     private static final int ZIP_LOCAL_FILE_HEADER_MIN_SIZE = 30;
 
@@ -161,6 +167,21 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// The callback invoked after this file system closes, or `null` when no callback is needed.
     private final @Nullable Runnable closeAction;
 
+    /// The storage used for transient decoded seekable entry bodies.
+    private final ArkivoEditStorage decodedEntryStorage;
+
+    /// The lock protecting decoded entry content and storage lifecycle state.
+    private final Object decodedEntryLifecycleLock = new Object();
+
+    /// Decoded entry bodies still owned by open seekable channels.
+    private final Set<ArkivoStoredContent> activeDecodedEntryContents = StoredContentSupport.newIdentitySet();
+
+    /// Decoded entry bodies whose cleanup failed and must be retried.
+    private final Set<ArkivoStoredContent> retiredDecodedEntryContents = StoredContentSupport.newIdentitySet();
+
+    /// Whether the decoded entry storage has been closed.
+    private boolean decodedEntryStorageClosed;
+
     /// The root path for this ZIP file system.
     private final ZipArkivoPath rootPath;
 
@@ -212,6 +233,13 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         this.volumes = volumes;
         this.config = Objects.requireNonNull(config, "config");
         this.closeAction = closeAction;
+        ArkivoEditStorage configuredStorage = config.editStorage();
+        this.decodedEntryStorage = configuredStorage != null
+                ? configuredStorage
+                : ArkivoEditStorage.hybrid(
+                        DEFAULT_DECODED_ENTRY_MEMORY_THRESHOLD,
+                        defaultDecodedEntryStorageDirectory(archivePath)
+                );
         this.rootPath = ZipArkivoPath.root(this);
         this.indexLock = ZipLocks.create(config.threadSafety());
     }
@@ -275,7 +303,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     @Override
     public void close() throws IOException {
         try (CloseOperation ignored = beginCloseOperation()) {
-            if (!open && volumesClosed && closeActionCompleted) {
+            if (!open && volumesClosed && closeActionCompleted && decodedEntryStorageClosed) {
                 return;
             }
             open = false;
@@ -305,6 +333,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                     }
                 }
             }
+            failure = finishDecodedEntryStorage(failure);
             if (failure instanceof IOException exception) {
                 throw exception;
             }
@@ -408,7 +437,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 || compressionMethod == ZipMethod.LZMA_ID
                 || compressionMethod == ZipMethod.XZ_ID
                 || isZstandardMethod(compressionMethod)) {
-            return new ByteArraySeekableByteChannel(readEntryBytes(path, entry, dataOffset));
+            return newDecodedEntryByteChannel(path, entry, dataOffset);
         }
         throw new IOException("Unsupported ZIP compression method: " + compressionMethod);
     }
@@ -501,7 +530,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 throw new DirectoryIteratorException(exception);
             }
         }
-        return new ListDirectoryStream(List.copyOf(paths));
+        return new FixedDirectoryStream<>(paths);
     }
 
     /// Checks access to an entry path.
@@ -528,27 +557,31 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Returns an attribute view for an entry path.
     public <V extends java.nio.file.attribute.FileAttributeView> @Nullable V getFileAttributeView(
             Path path,
-            Class<V> type
+            Class<V> type,
+            LinkOption... options
     ) {
         try (Operation ignored = beginReadOperation()) {
-            return getFileAttributeViewLocked(path, type);
+            return getFileAttributeViewLocked(path, type, options);
         }
     }
 
     /// Returns an attribute view while the caller holds the shared operation lock.
     private <V extends java.nio.file.attribute.FileAttributeView> @Nullable V getFileAttributeViewLocked(
             Path path,
-            Class<V> type
+            Class<V> type,
+            LinkOption... options
     ) {
         Objects.requireNonNull(type, "type");
+        ArkivoFileSystemProviderSupport.AttributeViewPath viewPath =
+                ArkivoFileSystemProviderSupport.attributeViewPath(path, options);
         if (type == BasicFileAttributeView.class || type == ZipArkivoEntryAttributeView.class) {
-            return type.cast(new EntryAttributeView(this, path));
+            return type.cast(new EntryAttributeView(this, viewPath));
         }
         if (type == FileOwnerAttributeView.class) {
-            return type.cast(new OwnerEntryAttributeView(this, path));
+            return type.cast(new OwnerEntryAttributeView(this, viewPath));
         }
         if (type == PosixFileAttributeView.class) {
-            return type.cast(new PosixEntryAttributeView(this, path));
+            return type.cast(new PosixEntryAttributeView(this, viewPath));
         }
         return null;
     }
@@ -1280,14 +1313,109 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         return checkedZipOffsetAdd(dataOffset, extraLength, "local file data offset");
     }
 
-    /// Reads a ZIP entry into a byte array.
-    private byte[] readEntryBytes(Path path, ZipEntryRecord entry, long dataOffset) throws IOException {
-        if (entry.uncompressedSize > Integer.MAX_VALUE) {
-            throw new IOException("ZIP entry is too large for seekable decoded access: " + path);
+    /// Decodes a ZIP entry into staging storage and opens a seekable read-only channel over it.
+    private SeekableByteChannel newDecodedEntryByteChannel(
+            Path path,
+            ZipEntryRecord entry,
+            long dataOffset
+    ) throws IOException {
+        ArkivoStoredContent content = decodedEntryStorage.createContent(path.toString(), entry.uncompressedSize);
+        @Nullable SeekableByteChannel channel = null;
+        try {
+            try (InputStream input = entryInputStream(path, entry, dataOffset);
+                 SeekableByteChannel output = content.openChannel(Set.of(
+                         StandardOpenOption.TRUNCATE_EXISTING,
+                         StandardOpenOption.WRITE
+                 ))) {
+                StoredContentSupport.copyInput(input, output);
+            }
+            channel = content.openChannel(Set.of(StandardOpenOption.READ));
+            synchronized (decodedEntryLifecycleLock) {
+                activeDecodedEntryContents.add(content);
+            }
+            SeekableByteChannel result = new DecodedEntryByteChannel(content, channel);
+            channel = null;
+            return result;
+        } catch (IOException | RuntimeException | Error exception) {
+            if (channel != null) {
+                try {
+                    channel.close();
+                } catch (IOException | RuntimeException | Error cleanupFailure) {
+                    exception.addSuppressed(cleanupFailure);
+                }
+            }
+            retireDecodedEntryContent(content, exception);
+            throw exception;
         }
-        try (InputStream input = entryInputStream(path, entry, dataOffset)) {
-            return input.readAllBytes();
+    }
+
+    /// Returns the default directory for transient decoded entry storage.
+    private static Path defaultDecodedEntryStorageDirectory(@Nullable Path archivePath) {
+        if (archivePath != null) {
+            Path absolutePath = archivePath.toAbsolutePath();
+            Path parent = absolutePath.getParent();
+            return parent != null ? parent : absolutePath;
         }
+        return Path.of(System.getProperty("java.io.tmpdir", ".")).toAbsolutePath().normalize();
+    }
+
+    /// Releases a decoded body and finishes deferred storage cleanup after file system close.
+    private @Nullable Throwable releaseDecodedEntryContent(
+            ArkivoStoredContent content,
+            @Nullable Throwable failure
+    ) {
+        boolean retired = false;
+        try {
+            content.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = mergeFailure(failure, exception);
+            retired = true;
+        }
+        synchronized (decodedEntryLifecycleLock) {
+            activeDecodedEntryContents.remove(content);
+            if (retired) {
+                retiredDecodedEntryContents.add(content);
+            }
+        }
+        return open ? failure : finishDecodedEntryStorage(failure);
+    }
+
+    /// Releases content allocated during a failed channel open and records cleanup failures.
+    private void retireDecodedEntryContent(ArkivoStoredContent content, Throwable failure) {
+        try {
+            content.close();
+        } catch (IOException | RuntimeException | Error cleanupFailure) {
+            synchronized (decodedEntryLifecycleLock) {
+                retiredDecodedEntryContents.add(content);
+            }
+            failure.addSuppressed(cleanupFailure);
+        }
+    }
+
+    /// Retries retired content cleanup and closes storage once no decoded channels remain.
+    private @Nullable Throwable finishDecodedEntryStorage(@Nullable Throwable failure) {
+        synchronized (decodedEntryLifecycleLock) {
+            Iterator<ArkivoStoredContent> iterator = retiredDecodedEntryContents.iterator();
+            while (iterator.hasNext()) {
+                try {
+                    iterator.next().close();
+                    iterator.remove();
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = mergeFailure(failure, exception);
+                }
+            }
+            if (!decodedEntryStorageClosed
+                    && activeDecodedEntryContents.isEmpty()
+                    && retiredDecodedEntryContents.isEmpty()) {
+                try {
+                    decodedEntryStorage.close();
+                    decodedEntryStorageClosed = true;
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = mergeFailure(failure, exception);
+                }
+            }
+        }
+        return failure;
     }
 
     /// Opens a ZIP entry data stream.
@@ -1305,7 +1433,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                         : openTraditionalDecryptingStream(path, entry, input);
             }
             if (entry.compressionMethod() == ZipMethod.DEFLATED_ID) {
-                input = new EntryInflaterInputStream(input);
+                input = openDeflateInputStream(input);
             } else if (entry.compressionMethod() == ZipMethod.DEFLATE64_ID) {
                 input = openDeflate64InputStream(input);
             } else if (entry.compressionMethod() == ZipMethod.BZIP2_ID) {
@@ -1329,6 +1457,11 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 closeAfterFailedOpen(archive, failure);
             }
         }
+    }
+
+    /// Opens a raw Deflate decoding stream and owns the compressed stream.
+    private static InputStream openDeflateInputStream(InputStream input) throws IOException {
+        return ZipCompressionCodecs.openInputStream("deflate", input);
     }
 
     /// Opens a Deflate64 decoding stream and owns the compressed stream.
@@ -1369,7 +1502,12 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 throw new IOException("ZIP LZMA entry without EOS marker requires an uncompressed size");
             }
             long expectedUncompressedSize = usesEndMarker ? -1L : uncompressedSize;
-            return new LZMAInputStream(input, expectedUncompressedSize, properties, dictionarySize);
+            return ZipCompressionCodecs.openRawLZMADecoder(
+                    input,
+                    properties,
+                    Integer.toUnsignedLong(dictionarySize),
+                    expectedUncompressedSize
+            );
         } catch (IOException | RuntimeException | Error exception) {
             try {
                 input.close();
@@ -2975,10 +3113,13 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         private final ZipArkivoFileSystemImpl fileSystem;
 
         /// The path whose attributes are exposed.
-        private final Path path;
+        private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates a synthesized POSIX attribute view.
-        private PosixEntryAttributeView(ZipArkivoFileSystemImpl fileSystem, Path path) {
+        private PosixEntryAttributeView(
+                ZipArkivoFileSystemImpl fileSystem,
+                ArkivoFileSystemProviderSupport.AttributeViewPath path
+        ) {
             this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
             this.path = Objects.requireNonNull(path, "path");
         }
@@ -2992,13 +3133,13 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         /// Reads synthesized POSIX attributes.
         @Override
         public PosixFileAttributes readAttributes() throws IOException {
-            return fileSystem.readZipAttributes(path);
+            return fileSystem.readZipAttributes(path.resolve());
         }
 
         /// Returns the synthesized owner.
         @Override
         public UserPrincipal getOwner() throws IOException {
-            return fileSystem.readZipAttributes(path).owner();
+            return fileSystem.readZipAttributes(path.resolve()).owner();
         }
 
         /// Sets entry timestamps.
@@ -3039,10 +3180,13 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         private final ZipArkivoFileSystemImpl fileSystem;
 
         /// The path whose owner is exposed.
-        private final Path path;
+        private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates a synthesized owner attribute view.
-        private OwnerEntryAttributeView(ZipArkivoFileSystemImpl fileSystem, Path path) {
+        private OwnerEntryAttributeView(
+                ZipArkivoFileSystemImpl fileSystem,
+                ArkivoFileSystemProviderSupport.AttributeViewPath path
+        ) {
             this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
             this.path = Objects.requireNonNull(path, "path");
         }
@@ -3056,7 +3200,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         /// Returns the synthesized owner.
         @Override
         public UserPrincipal getOwner() throws IOException {
-            return fileSystem.readZipAttributes(path).owner();
+            return fileSystem.readZipAttributes(path.resolve()).owner();
         }
 
         /// Sets the file owner.
@@ -3073,10 +3217,13 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         private final ZipArkivoFileSystemImpl fileSystem;
 
         /// The path whose attributes are exposed.
-        private final Path path;
+        private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates an entry attribute view.
-        private EntryAttributeView(ZipArkivoFileSystemImpl fileSystem, Path path) {
+        private EntryAttributeView(
+                ZipArkivoFileSystemImpl fileSystem,
+                ArkivoFileSystemProviderSupport.AttributeViewPath path
+        ) {
             this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
             this.path = Objects.requireNonNull(path, "path");
         }
@@ -3084,7 +3231,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         /// Reads the ZIP-specific entry attributes.
         @Override
         public ZipArkivoEntryAttributes readAttributes() throws IOException {
-            return fileSystem.readZipAttributes(path);
+            return fileSystem.readZipAttributes(path.resolve());
         }
 
         /// Sets entry timestamps.
@@ -3154,42 +3301,6 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         @Override
         public void setRawComment(byte @Nullable [] rawComment) {
             throw new java.nio.file.ReadOnlyFileSystemException();
-        }
-    }
-
-    /// Implements an immutable directory stream backed by a path list.
-    private static final class ListDirectoryStream implements DirectoryStream<Path> {
-        /// The directory entries.
-        private final List<Path> paths;
-
-        /// Whether this directory stream is open.
-        private boolean open = true;
-
-        /// Whether the iterator has already been returned.
-        private boolean iteratorReturned;
-
-        /// Creates a directory stream backed by a path list.
-        private ListDirectoryStream(List<Path> paths) {
-            this.paths = paths;
-        }
-
-        /// Returns an iterator over directory entries.
-        @Override
-        public java.util.Iterator<Path> iterator() {
-            if (!open) {
-                throw new IllegalStateException("Directory stream is closed");
-            }
-            if (iteratorReturned) {
-                throw new IllegalStateException("Directory stream iterator has already been returned");
-            }
-            iteratorReturned = true;
-            return paths.iterator();
-        }
-
-        /// Closes this directory stream.
-        @Override
-        public void close() {
-            open = false;
         }
     }
 
@@ -3313,40 +3424,6 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         private void ensureOpen() throws IOException {
             if (closed) {
                 throw new IOException("ZIP entry input stream is closed");
-            }
-        }
-    }
-
-    /// Inflates a ZIP entry stream and releases the native inflater when closed.
-    @NotNullByDefault
-    private static final class EntryInflaterInputStream extends InflaterInputStream {
-        /// The inflater used by this stream.
-        private final Inflater inflater;
-
-        /// Whether the inflater has been released.
-        private boolean released;
-
-        /// Creates an inflater stream for raw ZIP deflate data.
-        private EntryInflaterInputStream(InputStream input) {
-            this(input, new Inflater(true));
-        }
-
-        /// Creates an inflater stream with the given raw deflate inflater.
-        private EntryInflaterInputStream(InputStream input, Inflater inflater) {
-            super(input, inflater);
-            this.inflater = inflater;
-        }
-
-        /// Closes the stream and releases the inflater.
-        @Override
-        public void close() throws IOException {
-            try {
-                super.close();
-            } finally {
-                if (!released) {
-                    released = true;
-                    inflater.end();
-                }
             }
         }
     }
@@ -3483,6 +3560,100 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         /// Requires this bounded channel to be open.
         private void ensureOpen() throws IOException {
             if (!isOpen()) {
+                throw new ClosedChannelException();
+            }
+        }
+    }
+
+    /// Exposes one transient decoded entry body as a seekable read-only channel.
+    @NotNullByDefault
+    private final class DecodedEntryByteChannel implements SeekableByteChannel {
+        /// The transient stored body released when this channel closes.
+        private final ArkivoStoredContent content;
+
+        /// The read channel opened over the transient stored body.
+        private final SeekableByteChannel channel;
+
+        /// Whether this wrapper remains open.
+        private boolean channelOpen = true;
+
+        /// Creates a read-only channel over transient decoded content.
+        private DecodedEntryByteChannel(ArkivoStoredContent content, SeekableByteChannel channel) {
+            this.content = Objects.requireNonNull(content, "content");
+            this.channel = Objects.requireNonNull(channel, "channel");
+        }
+
+        /// Reads decoded entry bytes.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            Objects.requireNonNull(destination, "destination");
+            ensureChannelOpen();
+            return channel.read(destination);
+        }
+
+        /// Rejects writes to a read-only decoded entry channel.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            ensureChannelOpen();
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns the current decoded entry position.
+        @Override
+        public long position() throws IOException {
+            ensureChannelOpen();
+            return channel.position();
+        }
+
+        /// Changes the current decoded entry position.
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            ensureChannelOpen();
+            channel.position(newPosition);
+            return this;
+        }
+
+        /// Returns the decoded entry size.
+        @Override
+        public long size() throws IOException {
+            ensureChannelOpen();
+            return channel.size();
+        }
+
+        /// Rejects truncation of a read-only decoded entry channel.
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            ensureChannelOpen();
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns whether this wrapper and its stored-content channel remain open.
+        @Override
+        public boolean isOpen() {
+            return channelOpen && channel.isOpen();
+        }
+
+        /// Closes the read channel and releases its transient decoded body.
+        @Override
+        public void close() throws IOException {
+            if (!channelOpen) {
+                return;
+            }
+            channelOpen = false;
+            @Nullable Throwable failure = null;
+            try {
+                channel.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+            }
+            failure = releaseDecodedEntryContent(content, failure);
+            throwFailure(failure);
+        }
+
+        /// Requires this wrapper to remain open.
+        private void ensureChannelOpen() throws ClosedChannelException {
+            if (!channelOpen) {
                 throw new ClosedChannelException();
             }
         }
@@ -3664,100 +3835,4 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         }
     }
 
-    /// Exposes a byte array as a read-only seekable channel.
-    private static final class ByteArraySeekableByteChannel implements SeekableByteChannel {
-        /// The backing bytes.
-        private final byte[] bytes;
-
-        /// The current channel position.
-        private int position;
-
-        /// Whether this channel is open.
-        private boolean open = true;
-
-        /// Creates a read-only byte array channel.
-        private ByteArraySeekableByteChannel(byte[] bytes) {
-            this.bytes = Objects.requireNonNull(bytes, "bytes");
-        }
-
-        /// Reads bytes from the current position.
-        @Override
-        public int read(ByteBuffer destination) throws IOException {
-            ensureOpen();
-            Objects.requireNonNull(destination, "destination");
-            if (!destination.hasRemaining()) {
-                return 0;
-            }
-            if (position >= bytes.length) {
-                return -1;
-            }
-
-            int length = Math.min(destination.remaining(), bytes.length - position);
-            destination.put(bytes, position, length);
-            position += length;
-            return length;
-        }
-
-        /// Always rejects writes because ZIP entry channels are read-only.
-        @Override
-        public int write(ByteBuffer source) throws IOException {
-            ensureOpen();
-            Objects.requireNonNull(source, "source");
-            throw new NonWritableChannelException();
-        }
-
-        /// Returns the current channel position.
-        @Override
-        public long position() throws IOException {
-            ensureOpen();
-            return position;
-        }
-
-        /// Sets the current channel position.
-        @Override
-        public SeekableByteChannel position(long newPosition) throws IOException {
-            ensureOpen();
-            if (newPosition < 0 || newPosition > Integer.MAX_VALUE) {
-                throw new IllegalArgumentException("newPosition is out of range");
-            }
-            position = (int) newPosition;
-            return this;
-        }
-
-        /// Returns the byte array size.
-        @Override
-        public long size() throws IOException {
-            ensureOpen();
-            return bytes.length;
-        }
-
-        /// Always rejects truncation because ZIP entry channels are read-only.
-        @Override
-        public SeekableByteChannel truncate(long size) throws IOException {
-            ensureOpen();
-            if (size < 0) {
-                throw new IllegalArgumentException("size must not be negative");
-            }
-            throw new NonWritableChannelException();
-        }
-
-        /// Returns whether this channel is open.
-        @Override
-        public boolean isOpen() {
-            return open;
-        }
-
-        /// Closes this channel.
-        @Override
-        public void close() {
-            open = false;
-        }
-
-        /// Requires this channel to be open.
-        private void ensureOpen() throws IOException {
-            if (!open) {
-                throw new ClosedChannelException();
-            }
-        }
-    }
 }

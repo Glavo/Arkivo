@@ -60,20 +60,45 @@ public final class ZstdCodec implements CompressionCodec {
     /// The minimum supported Zstandard hash-table logarithm.
     private static final int MINIMUM_HASH_LOG = 6;
 
-    /// The maximum supported Zstandard hash-table logarithm.
-    private static final int MAXIMUM_HASH_LOG = 30;
+    /// The maximum hash-table logarithm supported by the pure Java match finder.
+    private static final int MAXIMUM_HASH_LOG = 18;
 
     /// The minimum supported Zstandard chain-table logarithm.
     private static final int MINIMUM_CHAIN_LOG = 6;
 
-    /// The maximum supported Zstandard chain-table logarithm.
-    private static final int MAXIMUM_CHAIN_LOG = 30;
+    /// The maximum chain-table logarithm supported by the pure Java match finder.
+    private static final int MAXIMUM_CHAIN_LOG = 17;
 
     /// The minimum supported Zstandard search-depth logarithm.
     private static final int MINIMUM_SEARCH_LOG = 1;
 
-    /// The maximum supported Zstandard search-depth logarithm.
-    private static final int MAXIMUM_SEARCH_LOG = 30;
+    /// The maximum search-depth logarithm supported by the pure Java match finder.
+    private static final int MAXIMUM_SEARCH_LOG = 10;
+
+    /// The minimum supported long-distance hash-table logarithm.
+    private static final int MINIMUM_LDM_HASH_LOG = 6;
+
+    /// The minimum explicit long-distance sampling-rate logarithm.
+    private static final int MINIMUM_LDM_HASH_RATE_LOG = 1;
+
+    /// The maximum long-distance hash-table logarithm supported by the pure Java matcher.
+    private static final int MAXIMUM_LDM_HASH_LOG = 20;
+
+    /// The minimum supported long-distance match length.
+    private static final int MINIMUM_LDM_MATCH_LENGTH = 4;
+
+    /// The maximum supported long-distance match length.
+    private static final int MAXIMUM_LDM_MATCH_LENGTH = 4_096;
+
+    /// The minimum supported long-distance bucket-size logarithm.
+    private static final int MINIMUM_LDM_BUCKET_SIZE_LOG = 1;
+
+    /// The maximum supported long-distance bucket-size logarithm.
+    private static final int MAXIMUM_LDM_BUCKET_SIZE_LOG = 8;
+
+    /// The maximum supported long-distance sampling-rate logarithm.
+    private static final int MAXIMUM_LDM_HASH_RATE_LOG =
+            MAXIMUM_WINDOW_LOG - MINIMUM_LDM_HASH_LOG;
 
     /// The minimum match length accepted by the stable Zstandard compression API.
     private static final int MIN_MATCH_LENGTH_MINIMUM = 3;
@@ -125,6 +150,26 @@ public final class ZstdCodec implements CompressionCodec {
     public static final CodecOption<Boolean> LONG_DISTANCE_MATCHING =
             CodecOption.of("zstd.longDistanceMatching", Boolean.class);
 
+    /// Overrides the long-distance hash-table logarithm; zero selects `windowLog - 7`.
+    public static final CodecOption<Long> LDM_HASH_LOG =
+            CodecOption.of("zstd.ldmHashLog", Long.class);
+
+    /// Overrides the minimum long-distance match length; zero selects 64 bytes.
+    public static final CodecOption<Long> LDM_MIN_MATCH =
+            CodecOption.of("zstd.ldmMinMatch", Long.class);
+
+    /// Overrides the long-distance collision-bucket logarithm; zero selects three.
+    public static final CodecOption<Long> LDM_BUCKET_SIZE_LOG =
+            CodecOption.of("zstd.ldmBucketSizeLog", Long.class);
+
+    /// Overrides the long-distance sampling-rate logarithm; zero selects `windowLog - ldmHashLog`.
+    public static final CodecOption<Long> LDM_HASH_RATE_LOG =
+            CodecOption.of("zstd.ldmHashRateLog", Long.class);
+
+    /// Selects standard or explicitly requested magicless Zstandard framing.
+    public static final CodecOption<ZstdFrameFormat> FRAME_FORMAT =
+            CodecOption.of("zstd.frameFormat", ZstdFrameFormat.class);
+
     /// The supported Zstandard operations and options.
     private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(
             Set.of(
@@ -155,9 +200,20 @@ public final class ZstdCodec implements CompressionCodec {
                     OVERLAP_LOG,
                     CONTENT_SIZE,
                     DICTIONARY_ID,
-                    LONG_DISTANCE_MATCHING
+                    LONG_DISTANCE_MATCHING,
+                    LDM_HASH_LOG,
+                    LDM_MIN_MATCH,
+                    LDM_BUCKET_SIZE_LOG,
+                    LDM_HASH_RATE_LOG,
+                    FRAME_FORMAT
             ),
-            Set.of(StandardCodecOptions.DICTIONARY, StandardCodecOptions.MAX_OUTPUT_SIZE, StandardCodecOptions.MAX_WINDOW_SIZE)
+            Set.of(
+                    StandardCodecOptions.DICTIONARY,
+                    StandardCodecOptions.CHECKSUM,
+                    StandardCodecOptions.MAX_OUTPUT_SIZE,
+                    StandardCodecOptions.MAX_WINDOW_SIZE,
+                    FRAME_FORMAT
+            )
     );
 
     /// The requested Zstandard compression level.
@@ -283,6 +339,46 @@ public final class ZstdCodec implements CompressionCodec {
         return MIN_MATCH_LENGTH_MAXIMUM;
     }
 
+    /// Returns the minimum supported long-distance hash-table logarithm.
+    public long minimumLongDistanceHashLog() {
+        return MINIMUM_LDM_HASH_LOG;
+    }
+
+    /// Returns the maximum supported long-distance hash-table logarithm.
+    public long maximumLongDistanceHashLog() {
+        return MAXIMUM_LDM_HASH_LOG;
+    }
+
+    /// Returns the minimum supported long-distance match length.
+    public long minimumLongDistanceMatchLength() {
+        return MINIMUM_LDM_MATCH_LENGTH;
+    }
+
+    /// Returns the maximum supported long-distance match length.
+    public long maximumLongDistanceMatchLength() {
+        return MAXIMUM_LDM_MATCH_LENGTH;
+    }
+
+    /// Returns the minimum supported long-distance collision-bucket logarithm.
+    public long minimumLongDistanceBucketSizeLog() {
+        return MINIMUM_LDM_BUCKET_SIZE_LOG;
+    }
+
+    /// Returns the maximum supported long-distance collision-bucket logarithm.
+    public long maximumLongDistanceBucketSizeLog() {
+        return MAXIMUM_LDM_BUCKET_SIZE_LOG;
+    }
+
+    /// Returns the minimum explicit long-distance sampling-rate logarithm.
+    public long minimumLongDistanceHashRateLog() {
+        return MINIMUM_LDM_HASH_RATE_LOG;
+    }
+
+    /// Returns the maximum supported long-distance sampling-rate logarithm.
+    public long maximumLongDistanceHashRateLog() {
+        return MAXIMUM_LDM_HASH_RATE_LOG;
+    }
+
     /// Returns a codec configured with the given dictionary bytes.
     public ZstdCodec withDictionary(byte[] dictionary) {
         return new ZstdCodec(compressionLevel, Objects.requireNonNull(dictionary, "dictionary"));
@@ -302,12 +398,8 @@ public final class ZstdCodec implements CompressionCodec {
     /// Returns whether the given prefix starts with the Zstandard frame signature.
     @Override
     public boolean matches(ByteBuffer prefix) {
-        int position = prefix.position();
-        return prefix.remaining() >= 4
-                && Byte.toUnsignedInt(prefix.get(position)) == 0x28
-                && Byte.toUnsignedInt(prefix.get(position + 1)) == 0xb5
-                && Byte.toUnsignedInt(prefix.get(position + 2)) == 0x2f
-                && Byte.toUnsignedInt(prefix.get(position + 3)) == 0xfd;
+        Objects.requireNonNull(prefix, "prefix");
+        return ZstdFrameHeader.hasFrameMagic(prefix);
     }
 
     /// Returns the maximum Zstandard compressed size for an input of `sourceSize` bytes.
@@ -328,16 +420,30 @@ public final class ZstdCodec implements CompressionCodec {
 
     /// Parses one standard or skippable frame header without changing the source buffer.
     public ZstdFrameInfo frameInfo(ByteBuffer source) throws IOException {
+        return frameInfo(source, ZstdFrameFormat.STANDARD);
+    }
+
+    /// Parses one frame header in the selected physical format without changing the source buffer.
+    public ZstdFrameInfo frameInfo(ByteBuffer source, ZstdFrameFormat format) throws IOException {
         Objects.requireNonNull(source, "source");
-        return ZstdFrameHeader.parse(source);
+        Objects.requireNonNull(format, "format");
+        return ZstdFrameHeader.parse(source, format == ZstdFrameFormat.MAGICLESS);
     }
 
     /// Returns the complete compressed size of one frame without changing the source buffer.
     ///
     /// This scans block framing and verifies that the complete frame is available without decompressing its payload.
     public long frameCompressedSize(ByteBuffer source) throws IOException {
+        return frameCompressedSize(source, ZstdFrameFormat.STANDARD);
+    }
+
+    /// Returns the complete compressed size of one frame in the selected physical format.
+    ///
+    /// This scans block framing and verifies that the complete frame is available without decompressing its payload.
+    public long frameCompressedSize(ByteBuffer source, ZstdFrameFormat format) throws IOException {
         Objects.requireNonNull(source, "source");
-        return ZstdFrameHeader.frameCompressedSize(source);
+        Objects.requireNonNull(format, "format");
+        return ZstdFrameHeader.frameCompressedSize(source, format == ZstdFrameFormat.MAGICLESS);
     }
 
     /// Returns the embedded identifier of a formatted Zstandard dictionary without changing the source buffer.
@@ -362,7 +468,8 @@ public final class ZstdCodec implements CompressionCodec {
         return new ZstdChannelEncoder(
                 target,
                 ownership,
-                createEncoderParameters(options, pledgedSourceSize)
+                createEncoderParameters(options, pledgedSourceSize),
+                frameFormat(options) == ZstdFrameFormat.MAGICLESS
         );
     }
 
@@ -378,8 +485,16 @@ public final class ZstdCodec implements CompressionCodec {
         Objects.requireNonNull(ownership, "ownership");
         long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
         long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
+        @Nullable ChecksumMode checksum = options.get(StandardCodecOptions.CHECKSUM);
         return StandardCodecOptionSupport.limitOutput(
-                new ZstdChannelDecoder(source, ownership, decoderDictionary(options), maximumWindowSize),
+                new ZstdChannelDecoder(
+                        source,
+                        ownership,
+                        decoderDictionary(options),
+                        maximumWindowSize,
+                        frameFormat(options) == ZstdFrameFormat.MAGICLESS,
+                        checksum != ChecksumMode.DISABLED
+                ),
                 maximumOutputSize
         );
     }
@@ -411,6 +526,10 @@ public final class ZstdCodec implements CompressionCodec {
         @Nullable Boolean contentSize = options.get(CONTENT_SIZE);
         @Nullable Boolean dictionaryId = options.get(DICTIONARY_ID);
         @Nullable Boolean longDistanceMatching = options.get(LONG_DISTANCE_MATCHING);
+        @Nullable Long ldmHashLog = options.get(LDM_HASH_LOG);
+        @Nullable Long ldmMinMatch = options.get(LDM_MIN_MATCH);
+        @Nullable Long ldmBucketSizeLog = options.get(LDM_BUCKET_SIZE_LOG);
+        @Nullable Long ldmHashRateLog = options.get(LDM_HASH_RATE_LOG);
         @Nullable ChecksumMode checksum = options.get(StandardCodecOptions.CHECKSUM);
         @Nullable WorkerCount workers = options.get(StandardCodecOptions.WORKER_COUNT);
         int selectedJobSize = nonNegativeInt(
@@ -467,6 +586,30 @@ public final class ZstdCodec implements CompressionCodec {
                 contentSize == null || contentSize,
                 dictionaryId == null || dictionaryId,
                 longDistanceMatching != null && longDistanceMatching,
+                boundedParameter(
+                        ldmHashLog != null ? ldmHashLog : 0L,
+                        MINIMUM_LDM_HASH_LOG,
+                        MAXIMUM_LDM_HASH_LOG,
+                        "Zstandard long-distance hash log"
+                ),
+                boundedParameter(
+                        ldmMinMatch != null ? ldmMinMatch : 0L,
+                        MINIMUM_LDM_MATCH_LENGTH,
+                        MAXIMUM_LDM_MATCH_LENGTH,
+                        "Zstandard long-distance minimum match"
+                ),
+                boundedParameter(
+                        ldmBucketSizeLog != null ? ldmBucketSizeLog : 0L,
+                        MINIMUM_LDM_BUCKET_SIZE_LOG,
+                        MAXIMUM_LDM_BUCKET_SIZE_LOG,
+                        "Zstandard long-distance bucket-size log"
+                ),
+                boundedParameter(
+                        ldmHashRateLog != null ? ldmHashRateLog : 0L,
+                        MINIMUM_LDM_HASH_RATE_LOG,
+                        MAXIMUM_LDM_HASH_RATE_LOG,
+                        "Zstandard long-distance hash-rate log"
+                ),
                 workers != null ? workers.value() : 0,
                 selectedJobSize,
                 selectedOverlapLog,
@@ -503,31 +646,21 @@ public final class ZstdCodec implements CompressionCodec {
                 : dictionary != null ? CompressionDictionary.of(dictionary) : null;
     }
 
+    /// Returns the selected physical frame format, defaulting to standard framing.
+    private static ZstdFrameFormat frameFormat(CodecOptions options) {
+        @Nullable ZstdFrameFormat format = options.get(FRAME_FORMAT);
+        return format != null ? format : ZstdFrameFormat.STANDARD;
+    }
+
     /// Compresses all remaining source bytes into the target buffer.
     @Override
     public void compress(ByteBuffer source, ByteBuffer target) throws IOException {
-        Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(target, "target");
-        if (!source.isDirect() || !target.isDirect()) {
-            throw new IOException("Zstandard ByteBuffer compression requires direct buffers");
-        }
-        if (target.isReadOnly()) {
-            throw new IOException("Zstandard ByteBuffer compression target buffer must be writable");
-        }
         CompressionCodec.super.compress(source, target);
     }
 
     /// Decompresses all remaining source bytes into the target buffer.
     @Override
     public void decompress(ByteBuffer source, ByteBuffer target) throws IOException {
-        Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(target, "target");
-        if (!source.isDirect() || !target.isDirect()) {
-            throw new IOException("Zstandard ByteBuffer decompression requires direct buffers");
-        }
-        if (target.isReadOnly()) {
-            throw new IOException("Zstandard ByteBuffer decompression target buffer must be writable");
-        }
         CompressionCodec.super.decompress(source, target);
     }
 }

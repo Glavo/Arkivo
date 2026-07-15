@@ -33,8 +33,11 @@ public final class Rar5CompressionTest {
     /// The system property containing the published RAR module JAR path.
     private static final String RAR_JAR_PROPERTY = "arkivo.rar.jar";
 
-    /// The system property containing the Arkivo base module JAR path.
-    private static final String BASE_JAR_PROPERTY = "arkivo.base.jar";
+    /// The system property containing the Arkivo archive module JAR path.
+    private static final String ARCHIVE_JAR_PROPERTY = "arkivo.archive.jar";
+
+    /// The system property containing the Arkivo internal base module JAR path.
+    private static final String INTERNAL_BASE_JAR_PROPERTY = "arkivo.internal-base.jar";
 
     /// The system property containing the published codec-core JAR path.
     private static final String CODEC_JAR_PROPERTY = "arkivo.codec.jar";
@@ -182,7 +185,8 @@ public final class Rar5CompressionTest {
     public void readsCompressedEntryFromPublishedModule() throws Exception {
         ModuleFinder finder = ModuleFinder.of(
                 requiredPathProperty(RAR_JAR_PROPERTY),
-                requiredPathProperty(BASE_JAR_PROPERTY),
+                requiredPathProperty(ARCHIVE_JAR_PROPERTY),
+                requiredPathProperty(INTERNAL_BASE_JAR_PROPERTY),
                 requiredPathProperty(CODEC_JAR_PROPERTY),
                 requiredPathProperty(PPMD_JAR_PROPERTY)
         );

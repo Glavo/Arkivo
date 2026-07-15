@@ -98,6 +98,18 @@ public final class ZstdOfficialCorpusTest {
         }
     }
 
+    /// Verifies the official zero-weight dictionary with self data and a symbol carrying a nonzero weight.
+    @Test
+    public void roundTripsOfficialZeroWeightDictionary() throws IOException {
+        byte[] dictionary = Files.readAllBytes(corpusPath("tests/dict-files/zero-weight-dict"));
+
+        verifyDictionaryInteroperability(dictionary, dictionary);
+        verifyDictionaryInteroperability(
+                dictionary,
+                "0000000000000000000000000\n".getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        );
+    }
+
     /// Trains a pure Java dictionary from official regression inputs and verifies native interoperability.
     @Test
     public void trainsFromOfficialCompressionRegressionInputs() throws IOException {
@@ -205,6 +217,34 @@ public final class ZstdOfficialCorpusTest {
             new ZstdCodec().decompress(source, target);
         }
         return decoded.toByteArray();
+    }
+
+    /// Verifies pure Java and native compression in both directions with one dictionary.
+    private static void verifyDictionaryInteroperability(
+            byte[] dictionaryBytes,
+            byte[] input
+    ) throws IOException {
+        CodecOptions options = CodecOptions.builder()
+                .set(
+                        StandardCodecOptions.DICTIONARY,
+                        CompressionDictionary.of(dictionaryBytes)
+                )
+                .build();
+        ZstdCodec codec = new ZstdCodec();
+
+        byte[] pureJavaCompressed = compress(codec, input, options);
+        assertArrayEquals(input, decompress(codec, pureJavaCompressed, options));
+        try (ZstdDecompressCtx context = new ZstdDecompressCtx()) {
+            context.loadDict(dictionaryBytes);
+            assertArrayEquals(input, context.decompress(pureJavaCompressed, input.length));
+        }
+
+        byte[] nativeCompressed;
+        try (ZstdCompressCtx context = new ZstdCompressCtx()) {
+            context.loadDict(dictionaryBytes);
+            nativeCompressed = context.compress(input);
+        }
+        assertArrayEquals(input, decompress(codec, nativeCompressed, options));
     }
 
     /// Compresses bytes through the Arkivo channel API.

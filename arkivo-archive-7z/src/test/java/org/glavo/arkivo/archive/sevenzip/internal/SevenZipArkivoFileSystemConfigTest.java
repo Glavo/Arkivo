@@ -314,23 +314,21 @@ public final class SevenZipArkivoFileSystemConfigTest {
     }
 
 
-    /// Verifies that edit storage is accepted for updates and rejected outside update mode.
+    /// Verifies that edit storage is accepted for reads and updates but rejected in forward-only write mode.
     @Test
-    public void editStorageRequiresUpdateMode() {
+    public void editStorageSupportsReadAndUpdateModes() {
         ArkivoEditStorage storage = ArkivoEditStorage.memory();
-        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromUpdateEnvironment(Map.of(
+        SevenZipArkivoFileSystemConfig readConfig = SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+                ArkivoFileSystem.EDIT_STORAGE.key(),
+                storage
+        ));
+        SevenZipArkivoFileSystemConfig updateConfig = SevenZipArkivoFileSystemConfig.fromUpdateEnvironment(Map.of(
                 ArkivoFileSystem.EDIT_STORAGE.key(),
                 storage
         ));
 
-        assertSame(storage, config.editStorage());
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
-                        ArkivoFileSystem.EDIT_STORAGE.key(),
-                        storage
-                ))
-        );
+        assertSame(storage, readConfig.editStorage());
+        assertSame(storage, updateConfig.editStorage());
         assertThrows(
                 IllegalArgumentException.class,
                 () -> SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(

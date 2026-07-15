@@ -27,6 +27,8 @@ import java.util.Objects;
 /// select another publication policy.
 /// Indexed read and update sessions stage entry bodies through `ArkivoFileSystem.EDIT_STORAGE`, using temporary files
 /// under the system temporary directory by default. The file system owns and closes the selected edit storage.
+/// An entry being replaced through an open writable channel is hidden from new reads until that channel closes;
+/// channels and attribute snapshots opened before the replacement retain the preceding entry state.
 /// Channel-source update sessions require an explicit `ArkivoFileSystem.COMMIT_TARGET` because they have no source
 /// path to replace. The detected or explicitly selected compression codec is preserved when publishing the derivative.
 /// GNU sparse entries are staged as expanded logical files; an update commit normalizes old GNU `S` entries to regular
@@ -63,7 +65,7 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     public static TarArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
-        return TarArkivoFileSystemProvider.instance().newFileSystem(path, environment);
+        return TarArkivoFileSystemProvider.instance().openPath(path, environment);
     }
 
     /// Opens a read-only TAR archive file system directly from one owned seekable channel.

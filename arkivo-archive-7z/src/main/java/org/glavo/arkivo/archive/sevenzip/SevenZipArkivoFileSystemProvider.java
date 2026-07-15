@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.sevenzip;
 
 import org.glavo.arkivo.archive.ArkivoFileSystem;
+import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemConfig;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -19,14 +20,10 @@ import java.nio.file.CopyOption;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileStore;
 import java.nio.file.FileSystem;
-import java.nio.file.FileSystemAlreadyExistsException;
-import java.nio.file.FileSystemNotFoundException;
-import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.ProviderMismatchException;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileAttributeView;
@@ -34,7 +31,6 @@ import java.nio.file.spi.FileSystemProvider;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 /// Provides JDK file system provider entry points for 7z archives.
 @NotNullByDefault
@@ -46,7 +42,8 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
     private static final SevenZipArkivoFileSystemProvider INSTANCE = new SevenZipArkivoFileSystemProvider();
 
     /// The file systems opened through URI entry points.
-    private final ConcurrentHashMap<URI, SevenZipArkivoFileSystem> fileSystems = new ConcurrentHashMap<>();
+    private final ArkivoFileSystemProviderSupport.Registry<SevenZipArkivoFileSystem> fileSystems =
+            new ArkivoFileSystemProviderSupport.Registry<>();
 
     /// Creates a 7z file system provider.
     public SevenZipArkivoFileSystemProvider() {
@@ -67,42 +64,28 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
     @Override
     public ArkivoFileSystem newFileSystem(URI uri, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(environment, "environment");
-        ParsedSevenZipUri parsedUri = ParsedSevenZipUri.parse(uri, false);
+        ArkivoFileSystemProviderSupport.ParsedUri parsedUri = parseUri(uri, false);
         SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromEnvironment(environment);
-
-        while (true) {
-            SevenZipArkivoFileSystem existing = fileSystems.get(parsedUri.archiveUri);
-            if (existing != null) {
-                if (existing.isOpen()) {
-                    throw new FileSystemAlreadyExistsException(parsedUri.archiveUri.toString());
-                }
-                fileSystems.remove(parsedUri.archiveUri, existing);
-                continue;
-            }
-
-            SevenZipArkivoFileSystem[] holder = new SevenZipArkivoFileSystem[1];
-            Runnable closeAction = () -> {
-                SevenZipArkivoFileSystem fileSystem = holder[0];
-                if (fileSystem != null) {
-                    fileSystems.remove(parsedUri.archiveUri, fileSystem);
-                }
-            };
-            SevenZipArkivoFileSystem fileSystem =
-                    new SevenZipArkivoFileSystemImpl(this, parsedUri.archivePath, null, config, closeAction);
-            holder[0] = fileSystem;
-
-            existing = fileSystems.putIfAbsent(parsedUri.archiveUri, fileSystem);
-            if (existing == null) {
-                return fileSystem;
-            }
-
-            fileSystem.close();
-        }
+        return fileSystems.open(parsedUri.archiveUri(), closeAction -> new SevenZipArkivoFileSystemImpl(
+                this,
+                parsedUri.archivePath(),
+                null,
+                config,
+                closeAction
+        ));
     }
 
     /// Opens a 7z archive file system from an archive path.
     @Override
     public SevenZipArkivoFileSystem newFileSystem(Path path, Map<String, ?> environment) throws IOException {
+        Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(environment, "environment");
+        ArkivoFileSystemProviderSupport.requirePathFormat(path, SevenZipArkivoFormat.instance());
+        return openPath(path, environment);
+    }
+
+    /// Opens a 7z archive path whose format has already been selected explicitly.
+    SevenZipArkivoFileSystem openPath(Path path, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(path, "path");
         SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromEnvironment(environment);
         return new SevenZipArkivoFileSystemImpl(this, path, null, config);
@@ -111,14 +94,16 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
     /// Returns an open 7z archive file system for a provider URI.
     @Override
     public FileSystem getFileSystem(URI uri) {
-        return requireFileSystem(ParsedSevenZipUri.parse(uri, false));
+        return fileSystems.require(parseUri(uri, false).archiveUri());
     }
 
     /// Returns a path inside an open 7z archive file system.
     @Override
     public Path getPath(URI uri) {
-        ParsedSevenZipUri parsedUri = ParsedSevenZipUri.parse(uri, true);
-        return requireFileSystem(parsedUri).getPath(parsedUri.entryPath);
+        ArkivoFileSystemProviderSupport.ParsedUri parsedUri = parseUri(uri, true);
+        return fileSystems.require(parsedUri.archiveUri()).getPath(
+                Objects.requireNonNull(parsedUri.entryPath(), "entryPath")
+        );
     }
 
     /// Opens a byte channel for a path inside a 7z archive file system.
@@ -128,13 +113,20 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
             Set<? extends OpenOption> options,
             FileAttribute<?>... attributes
     ) throws IOException {
-        return sevenZipFileSystem(path).newByteChannel(path, options, attributes);
+        return sevenZipFileSystem(path).newByteChannel(
+                ArkivoFileSystemProviderSupport.resolveReadChannelPath(path, options),
+                options,
+                attributes
+        );
     }
 
     /// Opens an input stream for a path inside a 7z archive file system.
     @Override
     public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
-        return sevenZipFileSystem(path).newInputStream(path, options);
+        return sevenZipFileSystem(path).newInputStream(
+                ArkivoFileSystemProviderSupport.resolveReadPath(path, options),
+                options
+        );
     }
 
     /// Opens an output stream for a path inside a writable 7z archive file system.
@@ -149,7 +141,10 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
             Path directory,
             DirectoryStream.Filter<? super Path> filter
     ) throws IOException {
-        return sevenZipFileSystem(directory).newDirectoryStream(directory, filter);
+        return sevenZipFileSystem(directory).newDirectoryStream(
+                ArkivoFileSystemProviderSupport.resolveReadPath(directory),
+                filter
+        );
     }
 
     /// Creates a directory inside a writable 7z archive file system.
@@ -173,53 +168,23 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
     /// Copies a path inside or across 7z archive file systems.
     @Override
     public void copy(Path source, Path target, CopyOption... options) throws IOException {
-        boolean replaceExisting = false;
-        for (CopyOption option : options) {
-            if (option == StandardCopyOption.REPLACE_EXISTING) {
-                replaceExisting = true;
-            } else {
-                throw new UnsupportedOperationException("Unsupported 7z copy option: " + option);
-            }
-        }
-
-        BasicFileAttributes attributes = readAttributes(source, BasicFileAttributes.class);
-        if (attributes.isDirectory()) {
-            if (Files.exists(target)) {
-                if (!replaceExisting) {
-                    throw new java.nio.file.FileAlreadyExistsException(target.toString());
-                }
-                if (Files.isDirectory(target)) {
-                    return;
-                }
-                Files.delete(target);
-            }
-            Files.createDirectories(target);
-            return;
-        }
-
-        if (Files.exists(target) && !replaceExisting) {
-            throw new java.nio.file.FileAlreadyExistsException(target.toString());
-        }
-        try (InputStream input = newInputStream(source)) {
-            if (replaceExisting) {
-                Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
-            } else {
-                Files.copy(input, target);
-            }
-        }
+        sevenZipFileSystem(source);
+        ArkivoFileSystemProviderSupport.copy(source, target, options);
     }
 
     /// Moves a path inside an update-mode 7z archive file system.
     @Override
     public void move(Path source, Path target, CopyOption... options) throws IOException {
-        sevenZipFileSystem(source).move(source, target, options);
+        SevenZipArkivoFileSystemImpl fileSystem = sevenZipFileSystem(source);
+        ArkivoFileSystemProviderSupport.requireSameFileSystemMove(source, target);
+        fileSystem.move(source, target, options);
     }
 
     /// Returns whether two 7z archive paths refer to the same file.
     @Override
     public boolean isSameFile(Path path, Path other) throws IOException {
-        sevenZipFileSystem(path).checkAccess(path);
-        return path.equals(other);
+        sevenZipFileSystem(path);
+        return ArkivoFileSystemProviderSupport.isSameFile(path, other);
     }
 
     /// Returns whether a 7z archive path is hidden.
@@ -250,7 +215,7 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
             Class<V> type,
             LinkOption... options
     ) {
-        return sevenZipFileSystem(path).getFileAttributeView(path, type);
+        return sevenZipFileSystem(path).getFileAttributeView(path, type, options);
     }
 
     /// Reads file attributes for a 7z archive path.
@@ -260,13 +225,19 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
             Class<A> type,
             LinkOption... options
     ) throws IOException {
-        return sevenZipFileSystem(path).readAttributes(path, type);
+        return sevenZipFileSystem(path).readAttributes(
+                ArkivoFileSystemProviderSupport.resolveReadPath(path, options),
+                type
+        );
     }
 
     /// Reads named file attributes for a 7z archive path.
     @Override
     public Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options) throws IOException {
-        return sevenZipFileSystem(path).readAttributes(path, attributes);
+        return sevenZipFileSystem(path).readAttributes(
+                ArkivoFileSystemProviderSupport.resolveReadPath(path, options),
+                attributes
+        );
     }
 
     /// Reads a symbolic link target from a 7z archive path.
@@ -290,80 +261,8 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
         throw new ProviderMismatchException();
     }
 
-    /// Returns the open file system registered for a parsed URI.
-    private SevenZipArkivoFileSystem requireFileSystem(ParsedSevenZipUri parsedUri) {
-        SevenZipArkivoFileSystem fileSystem = fileSystems.get(parsedUri.archiveUri);
-        if (fileSystem != null && fileSystem.isOpen()) {
-            return fileSystem;
-        }
-        if (fileSystem != null) {
-            fileSystems.remove(parsedUri.archiveUri, fileSystem);
-        }
-        throw new FileSystemNotFoundException(parsedUri.archiveUri.toString());
-    }
-
-    /// Requires a provider URI to use the 7z Arkivo scheme.
-    private static void requireSupportedScheme(URI uri) {
-        Objects.requireNonNull(uri, "uri");
-        if (!SCHEME.equalsIgnoreCase(uri.getScheme())) {
-            throw new IllegalArgumentException("Unsupported URI scheme: " + uri);
-        }
-    }
-
-    /// Stores parsed components from a 7z Arkivo provider URI.
-    @NotNullByDefault
-    private static final class ParsedSevenZipUri {
-        /// The nested archive URI.
-        private final URI archiveUri;
-
-        /// The archive path resolved from the nested archive URI.
-        private final Path archivePath;
-
-        /// The decoded entry path, or `null` when the URI identifies only an archive file system.
-        private final @Nullable String entryPath;
-
-        /// Creates parsed 7z URI components.
-        private ParsedSevenZipUri(URI archiveUri, Path archivePath, @Nullable String entryPath) {
-            this.archiveUri = archiveUri;
-            this.archivePath = archivePath;
-            this.entryPath = entryPath;
-        }
-
-        /// Parses a 7z Arkivo provider URI.
-        private static ParsedSevenZipUri parse(URI uri, boolean requireEntryPath) {
-            requireSupportedScheme(uri);
-            if (uri.getRawQuery() != null || uri.getRawFragment() != null) {
-                throw new IllegalArgumentException("7z Arkivo URI must not contain query or fragment: " + uri);
-            }
-
-            String schemeSpecificPart = uri.getRawSchemeSpecificPart();
-            int separator = schemeSpecificPart.indexOf("!/");
-            if (separator < 0 && requireEntryPath) {
-                throw new IllegalArgumentException("7z Arkivo entry URI must contain !/: " + uri);
-            }
-
-            String archivePart = separator >= 0
-                    ? schemeSpecificPart.substring(0, separator)
-                    : schemeSpecificPart;
-            if (archivePart.isEmpty()) {
-                throw new IllegalArgumentException("7z Arkivo URI must contain an archive URI: " + uri);
-            }
-
-            URI archiveUri = URI.create(archivePart).normalize();
-            Path archivePath = Path.of(archiveUri);
-            String entryPath = separator >= 0
-                    ? decodeEntryPath(schemeSpecificPart.substring(separator + 2))
-                    : null;
-            return new ParsedSevenZipUri(archiveUri, archivePath, entryPath);
-        }
-
-        /// Decodes a raw entry path from a 7z Arkivo provider URI.
-        private static String decodeEntryPath(String rawEntryPath) {
-            if (rawEntryPath.isEmpty()) {
-                return "/";
-            }
-            String decodedPath = URI.create("arkivo-entry:/" + rawEntryPath).getPath();
-            return decodedPath != null ? decodedPath : "/";
-        }
+    /// Parses a 7z provider URI through the shared archive URI grammar.
+    private static ArkivoFileSystemProviderSupport.ParsedUri parseUri(URI uri, boolean requireEntryPath) {
+        return ArkivoFileSystemProviderSupport.parseUri(uri, SCHEME, "7z", requireEntryPath);
     }
 }

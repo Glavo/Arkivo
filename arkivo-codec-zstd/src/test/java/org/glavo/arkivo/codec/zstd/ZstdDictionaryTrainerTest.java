@@ -67,6 +67,8 @@ final class ZstdDictionaryTrainerTest {
         ByteBuffer source = ByteBuffer.allocateDirect(payload.length);
         source.put(payload).flip();
         ByteBuffer compressed = codec.compress(source, options);
+        assertEquals(3, firstLiteralType(codec, compressed.duplicate()));
+        assertEquals(0xfc, firstSequenceModes(codec, compressed.duplicate()));
         ByteBuffer decoded = codec.decompress(compressed, payload.length, options);
         byte[] bufferOutput = new byte[decoded.remaining()];
         decoded.get(bufferOutput);
@@ -209,6 +211,100 @@ final class ZstdDictionaryTrainerTest {
             assertEquals(sample.limit(), sample.position());
         }
         return trainer;
+    }
+
+    /// Returns the literal-section type from the first compressed block.
+    private static int firstLiteralType(ZstdCodec codec, ByteBuffer frame) throws Exception {
+        int frameStart = frame.position();
+        ZstdStandardFrameInfo info = (ZstdStandardFrameInfo) codec.frameInfo(frame.duplicate());
+        int blockOffset = frameStart + info.headerSize();
+        int blockHeader = Byte.toUnsignedInt(frame.get(blockOffset))
+                | Byte.toUnsignedInt(frame.get(blockOffset + 1)) << 8
+                | Byte.toUnsignedInt(frame.get(blockOffset + 2)) << 16;
+        if ((blockHeader >>> 1 & 3) != 2) {
+            throw new AssertionError("Expected a compressed Zstandard block");
+        }
+        return Byte.toUnsignedInt(frame.get(blockOffset + 3)) & 3;
+    }
+
+    /// Returns the three sequence-table modes from the first compressed block.
+    private static int firstSequenceModes(ZstdCodec codec, ByteBuffer frame) throws Exception {
+        int frameStart = frame.position();
+        ZstdStandardFrameInfo info = (ZstdStandardFrameInfo) codec.frameInfo(frame.duplicate());
+        int blockOffset = frameStart + info.headerSize();
+        int blockHeader = Byte.toUnsignedInt(frame.get(blockOffset))
+                | Byte.toUnsignedInt(frame.get(blockOffset + 1)) << 8
+                | Byte.toUnsignedInt(frame.get(blockOffset + 2)) << 16;
+        if ((blockHeader >>> 1 & 3) != 2) {
+            throw new AssertionError("Expected a compressed Zstandard block");
+        }
+
+        int position = blockOffset + 3;
+        position += encodedLiteralSectionSize(frame, position);
+        int firstCount = Byte.toUnsignedInt(frame.get(position++));
+        int sequenceCount;
+        if (firstCount < 128) {
+            sequenceCount = firstCount;
+        } else if (firstCount < 255) {
+            sequenceCount = (firstCount - 128) << 8
+                    | Byte.toUnsignedInt(frame.get(position++));
+        } else {
+            sequenceCount = (Byte.toUnsignedInt(frame.get(position))
+                    | Byte.toUnsignedInt(frame.get(position + 1)) << 8) + 0x7f00;
+            position += 2;
+        }
+        if (sequenceCount == 0) {
+            throw new AssertionError("Expected Zstandard sequences");
+        }
+        return Byte.toUnsignedInt(frame.get(position));
+    }
+
+    /// Returns the encoded byte size of one literal section.
+    private static int encodedLiteralSectionSize(ByteBuffer frame, int offset) {
+        int first = Byte.toUnsignedInt(frame.get(offset));
+        int type = first & 3;
+        int sizeFormat = first >>> 2 & 3;
+        if (type <= 1) {
+            int headerSize;
+            int regeneratedSize;
+            if (sizeFormat == 0 || sizeFormat == 2) {
+                headerSize = 1;
+                regeneratedSize = first >>> 3;
+            } else if (sizeFormat == 1) {
+                headerSize = 2;
+                regeneratedSize = (first
+                        | Byte.toUnsignedInt(frame.get(offset + 1)) << 8) >>> 4;
+            } else {
+                headerSize = 3;
+                regeneratedSize = (first
+                        | Byte.toUnsignedInt(frame.get(offset + 1)) << 8
+                        | Byte.toUnsignedInt(frame.get(offset + 2)) << 16) >>> 4;
+            }
+            return headerSize + (type == 0 ? regeneratedSize : 1);
+        }
+
+        if (sizeFormat <= 1) {
+            int header = first
+                    | Byte.toUnsignedInt(frame.get(offset + 1)) << 8
+                    | Byte.toUnsignedInt(frame.get(offset + 2)) << 16;
+            return 3 + (header >>> 14 & 0x3ff);
+        }
+        if (sizeFormat == 2) {
+            long header = Integer.toUnsignedLong(
+                    first
+                            | Byte.toUnsignedInt(frame.get(offset + 1)) << 8
+                            | Byte.toUnsignedInt(frame.get(offset + 2)) << 16
+                            | frame.get(offset + 3) << 24
+            );
+            return 4 + (int) (header >>> 18 & 0x3fff);
+        }
+        long header = Integer.toUnsignedLong(
+                first
+                        | Byte.toUnsignedInt(frame.get(offset + 1)) << 8
+                        | Byte.toUnsignedInt(frame.get(offset + 2)) << 16
+                        | frame.get(offset + 3) << 24
+        ) | (long) Byte.toUnsignedInt(frame.get(offset + 4)) << 32;
+        return 5 + (int) (header >>> 22 & 0x3ffff);
     }
 
     /// Returns one direct-buffer sample.

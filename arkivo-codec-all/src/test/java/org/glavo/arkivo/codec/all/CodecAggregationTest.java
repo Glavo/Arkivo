@@ -24,6 +24,21 @@ final class CodecAggregationTest {
                 .map(CompressionCodec::name)
                 .collect(Collectors.toUnmodifiableSet());
 
-        assertEquals(Set.of("bzip2", "deflate", "deflate64", "gzip", "lzma", "ppmd", "xz", "zlib", "zstd"), names);
+        assertEquals(
+                Set.of(
+                        "bzip2",
+                        "deflate",
+                        "deflate64",
+                        "gzip",
+                        "lzma",
+                        "lzma-raw",
+                        "lzma2",
+                        "ppmd",
+                        "xz",
+                        "zlib",
+                        "zstd"
+                ),
+                names
+        );
     }
 }

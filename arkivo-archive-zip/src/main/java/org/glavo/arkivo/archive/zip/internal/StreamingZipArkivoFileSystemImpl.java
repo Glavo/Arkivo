@@ -4,8 +4,6 @@
 package org.glavo.arkivo.archive.zip.internal;
 
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.lzma.internal.LZMAOutputStream;
-import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
 
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
@@ -19,8 +17,12 @@ import org.glavo.arkivo.archive.ArkivoVolumePathLayout;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
+import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
+import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
+import org.glavo.arkivo.archive.internal.ForwardOnlyOutputChannel;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.internal.PosixPermissions;
+import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
 
 
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
@@ -40,25 +42,26 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.Channels;
-import java.nio.channels.ClosedChannelException;
-import java.nio.channels.NonReadableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AccessMode;
 import java.nio.file.ClosedFileSystemException;
+import java.nio.file.CopyOption;
 import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.DirectoryIteratorException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileSystemException;
 import java.nio.file.FileStore;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.NotLinkException;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
-import java.nio.file.ReadOnlyFileSystemException;
 import java.nio.file.PathMatcher;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.WatchService;
 import java.nio.file.attribute.BasicFileAttributeView;
@@ -92,8 +95,6 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.zip.CRC32;
-import java.util.zip.Deflater;
-import java.util.zip.DeflaterOutputStream;
 
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.BZIP2_METHOD;
 import static org.glavo.arkivo.archive.zip.internal.ZipConstants.CENTRAL_DIRECTORY_HEADER_SIGNATURE;
@@ -220,6 +221,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// The next unique storage suffix used for an uncompressed staged entry body.
     private long stagedEntrySequence;
 
+    /// The active random-access update channel, or `null` when no entry body is being edited.
+    private @Nullable StagedSeekableByteChannel activeUpdateChannel;
+
     /// The relocated local header locations for surviving existing entries.
     private final HashMap<String, RelocatedLocalHeader> relocatedExistingEntryOffsets = new HashMap<>();
 
@@ -241,11 +245,11 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// The symbolic link targets written during this output session, keyed by normalized entry name.
     private final HashMap<String, String> writtenSymbolicLinkTargets = new HashMap<>();
 
-    /// The existing central directory entries copied when appending to an archive.
-    private final @Unmodifiable List<ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot> existingCentralDirectoryEntries;
+    /// The existing central directory entries copied when rewriting an archive.
+    private final ArrayList<ExistingEntry> existingCentralDirectoryEntries;
 
-    /// The existing entry names available before this output session started.
-    private final @Unmodifiable Set<String> existingEntryNames;
+    /// The current names of existing entries available in this output session.
+    private final HashSet<String> existingEntryNames;
 
     /// The existing entry names replaced by this output session.
     private final HashSet<String> replacedEntries = new HashSet<>();
@@ -433,14 +437,14 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             }
         }
         if (appendSnapshot != null) {
-            this.existingCentralDirectoryEntries = appendSnapshot.entries();
-            this.existingEntryNames = appendSnapshot.entryNames();
+            this.existingCentralDirectoryEntries = existingEntries(appendSnapshot.entries());
+            this.existingEntryNames = new HashSet<>(appendSnapshot.entryNames());
             if (!replaceExistingEntries) {
                 this.writtenEntries.addAll(appendSnapshot.entryNames());
             }
         } else {
-            this.existingCentralDirectoryEntries = List.of();
-            this.existingEntryNames = Set.of();
+            this.existingCentralDirectoryEntries = new ArrayList<>();
+            this.existingEntryNames = new HashSet<>();
         }
         this.existingArchiveReader = appendSnapshot != null
                 ? ZipArkivoFileSystemImpl.openUpdateReader(provider, archivePath, config)
@@ -464,6 +468,17 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             throw new NoSuchFileException(archivePath.toString());
         }
         return ZipArkivoFileSystemImpl.readCentralDirectorySnapshot(archivePath, config);
+    }
+
+    /// Wraps immutable source snapshots with mutable-session entry names.
+    private static ArrayList<ExistingEntry> existingEntries(
+            List<ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot> snapshots
+    ) {
+        ArrayList<ExistingEntry> entries = new ArrayList<>(snapshots.size());
+        for (ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot snapshot : snapshots) {
+            entries.add(ExistingEntry.original(snapshot));
+        }
+        return entries;
     }
 
     /// Returns the directory used by default temporary edit and commit storage.
@@ -643,8 +658,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         this.stagedRecords = openedStagedRecords;
         this.rewriteSnapshot = snapshot;
         this.archiveComment = snapshot.archiveComment();
-        this.existingCentralDirectoryEntries = snapshot.entries();
-        this.existingEntryNames = snapshot.entryNames();
+        this.existingCentralDirectoryEntries = existingEntries(snapshot.entries());
+        this.existingEntryNames = new HashSet<>(snapshot.entryNames());
         this.existingArchiveReader = ZipArkivoFileSystemImpl.openUpdateReader(provider, source, config);
         this.rootPath = ZipArkivoPath.root(this);
     }
@@ -683,8 +698,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 StreamChannelAdapters.outputStream(Objects.requireNonNull(output, "output")),
                 0L
         );
-        this.existingCentralDirectoryEntries = List.of();
-        this.existingEntryNames = Set.of();
+        this.existingCentralDirectoryEntries = new ArrayList<>();
+        this.existingEntryNames = new HashSet<>();
         this.existingArchiveReader = null;
         this.rootPath = ZipArkivoPath.root(this);
     }
@@ -735,8 +750,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         this.archiveComment = new byte[0];
         this.replaceExistingEntries = false;
         this.output = SplitCountingOutputStream.open(Objects.requireNonNull(target, "target"), splitSize);
-        this.existingCentralDirectoryEntries = List.of();
-        this.existingEntryNames = Set.of();
+        this.existingCentralDirectoryEntries = new ArrayList<>();
+        this.existingEntryNames = new HashSet<>();
         this.existingArchiveReader = null;
         this.rootPath = ZipArkivoPath.root(this);
     }
@@ -885,30 +900,57 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
              SeekableByteChannel staged = records.openChannel(Set.of(StandardOpenOption.READ))) {
             copyRange(source, snapshot.preambleOffset(), snapshot.preambleSize(), output);
 
-            ArrayList<ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot> survivingEntries =
-                    new ArrayList<>();
-            for (ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot entry : existingCentralDirectoryEntries) {
+            ArrayList<ExistingEntry> survivingEntries = new ArrayList<>();
+            for (ExistingEntry entry : existingCentralDirectoryEntries) {
                 if (!replacedEntries.contains(entry.entryName()) && !deletedEntries.contains(entry.entryName())) {
                     survivingEntries.add(entry);
                 }
             }
             survivingEntries.sort(Comparator.comparingLong(
-                    ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot::localHeaderOffset
+                    entry -> entry.source().localHeaderOffset()
             ));
-            for (ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot entry : survivingEntries) {
-                output.startRecord(entry.localHeaderSize());
+            for (ExistingEntry entry : survivingEntries) {
+                LocalRecordRewrite rewrite = localRecordRewrite(
+                        source,
+                        entry.source().localHeaderOffset(),
+                        entry.source().localHeaderSize(),
+                        entry.renamed() ? entry.rawName() : null,
+                        entry.localTimestampChanged() ? entry.dosTime() : -1,
+                        entry.localTimestampChanged() ? entry.dosDate() : -1
+                );
+                output.startRecord(rewrite.finalHeaderSize());
                 relocatedExistingEntryOffsets.put(
                         entry.entryName(),
                         new RelocatedLocalHeader(output.diskNumber(), output.diskPosition())
                 );
-                copyRange(source, entry.localHeaderOffset(), entry.localRecordSize(), output);
+                copyLocalRecord(
+                        source,
+                        entry.source().localHeaderOffset(),
+                        entry.source().localHeaderSize(),
+                        entry.source().localRecordSize(),
+                        rewrite
+                );
             }
 
             for (CentralEntry entry : centralEntries) {
-                output.startRecord(entry.localHeaderSize);
+                LocalRecordRewrite rewrite = localRecordRewrite(
+                        staged,
+                        entry.localHeaderOffset,
+                        entry.localHeaderSize,
+                        entry.renamed() ? entry.rawName : null,
+                        entry.localTimestampChanged ? entry.dosTime : -1,
+                        entry.localTimestampChanged ? entry.dosDate : -1
+                );
+                output.startRecord(rewrite.finalHeaderSize());
                 entry.relocatedLocalHeaderDiskNumber = output.diskNumber();
                 entry.relocatedLocalHeaderOffset = output.diskPosition();
-                copyRange(staged, entry.localHeaderOffset, entry.localRecordSize, output);
+                copyLocalRecord(
+                        staged,
+                        entry.localHeaderOffset,
+                        entry.localHeaderSize,
+                        entry.localRecordSize,
+                        rewrite
+                );
             }
         }
     }
@@ -990,6 +1032,96 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             destination.write(buffer.array(), 0, count);
             remaining -= count;
         }
+    }
+
+    /// Prepares a local record header for name or timestamp changes.
+    private static LocalRecordRewrite localRecordRewrite(
+            SeekableByteChannel source,
+            long localHeaderOffset,
+            long sourceHeaderSize,
+            byte @Nullable [] renamedRawName,
+            int replacementDosTime,
+            int replacementDosDate
+    ) throws IOException {
+        boolean timestampChanged = replacementDosTime >= 0 || replacementDosDate >= 0;
+        if (renamedRawName == null && !timestampChanged) {
+            return LocalRecordRewrite.unchanged(sourceHeaderSize);
+        }
+        if ((replacementDosTime < 0) != (replacementDosDate < 0)) {
+            throw new IllegalArgumentException("DOS time and date replacements must be provided together");
+        }
+        if (sourceHeaderSize < ZIP_LOCAL_FILE_HEADER_MIN_SIZE || sourceHeaderSize > Integer.MAX_VALUE) {
+            throw new IOException("Invalid ZIP local file header size");
+        }
+
+        byte[] fixedHeader = readExactRange(source, localHeaderOffset, ZIP_LOCAL_FILE_HEADER_MIN_SIZE);
+        ByteBuffer header = ByteBuffer.wrap(fixedHeader).order(ByteOrder.LITTLE_ENDIAN);
+        if (header.getInt(0) != LOCAL_FILE_HEADER_SIGNATURE) {
+            throw new IOException("Invalid ZIP local file header");
+        }
+        int sourceNameLength = Short.toUnsignedInt(header.getShort(26));
+        int sourceExtraLength = Short.toUnsignedInt(header.getShort(28));
+        if (ZIP_LOCAL_FILE_HEADER_MIN_SIZE + (long) sourceNameLength + sourceExtraLength != sourceHeaderSize) {
+            throw new IOException("ZIP local file header size does not match its variable data");
+        }
+
+        byte[] rawName = renamedRawName != null
+                ? renamedRawName
+                : readExactRange(source, localHeaderOffset + ZIP_LOCAL_FILE_HEADER_MIN_SIZE, sourceNameLength);
+        long extraOffset = localHeaderOffset + ZIP_LOCAL_FILE_HEADER_MIN_SIZE + sourceNameLength;
+        byte[] sourceExtraData = readExactRange(source, extraOffset, sourceExtraLength);
+        byte[] localExtraData = renamedRawName != null
+                ? removeUnicodePathExtraField(sourceExtraData)
+                : sourceExtraData;
+        requireUInt16(rawName.length, "entry name length");
+        requireUInt16(localExtraData.length, "local extra data length");
+        if (renamedRawName != null) {
+            header.putShort(6, (short) (Short.toUnsignedInt(header.getShort(6)) | UTF8_FLAG));
+        }
+        if (timestampChanged) {
+            header.putShort(10, (short) replacementDosTime);
+            header.putShort(12, (short) replacementDosDate);
+        }
+        header.putShort(26, (short) rawName.length);
+        header.putShort(28, (short) localExtraData.length);
+        return new LocalRecordRewrite(fixedHeader, rawName, localExtraData);
+    }
+
+    /// Copies one local record, replacing only its header when the entry was renamed.
+    private void copyLocalRecord(
+            SeekableByteChannel source,
+            long localHeaderOffset,
+            long sourceHeaderSize,
+            long sourceRecordSize,
+            LocalRecordRewrite rewrite
+    ) throws IOException {
+        if (!rewrite.changed()) {
+            copyRange(source, localHeaderOffset, sourceRecordSize, output);
+            return;
+        }
+        output.write(rewrite.fixedHeader());
+        output.write(rewrite.rawName());
+        output.write(rewrite.localExtraData());
+        copyRange(
+                source,
+                localHeaderOffset + sourceHeaderSize,
+                sourceRecordSize - sourceHeaderSize,
+                output
+        );
+    }
+
+    /// Reads an exact byte range from seekable storage.
+    private static byte[] readExactRange(SeekableByteChannel source, long offset, int length) throws IOException {
+        byte[] bytes = new byte[length];
+        ByteBuffer buffer = ByteBuffer.wrap(bytes);
+        source.position(offset);
+        while (buffer.hasRemaining()) {
+            int count = source.read(buffer);
+            if (count < 0) {
+                throw new IOException("Unexpected end of ZIP storage while reading a local record header");
+            }
+        }
+        return bytes;
     }
 
     /// Closes the borrowed read-only archive view and returns the accumulated failure.
@@ -1193,7 +1325,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         throw new UnsupportedOperationException("ZIP watch services are not supported");
     }
 
-    /// Checks whether the given path can be accessed in streaming output mode.
+    /// Checks whether the given path can be accessed in streaming creation or complete-rewrite mode.
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             checkAccessLocked(path, modes);
@@ -1206,17 +1338,19 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         try {
             checkOpen();
             String entryName = entryName(path);
+            if (!entryName.isEmpty() && !visibleEntry(entryName) && !visibleDirectory(entryName)) {
+                throw new NoSuchFileException(path.toString());
+            }
             for (AccessMode mode : modes) {
                 Objects.requireNonNull(mode, "mode");
-                if (mode != AccessMode.WRITE) {
-                    throw new UnsupportedOperationException("Streaming ZIP output supports only write access checks");
+                if (mode == AccessMode.READ && rewriteSnapshot == null) {
+                    throw new UnsupportedOperationException(
+                            "Direct streaming ZIP creation does not expose readable entry bodies"
+                    );
                 }
-            }
-            if (modes.length == 0
-                    && !entryName.isEmpty()
-                    && !visibleEntry(entryName)
-                    && !visibleDirectory(entryName)) {
-                throw new NoSuchFileException(path.toString());
+                if (mode == AccessMode.EXECUTE) {
+                    throw new UnsupportedOperationException("ZIP entries do not support execute access checks");
+                }
             }
         } finally {
             unlock();
@@ -1261,27 +1395,37 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         } finally {
             unlock();
         }
-        return new ListDirectoryStream(List.copyOf(paths));
+        return new FixedDirectoryStream<>(paths);
     }
 
     /// Returns an attribute view for an entry path visible in the current output session.
-    public <V extends FileAttributeView> @Nullable V getFileAttributeView(Path path, Class<V> type) {
+    public <V extends FileAttributeView> @Nullable V getFileAttributeView(
+            Path path,
+            Class<V> type,
+            LinkOption... options
+    ) {
         try (Operation ignored = beginReadOperation()) {
-            return getFileAttributeViewLocked(path, type);
+            return getFileAttributeViewLocked(path, type, options);
         }
     }
 
     /// Returns an attribute view while the caller holds the shared operation lock.
-    private <V extends FileAttributeView> @Nullable V getFileAttributeViewLocked(Path path, Class<V> type) {
+    private <V extends FileAttributeView> @Nullable V getFileAttributeViewLocked(
+            Path path,
+            Class<V> type,
+            LinkOption... options
+    ) {
         Objects.requireNonNull(type, "type");
+        ArkivoFileSystemProviderSupport.AttributeViewPath viewPath =
+                ArkivoFileSystemProviderSupport.attributeViewPath(path, options);
         if (type == BasicFileAttributeView.class || type == ZipArkivoEntryAttributeView.class) {
-            return type.cast(new EntryAttributeView(this, path));
+            return type.cast(new EntryAttributeView(this, viewPath));
         }
         if (type == FileOwnerAttributeView.class) {
-            return type.cast(new OwnerEntryAttributeView(this, path));
+            return type.cast(new OwnerEntryAttributeView(this, viewPath));
         }
         if (type == PosixFileAttributeView.class) {
-            return type.cast(new PosixEntryAttributeView(this, path));
+            return type.cast(new PosixEntryAttributeView(this, viewPath));
         }
         return null;
     }
@@ -1364,7 +1508,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
             String target = writtenSymbolicLinkTargets.get(entryName);
             if (target == null) {
-                throw new UnsupportedOperationException("Streaming ZIP output cannot read existing symbolic link targets");
+                ZipArkivoFileSystemImpl reader = Objects.requireNonNull(
+                        existingArchiveReader,
+                        "existingArchiveReader"
+                );
+                return getPath(reader.readSymbolicLink(
+                        reader.getPath("/" + existingSourceEntryName(entryName))
+                ).toString());
             }
             return getPath(target);
         } finally {
@@ -1421,18 +1571,28 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         if (!visibleExistingEntry(entryName)) {
             return null;
         }
-        for (ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot entry : existingCentralDirectoryEntries) {
+        for (ExistingEntry entry : existingCentralDirectoryEntries) {
             if (entry.entryName().equals(entryName)) {
-                return EntryAttributes.existing(entry, config);
+                return EntryAttributes.existing(entry.attributesSnapshot(), config);
             }
         }
         return null;
     }
 
+    /// Returns the immutable source name backing one visible existing entry.
+    private String existingSourceEntryName(String entryName) throws NoSuchFileException {
+        for (ExistingEntry entry : existingCentralDirectoryEntries) {
+            if (entry.entryName().equals(entryName) && visibleExistingEntry(entryName)) {
+                return entry.source().entryName();
+            }
+        }
+        throw new NoSuchFileException(entryName);
+    }
+
     /// Returns direct child entry names visible below a directory.
     private List<String> visibleChildNames(String directoryName) {
         TreeSet<String> children = new TreeSet<>();
-        for (ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot entry : existingCentralDirectoryEntries) {
+        for (ExistingEntry entry : existingCentralDirectoryEntries) {
             if (visibleExistingEntry(entry.entryName())) {
                 addDirectChild(children, directoryName, entry.entryName());
             }
@@ -1659,6 +1819,11 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         Objects.requireNonNull(attributes, "attributes");
         boolean read = options.isEmpty() || options.contains(StandardOpenOption.READ);
         boolean write = requestsEntryWrite(options);
+        if (write && rewriteSnapshot != null) {
+            try (Operation ignored = beginWriteOperation()) {
+                return manageWriteChannel(newUpdateEntryByteChannel(path, options, attributes));
+            }
+        }
         if (read && write) {
             throw new UnsupportedOperationException("ZIP update entry channels do not support combined read/write access");
         }
@@ -1679,7 +1844,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     metadata,
                     options.toArray(OpenOption[]::new)
             );
-            return manageWriteChannel(new EntryWritableByteChannel(outputStream));
+            return manageWriteChannel(new ForwardOnlyOutputChannel(outputStream));
         }
     }
 
@@ -1701,7 +1866,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         lock();
         try {
             checkOpen();
-            requireNoActiveEntry();
+            requireNoActiveOutput();
             if (attributes.length != 0) {
                 throw new UnsupportedOperationException("ZIP read channels do not accept initial attributes");
             }
@@ -1722,7 +1887,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                         "existingArchiveReader"
                 );
                 return reader.newByteChannel(
-                        reader.getPath("/" + entryName),
+                        reader.getPath("/" + existingSourceEntryName(entryName)),
                         options,
                         attributes
                 );
@@ -1734,6 +1899,214 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         } finally {
             unlock();
         }
+    }
+
+    /// Opens a staged random-access channel for one complete-rewrite entry body.
+    private SeekableByteChannel newUpdateEntryByteChannel(
+            Path path,
+            Set<? extends OpenOption> options,
+            FileAttribute<?>... attributes
+    ) throws IOException {
+        lock();
+        try {
+            checkOpen();
+            requireNoActiveEntry();
+            validateUpdateEntryOptions(options);
+
+            boolean append = options.contains(StandardOpenOption.APPEND);
+            boolean writable = options.contains(StandardOpenOption.WRITE) || append;
+            boolean readable = options.contains(StandardOpenOption.READ);
+            if (!readable && !writable) {
+                throw new IllegalArgumentException("ZIP update entry channel requires READ, WRITE, or APPEND");
+            }
+
+            String entryName = regularEntryName(path);
+            boolean existing = visibleEntry(entryName);
+            boolean create = options.contains(StandardOpenOption.CREATE)
+                    || options.contains(StandardOpenOption.CREATE_NEW);
+            if (!existing && !create) {
+                throw new NoSuchFileException(path.toString());
+            }
+            if (existing && options.contains(StandardOpenOption.CREATE_NEW)) {
+                throw new FileAlreadyExistsException(path.toString());
+            }
+            if (!existing && visibleDirectory(entryName)) {
+                throw new FileSystemException(path.toString(), null, "ZIP entry is a directory");
+            }
+
+            boolean truncate = writable && options.contains(StandardOpenOption.TRUNCATE_EXISTING);
+            EntryMetadata metadata = applyInitialAttributes(
+                    EntryMetadata.deflated(config.defaultEncryption()),
+                    false,
+                    attributes
+            );
+            ArkivoStoredContent pendingContent = Objects.requireNonNull(editStorage, "editStorage").createContent(
+                    "zip-update-random-entry-" + stagedEntrySequence++,
+                    ArkivoEditStorage.UNKNOWN_SIZE
+            );
+            @Nullable SeekableByteChannel storageChannel = null;
+            try {
+                if (existing && !truncate) {
+                    copyVisibleEntryContent(entryName, pendingContent);
+                }
+                HashSet<OpenOption> storageOptions = new HashSet<>();
+                if (readable) {
+                    storageOptions.add(StandardOpenOption.READ);
+                }
+                if (writable) {
+                    storageOptions.add(StandardOpenOption.WRITE);
+                }
+                if (!existing || truncate) {
+                    storageOptions.add(StandardOpenOption.TRUNCATE_EXISTING);
+                }
+                storageChannel = pendingContent.openChannel(Set.copyOf(storageOptions));
+                StagedSeekableByteChannel channel = new StagedSeekableByteChannel(
+                        storageChannel,
+                        readable,
+                        writable,
+                        append,
+                        writable && (!existing || truncate),
+                        (completedChannel, commit) -> completeUpdateEntryChannel(
+                                completedChannel,
+                                commit,
+                                entryName,
+                                metadata,
+                                pendingContent
+                        )
+                );
+                activeUpdateChannel = channel;
+                return channel;
+            } catch (IOException | RuntimeException | Error exception) {
+                if (storageChannel != null) {
+                    try {
+                        storageChannel.close();
+                    } catch (IOException | RuntimeException | Error cleanupFailure) {
+                        exception.addSuppressed(cleanupFailure);
+                    }
+                }
+                try {
+                    pendingContent.close();
+                } catch (IOException | RuntimeException | Error cleanupFailure) {
+                    exception.addSuppressed(cleanupFailure);
+                }
+                throw exception;
+            }
+        } finally {
+            unlock();
+        }
+    }
+
+    /// Validates open options for a complete-rewrite entry channel.
+    private static void validateUpdateEntryOptions(Set<? extends OpenOption> options) {
+        if (options.contains(StandardOpenOption.APPEND) && options.contains(StandardOpenOption.READ)) {
+            throw new IllegalArgumentException("ZIP entry APPEND cannot be combined with READ");
+        }
+        if (options.contains(StandardOpenOption.APPEND)
+                && options.contains(StandardOpenOption.TRUNCATE_EXISTING)) {
+            throw new IllegalArgumentException("ZIP entry APPEND cannot be combined with TRUNCATE_EXISTING");
+        }
+        for (OpenOption option : options) {
+            if (option != StandardOpenOption.READ
+                    && option != StandardOpenOption.WRITE
+                    && option != StandardOpenOption.APPEND
+                    && option != StandardOpenOption.CREATE
+                    && option != StandardOpenOption.CREATE_NEW
+                    && option != StandardOpenOption.TRUNCATE_EXISTING) {
+                throw new UnsupportedOperationException("Unsupported ZIP entry update option: " + option);
+            }
+        }
+    }
+
+    /// Copies the currently visible uncompressed body into pending random-access storage.
+    private void copyVisibleEntryContent(String entryName, ArkivoStoredContent destination) throws IOException {
+        try (SeekableByteChannel source = openVisibleEntryContent(entryName);
+             SeekableByteChannel target = destination.openChannel(Set.of(
+                     StandardOpenOption.TRUNCATE_EXISTING,
+                     StandardOpenOption.WRITE
+             ))) {
+            ByteBuffer buffer = ByteBuffer.allocate(COPY_BUFFER_SIZE);
+            while (source.read(buffer) >= 0) {
+                buffer.flip();
+                while (buffer.hasRemaining()) {
+                    target.write(buffer);
+                }
+                buffer.clear();
+            }
+        }
+    }
+
+    /// Opens the uncompressed body currently visible for an update entry.
+    private SeekableByteChannel openVisibleEntryContent(String entryName) throws IOException {
+        ArkivoStoredContent stagedContent = stagedEntryContents.get(entryName);
+        if (stagedContent != null && visibleWrittenEntry(entryName)) {
+            return stagedContent.openChannel(Set.of(StandardOpenOption.READ));
+        }
+        if (visibleExistingEntry(entryName)) {
+            ZipArkivoFileSystemImpl reader = Objects.requireNonNull(existingArchiveReader, "existingArchiveReader");
+            return reader.newByteChannel(
+                    reader.getPath("/" + existingSourceEntryName(entryName)),
+                    Set.of(StandardOpenOption.READ)
+            );
+        }
+        throw new IOException("ZIP entry does not expose readable file content: " + entryName);
+    }
+
+    /// Commits a changed random-access body as a new staged ZIP local record.
+    private void commitUpdatedEntry(
+            String entryName,
+            EntryMetadata metadata,
+            ArkivoStoredContent content
+    ) throws IOException {
+        if (visibleWrittenEntry(entryName)) {
+            removeWrittenEntry(entryName);
+        }
+        OpenOption[] outputOptions = visibleExistingEntry(entryName)
+                ? new OpenOption[]{StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING}
+                : new OpenOption[]{StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW};
+        try (SeekableByteChannel source = content.openChannel(Set.of(StandardOpenOption.READ));
+             OutputStream target = newOutputStreamLocked(
+                     getPath("/" + entryName),
+                     metadata,
+                     outputOptions
+             )) {
+            ByteBuffer buffer = ByteBuffer.allocate(COPY_BUFFER_SIZE);
+            while (source.read(buffer) >= 0) {
+                target.write(buffer.array(), 0, buffer.position());
+                buffer.clear();
+            }
+        }
+    }
+
+    /// Clears one completed update channel, commits changed bytes, and releases its pending body.
+    private void completeUpdateEntryChannel(
+            StagedSeekableByteChannel channel,
+            boolean commit,
+            String entryName,
+            EntryMetadata metadata,
+            ArkivoStoredContent content
+    ) throws IOException {
+        @Nullable Throwable failure = null;
+        lock();
+        try {
+            if (activeUpdateChannel == channel) {
+                activeUpdateChannel = null;
+            }
+            if (commit) {
+                try {
+                    commitUpdatedEntry(entryName, metadata, content);
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = exception;
+                }
+            }
+        } finally {
+            unlock();
+        }
+        try {
+            content.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            failure = appendFailure(failure, exception);
+        }
+        throwFailure(failure);
     }
 
     /// Returns whether entry open options request output or mutation behavior.
@@ -2046,6 +2419,412 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
     }
 
+    /// Moves one entry and all visible descendants inside a complete-rewrite update session.
+    public void move(Path source, Path target, CopyOption... options) throws IOException {
+        try (Operation ignored = beginWriteOperation()) {
+            moveLocked(source, target, options);
+        }
+    }
+
+    /// Moves one entry while the caller holds the exclusive operation lock.
+    private void moveLocked(Path source, Path target, CopyOption... options) throws IOException {
+        lock();
+        try {
+            checkOpen();
+            requireNoActiveEntry();
+            if (rewriteSnapshot == null) {
+                throw new UnsupportedOperationException("ZIP moves require complete-rewrite update mode");
+            }
+            Objects.requireNonNull(options, "options");
+            boolean replaceExisting = false;
+            for (CopyOption option : options) {
+                Objects.requireNonNull(option, "option");
+                if (option == StandardCopyOption.REPLACE_EXISTING) {
+                    replaceExisting = true;
+                } else if (option != StandardCopyOption.ATOMIC_MOVE) {
+                    throw new UnsupportedOperationException("Unsupported ZIP move option: " + option);
+                }
+            }
+
+            String sourceName = entryName(source);
+            String targetName = entryName(target);
+            if (sourceName.isEmpty() || targetName.isEmpty()) {
+                throw new FileSystemException(source.toString(), target.toString(), "The ZIP root cannot be moved");
+            }
+            ZipArkivoEntryAttributes sourceAttributes = readZipAttributesLocked(source, sourceName);
+            if (sourceName.equals(targetName)) {
+                return;
+            }
+            boolean sourceDirectory = sourceAttributes.isDirectory();
+            if (sourceDirectory && targetName.startsWith(sourceName + "/")) {
+                throw new FileSystemException(
+                        source.toString(),
+                        target.toString(),
+                        "A directory cannot be moved below itself"
+                );
+            }
+            requireMoveParentDirectory(target, targetName);
+
+            @Nullable ZipArkivoEntryAttributes targetAttributes = null;
+            try {
+                targetAttributes = readZipAttributesLocked(target, targetName);
+            } catch (NoSuchFileException ignored) {
+            }
+            if (targetAttributes != null) {
+                if (!replaceExisting) {
+                    throw new FileAlreadyExistsException(target.toString());
+                }
+                if (sourceDirectory != targetAttributes.isDirectory()) {
+                    throw new FileSystemException(
+                            source.toString(),
+                            target.toString(),
+                            "Source and target entry types differ"
+                    );
+                }
+                if (targetAttributes.isDirectory() && directoryHasVisibleChildren(targetName)) {
+                    throw new DirectoryNotEmptyException(target.toString());
+                }
+            }
+
+            LinkedHashMap<String, String> movedPaths = movedEntryPaths(sourceName, targetName);
+            if (movedPaths.isEmpty()) {
+                throw new NoSuchFileException(source.toString());
+            }
+            for (String movedPath : movedPaths.values()) {
+                if (movedPaths.containsKey(movedPath)) {
+                    continue;
+                }
+                if (visibleEntry(movedPath)
+                        && !(replaceExisting && movedPath.equals(targetName))) {
+                    throw new FileAlreadyExistsException(movedPath);
+                }
+            }
+
+            ArrayList<ExistingEntry> rebuiltExistingEntries = new ArrayList<>(
+                    existingCentralDirectoryEntries.size()
+            );
+            for (ExistingEntry entry : existingCentralDirectoryEntries) {
+                String oldName = entry.entryName();
+                if (oldName.equals(targetName) && !movedPaths.containsKey(oldName)) {
+                    continue;
+                }
+                @Nullable String newName = movedPaths.get(oldName);
+                rebuiltExistingEntries.add(newName != null ? entry.renamed(newName) : entry);
+            }
+
+            ArrayList<CentralEntry> rebuiltCentralEntries = new ArrayList<>(centralEntries.size());
+            for (CentralEntry entry : centralEntries) {
+                String oldName = entryNameKey(entry.entryName);
+                if (oldName.equals(targetName) && !movedPaths.containsKey(oldName)) {
+                    continue;
+                }
+                @Nullable String newName = movedPaths.get(oldName);
+                rebuiltCentralEntries.add(newName != null ? entry.renamed(newName) : entry);
+            }
+
+            if (targetAttributes != null && !movedPaths.containsKey(targetName)) {
+                removeWrittenEntry(targetName);
+            }
+            existingCentralDirectoryEntries.clear();
+            existingCentralDirectoryEntries.addAll(rebuiltExistingEntries);
+            centralEntries.clear();
+            centralEntries.addAll(rebuiltCentralEntries);
+            remapWrittenEntries(movedPaths);
+            remapEntryMap(stagedEntryContents, movedPaths);
+            remapEntryMap(writtenSymbolicLinkTargets, movedPaths);
+            existingEntryNames.clear();
+            for (ExistingEntry entry : existingCentralDirectoryEntries) {
+                existingEntryNames.add(entry.entryName());
+            }
+            for (String movedPath : movedPaths.values()) {
+                deletedEntries.remove(movedPath);
+                replacedEntries.remove(movedPath);
+            }
+        } finally {
+            unlock();
+        }
+    }
+
+    /// Requires the destination parent to identify a visible directory.
+    private void requireMoveParentDirectory(Path target, String targetName) throws IOException {
+        int separator = targetName.lastIndexOf('/');
+        if (separator < 0) {
+            return;
+        }
+        String parentName = targetName.substring(0, separator);
+        ZipArkivoEntryAttributes attributes = readZipAttributesLocked(
+                getPath("/" + parentName),
+                parentName
+        );
+        if (!attributes.isDirectory()) {
+            throw new FileSystemException(target.toString(), null, "ZIP move target parent is not a directory");
+        }
+    }
+
+    /// Returns the explicit visible entry names moved from one subtree to another.
+    private LinkedHashMap<String, String> movedEntryPaths(String sourceName, String targetName) {
+        LinkedHashMap<String, String> movedPaths = new LinkedHashMap<>();
+        String sourcePrefix = sourceName + "/";
+        for (ExistingEntry entry : existingCentralDirectoryEntries) {
+            String name = entry.entryName();
+            if (visibleExistingEntry(name) && (name.equals(sourceName) || name.startsWith(sourcePrefix))) {
+                movedPaths.put(name, targetName + name.substring(sourceName.length()));
+            }
+        }
+        for (CentralEntry entry : centralEntries) {
+            String name = entryNameKey(entry.entryName);
+            if (name.equals(sourceName) || name.startsWith(sourcePrefix)) {
+                movedPaths.put(name, targetName + name.substring(sourceName.length()));
+            }
+        }
+        return movedPaths;
+    }
+
+    /// Remaps names tracked by the written-entry membership set.
+    private void remapWrittenEntries(Map<String, String> movedPaths) {
+        HashSet<String> remapped = new HashSet<>(writtenEntries.size());
+        for (String entryName : writtenEntries) {
+            String key = entryNameKey(entryName);
+            @Nullable String movedName = movedPaths.get(key);
+            if (movedName == null) {
+                remapped.add(entryName);
+            } else {
+                remapped.add(entryName.endsWith("/") ? movedName + "/" : movedName);
+            }
+        }
+        writtenEntries.clear();
+        writtenEntries.addAll(remapped);
+    }
+
+    /// Remaps keys in one per-entry update map without changing its values.
+    private static <V> void remapEntryMap(Map<String, V> values, Map<String, String> movedPaths) {
+        HashMap<String, V> movedValues = new HashMap<>();
+        for (Map.Entry<String, String> movedPath : movedPaths.entrySet()) {
+            V value = values.remove(movedPath.getKey());
+            if (value != null) {
+                movedValues.put(movedPath.getValue(), value);
+            }
+        }
+        values.putAll(movedValues);
+    }
+
+    /// Sets entry timestamps in a complete-rewrite update session.
+    private void setTimes(
+            Path path,
+            @Nullable FileTime lastModifiedTime,
+            @Nullable FileTime lastAccessTime,
+            @Nullable FileTime createTime
+    ) throws IOException {
+        if (lastAccessTime != null || createTime != null) {
+            throw new UnsupportedOperationException(
+                    "ZIP update sessions can persist only the last-modified timestamp"
+            );
+        }
+        mutateEntryMetadata(
+                path,
+                entry -> {
+                    if (lastModifiedTime == null) {
+                        return entry;
+                    }
+                    requireTimestampUpdateSupported(
+                            EntryAttributes.existing(entry.attributesSnapshot(), config),
+                            entry.dosTime(),
+                            lastModifiedTime
+                    );
+                    return entry.withLastModifiedTime(lastModifiedTime);
+                },
+                entry -> {
+                    if (lastModifiedTime == null) {
+                        return entry;
+                    }
+                    requireTimestampUpdateSupported(
+                            EntryAttributes.written(entry, config),
+                            entry.dosTime,
+                            lastModifiedTime
+                    );
+                    return entry.withLastModifiedTime(lastModifiedTime);
+                }
+        );
+    }
+
+    /// Rejects timestamp changes coupled to a traditional encryption verification byte.
+    private static void requireTimestampUpdateSupported(
+            ZipArkivoEntryAttributes attributes,
+            int currentDosTime,
+            FileTime lastModifiedTime
+    ) {
+        int updatedDosTime = dosTime(lastModifiedTime);
+        if (attributes.encryption().equals(ZipEncryption.traditional())
+                && (attributes.generalPurposeFlags() & DATA_DESCRIPTOR_FLAG) != 0
+                && (currentDosTime >>> 8) != (updatedDosTime >>> 8)) {
+            throw new UnsupportedOperationException(
+                    "Changing this traditional ZIP entry timestamp requires rewriting its encrypted body"
+            );
+        }
+    }
+
+    /// Sets synthesized POSIX permissions in a complete-rewrite update session.
+    private void setPermissions(Path path, Set<PosixFilePermission> permissions) throws IOException {
+        Set<PosixFilePermission> copiedPermissions = Set.copyOf(
+                Objects.requireNonNull(permissions, "permissions")
+        );
+        mutateEntryMetadata(
+                path,
+                entry -> {
+                    EntryAttributes attributes = EntryAttributes.existing(entry.attributesSnapshot(), config);
+                    return entry.withExternalAttributes(
+                            ZipPosixSupport.UNIX_VERSION_MADE_BY,
+                            externalAttributes(copiedPermissions, attributes)
+                    );
+                },
+                entry -> {
+                    EntryAttributes attributes = EntryAttributes.written(entry, config);
+                    return entry.withExternalAttributes(
+                            ZipPosixSupport.UNIX_VERSION_MADE_BY,
+                            externalAttributes(copiedPermissions, attributes)
+                    );
+                }
+        );
+    }
+
+    /// Returns ZIP external file attributes for permissions without changing the entry type.
+    private static long externalAttributes(
+            Set<PosixFilePermission> permissions,
+            ZipArkivoEntryAttributes attributes
+    ) {
+        if (attributes.isSymbolicLink()) {
+            return ZipPosixSupport.symbolicLinkExternalAttributes(permissions);
+        }
+        return ZipPosixSupport.externalAttributes(permissions, attributes.isDirectory());
+    }
+
+    /// Validates a synthesized owner assignment and the target entry.
+    private void setOwner(Path path, UserPrincipal owner) throws IOException {
+        ZipPosixSupport.requireDefaultOwner(Objects.requireNonNull(owner, "owner"));
+        mutateEntryMetadata(path, entry -> entry, entry -> entry);
+    }
+
+    /// Validates a synthesized group assignment and the target entry.
+    private void setGroup(Path path, GroupPrincipal group) throws IOException {
+        ZipPosixSupport.requireDefaultGroup(Objects.requireNonNull(group, "group"));
+        mutateEntryMetadata(path, entry -> entry, entry -> entry);
+    }
+
+    /// Sets ZIP internal file attributes in a complete-rewrite update session.
+    private void setInternalAttributes(Path path, int internalAttributes) throws IOException {
+        requireUInt16(internalAttributes, "internal attributes");
+        mutateEntryMetadata(
+                path,
+                entry -> entry.withInternalAttributes(internalAttributes),
+                entry -> entry.withInternalAttributes(internalAttributes)
+        );
+    }
+
+    /// Sets ZIP external file attributes in a complete-rewrite update session.
+    private void setExternalAttributes(Path path, long externalAttributes) throws IOException {
+        requireUInt32(externalAttributes, "external attributes");
+        mutateEntryMetadata(
+                path,
+                entry -> entry.withExternalAttributes(entry.versionMadeBy(), externalAttributes),
+                entry -> entry.withExternalAttributes(entry.versionMadeBy, externalAttributes)
+        );
+    }
+
+    /// Sets raw ZIP entry comment bytes in a complete-rewrite update session.
+    private void setRawComment(Path path, byte @Nullable [] rawComment) throws IOException {
+        byte @Nullable [] copiedComment = rawComment != null ? rawComment.clone() : null;
+        if (copiedComment != null) {
+            requireUInt16(copiedComment.length, "comment length");
+        }
+        mutateEntryMetadata(
+                path,
+                entry -> entry.withRawComment(copiedComment),
+                entry -> entry.withRawComment(copiedComment)
+        );
+    }
+
+    /// Sets one named persistent ZIP entry attribute.
+    public void setAttribute(Path path, String attribute, Object value) throws IOException {
+        Objects.requireNonNull(attribute, "attribute");
+        int separator = attribute.indexOf(':');
+        String view = separator >= 0 ? attribute.substring(0, separator) : "basic";
+        String name = separator >= 0 ? attribute.substring(separator + 1) : attribute;
+        switch (view + ":" + name) {
+            case "basic:lastModifiedTime", "posix:lastModifiedTime", "zip:lastModifiedTime" ->
+                    setTimes(path, (FileTime) value, null, null);
+            case "owner:owner", "posix:owner" -> setOwner(path, (UserPrincipal) value);
+            case "posix:group" -> setGroup(path, (GroupPrincipal) value);
+            case "posix:permissions", "zip:permissions" -> {
+                @SuppressWarnings("unchecked")
+                Set<PosixFilePermission> permissions = (Set<PosixFilePermission>) value;
+                setPermissions(path, permissions);
+            }
+            case "zip:internalAttributes" -> setInternalAttributes(path, (Integer) value);
+            case "zip:externalAttributes" -> setExternalAttributes(path, (Long) value);
+            case "zip:rawComment" -> setRawComment(path, (byte[]) value);
+            default -> throw new UnsupportedOperationException("Unsupported writable ZIP attribute: " + attribute);
+        }
+    }
+
+    /// Replaces metadata for one explicit entry after all validation has succeeded.
+    private void mutateEntryMetadata(
+            Path path,
+            ExistingEntryMutation existingMutation,
+            CentralEntryMutation writtenMutation
+    ) throws IOException {
+        try (Operation ignored = beginWriteOperation()) {
+            lock();
+            try {
+                checkOpen();
+                requireNoActiveEntry();
+                if (rewriteSnapshot == null) {
+                    throw new UnsupportedOperationException(
+                            "ZIP entry metadata updates require complete-rewrite update mode"
+                    );
+                }
+                String entryName = entryName(path);
+                for (int index = 0; index < centralEntries.size(); index++) {
+                    CentralEntry entry = centralEntries.get(index);
+                    if (entryNameKey(entry.entryName).equals(entryName)) {
+                        centralEntries.set(index, writtenMutation.apply(entry));
+                        return;
+                    }
+                }
+                if (visibleExistingEntry(entryName)) {
+                    for (int index = 0; index < existingCentralDirectoryEntries.size(); index++) {
+                        ExistingEntry entry = existingCentralDirectoryEntries.get(index);
+                        if (entry.entryName().equals(entryName)) {
+                            existingCentralDirectoryEntries.set(index, existingMutation.apply(entry));
+                            return;
+                        }
+                    }
+                }
+                if (visibleDirectory(entryName)) {
+                    throw new UnsupportedOperationException(
+                            "Synthetic ZIP directories do not have persistent entry metadata"
+                    );
+                }
+                throw new NoSuchFileException(path.toString());
+            } finally {
+                unlock();
+            }
+        }
+    }
+
+    /// Changes metadata for one existing source entry.
+    @FunctionalInterface
+    private interface ExistingEntryMutation {
+        /// Returns the replacement existing-entry state.
+        ExistingEntry apply(ExistingEntry entry) throws IOException;
+    }
+
+    /// Changes metadata for one entry written in the current update session.
+    @FunctionalInterface
+    private interface CentralEntryMutation {
+        /// Returns the replacement written-entry state.
+        CentralEntry apply(CentralEntry entry) throws IOException;
+    }
+
     /// Returns the number of bytes stored before an archive being updated.
     @Override
     public long preambleSize() throws IOException {
@@ -2077,10 +2856,18 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
     }
 
-    /// Requires no entry output stream to be active.
-    private void requireNoActiveEntry() throws IOException {
+    /// Requires no forward-only entry output stream to be active.
+    private void requireNoActiveOutput() throws IOException {
         if (currentEntryOutput != null) {
             throw new IOException("A ZIP entry output stream is already open");
+        }
+    }
+
+    /// Requires no entry body writer to be active.
+    private void requireNoActiveEntry() throws IOException {
+        requireNoActiveOutput();
+        if (activeUpdateChannel != null) {
+            throw new IOException("A ZIP entry update channel is already open");
         }
     }
 
@@ -2224,14 +3011,15 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     ) {
         Objects.requireNonNull(metadata, "metadata");
         @Nullable Set<PosixFilePermission> permissions = initialPosixPermissions(attributes);
+        @Nullable FileTime lastModifiedTime = initialLastModifiedTime(attributes);
 
-        if (permissions == null) {
-            return metadata;
+        if (permissions != null) {
+            metadata = metadata.withExternalAttributes(
+                    ZipPosixSupport.UNIX_VERSION_MADE_BY,
+                    ZipPosixSupport.externalAttributes(permissions, directory)
+            );
         }
-        return metadata.withExternalAttributes(
-                ZipPosixSupport.UNIX_VERSION_MADE_BY,
-                ZipPosixSupport.externalAttributes(permissions, directory)
-        );
+        return lastModifiedTime != null ? metadata.withLastModifiedTime(lastModifiedTime) : metadata;
     }
 
     /// Applies supported initial symbolic link attributes to entry metadata.
@@ -2241,14 +3029,15 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     ) {
         Objects.requireNonNull(metadata, "metadata");
         @Nullable Set<PosixFilePermission> permissions = initialPosixPermissions(attributes);
+        @Nullable FileTime lastModifiedTime = initialLastModifiedTime(attributes);
 
-        if (permissions == null) {
-            return metadata;
+        if (permissions != null) {
+            metadata = metadata.withExternalAttributes(
+                    ZipPosixSupport.UNIX_VERSION_MADE_BY,
+                    ZipPosixSupport.symbolicLinkExternalAttributes(permissions)
+            );
         }
-        return metadata.withExternalAttributes(
-                ZipPosixSupport.UNIX_VERSION_MADE_BY,
-                ZipPosixSupport.symbolicLinkExternalAttributes(permissions)
-        );
+        return lastModifiedTime != null ? metadata.withLastModifiedTime(lastModifiedTime) : metadata;
     }
 
     /// Returns initial POSIX permissions stored by supported file attributes.
@@ -2260,11 +3049,27 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             String name = attribute.name();
             if ("posix:permissions".equals(name)) {
                 permissions = posixPermissions(attribute);
-            } else {
+            } else if (!"basic:lastModifiedTime".equals(name)) {
                 throw new UnsupportedOperationException("Unsupported ZIP streaming file attribute: " + name);
             }
         }
         return permissions;
+    }
+
+    /// Returns the requested initial last-modified time, or `null` when none was supplied.
+    private static @Nullable FileTime initialLastModifiedTime(FileAttribute<?>... attributes) {
+        @Nullable FileTime lastModifiedTime = null;
+        for (FileAttribute<?> attribute : attributes) {
+            Objects.requireNonNull(attribute, "attribute");
+            if ("basic:lastModifiedTime".equals(attribute.name())) {
+                Object value = attribute.value();
+                if (!(value instanceof FileTime fileTime)) {
+                    throw new IllegalArgumentException("basic:lastModifiedTime must be a FileTime");
+                }
+                lastModifiedTime = fileTime;
+            }
+        }
+        return lastModifiedTime;
     }
 
     /// Returns POSIX permissions stored by a file attribute.
@@ -2456,13 +3261,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Appends existing central directory records that remain visible after replacements.
     private void appendExistingCentralDirectoryEntries(List<byte[]> records) throws IOException {
-        for (ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot entry : existingCentralDirectoryEntries) {
+        for (ExistingEntry entry : existingCentralDirectoryEntries) {
             if (!replacedEntries.contains(entry.entryName()) && !deletedEntries.contains(entry.entryName())) {
                 RelocatedLocalHeader relocatedHeader = relocatedExistingEntryOffsets.get(entry.entryName());
                 if (relocatedHeader == null) {
                     throw new IOException("ZIP existing entry was not relocated: " + entry.entryName());
                 }
-                records.add(relocateCentralDirectoryEntry(entry.bytes(), relocatedHeader));
+                records.add(relocateCentralDirectoryEntry(entry.centralDirectoryBytes(), relocatedHeader));
             }
         }
     }
@@ -2583,6 +3388,80 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         result.putShort(34, (short) (zip64DiskNumber ? UINT16_MAX : localHeaderDiskNumber));
         result.putInt(42, (int) (zip64LocalHeaderOffset ? UINT32_MAX : localHeaderOffset));
         return relocated;
+    }
+
+    /// Replaces the encoded name in one central directory entry with an authoritative UTF-8 name.
+    private static byte[] renameCentralDirectoryEntry(byte[] rawEntry, byte[] rawName) throws IOException {
+        Objects.requireNonNull(rawEntry, "rawEntry");
+        Objects.requireNonNull(rawName, "rawName");
+        requireUInt16(rawName.length, "entry name length");
+        if (rawEntry.length < ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE) {
+            throw new IOException("Invalid ZIP central directory header");
+        }
+
+        ByteBuffer source = ByteBuffer.wrap(rawEntry).order(ByteOrder.LITTLE_ENDIAN);
+        if (source.getInt(0) != CENTRAL_DIRECTORY_HEADER_SIGNATURE) {
+            throw new IOException("Invalid ZIP central directory header");
+        }
+        int oldNameLength = Short.toUnsignedInt(source.getShort(28));
+        int oldExtraLength = Short.toUnsignedInt(source.getShort(30));
+        int commentLength = Short.toUnsignedInt(source.getShort(32));
+        int oldExtraOffset = ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE + oldNameLength;
+        int oldCommentOffset = oldExtraOffset + oldExtraLength;
+        if (oldCommentOffset + commentLength != rawEntry.length) {
+            throw new IOException("Invalid ZIP central directory variable data length");
+        }
+
+        byte[] extraData = removeUnicodePathExtraField(
+                Arrays.copyOfRange(rawEntry, oldExtraOffset, oldCommentOffset)
+        );
+        requireUInt16(extraData.length, "central directory extra data length");
+        byte[] renamed = new byte[
+                ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE + rawName.length + extraData.length + commentLength
+        ];
+        System.arraycopy(rawEntry, 0, renamed, 0, ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE);
+        int extraOffset = ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE + rawName.length;
+        int commentOffset = extraOffset + extraData.length;
+        System.arraycopy(rawName, 0, renamed, ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE, rawName.length);
+        System.arraycopy(extraData, 0, renamed, extraOffset, extraData.length);
+        System.arraycopy(rawEntry, oldCommentOffset, renamed, commentOffset, commentLength);
+
+        ByteBuffer result = ByteBuffer.wrap(renamed).order(ByteOrder.LITTLE_ENDIAN);
+        result.putShort(8, (short) (Short.toUnsignedInt(result.getShort(8)) | UTF8_FLAG));
+        result.putShort(28, (short) rawName.length);
+        result.putShort(30, (short) extraData.length);
+        return renamed;
+    }
+
+    /// Removes every extra field with one identifier while preserving all other records byte-for-byte.
+    private static byte[] removeUnicodePathExtraField(byte[] extraData) throws IOException {
+        ZipExtraFields.validate(extraData);
+        int retainedSize = 0;
+        int offset = 0;
+        while (offset < extraData.length) {
+            ZipExtraFields.Field field = ZipExtraFields.read(extraData, offset);
+            if (field.id() != ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID) {
+                retainedSize += field.nextOffset() - offset;
+            }
+            offset = field.nextOffset();
+        }
+        if (retainedSize == extraData.length) {
+            return extraData;
+        }
+
+        byte[] retained = new byte[retainedSize];
+        int targetOffset = 0;
+        offset = 0;
+        while (offset < extraData.length) {
+            ZipExtraFields.Field field = ZipExtraFields.read(extraData, offset);
+            int fieldSize = field.nextOffset() - offset;
+            if (field.id() != ZipEntryNameDecoder.UNICODE_PATH_EXTRA_FIELD_ID) {
+                System.arraycopy(extraData, offset, retained, targetOffset, fieldSize);
+                targetOffset += fieldSize;
+            }
+            offset = field.nextOffset();
+        }
+        return retained;
     }
 
     /// Writes a ZIP64 end record and returns its physical location.
@@ -2859,8 +3738,6 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         /// The CRC-32 of uncompressed entry data.
         private final CRC32 crc32 = new CRC32();
 
-        /// The raw deflater used for ZIP deflated data.
-        private final @Nullable Deflater deflater;
 
         /// The stream that receives uncompressed bytes from the caller.
         private final OutputStream entryOutput;
@@ -2922,30 +3799,23 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             this.aesOutput = entryAesOutput;
             CompressionEncoder entryCompressionEncoder = null;
             if (metadata.method == DEFLATED_METHOD) {
-                Deflater entryDeflater = new Deflater(Deflater.DEFAULT_COMPRESSION, true);
-                this.deflater = entryDeflater;
-                this.entryOutput = new DeflaterOutputStream(dataOutput, entryDeflater);
+                entryCompressionEncoder = ZipCompressionCodecs.openEncoder("deflate", dataOutput);
+                this.entryOutput = StreamChannelAdapters.outputStream(entryCompressionEncoder);
             } else if (metadata.method == DEFLATE64_METHOD) {
-                this.deflater = null;
                 entryCompressionEncoder = ZipCompressionCodecs.openEncoder("deflate64", dataOutput);
                 this.entryOutput = StreamChannelAdapters.outputStream(entryCompressionEncoder);
             } else if (metadata.method == BZIP2_METHOD) {
-                this.deflater = null;
                 entryCompressionEncoder = ZipCompressionCodecs.openEncoder("bzip2", dataOutput);
                 this.entryOutput = StreamChannelAdapters.outputStream(entryCompressionEncoder);
             } else if (isZstandardMethod(metadata.method)) {
-                this.deflater = null;
                 entryCompressionEncoder = ZipCompressionCodecs.openEncoder("zstd", dataOutput);
                 this.entryOutput = StreamChannelAdapters.outputStream(entryCompressionEncoder);
             } else if (metadata.method == LZMA_METHOD) {
-                this.deflater = null;
                 this.entryOutput = new ZipLZMAOutputStream(dataOutput);
             } else if (metadata.method == XZ_METHOD) {
-                this.deflater = null;
                 entryCompressionEncoder = ZipCompressionCodecs.openEncoder("xz", dataOutput);
                 this.entryOutput = StreamChannelAdapters.outputStream(entryCompressionEncoder);
             } else {
-                this.deflater = null;
                 this.entryOutput = dataOutput;
             }
             this.compressionEncoder = entryCompressionEncoder;
@@ -3006,8 +3876,6 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     CompressionEncoder entryCompressionEncoder = compressionEncoder;
                     if (entryCompressionEncoder != null) {
                         entryCompressionEncoder.finish();
-                    } else if (entryOutput instanceof DeflaterOutputStream deflatedOutput) {
-                        deflatedOutput.finish();
                     } else if (entryOutput instanceof ZipLZMAOutputStream lzmaOutput) {
                         lzmaOutput.finish();
                     }
@@ -3053,10 +3921,6 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     abortSplitOutput(output);
                     throw exception;
                 } finally {
-                    Deflater entryDeflater = deflater;
-                    if (entryDeflater != null) {
-                        entryDeflater.end();
-                    }
                     currentEntryOutput = null;
                 }
             } finally {
@@ -3072,112 +3936,6 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             checkOpen();
         }
     }
-
-    /// Adapts an entry output stream to a forward-only seekable byte channel.
-    @NotNullByDefault
-    private static final class EntryWritableByteChannel implements SeekableByteChannel {
-        /// The wrapped entry output stream.
-        private final OutputStream output;
-
-        /// The current forward-only position.
-        private long position;
-
-        /// Whether this channel is open.
-        private boolean open = true;
-
-        /// Creates a writable byte channel.
-        private EntryWritableByteChannel(OutputStream output) {
-            this.output = Objects.requireNonNull(output, "output");
-        }
-
-        /// Reads are never supported by ZIP output entry channels.
-        @Override
-        public int read(ByteBuffer destination) throws IOException {
-            Objects.requireNonNull(destination, "destination");
-            ensureOpen();
-            throw new NonReadableChannelException();
-        }
-
-        /// Writes bytes at the current forward-only position.
-        @Override
-        public int write(ByteBuffer source) throws IOException {
-            Objects.requireNonNull(source, "source");
-            ensureOpen();
-            int length = source.remaining();
-            if (source.hasArray()) {
-                int offset = source.arrayOffset() + source.position();
-                output.write(source.array(), offset, length);
-                source.position(source.limit());
-            } else {
-                byte[] buffer = new byte[Math.min(length, 8192)];
-                while (source.hasRemaining()) {
-                    int count = Math.min(source.remaining(), buffer.length);
-                    source.get(buffer, 0, count);
-                    output.write(buffer, 0, count);
-                }
-            }
-            position += length;
-            return length;
-        }
-
-        /// Returns the current forward-only position.
-        @Override
-        public long position() throws IOException {
-            ensureOpen();
-            return position;
-        }
-
-        /// Accepts only the current position because ZIP output entry channels are forward-only.
-        @Override
-        public SeekableByteChannel position(long newPosition) throws IOException {
-            ensureOpen();
-            if (newPosition != position) {
-                throw new UnsupportedOperationException("ZIP output entry channels are forward-only");
-            }
-            return this;
-        }
-
-        /// Returns the number of bytes written so far.
-        @Override
-        public long size() throws IOException {
-            ensureOpen();
-            return position;
-        }
-
-        /// Truncation is not supported by ZIP output entry channels.
-        @Override
-        public SeekableByteChannel truncate(long size) throws IOException {
-            ensureOpen();
-            if (size != position) {
-                throw new UnsupportedOperationException("ZIP output entry channels cannot be truncated");
-            }
-            return this;
-        }
-
-        /// Returns whether this channel is open.
-        @Override
-        public boolean isOpen() {
-            return open;
-        }
-
-        /// Closes the wrapped entry output stream.
-        @Override
-        public void close() throws IOException {
-            if (!open) {
-                return;
-            }
-            open = false;
-            output.close();
-        }
-
-        /// Requires this channel to be open.
-        private void ensureOpen() throws IOException {
-            if (!open) {
-                throw new ClosedChannelException();
-            }
-        }
-    }
-
     /// Counts bytes written to an output stream.
     @NotNullByDefault
     private static class CountingOutputStream extends OutputStream {
@@ -3631,17 +4389,25 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// Writes a ZIP LZMA segment backed by a raw LZMA encoder.
     private static final class ZipLZMAOutputStream extends OutputStream {
         /// The raw LZMA output stream.
-        private final LZMAOutputStream output;
+        private final OutputStream output;
 
         /// Creates a ZIP LZMA output stream and writes the ZIP LZMA property header.
         private ZipLZMAOutputStream(OutputStream output) throws IOException {
-            LZMAProperties properties = LZMAProperties.defaults(LZMA_DICTIONARY_SIZE);
-            LZMAOutputStream lzmaOutput = new LZMAOutputStream(
-                    new NonClosingOutputStream(output),
-                    properties,
-                    true
+            OutputStream lzmaOutput = ZipCompressionCodecs.openRawLZMAEncoder(
+                    LZMA_DICTIONARY_SIZE,
+                    true,
+                    new NonClosingOutputStream(output)
             );
-            writeLzmaPropertyHeader(output, properties.propertyByte(), properties.dictionarySize());
+            try {
+                writeLzmaPropertyHeader(output, 0x5d, LZMA_DICTIONARY_SIZE);
+            } catch (IOException | RuntimeException | Error exception) {
+                try {
+                    lzmaOutput.close();
+                } catch (IOException | RuntimeException | Error closeException) {
+                    exception.addSuppressed(closeException);
+                }
+                throw exception;
+            }
             this.output = lzmaOutput;
         }
 
@@ -4127,10 +4893,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         private final StreamingZipArkivoFileSystemImpl fileSystem;
 
         /// The path whose attributes are exposed.
-        private final Path path;
+        private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates a synthesized POSIX attribute view.
-        private PosixEntryAttributeView(StreamingZipArkivoFileSystemImpl fileSystem, Path path) {
+        private PosixEntryAttributeView(
+                StreamingZipArkivoFileSystemImpl fileSystem,
+                ArkivoFileSystemProviderSupport.AttributeViewPath path
+        ) {
             this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
             this.path = Objects.requireNonNull(path, "path");
         }
@@ -4144,13 +4913,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         /// Reads synthesized POSIX attributes.
         @Override
         public PosixFileAttributes readAttributes() throws IOException {
-            return fileSystem.readZipAttributes(path);
+            return fileSystem.readZipAttributes(path.resolve());
         }
 
         /// Returns the synthesized owner.
         @Override
         public UserPrincipal getOwner() throws IOException {
-            return fileSystem.readZipAttributes(path).owner();
+            return fileSystem.readZipAttributes(path.resolve()).owner();
         }
 
         /// Sets entry timestamps.
@@ -4159,29 +4928,26 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 @Nullable FileTime lastModifiedTime,
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
-        ) {
-            throw new ReadOnlyFileSystemException();
+        ) throws IOException {
+            fileSystem.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
         }
 
         /// Sets the file owner.
         @Override
-        public void setOwner(UserPrincipal owner) {
-            Objects.requireNonNull(owner, "owner");
-            throw new ReadOnlyFileSystemException();
+        public void setOwner(UserPrincipal owner) throws IOException {
+            fileSystem.setOwner(path.resolve(), owner);
         }
 
         /// Sets the file group.
         @Override
-        public void setGroup(GroupPrincipal group) {
-            Objects.requireNonNull(group, "group");
-            throw new ReadOnlyFileSystemException();
+        public void setGroup(GroupPrincipal group) throws IOException {
+            fileSystem.setGroup(path.resolve(), group);
         }
 
         /// Sets POSIX permissions.
         @Override
-        public void setPermissions(Set<PosixFilePermission> permissions) {
-            Objects.requireNonNull(permissions, "permissions");
-            throw new ReadOnlyFileSystemException();
+        public void setPermissions(Set<PosixFilePermission> permissions) throws IOException {
+            fileSystem.setPermissions(path.resolve(), permissions);
         }
     }
 
@@ -4192,10 +4958,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         private final StreamingZipArkivoFileSystemImpl fileSystem;
 
         /// The path whose owner is exposed.
-        private final Path path;
+        private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates a synthesized owner attribute view.
-        private OwnerEntryAttributeView(StreamingZipArkivoFileSystemImpl fileSystem, Path path) {
+        private OwnerEntryAttributeView(
+                StreamingZipArkivoFileSystemImpl fileSystem,
+                ArkivoFileSystemProviderSupport.AttributeViewPath path
+        ) {
             this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
             this.path = Objects.requireNonNull(path, "path");
         }
@@ -4209,14 +4978,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         /// Returns the synthesized owner.
         @Override
         public UserPrincipal getOwner() throws IOException {
-            return fileSystem.readZipAttributes(path).owner();
+            return fileSystem.readZipAttributes(path.resolve()).owner();
         }
 
         /// Sets the file owner.
         @Override
-        public void setOwner(UserPrincipal owner) {
-            Objects.requireNonNull(owner, "owner");
-            throw new ReadOnlyFileSystemException();
+        public void setOwner(UserPrincipal owner) throws IOException {
+            fileSystem.setOwner(path.resolve(), owner);
         }
     }
 
@@ -4227,10 +4995,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         private final StreamingZipArkivoFileSystemImpl fileSystem;
 
         /// The path whose attributes are exposed.
-        private final Path path;
+        private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates an entry attribute view.
-        private EntryAttributeView(StreamingZipArkivoFileSystemImpl fileSystem, Path path) {
+        private EntryAttributeView(
+                StreamingZipArkivoFileSystemImpl fileSystem,
+                ArkivoFileSystemProviderSupport.AttributeViewPath path
+        ) {
             this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
             this.path = Objects.requireNonNull(path, "path");
         }
@@ -4238,7 +5009,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         /// Reads the ZIP-specific entry attributes.
         @Override
         public ZipArkivoEntryAttributes readAttributes() throws IOException {
-            return fileSystem.readZipAttributes(path);
+            return fileSystem.readZipAttributes(path.resolve());
         }
 
         /// Sets entry timestamps.
@@ -4247,104 +5018,76 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 @Nullable FileTime lastModifiedTime,
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
-        ) {
-            throw new ReadOnlyFileSystemException();
+        ) throws IOException {
+            fileSystem.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
         }
 
         /// Sets POSIX permissions.
         @Override
-        public void setPermissions(Set<PosixFilePermission> permissions) {
-            Objects.requireNonNull(permissions, "permissions");
-            throw new ReadOnlyFileSystemException();
+        public void setPermissions(Set<PosixFilePermission> permissions) throws IOException {
+            fileSystem.setPermissions(path.resolve(), permissions);
         }
 
         /// Sets the ZIP compression method requested for the entry.
         @Override
         public void setMethod(ZipMethod method) {
             Objects.requireNonNull(method, "method");
-            throw new ReadOnlyFileSystemException();
+            throw new UnsupportedOperationException(
+                    "Changing a completed ZIP entry method requires recompressing its body"
+            );
         }
 
         /// Sets the ZIP encryption method requested for the entry.
         @Override
         public void setEncryption(ZipEncryption encryption) {
             Objects.requireNonNull(encryption, "encryption");
-            throw new ReadOnlyFileSystemException();
+            throw new UnsupportedOperationException(
+                    "Changing completed ZIP entry encryption requires rewriting its body"
+            );
         }
 
         /// Sets the expected uncompressed size and CRC-32 value for entries that require them before writing.
         @Override
         public void setUncompressedSizeAndCrc32(long uncompressedSize, long crc32) {
-            throw new ReadOnlyFileSystemException();
+            throw new UnsupportedOperationException(
+                    "Completed ZIP entry sizes and checksums are derived from the encoded body"
+            );
         }
 
         /// Sets the ZIP internal file attributes.
         @Override
-        public void setInternalAttributes(int internalAttributes) {
-            throw new ReadOnlyFileSystemException();
+        public void setInternalAttributes(int internalAttributes) throws IOException {
+            fileSystem.setInternalAttributes(path.resolve(), internalAttributes);
         }
 
         /// Sets the ZIP external file attributes.
         @Override
-        public void setExternalAttributes(long externalAttributes) {
-            throw new ReadOnlyFileSystemException();
+        public void setExternalAttributes(long externalAttributes) throws IOException {
+            fileSystem.setExternalAttributes(path.resolve(), externalAttributes);
         }
 
         /// Sets raw local file header extra data bytes.
         @Override
         public void setLocalExtraData(byte[] extraData) {
             Objects.requireNonNull(extraData, "extraData");
-            throw new ReadOnlyFileSystemException();
+            throw new UnsupportedOperationException(
+                    "Changing completed ZIP local extra data can invalidate encoded entry metadata"
+            );
         }
 
         /// Sets raw central directory extra data bytes.
         @Override
         public void setCentralDirectoryExtraData(byte[] extraData) {
             Objects.requireNonNull(extraData, "extraData");
-            throw new ReadOnlyFileSystemException();
+            throw new UnsupportedOperationException(
+                    "Changing completed ZIP central extra data can invalidate generated ZIP metadata"
+            );
         }
 
         /// Sets the raw ZIP entry comment bytes.
         @Override
-        public void setRawComment(byte @Nullable [] rawComment) {
-            throw new ReadOnlyFileSystemException();
-        }
-    }
-
-    /// Implements an immutable directory stream backed by a path list.
-    @NotNullByDefault
-    private static final class ListDirectoryStream implements DirectoryStream<Path> {
-        /// The directory entries.
-        private final List<Path> paths;
-
-        /// Whether this directory stream is open.
-        private boolean open = true;
-
-        /// Whether the iterator has already been returned.
-        private boolean iteratorReturned;
-
-        /// Creates a directory stream backed by a path list.
-        private ListDirectoryStream(List<Path> paths) {
-            this.paths = List.copyOf(Objects.requireNonNull(paths, "paths"));
-        }
-
-        /// Returns an iterator over directory entries.
-        @Override
-        public java.util.Iterator<Path> iterator() {
-            if (!open) {
-                throw new IllegalStateException("Directory stream is closed");
-            }
-            if (iteratorReturned) {
-                throw new IllegalStateException("Directory stream iterator has already been returned");
-            }
-            iteratorReturned = true;
-            return paths.iterator();
-        }
-
-        /// Closes this directory stream.
-        @Override
-        public void close() {
-            open = false;
+        public void setRawComment(byte @Nullable [] rawComment) throws IOException {
+            fileSystem.setRawComment(path.resolve(), rawComment);
         }
     }
 
@@ -4462,6 +5205,25 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     encryption,
                     dosTime,
                     dosDate,
+                    versionMadeBy,
+                    internalAttributes,
+                    externalAttributes,
+                    expectedUncompressedSize,
+                    expectedCrc32,
+                    localExtraData,
+                    centralDirectoryExtraData,
+                    rawComment
+            );
+        }
+
+        /// Returns a copy with the DOS last-modified timestamp replaced.
+        private EntryMetadata withLastModifiedTime(FileTime lastModifiedTime) {
+            Objects.requireNonNull(lastModifiedTime, "lastModifiedTime");
+            return new EntryMetadata(
+                    method,
+                    encryption,
+                    dosTime(lastModifiedTime),
+                    dosDate(lastModifiedTime),
                     versionMadeBy,
                     internalAttributes,
                     externalAttributes,
@@ -4721,6 +5483,209 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
     }
 
+    /// Stores either an unchanged local record header size or replacement header bytes.
+    ///
+    /// @param fixedHeader the replacement fixed header, or an empty array for an unchanged record
+    /// @param rawName the replacement encoded name, or an empty array for an unchanged record
+    /// @param localExtraData the replacement local extra data, or an empty array for an unchanged record
+    /// @param finalHeaderSize the final local header size
+    private record LocalRecordRewrite(
+            byte @Unmodifiable [] fixedHeader,
+            byte @Unmodifiable [] rawName,
+            byte @Unmodifiable [] localExtraData,
+            long finalHeaderSize
+    ) {
+        /// Creates a validated local record rewrite.
+        private LocalRecordRewrite {
+            fixedHeader = Objects.requireNonNull(fixedHeader, "fixedHeader").clone();
+            rawName = Objects.requireNonNull(rawName, "rawName").clone();
+            localExtraData = Objects.requireNonNull(localExtraData, "localExtraData").clone();
+            if (finalHeaderSize < ZIP_LOCAL_FILE_HEADER_MIN_SIZE) {
+                throw new IllegalArgumentException("finalHeaderSize is too small");
+            }
+        }
+
+        /// Creates an unchanged local record description.
+        private static LocalRecordRewrite unchanged(long headerSize) {
+            return new LocalRecordRewrite(new byte[0], new byte[0], new byte[0], headerSize);
+        }
+
+        /// Creates a changed local record description.
+        private LocalRecordRewrite(byte[] fixedHeader, byte[] rawName, byte[] localExtraData) {
+            this(
+                    fixedHeader,
+                    rawName,
+                    localExtraData,
+                    ZIP_LOCAL_FILE_HEADER_MIN_SIZE + (long) rawName.length + localExtraData.length
+            );
+        }
+
+        /// Returns whether this record needs a replacement header.
+        private boolean changed() {
+            return fixedHeader.length != 0;
+        }
+
+        /// Returns a copy of the replacement fixed header.
+        @Override
+        public byte @Unmodifiable [] fixedHeader() {
+            return fixedHeader.clone();
+        }
+
+        /// Returns a copy of the replacement encoded name.
+        @Override
+        public byte @Unmodifiable [] rawName() {
+            return rawName.clone();
+        }
+
+        /// Returns a copy of the replacement local extra data.
+        @Override
+        public byte @Unmodifiable [] localExtraData() {
+            return localExtraData.clone();
+        }
+    }
+
+    /// Tracks one immutable source entry under its current update-session name.
+    ///
+    /// @param source the immutable central directory and local record source
+    /// @param entryName the current normalized entry name
+    /// @param rawName the current encoded central and local header name
+    /// @param centralDirectoryBytes the current central directory entry bytes
+    /// @param localTimestampChanged whether the local header timestamp differs from the source
+    private record ExistingEntry(
+            ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot source,
+            String entryName,
+            byte @Unmodifiable [] rawName,
+            byte @Unmodifiable [] centralDirectoryBytes,
+            boolean localTimestampChanged
+    ) {
+        /// Creates a validated existing entry state.
+        private ExistingEntry {
+            Objects.requireNonNull(source, "source");
+            Objects.requireNonNull(entryName, "entryName");
+            rawName = Objects.requireNonNull(rawName, "rawName").clone();
+            centralDirectoryBytes = Objects.requireNonNull(
+                    centralDirectoryBytes,
+                    "centralDirectoryBytes"
+            ).clone();
+        }
+
+        /// Creates an unchanged state from one source snapshot.
+        private static ExistingEntry original(
+                ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot source
+        ) {
+            byte[] centralDirectoryBytes = source.bytes();
+            int nameLength = readUnsignedShort(centralDirectoryBytes, 28);
+            byte[] rawName = Arrays.copyOfRange(
+                    centralDirectoryBytes,
+                    ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE,
+                    ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE + nameLength
+            );
+            return new ExistingEntry(source, source.entryName(), rawName, centralDirectoryBytes, false);
+        }
+
+        /// Returns a state with its current name replaced.
+        private ExistingEntry renamed(String newEntryName) throws IOException {
+            String storedName = directoryEntry() ? newEntryName + "/" : newEntryName;
+            byte[] renamedRawName = rawEntryName(storedName);
+            return new ExistingEntry(
+                    source,
+                    newEntryName,
+                    renamedRawName,
+                    renameCentralDirectoryEntry(centralDirectoryBytes, renamedRawName),
+                    localTimestampChanged
+            );
+        }
+
+        /// Returns a state with a new last-modified timestamp.
+        private ExistingEntry withLastModifiedTime(FileTime lastModifiedTime) {
+            byte[] updated = centralDirectoryBytes.clone();
+            ByteBuffer header = ByteBuffer.wrap(updated).order(ByteOrder.LITTLE_ENDIAN);
+            header.putShort(12, (short) StreamingZipArkivoFileSystemImpl.dosTime(lastModifiedTime));
+            header.putShort(14, (short) StreamingZipArkivoFileSystemImpl.dosDate(lastModifiedTime));
+            return new ExistingEntry(source, entryName, rawName, updated, true);
+        }
+
+        /// Returns a state with new ZIP internal file attributes.
+        private ExistingEntry withInternalAttributes(int internalAttributes) {
+            requireUInt16(internalAttributes, "internal attributes");
+            byte[] updated = centralDirectoryBytes.clone();
+            ByteBuffer.wrap(updated).order(ByteOrder.LITTLE_ENDIAN).putShort(36, (short) internalAttributes);
+            return new ExistingEntry(source, entryName, rawName, updated, localTimestampChanged);
+        }
+
+        /// Returns a state with new ZIP external file attributes and version-made-by value.
+        private ExistingEntry withExternalAttributes(int versionMadeBy, long externalAttributes) {
+            requireUInt16(versionMadeBy, "version made by");
+            requireUInt32(externalAttributes, "external attributes");
+            byte[] updated = centralDirectoryBytes.clone();
+            ByteBuffer header = ByteBuffer.wrap(updated).order(ByteOrder.LITTLE_ENDIAN);
+            header.putShort(4, (short) versionMadeBy);
+            header.putInt(38, (int) externalAttributes);
+            return new ExistingEntry(source, entryName, rawName, updated, localTimestampChanged);
+        }
+
+        /// Returns a state with new raw entry comment bytes.
+        private ExistingEntry withRawComment(byte @Nullable [] rawComment) {
+            byte[] comment = rawComment != null ? rawComment.clone() : new byte[0];
+            requireUInt16(comment.length, "comment length");
+            int nameLength = readUnsignedShort(centralDirectoryBytes, 28);
+            int extraLength = readUnsignedShort(centralDirectoryBytes, 30);
+            int commentOffset = ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE + nameLength + extraLength;
+            byte[] updated = Arrays.copyOf(centralDirectoryBytes, commentOffset + comment.length);
+            System.arraycopy(comment, 0, updated, commentOffset, comment.length);
+            ByteBuffer.wrap(updated).order(ByteOrder.LITTLE_ENDIAN).putShort(32, (short) comment.length);
+            return new ExistingEntry(source, entryName, rawName, updated, localTimestampChanged);
+        }
+
+        /// Returns the current central-directory DOS time field.
+        private int dosTime() {
+            return readUnsignedShort(centralDirectoryBytes, 12);
+        }
+
+        /// Returns the current central-directory DOS date field.
+        private int dosDate() {
+            return readUnsignedShort(centralDirectoryBytes, 14);
+        }
+
+        /// Returns the current ZIP version-made-by field.
+        private int versionMadeBy() {
+            return readUnsignedShort(centralDirectoryBytes, 4);
+        }
+
+        /// Returns whether the source local record must receive a replacement header.
+        private boolean renamed() {
+            return !entryName.equals(source.entryName());
+        }
+
+        /// Returns whether this is an explicit directory entry.
+        private boolean directoryEntry() {
+            return rawName.length > 0 && rawName[rawName.length - 1] == '/';
+        }
+
+        /// Returns a snapshot containing the current central directory metadata for attribute parsing.
+        private ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot attributesSnapshot() {
+            return new ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot(
+                    entryName,
+                    centralDirectoryBytes,
+                    source.localHeaderOffset(),
+                    source.localHeaderSize(),
+                    source.localRecordSize()
+            );
+        }
+
+        /// Returns a copy of the current encoded name.
+        @Override
+        public byte @Unmodifiable [] rawName() {
+            return rawName.clone();
+        }
+
+        /// Returns a copy of the current central directory entry bytes.
+        @Override
+        public byte @Unmodifiable [] centralDirectoryBytes() {
+            return centralDirectoryBytes.clone();
+        }
+    }
+
     /// Describes a relocated local header location.
     ///
     /// @param diskNumber the zero-based output disk number
@@ -4743,6 +5708,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     private static final class CentralEntry {
         /// The decoded entry name.
         private final String entryName;
+
+        /// The decoded entry name serialized in the staged local record.
+        private final String serializedEntryName;
 
         /// The raw entry name bytes.
         private final byte[] rawName;
@@ -4807,6 +5775,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         /// The raw ZIP entry comment bytes.
         private final byte[] rawComment;
 
+        /// Whether the staged local header timestamp must be replaced.
+        private final boolean localTimestampChanged;
+
         /// Creates central directory metadata.
         private CentralEntry(
                 String entryName,
@@ -4825,6 +5796,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 EntryMetadata metadata
         ) {
             this.entryName = Objects.requireNonNull(entryName, "entryName");
+            this.serializedEntryName = entryName;
             this.rawName = Objects.requireNonNull(rawName, "rawName");
             this.flags = flags;
             this.method = method;
@@ -4844,6 +5816,159 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             this.localExtraData = metadata.localExtraData.clone();
             this.centralDirectoryExtraData = metadata.centralDirectoryExtraData.clone();
             this.rawComment = metadata.rawComment.clone();
+            this.localTimestampChanged = false;
+        }
+
+        /// Creates changed central metadata over the same staged local record.
+        private CentralEntry(
+                CentralEntry source,
+                String entryName,
+                byte[] rawName,
+                int flags,
+                int dosTime,
+                int dosDate,
+                int versionMadeBy,
+                int internalAttributes,
+                long externalAttributes,
+                byte[] localExtraData,
+                byte[] centralDirectoryExtraData,
+                byte[] rawComment,
+                boolean localTimestampChanged
+        ) {
+            this.entryName = Objects.requireNonNull(entryName, "entryName");
+            this.serializedEntryName = source.serializedEntryName;
+            this.rawName = Objects.requireNonNull(rawName, "rawName");
+            this.flags = flags;
+            this.method = source.method;
+            this.dosTime = dosTime;
+            this.dosDate = dosDate;
+            this.crc32 = source.crc32;
+            this.compressedSize = source.compressedSize;
+            this.uncompressedSize = source.uncompressedSize;
+            this.localHeaderDiskNumber = source.localHeaderDiskNumber;
+            this.localHeaderOffset = source.localHeaderOffset;
+            this.localHeaderSize = source.localHeaderSize;
+            this.localRecordSize = source.localRecordSize;
+            this.relocatedLocalHeaderDiskNumber = source.relocatedLocalHeaderDiskNumber;
+            this.relocatedLocalHeaderOffset = source.relocatedLocalHeaderOffset;
+            this.versionNeeded = source.versionNeeded;
+            this.versionMadeBy = versionMadeBy;
+            this.internalAttributes = internalAttributes;
+            this.externalAttributes = externalAttributes;
+            this.localExtraData = Objects.requireNonNull(localExtraData, "localExtraData").clone();
+            this.centralDirectoryExtraData = Objects.requireNonNull(
+                    centralDirectoryExtraData,
+                    "centralDirectoryExtraData"
+            ).clone();
+            this.rawComment = Objects.requireNonNull(rawComment, "rawComment").clone();
+            this.localTimestampChanged = source.localTimestampChanged || localTimestampChanged;
+        }
+
+        /// Returns central metadata with a new normalized entry name.
+        private CentralEntry renamed(String newEntryName) throws IOException {
+            String storedName = directory() ? newEntryName + "/" : newEntryName;
+            byte[] renamedRawName = rawEntryName(storedName);
+            return new CentralEntry(
+                    this,
+                    storedName,
+                    renamedRawName,
+                    flags | UTF8_FLAG,
+                    dosTime,
+                    dosDate,
+                    versionMadeBy,
+                    internalAttributes,
+                    externalAttributes,
+                    removeUnicodePathExtraField(localExtraData),
+                    removeUnicodePathExtraField(centralDirectoryExtraData),
+                    rawComment,
+                    false
+            );
+        }
+
+        /// Returns central metadata with a new last-modified timestamp.
+        private CentralEntry withLastModifiedTime(FileTime lastModifiedTime) {
+            return new CentralEntry(
+                    this,
+                    entryName,
+                    rawName,
+                    flags,
+                    StreamingZipArkivoFileSystemImpl.dosTime(lastModifiedTime),
+                    StreamingZipArkivoFileSystemImpl.dosDate(lastModifiedTime),
+                    versionMadeBy,
+                    internalAttributes,
+                    externalAttributes,
+                    localExtraData,
+                    centralDirectoryExtraData,
+                    rawComment,
+                    true
+            );
+        }
+
+        /// Returns central metadata with new ZIP internal file attributes.
+        private CentralEntry withInternalAttributes(int newInternalAttributes) {
+            requireUInt16(newInternalAttributes, "internal attributes");
+            return new CentralEntry(
+                    this,
+                    entryName,
+                    rawName,
+                    flags,
+                    dosTime,
+                    dosDate,
+                    versionMadeBy,
+                    newInternalAttributes,
+                    externalAttributes,
+                    localExtraData,
+                    centralDirectoryExtraData,
+                    rawComment,
+                    false
+            );
+        }
+
+        /// Returns central metadata with new ZIP external file attributes and version-made-by value.
+        private CentralEntry withExternalAttributes(int newVersionMadeBy, long newExternalAttributes) {
+            requireUInt16(newVersionMadeBy, "version made by");
+            requireUInt32(newExternalAttributes, "external attributes");
+            return new CentralEntry(
+                    this,
+                    entryName,
+                    rawName,
+                    flags,
+                    dosTime,
+                    dosDate,
+                    newVersionMadeBy,
+                    internalAttributes,
+                    newExternalAttributes,
+                    localExtraData,
+                    centralDirectoryExtraData,
+                    rawComment,
+                    false
+            );
+        }
+
+        /// Returns central metadata with new raw entry comment bytes.
+        private CentralEntry withRawComment(byte @Nullable [] newRawComment) {
+            byte[] comment = newRawComment != null ? newRawComment.clone() : new byte[0];
+            requireUInt16(comment.length, "comment length");
+            return new CentralEntry(
+                    this,
+                    entryName,
+                    rawName,
+                    flags,
+                    dosTime,
+                    dosDate,
+                    versionMadeBy,
+                    internalAttributes,
+                    externalAttributes,
+                    localExtraData,
+                    centralDirectoryExtraData,
+                    comment,
+                    false
+            );
+        }
+
+        /// Returns whether this entry needs a replacement staged local header.
+        private boolean renamed() {
+            return !entryName.equals(serializedEntryName);
         }
 
         /// Returns whether the central directory entry needs ZIP64 extra metadata.

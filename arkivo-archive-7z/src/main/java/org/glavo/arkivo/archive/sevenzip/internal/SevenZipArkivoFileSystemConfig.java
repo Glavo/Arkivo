@@ -90,7 +90,7 @@ public final class SevenZipArkivoFileSystemConfig {
     /// The requested 7z file system thread-safety strategy.
     private final ArkivoFileSystemThreadSafety threadSafety;
 
-    /// The storage used to stage decoded update entry bodies, or `null` for the default temporary-file storage.
+    /// The storage used to stage decoded random-read and update entry bodies, or `null` for format defaults.
     private final @Nullable ArkivoEditStorage editStorage;
 
     /// The target used to publish a rewritten single-volume update, or `null` for default publication.
@@ -261,8 +261,8 @@ public final class SevenZipArkivoFileSystemConfig {
         if (!config.archiveUpdate() && config.commitTarget() != null) {
             throw new IllegalArgumentException("7z commit targets require read/write update mode");
         }
-        if (!config.archiveUpdate() && config.editStorage() != null) {
-            throw new IllegalArgumentException("7z edit storage requires read/write update mode");
+        if (config.archiveWritable() && !config.archiveUpdate() && config.editStorage() != null) {
+            throw new IllegalArgumentException("7z edit storage is unavailable in forward-only write mode");
         }
         if (config.archiveUpdate() && ArkivoFileSystem.SOURCE_MUTATION_POLICY.isPresent(environment)) {
             throw new UnsupportedOperationException("7z update mode always performs a complete archive rewrite");

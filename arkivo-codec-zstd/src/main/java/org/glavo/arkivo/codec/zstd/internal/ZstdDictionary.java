@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.zstd.internal;
 
 import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -25,6 +26,7 @@ final class ZstdDictionary {
             null,
             null,
             null,
+            null,
             1,
             4,
             8
@@ -38,6 +40,9 @@ final class ZstdDictionary {
 
     /// Initial Huffman table, or null for raw dictionaries.
     private final @Nullable ZstdEntropy.HuffmanTable huffmanTable;
+
+    /// Initial Huffman encoding table, or null for raw dictionaries.
+    private final @Nullable ZstdLiteralEncoder.HuffmanEncoding huffmanEncoding;
 
     /// Initial offset-code FSE table, or null for raw dictionaries.
     private final @Nullable ZstdEntropy.FseTable offsetTable;
@@ -62,6 +67,7 @@ final class ZstdDictionary {
             long id,
             byte[] content,
             @Nullable ZstdEntropy.HuffmanTable huffmanTable,
+            @Nullable ZstdLiteralEncoder.HuffmanEncoding huffmanEncoding,
             @Nullable ZstdEntropy.FseTable offsetTable,
             @Nullable ZstdEntropy.FseTable matchLengthTable,
             @Nullable ZstdEntropy.FseTable literalLengthTable,
@@ -72,6 +78,7 @@ final class ZstdDictionary {
         this.id = id;
         this.content = content;
         this.huffmanTable = huffmanTable;
+        this.huffmanEncoding = huffmanEncoding;
         this.offsetTable = offsetTable;
         this.matchLengthTable = matchLengthTable;
         this.literalLengthTable = literalLengthTable;
@@ -93,6 +100,7 @@ final class ZstdDictionary {
             return new ZstdDictionary(
                     dictionary.id(),
                     bytes,
+                    null,
                     null,
                     null,
                     null,
@@ -135,6 +143,11 @@ final class ZstdDictionary {
                 id,
                 Arrays.copyOfRange(bytes, offset, bytes.length),
                 huffman.table(),
+                ZstdLiteralEncoder.fromWeights(
+                        huffman.weights(),
+                        huffman.symbolCount(),
+                        huffman.tableLog()
+                ),
                 offsets.table(),
                 matches.table(),
                 literals.table(),
@@ -157,6 +170,11 @@ final class ZstdDictionary {
     /// Returns the initial Huffman table, or null when unavailable.
     @Nullable ZstdEntropy.HuffmanTable huffmanTable() {
         return huffmanTable;
+    }
+
+    /// Returns the initial Huffman encoding table, or null when unavailable.
+    @Nullable ZstdLiteralEncoder.HuffmanEncoding huffmanEncoding() {
+        return huffmanEncoding;
     }
 
     /// Returns the initial offset table, or null when unavailable.
@@ -191,11 +209,6 @@ final class ZstdDictionary {
 
     /// Reads one unsigned little-endian 32-bit integer.
     private static long readUnsignedInt(byte[] source, int offset) {
-        return Integer.toUnsignedLong(
-                Byte.toUnsignedInt(source[offset])
-                        | Byte.toUnsignedInt(source[offset + 1]) << 8
-                        | Byte.toUnsignedInt(source[offset + 2]) << 16
-                        | source[offset + 3] << 24
-        );
+        return Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(source, offset));
     }
 }

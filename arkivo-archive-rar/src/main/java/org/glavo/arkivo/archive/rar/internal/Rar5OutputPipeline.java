@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.rar.internal;
 
+import org.glavo.arkivo.internal.ByteArrayAccess;
+
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -212,7 +214,7 @@ final class Rar5OutputPipeline {
             }
 
             int addressIndex = index + 1;
-            int address = readInt32LittleEndian(result, addressIndex);
+            int address = ByteArrayAccess.readIntLittleEndian(result, addressIndex);
             int instructionOffset = (int) (fileOffset + addressIndex) & 0x00ff_ffff;
             if (Integer.compareUnsigned(address, 1 << 24) < 0) {
                 address -= instructionOffset;
@@ -222,7 +224,7 @@ final class Rar5OutputPipeline {
                 index += 4;
                 continue;
             }
-            writeInt32LittleEndian(result, addressIndex, address);
+            ByteArrayAccess.writeIntLittleEndian(result, addressIndex, address);
             index += 4;
         }
         return result;
@@ -236,29 +238,13 @@ final class Rar5OutputPipeline {
             if ((result[index + 3] & 0xff) != 0xeb) {
                 continue;
             }
-            int instruction = readInt32LittleEndian(result, index);
+            int instruction = ByteArrayAccess.readIntLittleEndian(result, index);
             int instructionOffset = (int) (fileOffset + index) >>> 2;
             instruction = (instruction & 0xff00_0000)
                     | ((instruction - instructionOffset) & 0x00ff_ffff);
-            writeInt32LittleEndian(result, index, instruction);
+            ByteArrayAccess.writeIntLittleEndian(result, index, instruction);
         }
         return result;
-    }
-
-    /// Reads one little-endian 32-bit integer from a filter block.
-    private static int readInt32LittleEndian(byte[] data, int offset) {
-        return (data[offset] & 0xff)
-                | (data[offset + 1] & 0xff) << 8
-                | (data[offset + 2] & 0xff) << 16
-                | (data[offset + 3] & 0xff) << 24;
-    }
-
-    /// Writes one little-endian 32-bit integer into a filter block.
-    private static void writeInt32LittleEndian(byte[] data, int offset, int value) {
-        data[offset] = (byte) value;
-        data[offset + 1] = (byte) (value >>> 8);
-        data[offset + 2] = (byte) (value >>> 16);
-        data[offset + 3] = (byte) (value >>> 24);
     }
 
     /// Stages one unfiltered byte for a later bulk write.

@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.tar;
 
 import org.glavo.arkivo.archive.ArkivoFileSystem;
+import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -18,14 +19,10 @@ import java.nio.file.CopyOption;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileStore;
 import java.nio.file.FileSystem;
-import java.nio.file.FileSystemAlreadyExistsException;
-import java.nio.file.FileSystemNotFoundException;
-import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.ProviderMismatchException;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileAttributeView;
@@ -33,7 +30,6 @@ import java.nio.file.spi.FileSystemProvider;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 /// Provides JDK file system provider entry points for TAR archives.
 @NotNullByDefault
@@ -45,7 +41,8 @@ public final class TarArkivoFileSystemProvider extends FileSystemProvider {
     private static final TarArkivoFileSystemProvider INSTANCE = new TarArkivoFileSystemProvider();
 
     /// The file systems opened through URI entry points.
-    private final ConcurrentHashMap<URI, TarArkivoFileSystem> fileSystems = new ConcurrentHashMap<>();
+    private final ArkivoFileSystemProviderSupport.Registry<TarArkivoFileSystem> fileSystems =
+            new ArkivoFileSystemProviderSupport.Registry<>();
 
     /// Creates a TAR file system provider.
     public TarArkivoFileSystemProvider() {
@@ -66,41 +63,27 @@ public final class TarArkivoFileSystemProvider extends FileSystemProvider {
     @Override
     public ArkivoFileSystem newFileSystem(URI uri, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(environment, "environment");
-        ParsedTarUri parsedUri = ParsedTarUri.parse(uri, false);
-
-        while (true) {
-            TarArkivoFileSystem existing = fileSystems.get(parsedUri.archiveUri);
-            if (existing != null) {
-                if (existing.isOpen()) {
-                    throw new FileSystemAlreadyExistsException(parsedUri.archiveUri.toString());
-                }
-                fileSystems.remove(parsedUri.archiveUri, existing);
-                continue;
-            }
-
-            TarArkivoFileSystem[] holder = new TarArkivoFileSystem[1];
-            Runnable closeAction = () -> {
-                TarArkivoFileSystem fileSystem = holder[0];
-                if (fileSystem != null) {
-                    fileSystems.remove(parsedUri.archiveUri, fileSystem);
-                }
-            };
-            TarArkivoFileSystem fileSystem =
-                    TarArkivoFileSystemImpl.open(this, parsedUri.archivePath, parsedUri.archiveUri, environment, closeAction);
-            holder[0] = fileSystem;
-
-            existing = fileSystems.putIfAbsent(parsedUri.archiveUri, fileSystem);
-            if (existing == null) {
-                return fileSystem;
-            }
-
-            fileSystem.close();
-        }
+        ArkivoFileSystemProviderSupport.ParsedUri parsedUri = parseUri(uri, false);
+        return fileSystems.open(parsedUri.archiveUri(), closeAction -> TarArkivoFileSystemImpl.open(
+                this,
+                parsedUri.archivePath(),
+                parsedUri.archiveUri(),
+                environment,
+                closeAction
+        ));
     }
 
     /// Opens a TAR archive file system from an archive path.
     @Override
     public TarArkivoFileSystem newFileSystem(Path path, Map<String, ?> environment) throws IOException {
+        Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(environment, "environment");
+        ArkivoFileSystemProviderSupport.requirePathFormat(path, TarArkivoFormat.instance());
+        return openPath(path, environment);
+    }
+
+    /// Opens a TAR archive path whose format has already been selected explicitly.
+    TarArkivoFileSystem openPath(Path path, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
         return TarArkivoFileSystemImpl.open(this, path, path.toUri().normalize(), environment, () -> {
@@ -110,14 +93,16 @@ public final class TarArkivoFileSystemProvider extends FileSystemProvider {
     /// Returns an open TAR archive file system for a provider URI.
     @Override
     public FileSystem getFileSystem(URI uri) {
-        return requireFileSystem(ParsedTarUri.parse(uri, false));
+        return fileSystems.require(parseUri(uri, false).archiveUri());
     }
 
     /// Returns a path inside an open TAR archive file system.
     @Override
     public Path getPath(URI uri) {
-        ParsedTarUri parsedUri = ParsedTarUri.parse(uri, true);
-        return requireFileSystem(parsedUri).getPath(parsedUri.entryPath);
+        ArkivoFileSystemProviderSupport.ParsedUri parsedUri = parseUri(uri, true);
+        return fileSystems.require(parsedUri.archiveUri()).getPath(
+                Objects.requireNonNull(parsedUri.entryPath(), "entryPath")
+        );
     }
 
     /// Opens a byte channel for a path inside a TAR archive file system.
@@ -127,13 +112,20 @@ public final class TarArkivoFileSystemProvider extends FileSystemProvider {
             Set<? extends OpenOption> options,
             FileAttribute<?>... attributes
     ) throws IOException {
-        return readFileSystem(path).newByteChannel(path, options, attributes);
+        return readFileSystem(path).newByteChannel(
+                ArkivoFileSystemProviderSupport.resolveReadChannelPath(path, options),
+                options,
+                attributes
+        );
     }
 
     /// Opens an input stream for a path inside a TAR archive file system.
     @Override
     public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
-        return readFileSystem(path).newInputStream(path, options);
+        return readFileSystem(path).newInputStream(
+                ArkivoFileSystemProviderSupport.resolveReadPath(path, options),
+                options
+        );
     }
 
     /// Opens an output stream for a path inside a writable TAR archive file system.
@@ -146,7 +138,10 @@ public final class TarArkivoFileSystemProvider extends FileSystemProvider {
     @Override
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter)
             throws IOException {
-        return readFileSystem(directory).newDirectoryStream(directory, filter);
+        return readFileSystem(directory).newDirectoryStream(
+                ArkivoFileSystemProviderSupport.resolveReadPath(directory),
+                filter
+        );
     }
 
     /// Creates a directory entry inside a writable TAR archive file system.
@@ -176,54 +171,23 @@ public final class TarArkivoFileSystemProvider extends FileSystemProvider {
     /// Copies a path inside a TAR archive file system to another file system.
     @Override
     public void copy(Path source, Path target, CopyOption... options) throws IOException {
-        boolean replaceExisting = false;
-        for (CopyOption option : options) {
-            if (option == StandardCopyOption.REPLACE_EXISTING) {
-                replaceExisting = true;
-            } else {
-                throw new UnsupportedOperationException("Unsupported TAR copy option: " + option);
-            }
-        }
-
-        BasicFileAttributes attributes = readAttributes(source, BasicFileAttributes.class);
-        if (attributes.isDirectory()) {
-            if (Files.exists(target)) {
-                if (!replaceExisting) {
-                    throw new java.nio.file.FileAlreadyExistsException(target.toString());
-                }
-                if (Files.isDirectory(target)) {
-                    return;
-                }
-                Files.delete(target);
-            }
-            Files.createDirectories(target);
-            return;
-        }
-
-        try (InputStream input = newInputStream(source)) {
-            if (replaceExisting) {
-                Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
-            } else {
-                Files.copy(input, target);
-            }
-        }
+        readFileSystem(source);
+        ArkivoFileSystemProviderSupport.copy(source, target, options);
     }
 
     /// Moves an entry inside an update-mode TAR file system.
     @Override
     public void move(Path source, Path target, CopyOption... options) throws IOException {
         TarArkivoFileSystemImpl fileSystem = readFileSystem(source);
-        if (target.getFileSystem() != fileSystem) {
-            throw new ProviderMismatchException("TAR moves require source and target in the same file system");
-        }
+        ArkivoFileSystemProviderSupport.requireSameFileSystemMove(source, target);
         fileSystem.move(source, target, options);
     }
 
     /// Returns whether two TAR archive paths refer to the same file.
     @Override
     public boolean isSameFile(Path path, Path other) throws IOException {
-        readFileSystem(path).checkAccess(path);
-        return path.equals(other);
+        readFileSystem(path);
+        return ArkivoFileSystemProviderSupport.isSameFile(path, other);
     }
 
     /// Returns whether a TAR archive path is hidden.
@@ -259,13 +223,21 @@ public final class TarArkivoFileSystemProvider extends FileSystemProvider {
     @Override
     public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, LinkOption... options)
             throws IOException {
-        return readFileSystem(path).readAttributes(path, type, options);
+        return readFileSystem(path).readAttributes(
+                ArkivoFileSystemProviderSupport.resolveReadPath(path, options),
+                type,
+                options
+        );
     }
 
     /// Reads named file attributes for a TAR archive path.
     @Override
     public Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options) throws IOException {
-        return readFileSystem(path).readAttributes(path, attributes, options);
+        return readFileSystem(path).readAttributes(
+                ArkivoFileSystemProviderSupport.resolveReadPath(path, options),
+                attributes,
+                options
+        );
     }
 
     /// Reads a symbolic link target from a TAR archive path.
@@ -288,80 +260,8 @@ public final class TarArkivoFileSystemProvider extends FileSystemProvider {
         throw new ProviderMismatchException();
     }
 
-    /// Returns the open file system registered for a parsed URI.
-    private TarArkivoFileSystem requireFileSystem(ParsedTarUri parsedUri) {
-        TarArkivoFileSystem fileSystem = fileSystems.get(parsedUri.archiveUri);
-        if (fileSystem != null && fileSystem.isOpen()) {
-            return fileSystem;
-        }
-        if (fileSystem != null) {
-            fileSystems.remove(parsedUri.archiveUri, fileSystem);
-        }
-        throw new FileSystemNotFoundException(parsedUri.archiveUri.toString());
-    }
-
-    /// Requires a provider URI to use the TAR Arkivo scheme.
-    private static void requireSupportedScheme(URI uri) {
-        Objects.requireNonNull(uri, "uri");
-        if (!SCHEME.equalsIgnoreCase(uri.getScheme())) {
-            throw new IllegalArgumentException("Unsupported URI scheme: " + uri);
-        }
-    }
-
-    /// Stores parsed components from a TAR Arkivo provider URI.
-    @NotNullByDefault
-    private static final class ParsedTarUri {
-        /// The nested archive URI.
-        private final URI archiveUri;
-
-        /// The archive path resolved from the nested archive URI.
-        private final Path archivePath;
-
-        /// The decoded entry path, or `null` when the URI identifies only an archive file system.
-        private final @Nullable String entryPath;
-
-        /// Creates parsed TAR URI components.
-        private ParsedTarUri(URI archiveUri, Path archivePath, @Nullable String entryPath) {
-            this.archiveUri = archiveUri;
-            this.archivePath = archivePath;
-            this.entryPath = entryPath;
-        }
-
-        /// Parses a TAR Arkivo provider URI.
-        private static ParsedTarUri parse(URI uri, boolean requireEntryPath) {
-            requireSupportedScheme(uri);
-            if (uri.getRawQuery() != null || uri.getRawFragment() != null) {
-                throw new IllegalArgumentException("TAR Arkivo URI must not contain query or fragment: " + uri);
-            }
-
-            String schemeSpecificPart = uri.getRawSchemeSpecificPart();
-            int separator = schemeSpecificPart.indexOf("!/");
-            if (separator < 0 && requireEntryPath) {
-                throw new IllegalArgumentException("TAR Arkivo entry URI must contain !/: " + uri);
-            }
-
-            String archivePart = separator >= 0
-                    ? schemeSpecificPart.substring(0, separator)
-                    : schemeSpecificPart;
-            if (archivePart.isEmpty()) {
-                throw new IllegalArgumentException("TAR Arkivo URI must contain an archive URI: " + uri);
-            }
-
-            URI archiveUri = URI.create(archivePart).normalize();
-            Path archivePath = Path.of(archiveUri);
-            String entryPath = separator >= 0
-                    ? decodeEntryPath(schemeSpecificPart.substring(separator + 2))
-                    : null;
-            return new ParsedTarUri(archiveUri, archivePath, entryPath);
-        }
-
-        /// Decodes a raw entry path from a TAR Arkivo provider URI.
-        private static String decodeEntryPath(String rawEntryPath) {
-            if (rawEntryPath.isEmpty()) {
-                return "/";
-            }
-            String decodedPath = URI.create("arkivo-entry:/" + rawEntryPath).getPath();
-            return decodedPath != null ? decodedPath : "/";
-        }
+    /// Parses a TAR provider URI through the shared archive URI grammar.
+    private static ArkivoFileSystemProviderSupport.ParsedUri parseUri(URI uri, boolean requireEntryPath) {
+        return ArkivoFileSystemProviderSupport.parseUri(uri, SCHEME, "TAR", requireEntryPath);
     }
 }

@@ -28,6 +28,22 @@ final class ZstdFrameHeaderTest {
         assertEquals(65_536L, requiredWindow(0xa0, 0x00, 0x00, 0x01, 0x00));
     }
 
+    /// Verifies magicless headers report the same logical window without a four-byte prefix.
+    @Test
+    void parsesMagiclessWindow() {
+        assertEquals(
+                100L,
+                ZstdFrameHeader.requiredWindowSize(
+                        ByteBuffer.wrap(new byte[]{0x20, 100}),
+                        true
+                )
+        );
+        assertEquals(
+                ZstdFrameHeader.NEED_MORE_INPUT,
+                ZstdFrameHeader.requiredWindowSize(ByteBuffer.wrap(new byte[]{0x00}), true)
+        );
+    }
+
     /// Verifies incomplete, invalid, and skippable prefixes do not invent a window size.
     @Test
     void handlesNonstandardPrefixes() {

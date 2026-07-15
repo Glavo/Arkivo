@@ -4,6 +4,7 @@
 /// Provides branch-conversion byte transforms for executable code.
 module org.glavo.arkivo.codec.bcj {
     requires transitive org.glavo.arkivo.codec;
+    requires org.glavo.arkivo.base;
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.codec.bcj;

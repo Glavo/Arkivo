@@ -29,8 +29,14 @@ import java.util.Objects;
 /// path-backed split archives preserve their first-volume size unless `SPLIT_SIZE` selects another output split size.
 ///
 /// Modified decoded bodies and compressed random-read snapshots are staged through `ArkivoFileSystem.EDIT_STORAGE`.
-/// Update sessions own and close a configured storage; path-backed sessions use temporary files beside the archive by
-/// default, while explicit volume sessions use the platform temporary directory.
+/// Each file system owns and closes configured storage. Read-only sessions keep decoded bodies up to 1 MiB in memory
+/// and use temporary files for larger bodies by default; update sessions always use temporary files by default.
+/// Path-backed temporary files are placed beside the archive, while explicit volume sessions use the platform
+/// temporary directory. Copy entries remain directly addressable and bypass staging.
+/// Storage close is deferred while a decoded seekable channel still owns a transient body.
+///
+/// An entry being replaced through an open writable channel is hidden from new reads until that channel closes;
+/// channels and attribute snapshots opened before the replacement retain the preceding entry state.
 ///
 /// Updates preserve decoded entry content and stored timestamps and attributes, then re-encode every surviving entry
 /// with the configured output compression, filter chain, solid file-count policy, password, and header-encryption
@@ -153,7 +159,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     public static SevenZipArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
-        return SevenZipArkivoFileSystemProvider.instance().newFileSystem(path, environment);
+        return SevenZipArkivoFileSystemProvider.instance().openPath(path, environment);
     }
 
 

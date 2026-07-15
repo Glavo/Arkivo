@@ -7,17 +7,13 @@ import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.transform.TransformingInputStream;
 import org.glavo.arkivo.codec.delta.DeltaTransform;
-import org.glavo.arkivo.codec.lzma.internal.LZMA2InputStream;
-import org.glavo.arkivo.codec.lzma.internal.LZMAInputStream;
-import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -317,7 +313,7 @@ final class SevenZipLZMADecoder {
             return openLZMA(input, outputLimit, properties);
         }
         if (isLZMA2(methodId)) {
-            return openLZMA2(input, properties);
+            return openLZMA2(input, properties, outputLimit);
         }
         if (isDeflate(methodId)) {
             return openDeflate(input, properties, outputLimit);
@@ -346,7 +342,7 @@ final class SevenZipLZMADecoder {
         if (isBcjFilter(methodId)) {
             return openBcjFilter(input, methodId, properties);
         }
-        throw new UnsupportedOperationException("Unsupported 7z coder method: " + Arrays.toString(methodId));
+        throw new IOException("Unsupported 7z coder method: " + Arrays.toString(methodId));
     }
 
     /// Builds decoder streams by resolving coder graph dependencies from the final output.
@@ -395,7 +391,7 @@ final class SevenZipLZMADecoder {
             int coderIndex = method.coderIndexForOutput(outputStreamIndex);
             if (method.outputStreamCount(coderIndex) != 1
                     || method.firstOutputStreamIndex(coderIndex) != outputStreamIndex) {
-                throw new UnsupportedOperationException("Unsupported 7z multi-output coder");
+                throw new IOException("Unsupported 7z multi-output coder");
             }
 
             int inputCount = method.inputStreamCount(coderIndex);
@@ -453,7 +449,7 @@ final class SevenZipLZMADecoder {
                 }
             } else {
                 if (inputCount != 1) {
-                    throw new UnsupportedOperationException("Unsupported 7z multi-input coder");
+                    throw new IOException("Unsupported 7z multi-input coder");
                 }
                 output = openSingleInputCoder(
                         coderInputs.get(0),
@@ -535,12 +531,21 @@ final class SevenZipLZMADecoder {
         if (properties.length != 5) {
             throw new IOException("7z LZMA coder properties must contain five bytes");
         }
-        int dictionarySize = ByteBuffer.wrap(properties, 1, 4).order(ByteOrder.LITTLE_ENDIAN).getInt();
-        return new LZMAInputStream(input, uncompressedSize, Byte.toUnsignedInt(properties[0]), dictionarySize);
+        long dictionarySize = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(properties, 1));
+        return SevenZipCompressionCodecs.openRawLZMADecoder(
+                input,
+                Byte.toUnsignedInt(properties[0]),
+                dictionarySize,
+                uncompressedSize
+        );
     }
 
     /// Opens a raw LZMA2 decoder for 7z coder properties.
-    static InputStream openLZMA2(InputStream input, byte[] properties) throws IOException {
+    static InputStream openLZMA2(
+            InputStream input,
+            byte[] properties,
+            long maximumOutputSize
+    ) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(properties, "properties");
         if (properties.length != 1) {
@@ -550,11 +555,12 @@ final class SevenZipLZMADecoder {
         if (property > 37) {
             throw new IOException("Unsupported 7z LZMA2 dictionary property");
         }
-        int dictionarySize = (2 | (property & 1)) << ((property >>> 1) + 11);
-        if (dictionarySize > LZMAProperties.MAXIMUM_DICTIONARY_SIZE) {
-            throw new IOException("Unsupported 7z LZMA2 dictionary size: " + dictionarySize);
-        }
-        return new LZMA2InputStream(input, dictionarySize);
+        long dictionarySize = (long) (2 | (property & 1)) << ((property >>> 1) + 11);
+        return SevenZipCompressionCodecs.openLZMA2Decoder(
+                input,
+                dictionarySize,
+                maximumOutputSize
+        );
     }
 
     /// Opens a size-limited raw Deflate decoder for 7z coder properties.
@@ -628,9 +634,7 @@ final class SevenZipLZMADecoder {
             throw new IOException("7z PPMd coder properties must contain five bytes");
         }
         int maximumOrder = Byte.toUnsignedInt(properties[0]);
-        long memorySize = Integer.toUnsignedLong(
-                ByteBuffer.wrap(properties, 1, Integer.BYTES).order(ByteOrder.LITTLE_ENDIAN).getInt()
-        );
+        long memorySize = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(properties, 1));
         if (maximumOrder < 2 || maximumOrder > 64) {
             throw new IOException("Unsupported 7z PPMd maximum order: " + maximumOrder);
         }
@@ -684,7 +688,7 @@ final class SevenZipLZMADecoder {
         if (isRiscVFilter(methodId)) {
             return openRiscVFilter(input, properties);
         }
-        throw new UnsupportedOperationException("Unsupported 7z coder method: " + Arrays.toString(methodId));
+        throw new IOException("Unsupported 7z coder method: " + Arrays.toString(methodId));
     }
 
     /// Opens a raw x86 BCJ filter decoder for 7z coder properties.
@@ -756,7 +760,7 @@ final class SevenZipLZMADecoder {
         if (properties.length != 4) {
             throw new IOException(description + " properties must contain zero or four bytes");
         }
-        int startOffset = ByteBuffer.wrap(properties).order(ByteOrder.LITTLE_ENDIAN).getInt();
+        int startOffset = ByteArrayAccess.readIntLittleEndian(properties, 0);
         if ((startOffset & (alignment - 1)) != 0) {
             throw new IOException(description + " start offset must be aligned to " + alignment);
         }

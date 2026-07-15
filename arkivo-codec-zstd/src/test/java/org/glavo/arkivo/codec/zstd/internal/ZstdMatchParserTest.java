@@ -247,6 +247,10 @@ public final class ZstdMatchParserTest {
                 0,
                 0,
                 0,
+                0,
+                0,
+                0,
+                0,
                 -1L,
                 null
         );

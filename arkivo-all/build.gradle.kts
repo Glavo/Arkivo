@@ -253,6 +253,32 @@ val moduleJarFiles = moduleJarTasks.map { jarTask ->
     jarTask.flatMap { it.archiveFile }
 }
 
+val fileSystemProviderDiscoveryProbe = "org.glavo.arkivo.all.FileSystemProviderDiscoveryProbe"
+
+val verifyFileSystemProvidersOnClasspath by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description = "Verifies FileSystemProvider discovery from the published Arkivo JARs on the classpath."
+    dependsOn(tasks.named("testClasses"), moduleJarTasks)
+    classpath = files(sourceSets.test.get().output, moduleJarFiles)
+    mainClass.set(fileSystemProviderDiscoveryProbe)
+}
+
+val verifyFileSystemProvidersOnModulePath by tasks.registering(JavaExec::class) {
+    group = "verification"
+    description = "Verifies FileSystemProvider discovery from the published Arkivo modules."
+    dependsOn(tasks.named("testClasses"), moduleJarTasks)
+    classpath = sourceSets.test.get().output
+    mainClass.set(fileSystemProviderDiscoveryProbe)
+    doFirst {
+        jvmArgs(
+            "--module-path",
+            moduleJarFiles.joinToString(File.pathSeparator) { it.get().asFile.absolutePath },
+            "--add-modules",
+            "org.glavo.arkivo.all"
+        )
+    }
+}
+
 val verifyModuleDescriptors by tasks.registering {
     group = "verification"
     description = "Verifies packaged JPMS descriptors and public module boundaries."
@@ -398,6 +424,15 @@ val verifyModuleDescriptors by tasks.registering {
         }
 
         val expectedQualifiedExports = mapOf(
+            "org.glavo.arkivo.base" to mapOf(
+                "org.glavo.arkivo.internal" to setOf(
+                    "org.glavo.arkivo.archive.rar",
+                    "org.glavo.arkivo.archive.sevenzip",
+                    "org.glavo.arkivo.archive.zip",
+                    "org.glavo.arkivo.codec.bcj",
+                    "org.glavo.arkivo.codec.zstd"
+                )
+            ),
             archiveModule to mapOf(
                 "org.glavo.arkivo.archive.internal" to setOf(
                     "org.glavo.arkivo.archive.ar",
@@ -410,8 +445,6 @@ val verifyModuleDescriptors by tasks.registering {
 
             "org.glavo.arkivo.codec.lzma" to mapOf(
                 "org.glavo.arkivo.codec.lzma.internal" to setOf(
-                    "org.glavo.arkivo.archive.sevenzip",
-                    "org.glavo.arkivo.archive.zip",
                     "org.glavo.arkivo.codec.xz"
                 )
             ),
@@ -434,6 +467,7 @@ val verifyModuleDescriptors by tasks.registering {
         val archiveFormatService = "org.glavo.arkivo.archive.ArkivoFormat"
         val compressionCodecService = "org.glavo.arkivo.codec.CompressionCodec"
         val streamingSourceService = "org.glavo.arkivo.archive.spi.ArkivoStreamingSourceProvider"
+        val fileSystemProviderService = "java.nio.file.spi.FileSystemProvider"
         val expectedUses = mapOf(
             archiveModule to setOf(archiveFormatService, streamingSourceService),
             codecModule to setOf(compressionCodecService)
@@ -452,21 +486,36 @@ val verifyModuleDescriptors by tasks.registering {
                 )
             ),
             "org.glavo.arkivo.archive.ar" to mapOf(
-                archiveFormatService to setOf("org.glavo.arkivo.archive.ar.ArArkivoFormat")
+                archiveFormatService to setOf("org.glavo.arkivo.archive.ar.ArArkivoFormat"),
+                fileSystemProviderService to setOf(
+                    "org.glavo.arkivo.archive.ar.ArArkivoFileSystemProvider"
+                )
             ),
             "org.glavo.arkivo.archive.rar" to mapOf(
-                archiveFormatService to setOf("org.glavo.arkivo.archive.rar.RarArkivoFormat")
+                archiveFormatService to setOf("org.glavo.arkivo.archive.rar.RarArkivoFormat"),
+                fileSystemProviderService to setOf(
+                    "org.glavo.arkivo.archive.rar.RarArkivoFileSystemProvider"
+                )
             ),
             "org.glavo.arkivo.archive.sevenzip" to mapOf(
                 archiveFormatService to setOf(
                     "org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFormat"
+                ),
+                fileSystemProviderService to setOf(
+                    "org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystemProvider"
                 )
             ),
             "org.glavo.arkivo.archive.tar" to mapOf(
-                archiveFormatService to setOf("org.glavo.arkivo.archive.tar.TarArkivoFormat")
+                archiveFormatService to setOf("org.glavo.arkivo.archive.tar.TarArkivoFormat"),
+                fileSystemProviderService to setOf(
+                    "org.glavo.arkivo.archive.tar.TarArkivoFileSystemProvider"
+                )
             ),
             "org.glavo.arkivo.archive.zip" to mapOf(
-                archiveFormatService to setOf("org.glavo.arkivo.archive.zip.ZipArkivoFormat")
+                archiveFormatService to setOf("org.glavo.arkivo.archive.zip.ZipArkivoFormat"),
+                fileSystemProviderService to setOf(
+                    "org.glavo.arkivo.archive.zip.ZipArkivoFileSystemProvider"
+                )
             ),
             "org.glavo.arkivo.codec.bzip2" to mapOf(
                 compressionCodecService to setOf("org.glavo.arkivo.codec.bzip2.BZip2Codec")
@@ -481,7 +530,11 @@ val verifyModuleDescriptors by tasks.registering {
                 compressionCodecService to setOf("org.glavo.arkivo.codec.gzip.GzipCodec")
             ),
             "org.glavo.arkivo.codec.lzma" to mapOf(
-                compressionCodecService to setOf("org.glavo.arkivo.codec.lzma.LZMACodec")
+                compressionCodecService to setOf(
+                    "org.glavo.arkivo.codec.lzma.LZMACodec",
+                    "org.glavo.arkivo.codec.lzma.RawLZMACodec",
+                    "org.glavo.arkivo.codec.lzma.LZMA2Codec"
+                )
             ),
             "org.glavo.arkivo.codec.ppmd" to mapOf(
                 compressionCodecService to setOf("org.glavo.arkivo.codec.ppmd.PPMdCodec")
@@ -509,5 +562,10 @@ val verifyModuleDescriptors by tasks.registering {
 }
 
 tasks.named("check") {
-    dependsOn(verifyModuleDescriptors, benchmarkSourceSet.classesTaskName)
+    dependsOn(
+        verifyModuleDescriptors,
+        verifyFileSystemProvidersOnClasspath,
+        verifyFileSystemProvidersOnModulePath,
+        benchmarkSourceSet.classesTaskName
+    )
 }

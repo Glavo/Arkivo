@@ -18,7 +18,7 @@ final class ZstdFrameEncoder {
     private static final byte @Unmodifiable [] FRAME_MAGIC = {0x28, (byte) 0xb5, 0x2f, (byte) 0xfd};
 
     /// Encodes a frame header for the configured source pledge and dictionary.
-    static byte[] header(ZstdEncoderParameters parameters) {
+    static byte[] header(ZstdEncoderParameters parameters, boolean magicless) {
         long contentSize = parameters.contentSize()
                 ? parameters.pledgedSourceSize()
                 : -1L;
@@ -33,7 +33,9 @@ final class ZstdFrameEncoder {
                 | dictionaryFlag;
 
         ByteArrayOutputStream output = new ByteArrayOutputStream(18);
-        output.writeBytes(FRAME_MAGIC);
+        if (!magicless) {
+            output.writeBytes(FRAME_MAGIC);
+        }
         output.write(descriptor);
         if (!singleSegment) {
             output.write((parameters.windowLog() - 10) << 3);

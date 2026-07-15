@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 package org.glavo.arkivo.archive.rar.internal;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -195,12 +196,12 @@ final class Rar3Vm {
             machine.registers[7] = MEMORY_SIZE;
 
             int global = GLOBAL_ADDRESS;
-            for (int index = 0; index < 7; index++) writeInt32(machine.memory, global + index * 4, machine.registers[index]);
-            writeInt32(machine.memory, global + 0x1c, input.length);
-            writeInt32(machine.memory, global + 0x20, 0);
-            writeInt32(machine.memory, global + 0x24, (int) offset);
-            writeInt32(machine.memory, global + 0x28, (int) (offset >>> 32));
-            writeInt32(machine.memory, global + 0x2c, executionCount);
+            for (int index = 0; index < 7; index++) ByteArrayAccess.writeIntLittleEndian(machine.memory, global + index * 4, machine.registers[index]);
+            ByteArrayAccess.writeIntLittleEndian(machine.memory, global + 0x1c, input.length);
+            ByteArrayAccess.writeIntLittleEndian(machine.memory, global + 0x20, 0);
+            ByteArrayAccess.writeIntLittleEndian(machine.memory, global + 0x24, (int) offset);
+            ByteArrayAccess.writeIntLittleEndian(machine.memory, global + 0x28, (int) (offset >>> 32));
+            ByteArrayAccess.writeIntLittleEndian(machine.memory, global + 0x2c, executionCount);
 
             byte[] dynamicGlobal = persistentGlobal.length == 0 ? initialGlobal : persistentGlobal;
             int copied = Math.min(dynamicGlobal.length, GLOBAL_SIZE - FIXED_GLOBAL_SIZE);
@@ -210,12 +211,12 @@ final class Rar3Vm {
             run(machine);
             executionCount++;
 
-            int saveSize = Math.min(readInt32(machine.memory, global + 0x30), GLOBAL_SIZE - FIXED_GLOBAL_SIZE);
+            int saveSize = Math.min(ByteArrayAccess.readIntLittleEndian(machine.memory, global + 0x30), GLOBAL_SIZE - FIXED_GLOBAL_SIZE);
             persistentGlobal = saveSize <= 0
                     ? new byte[0]
                     : Arrays.copyOfRange(machine.memory, global + FIXED_GLOBAL_SIZE, global + FIXED_GLOBAL_SIZE + saveSize);
-            int outputLength = readInt32(machine.memory, global + 0x1c) & MEMORY_MASK;
-            int outputStart = readInt32(machine.memory, global + 0x20) & MEMORY_MASK;
+            int outputLength = ByteArrayAccess.readIntLittleEndian(machine.memory, global + 0x1c) & MEMORY_MASK;
+            int outputStart = ByteArrayAccess.readIntLittleEndian(machine.memory, global + 0x20) & MEMORY_MASK;
             if (outputStart + outputLength > MEMORY_SIZE) throw new IOException("RAR3 VM output exceeds its memory");
             return Arrays.copyOfRange(machine.memory, outputStart, outputStart + outputLength);
         }
@@ -395,14 +396,14 @@ final class Rar3Vm {
     /// Reads one byte or little-endian word from masked VM memory.
     private static int readMemory(Machine machine, int address, boolean byteMode) {
         int maskedAddress = address & MEMORY_MASK;
-        return byteMode ? machine.memory[maskedAddress] & 0xff : readInt32(machine.memory, maskedAddress);
+        return byteMode ? machine.memory[maskedAddress] & 0xff : ByteArrayAccess.readIntLittleEndian(machine.memory, maskedAddress);
     }
 
     /// Writes one byte or little-endian word to masked VM memory.
     private static void writeMemory(Machine machine, int address, int value, boolean byteMode) {
         int maskedAddress = address & MEMORY_MASK;
         if (byteMode) machine.memory[maskedAddress] = (byte) value;
-        else writeInt32(machine.memory, maskedAddress, value);
+        else ByteArrayAccess.writeIntLittleEndian(machine.memory, maskedAddress, value);
     }
 
     /// Pushes one word on the masked VM stack.
@@ -476,17 +477,4 @@ final class Rar3Vm {
         return byteMode ? value & 0xff : value;
     }
 
-    /// Reads a little-endian 32-bit value.
-    private static int readInt32(byte[] data, int offset) {
-        return data[offset] & 0xff | (data[offset + 1] & 0xff) << 8
-                | (data[offset + 2] & 0xff) << 16 | data[offset + 3] << 24;
-    }
-
-    /// Writes a little-endian 32-bit value.
-    private static void writeInt32(byte[] data, int offset, int value) {
-        data[offset] = (byte) value;
-        data[offset + 1] = (byte) (value >>> 8);
-        data[offset + 2] = (byte) (value >>> 16);
-        data[offset + 3] = (byte) (value >>> 24);
-    }
 }

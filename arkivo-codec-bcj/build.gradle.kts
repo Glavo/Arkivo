@@ -5,5 +5,6 @@
 
 dependencies {
     api(project(":arkivo-codec"))
+    implementation(project(":arkivo-base"))
     testImplementation("org.tukaani:xz:1.12")
 }

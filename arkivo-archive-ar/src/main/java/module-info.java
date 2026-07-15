@@ -9,4 +9,5 @@ module org.glavo.arkivo.archive.ar {
     exports org.glavo.arkivo.archive.ar;
 
     provides org.glavo.arkivo.archive.ArkivoFormat with org.glavo.arkivo.archive.ar.ArArkivoFormat;
+    provides java.nio.file.spi.FileSystemProvider with org.glavo.arkivo.archive.ar.ArArkivoFileSystemProvider;
 }

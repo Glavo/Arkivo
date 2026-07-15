@@ -161,7 +161,8 @@ public final class ZstdDictionaryTrainer {
     /// Trains a dictionary using either frequency-ranked or legacy-oriented content selection.
     ///
     /// Legacy mode selects the packed sample suffix. Both modes produce standard formatted Zstandard dictionaries;
-    /// they are not intended to reproduce byte-identical output from the native training implementations.
+    /// both derive initial Huffman and sequence FSE tables from the accepted samples. They are not intended to
+    /// reproduce byte-identical output from the native training implementations.
     public synchronized CompressionDictionary train(boolean legacy) {
         if (sampleCount == 0) {
             throw new IllegalStateException("At least one sample is required");

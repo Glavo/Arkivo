@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
 
 import org.jetbrains.annotations.NotNullByDefault;
@@ -94,6 +95,20 @@ final class StreamChannelAdaptersTest {
         }
     }
 
+    /// Verifies output-stream flush reaches a channel-first compression encoder.
+    @Test
+    void flushesCompressionEncoderThroughOutputStream() throws IOException {
+        TrackingCompressionEncoder encoder = new TrackingCompressionEncoder();
+        try (OutputStream output = StreamChannelAdapters.outputStream(encoder)) {
+            output.write(new byte[]{1, 2, 3});
+            output.flush();
+            assertEquals(1, encoder.flushCount());
+            assertEquals(3L, encoder.inputBytes());
+            assertTrue(encoder.isOpen());
+        }
+        assertFalse(encoder.isOpen());
+    }
+
     /// Verifies stream codec factory failures apply endpoint ownership after validation.
     @Test
     void appliesOwnershipAfterCodecFactoryFailure() {
@@ -155,6 +170,69 @@ final class StreamChannelAdaptersTest {
         assertThrows(IOException.class, output::close);
         output.close();
         assertEquals(2, writableChannel.closeCount());
+    }
+
+    /// Records calls made through a stream view of a compression encoder.
+    @NotNullByDefault
+    private static final class TrackingCompressionEncoder implements CompressionEncoder {
+        /// The number of accepted source bytes.
+        private long inputBytes;
+
+        /// The number of flush calls.
+        private int flushCount;
+
+        /// Whether this encoder remains open.
+        private boolean open = true;
+
+        /// Consumes all source bytes.
+        @Override
+        public int write(ByteBuffer source) {
+            int count = source.remaining();
+            source.position(source.limit());
+            inputBytes += count;
+            return count;
+        }
+
+        /// Records one compression flush.
+        @Override
+        public void flush() {
+            flushCount++;
+        }
+
+        /// Finishes this encoder.
+        @Override
+        public void finish() {
+            open = false;
+        }
+
+        /// Returns the number of accepted source bytes.
+        @Override
+        public long inputBytes() {
+            return inputBytes;
+        }
+
+        /// Returns zero because this test encoder emits no bytes.
+        @Override
+        public long outputBytes() {
+            return 0L;
+        }
+
+        /// Returns whether this encoder remains open.
+        @Override
+        public boolean isOpen() {
+            return open;
+        }
+
+        /// Finishes this encoder.
+        @Override
+        public void close() {
+            finish();
+        }
+
+        /// Returns the number of recorded flush calls.
+        private int flushCount() {
+            return flushCount;
+        }
     }
 
     /// Counts source read attempts.

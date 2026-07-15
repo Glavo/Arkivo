@@ -13,8 +13,13 @@ import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
+import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
+import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
+import org.glavo.arkivo.archive.internal.ForwardOnlyOutputChannel;
 import org.glavo.arkivo.archive.internal.PosixModes;
 import org.glavo.arkivo.archive.internal.PosixPermissions;
+import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
+import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
@@ -32,9 +37,6 @@ import java.io.OutputStream;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
-import java.nio.channels.ClosedChannelException;
-import java.nio.channels.NonReadableChannelException;
-import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.AccessMode;
 import java.nio.file.ClosedFileSystemException;
@@ -72,7 +74,6 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -147,7 +148,10 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private final boolean updateMode;
 
     /// The active update-mode entry channel, or `null` when no entry is being changed.
-    private @Nullable UpdateEntryByteChannel activeUpdateChannel;
+    private @Nullable StagedSeekableByteChannel activeUpdateChannel;
+
+    /// The normalized path hidden from new reads while its update channel is open.
+    private @Nullable String activeUpdatePath;
 
     /// Whether update mode has changed the indexed archive.
     private boolean dirty;
@@ -241,8 +245,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             if (ArkivoFileSystem.SOURCE_MUTATION_POLICY.isPresent(environment)) {
                 throw new UnsupportedOperationException("TAR update mode always performs a complete archive rewrite");
             }
-            ArkivoEditStorage editStorage = editStorage(environment);
-            Set<ArkivoStoredContent> ownedContents = identityContentSet();
+            ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(environment);
+            Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
             try {
                 Map<String, Node> nodes;
                 boolean newArchive = !Files.exists(archivePath);
@@ -288,7 +292,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 fileSystem.dirty = newArchive;
                 return fileSystem;
             } catch (IOException | RuntimeException | Error exception) {
-                closeOpenedStorage(editStorage, ownedContents, exception);
+                StoredContentSupport.closeAfterOpenFailure(editStorage, ownedContents, exception);
                 throw exception;
             }
         }
@@ -311,7 +315,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     threadSafety,
                     rootNodes(),
                     null,
-                    identityContentSet(),
+                    StoredContentSupport.newIdentitySet(),
                     TarArkivoStreamingWriter.open(output),
                     false,
                     false,
@@ -322,8 +326,8 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
 
         validateArchiveReadOptions(openOptions);
-        ArkivoEditStorage editStorage = editStorage(environment);
-        Set<ArkivoStoredContent> ownedContents = identityContentSet();
+        ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(environment);
+        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
         try {
             @Nullable CompressionCodec compressionCodec = requestedCompression;
             if (compressionCodec == null) {
@@ -355,7 +359,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     closeAction
             );
         } catch (IOException | RuntimeException | Error exception) {
-            closeOpenedStorage(editStorage, ownedContents, exception);
+            StoredContentSupport.closeAfterOpenFailure(editStorage, ownedContents, exception);
             throw exception;
         }
     }
@@ -401,13 +405,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 commitTarget = null;
             }
             requestedCompression = TarArkivoFileSystem.COMPRESSION.read(environment);
-            editStorage = editStorage(environment);
+            editStorage = StoredContentSupport.selectStorage(environment);
         } catch (RuntimeException | Error exception) {
             closeSourceAfterOpenFailure(source, exception);
             throw exception;
         }
 
-        Set<ArkivoStoredContent> ownedContents = identityContentSet();
+        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
         try {
             @Nullable CompressionCodec compressionCodec = requestedCompression;
             if (compressionCodec == null) {
@@ -447,7 +451,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     }
             );
         } catch (IOException | RuntimeException | Error exception) {
-            closeOpenedStorage(editStorage, ownedContents, exception);
+            StoredContentSupport.closeAfterOpenFailure(editStorage, ownedContents, exception);
             closeSourceAfterOpenFailure(source, exception);
             throw exception;
         }
@@ -470,7 +474,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     || !closeActionCompleted) {
                 @Nullable Throwable failure = null;
                 if (open) {
-                    @Nullable UpdateEntryByteChannel updateChannel = activeUpdateChannel;
+                    @Nullable StagedSeekableByteChannel updateChannel = activeUpdateChannel;
                     if (updateChannel != null) {
                         try {
                             updateChannel.close();
@@ -649,7 +653,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             if (!node.attributes().isRegularFile()) {
                 throw new FileSystemException(path.toString(), null, "TAR entry is not a regular file");
             }
-            return manageInputStream(openContentInputStream(node.content()));
+            return manageInputStream(StoredContentSupport.openInputStream(node.content()));
         }
     }
 
@@ -677,7 +681,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             return newUpdateByteChannel(path, options, attributes);
         }
         if (!readOnly && requestsWrite(options)) {
-            return new WritableEntryByteChannel(newOutputStream(path, options, attributes));
+            return new ForwardOnlyOutputChannel(newOutputStream(path, options, attributes));
         }
 
         requireReadableFileSystem();
@@ -686,7 +690,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         if (!node.attributes().isRegularFile()) {
             throw new FileSystemException(path.toString(), null, "TAR entry is not a regular file");
         }
-        return openContentChannel(node.content());
+        return StoredContentSupport.openReadChannel(node.content());
     }
 
     /// Opens an output stream for a new forward-only file entry.
@@ -1019,7 +1023,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 throw new DirectoryIteratorException(exception);
             }
         }
-        return new ListDirectoryStream(accepted);
+        return new FixedDirectoryStream<>(accepted);
     }
 
     /// Checks access to an entry.
@@ -1100,18 +1104,19 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             LinkOption... options
     ) {
         Objects.requireNonNull(type, "type");
-        Objects.requireNonNull(options, "options");
+        ArkivoFileSystemProviderSupport.AttributeViewPath viewPath =
+                ArkivoFileSystemProviderSupport.attributeViewPath(path, options);
         if (type == BasicFileAttributeView.class) {
-            return type.cast(new BasicView(path));
+            return type.cast(new BasicView(viewPath));
         }
         if (type == FileOwnerAttributeView.class) {
-            return type.cast(new OwnerView(path));
+            return type.cast(new OwnerView(viewPath));
         }
         if (type == PosixFileAttributeView.class) {
-            return type.cast(new PosixView(path));
+            return type.cast(new PosixView(viewPath));
         }
         if (type == TarArkivoEntryAttributeView.class) {
-            return type.cast(new TarView(path));
+            return type.cast(new TarView(viewPath));
         }
         return null;
     }
@@ -1492,7 +1497,10 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             ensureParents(nodes, entryPath);
         }
 
-        @Nullable Set<PosixFilePermission> permissions = initialPosixPermissions(attributes);
+        @Nullable Set<PosixFilePermission> requestedPermissions = initialPosixPermissions(attributes);
+        @Nullable Set<PosixFilePermission> initialPermissions = requestedPermissions != null
+                ? Set.copyOf(requestedPermissions)
+                : null;
         boolean append = options.contains(StandardOpenOption.APPEND);
         boolean writable = options.contains(StandardOpenOption.WRITE) || append;
         boolean readable = options.contains(StandardOpenOption.READ);
@@ -1505,7 +1513,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         @Nullable SeekableByteChannel storageChannel = null;
         try {
             if (existing != null && !truncate) {
-                copyContent(existing.content(), pendingContent);
+                StoredContentSupport.copyContent(existing.content(), pendingContent);
             }
             LinkedHashSet<OpenOption> storageOptions = new LinkedHashSet<>();
             if (readable) {
@@ -1518,19 +1526,38 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 storageOptions.add(StandardOpenOption.TRUNCATE_EXISTING);
             }
             storageChannel = pendingContent.openChannel(Set.copyOf(storageOptions));
-            UpdateEntryByteChannel channel = new UpdateEntryByteChannel(
-                    entryPath,
-                    existing,
-                    permissions,
-                    pendingContent,
+            StagedSeekableByteChannel channel = new StagedSeekableByteChannel(
                     storageChannel,
                     readable,
                     writable,
                     append,
-                    writable && (existing == null || truncate)
+                    writable && (existing == null || truncate),
+                    (completedChannel, commit) -> {
+                        if (activeUpdateChannel == completedChannel) {
+                            activeUpdateChannel = null;
+                            activeUpdatePath = null;
+                        }
+                        boolean transferred = false;
+                        try {
+                            if (commit) {
+                                commitUpdatedEntry(
+                                        entryPath,
+                                        existing,
+                                        initialPermissions,
+                                        pendingContent
+                                );
+                                transferred = true;
+                            }
+                        } finally {
+                            if (!transferred) {
+                                releaseStoredContent(pendingContent);
+                            }
+                        }
+                    }
             );
             if (writable) {
                 activeUpdateChannel = channel;
+                activeUpdatePath = entryPath;
             }
             return channel;
         } catch (IOException | RuntimeException | Error exception) {
@@ -1572,24 +1599,26 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     }
 
     /// Commits staged regular file content into the update index.
-    private void commitUpdatedEntry(UpdateEntryByteChannel channel, ArkivoStoredContent content) throws IOException {
-        if (activeUpdateChannel == channel) {
-            activeUpdateChannel = null;
-        }
-        @Nullable Node existing = nodes.get(channel.path());
-        if (existing != channel.originalNode()) {
-            throw new FileSystemException(channel.path(), null, "TAR entry changed while its update channel was open");
+    private void commitUpdatedEntry(
+            String path,
+            @Nullable Node originalNode,
+            @Nullable Set<PosixFilePermission> initialPermissions,
+            ArkivoStoredContent content
+    ) throws IOException {
+        @Nullable Node existing = nodes.get(path);
+        if (existing != originalNode) {
+            throw new FileSystemException(path, null, "TAR entry changed while its update channel was open");
         }
 
         long size = content.size();
         TarArkivoEntryAttributes base = existing != null
                 ? existing.attributes()
-                : defaultAttributes(channel.path(), TarEntryAttributes.REGULAR_TYPE, 0644, null, size);
-        int mode = existing == null && channel.initialPermissions() != null
-                ? PosixModes.permissionBits(channel.initialPermissions())
+                : defaultAttributes(path, TarEntryAttributes.REGULAR_TYPE, 0644, null, size);
+        int mode = existing == null && initialPermissions != null
+                ? PosixModes.permissionBits(initialPermissions)
                 : base.mode();
         TarEntryAttributes attributes = new TarEntryAttributes(
-                channel.path(),
+                path,
                 TarEntryAttributes.REGULAR_TYPE,
                 mode,
                 base.userId(),
@@ -1602,14 +1631,14 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 base.lastAccessTime(),
                 base.creationTime()
         );
-        Node replacement = new Node(channel.path(), attributes, false, content, false);
+        Node replacement = new Node(path, attributes, false, content, false);
         if (existing == null) {
             putNode(nodes, replacement);
         } else {
-            nodes.put(channel.path(), replacement);
+            nodes.put(path, replacement);
         }
         ownedContents.add(content);
-        refreshHardLinkContents(channel.path(), content, size);
+        refreshHardLinkContents(path, content, size);
         dirty = true;
     }
 
@@ -1643,32 +1672,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             }
         }
     }
-
-    /// Copies indexed content into newly allocated writable storage.
-    private static void copyContent(
-            @Nullable ArkivoStoredContent source,
-            ArkivoStoredContent destination
-    ) throws IOException {
-        try (SeekableByteChannel output = destination.openChannel(Set.of(
-                StandardOpenOption.TRUNCATE_EXISTING,
-                StandardOpenOption.WRITE
-        ))) {
-            if (source == null) {
-                return;
-            }
-            try (SeekableByteChannel input = source.openChannel(Set.of(StandardOpenOption.READ))) {
-                ByteBuffer buffer = ByteBuffer.allocate(64 * 1024);
-                while (input.read(buffer) >= 0) {
-                    buffer.flip();
-                    while (buffer.hasRemaining()) {
-                        output.write(buffer);
-                    }
-                    buffer.clear();
-                }
-            }
-        }
-    }
-
     /// Releases uncommitted stored content or retains it for close-time cleanup retry.
     private void releaseStoredContent(ArkivoStoredContent content) {
         try {
@@ -2076,6 +2079,9 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private Node requireNode(Path path) throws IOException {
         ensureOpen();
         String normalizedPath = normalizedNodePath(path);
+        if (normalizedPath.equals(activeUpdatePath)) {
+            throw new FileSystemException(path.toString(), null, "TAR entry is currently being written");
+        }
         @Nullable Node node = nodes.get(normalizedPath);
         if (node == null) {
             throw new NoSuchFileException(path.toString());
@@ -2103,104 +2109,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private static Map<String, Node> rootNodes() {
         return Map.of("", new Node("", syntheticDirectoryAttributes("/"), true, null, true));
     }
-
-    /// Returns identity-based content ownership storage for an indexed file system.
-    private static Set<ArkivoStoredContent> identityContentSet() {
-        return Collections.newSetFromMap(new IdentityHashMap<>());
-    }
-
-    /// Returns configured indexed-content storage or the default temporary-file storage.
-    private static ArkivoEditStorage editStorage(Map<String, ?> environment) {
-        @Nullable ArkivoEditStorage configured = ArkivoFileSystem.EDIT_STORAGE.read(environment);
-        return configured != null
-                ? configured
-                : ArkivoEditStorage.temporaryFiles(defaultEditStorageDirectory());
-    }
-
-    /// Returns the directory used by default indexed-content storage.
-    private static Path defaultEditStorageDirectory() {
-        return Path.of(System.getProperty("java.io.tmpdir", ".")).toAbsolutePath().normalize();
-    }
-
-    /// Closes resources allocated while opening an indexed file system and suppresses cleanup failures.
-    private static void closeOpenedStorage(
-            ArkivoEditStorage editStorage,
-            Set<ArkivoStoredContent> ownedContents,
-            Throwable failure
-    ) {
-        for (ArkivoStoredContent content : ownedContents) {
-            try {
-                content.close();
-            } catch (IOException | RuntimeException | Error cleanupFailure) {
-                failure.addSuppressed(cleanupFailure);
-            }
-        }
-        try {
-            editStorage.close();
-        } catch (IOException | RuntimeException | Error cleanupFailure) {
-            failure.addSuppressed(cleanupFailure);
-        }
-    }
-
-    /// Streams one archive entry body into newly allocated indexed content storage.
-    private static ArkivoStoredContent storeInput(
-            ArkivoEditStorage editStorage,
-            Set<ArkivoStoredContent> ownedContents,
-            String path,
-            long expectedSize,
-            InputStream input
-    ) throws IOException {
-        ArkivoStoredContent content = editStorage.createContent(path, expectedSize);
-        try {
-            try (SeekableByteChannel output = content.openChannel(Set.of(
-                    StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE
-            ))) {
-                copy(input, output);
-            }
-            ownedContents.add(content);
-            return content;
-        } catch (IOException | RuntimeException | Error exception) {
-            try {
-                content.close();
-            } catch (IOException | RuntimeException | Error cleanupFailure) {
-                exception.addSuppressed(cleanupFailure);
-            }
-            throw exception;
-        }
-    }
-
-    /// Copies an input stream to a seekable channel using bounded memory.
-    private static void copy(InputStream input, SeekableByteChannel output) throws IOException {
-        byte[] buffer = new byte[64 * 1024];
-        ByteBuffer bytes = ByteBuffer.wrap(buffer);
-        while (true) {
-            int count = input.read(buffer);
-            if (count < 0) {
-                return;
-            }
-            bytes.clear();
-            bytes.limit(count);
-            while (bytes.hasRemaining()) {
-                output.write(bytes);
-            }
-        }
-    }
-
-    /// Opens a stream over indexed content, or an empty stream when the entry has no body.
-    private static InputStream openContentInputStream(@Nullable ArkivoStoredContent content) throws IOException {
-        return content != null
-                ? Channels.newInputStream(content.openChannel(Set.of(StandardOpenOption.READ)))
-                : InputStream.nullInputStream();
-    }
-
-    /// Opens a seekable channel over indexed content, or an empty channel when the entry has no body.
-    private static SeekableByteChannel openContentChannel(@Nullable ArkivoStoredContent content) throws IOException {
-        return content != null
-                ? content.openChannel(Set.of(StandardOpenOption.READ))
-                : new ByteArraySeekableByteChannel(new byte[0]);
-    }
-
     /// Returns the indexed-content storage required outside forward-only write mode.
     private ArkivoEditStorage requireEditStorage() {
         return Objects.requireNonNull(editStorage, "editStorage");
@@ -2360,7 +2268,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 } else if (attributes instanceof TarEntryAttributes internalAttributes
                         && internalAttributes.bodySize() > 0L) {
                     try (InputStream entryInput = reader.openInputStream()) {
-                        content = storeInput(
+                        content = StoredContentSupport.storeInput(
                                 editStorage,
                                 ownedContents,
                                 path,
@@ -2637,10 +2545,10 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     @NotNullByDefault
     private final class BasicView implements BasicFileAttributeView {
         /// The path whose attributes are exposed.
-        private final Path path;
+        private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates an attribute view.
-        private BasicView(Path path) {
+        private BasicView(ArkivoFileSystemProviderSupport.AttributeViewPath path) {
             this.path = Objects.requireNonNull(path, "path");
         }
 
@@ -2653,7 +2561,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         /// Reads this path's attributes.
         @Override
         public BasicFileAttributes readAttributes() throws IOException {
-            return TarArkivoFileSystemImpl.this.readAttributes(path, BasicFileAttributes.class);
+            return TarArkivoFileSystemImpl.this.readAttributes(path.resolve(), BasicFileAttributes.class);
         }
 
         /// Sets this path's timestamps in update mode.
@@ -2663,7 +2571,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
         ) throws IOException {
-            TarArkivoFileSystemImpl.this.setTimes(path, lastModifiedTime, lastAccessTime, createTime);
+            TarArkivoFileSystemImpl.this.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
         }
     }
 
@@ -2671,17 +2579,17 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     @NotNullByDefault
     private final class TarView implements TarArkivoEntryAttributeView {
         /// The path whose attributes are exposed.
-        private final Path path;
+        private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates a TAR attribute view.
-        private TarView(Path path) {
+        private TarView(ArkivoFileSystemProviderSupport.AttributeViewPath path) {
             this.path = Objects.requireNonNull(path, "path");
         }
 
         /// Reads this path's TAR attributes.
         @Override
         public TarArkivoEntryAttributes readAttributes() throws IOException {
-            return TarArkivoFileSystemImpl.this.readAttributes(path, TarArkivoEntryAttributes.class);
+            return TarArkivoFileSystemImpl.this.readAttributes(path.resolve(), TarArkivoEntryAttributes.class);
         }
 
         /// Sets this path's timestamps in update mode.
@@ -2691,37 +2599,37 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
         ) throws IOException {
-            TarArkivoFileSystemImpl.this.setTimes(path, lastModifiedTime, lastAccessTime, createTime);
+            TarArkivoFileSystemImpl.this.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
         }
 
         /// Sets this path's numeric user identifier in update mode.
         @Override
         public void setUserId(long userId) throws IOException {
-            TarArkivoFileSystemImpl.this.setUserId(path, userId);
+            TarArkivoFileSystemImpl.this.setUserId(path.resolve(), userId);
         }
 
         /// Sets this path's numeric group identifier in update mode.
         @Override
         public void setGroupId(long groupId) throws IOException {
-            TarArkivoFileSystemImpl.this.setGroupId(path, groupId);
+            TarArkivoFileSystemImpl.this.setGroupId(path.resolve(), groupId);
         }
 
         /// Sets this path's raw TAR mode in update mode.
         @Override
         public void setMode(int mode) throws IOException {
-            TarArkivoFileSystemImpl.this.setMode(path, mode);
+            TarArkivoFileSystemImpl.this.setMode(path.resolve(), mode);
         }
 
         /// Sets this path's TAR user name in update mode.
         @Override
         public void setUserName(@Nullable String userName) throws IOException {
-            TarArkivoFileSystemImpl.this.setUserName(path, userName);
+            TarArkivoFileSystemImpl.this.setUserName(path.resolve(), userName);
         }
 
         /// Sets this path's TAR group name in update mode.
         @Override
         public void setGroupName(@Nullable String groupName) throws IOException {
-            TarArkivoFileSystemImpl.this.setGroupName(path, groupName);
+            TarArkivoFileSystemImpl.this.setGroupName(path.resolve(), groupName);
         }
     }
 
@@ -2729,10 +2637,10 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     @NotNullByDefault
     private final class OwnerView implements FileOwnerAttributeView {
         /// The path whose owner is exposed.
-        private final Path path;
+        private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates an owner attribute view.
-        private OwnerView(Path path) {
+        private OwnerView(ArkivoFileSystemProviderSupport.AttributeViewPath path) {
             this.path = Objects.requireNonNull(path, "path");
         }
 
@@ -2745,13 +2653,13 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         /// Returns this path's owner.
         @Override
         public UserPrincipal getOwner() throws IOException {
-            return TarArkivoFileSystemImpl.this.readAttributes(path, PosixFileAttributes.class).owner();
+            return TarArkivoFileSystemImpl.this.readAttributes(path.resolve(), PosixFileAttributes.class).owner();
         }
 
         /// Sets this path's owner in update mode.
         @Override
         public void setOwner(UserPrincipal owner) throws IOException {
-            TarArkivoFileSystemImpl.this.setOwner(path, owner);
+            TarArkivoFileSystemImpl.this.setOwner(path.resolve(), owner);
         }
     }
 
@@ -2759,10 +2667,10 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     @NotNullByDefault
     private final class PosixView implements PosixFileAttributeView {
         /// The path whose POSIX attributes are exposed.
-        private final Path path;
+        private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates a POSIX attribute view.
-        private PosixView(Path path) {
+        private PosixView(ArkivoFileSystemProviderSupport.AttributeViewPath path) {
             this.path = Objects.requireNonNull(path, "path");
         }
 
@@ -2775,7 +2683,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         /// Reads this path's POSIX attributes.
         @Override
         public PosixFileAttributes readAttributes() throws IOException {
-            return TarArkivoFileSystemImpl.this.readAttributes(path, PosixFileAttributes.class);
+            return TarArkivoFileSystemImpl.this.readAttributes(path.resolve(), PosixFileAttributes.class);
         }
 
         /// Returns this path's owner.
@@ -2791,25 +2699,25 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 @Nullable FileTime lastAccessTime,
                 @Nullable FileTime createTime
         ) throws IOException {
-            TarArkivoFileSystemImpl.this.setTimes(path, lastModifiedTime, lastAccessTime, createTime);
+            TarArkivoFileSystemImpl.this.setTimes(path.resolve(), lastModifiedTime, lastAccessTime, createTime);
         }
 
         /// Sets this path's owner in update mode.
         @Override
         public void setOwner(UserPrincipal owner) throws IOException {
-            TarArkivoFileSystemImpl.this.setOwner(path, owner);
+            TarArkivoFileSystemImpl.this.setOwner(path.resolve(), owner);
         }
 
         /// Sets this path's group in update mode.
         @Override
         public void setGroup(GroupPrincipal group) throws IOException {
-            TarArkivoFileSystemImpl.this.setGroup(path, group);
+            TarArkivoFileSystemImpl.this.setGroup(path.resolve(), group);
         }
 
         /// Sets this path's permissions in update mode.
         @Override
         public void setPermissions(Set<PosixFilePermission> permissions) throws IOException {
-            TarArkivoFileSystemImpl.this.setPermissions(path, permissions);
+            TarArkivoFileSystemImpl.this.setPermissions(path.resolve(), permissions);
         }
     }
 
@@ -2881,191 +2789,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             return ArkivoFileStoreAttributes.get(this, attribute);
         }
     }
-
-    /// Implements a staged random-access channel for one update-mode regular file.
-    @NotNullByDefault
-    private final class UpdateEntryByteChannel implements SeekableByteChannel {
-        /// The normalized entry path.
-        private final String path;
-
-        /// The node present when this channel opened, or `null` for a new entry.
-        private final @Nullable Node originalNode;
-
-        /// Initial permissions applied only when a new entry is committed.
-        private final @Nullable
-        @Unmodifiable Set<PosixFilePermission> initialPermissions;
-
-        /// Whether reads are allowed.
-        private final boolean readable;
-
-        /// Whether writes are allowed.
-        private final boolean writable;
-
-        /// Whether every write is forced to the current end.
-        private final boolean append;
-
-        /// The pending stored body transferred to the archive index after a successful close.
-        private final ArkivoStoredContent content;
-
-        /// The seekable channel opened over the pending stored body.
-        private final SeekableByteChannel channel;
-
-        /// Whether closing this channel must update the archive index.
-        private boolean changed;
-
-        /// Whether this channel is open.
-        private boolean channelOpen = true;
-
-        /// Creates a staged update entry channel.
-        private UpdateEntryByteChannel(
-                String path,
-                @Nullable Node originalNode,
-                @Nullable Set<PosixFilePermission> initialPermissions,
-                ArkivoStoredContent content,
-                SeekableByteChannel channel,
-                boolean readable,
-                boolean writable,
-                boolean append,
-                boolean forceCommit
-        ) throws IOException {
-            this.path = Objects.requireNonNull(path, "path");
-            this.originalNode = originalNode;
-            this.initialPermissions = initialPermissions != null ? Set.copyOf(initialPermissions) : null;
-            this.content = Objects.requireNonNull(content, "content");
-            this.channel = Objects.requireNonNull(channel, "channel");
-            this.readable = readable;
-            this.writable = writable;
-            this.append = append;
-            if (append) {
-                channel.position(channel.size());
-            }
-            this.changed = forceCommit;
-        }
-
-        /// Returns the normalized entry path.
-        private String path() {
-            return path;
-        }
-
-        /// Returns the node present when this channel opened.
-        private @Nullable Node originalNode() {
-            return originalNode;
-        }
-
-        /// Returns initial permissions for a new entry.
-        private @Nullable @Unmodifiable Set<PosixFilePermission> initialPermissions() {
-            return initialPermissions;
-        }
-
-        /// Reads staged bytes from the current position.
-        @Override
-        public int read(ByteBuffer destination) throws IOException {
-            Objects.requireNonNull(destination, "destination");
-            ensureChannelOpen();
-            if (!readable) {
-                throw new NonReadableChannelException();
-            }
-            return channel.read(destination);
-        }
-
-        /// Writes staged bytes at the current position or end in append mode.
-        @Override
-        public int write(ByteBuffer source) throws IOException {
-            Objects.requireNonNull(source, "source");
-            ensureChannelOpen();
-            if (!writable) {
-                throw new NonWritableChannelException();
-            }
-            if (append) {
-                channel.position(channel.size());
-            }
-            int count = channel.write(source);
-            changed |= count != 0;
-            return count;
-        }
-
-        /// Returns the current staged position.
-        @Override
-        public long position() throws IOException {
-            ensureChannelOpen();
-            return channel.position();
-        }
-
-        /// Changes the current staged position.
-        @Override
-        public SeekableByteChannel position(long newPosition) throws IOException {
-            ensureChannelOpen();
-            channel.position(newPosition);
-            return this;
-        }
-
-        /// Returns the current staged size.
-        @Override
-        public long size() throws IOException {
-            ensureChannelOpen();
-            return channel.size();
-        }
-
-        /// Truncates staged content.
-        @Override
-        public SeekableByteChannel truncate(long newSize) throws IOException {
-            ensureChannelOpen();
-            if (!writable) {
-                throw new NonWritableChannelException();
-            }
-            long previousSize = channel.size();
-            channel.truncate(newSize);
-            if (newSize < previousSize) {
-                changed = true;
-            }
-            return this;
-        }
-
-        /// Returns whether this channel is open.
-        @Override
-        public boolean isOpen() {
-            return channelOpen;
-        }
-
-        /// Closes this channel and commits changed staged bytes to the update index.
-        @Override
-        public void close() throws IOException {
-            if (!channelOpen) {
-                return;
-            }
-            channelOpen = false;
-            @Nullable Throwable failure = null;
-            try {
-                channel.close();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = exception;
-            }
-            if (activeUpdateChannel == this) {
-                activeUpdateChannel = null;
-            }
-            boolean transferred = false;
-            if (failure == null && writable && changed) {
-                try {
-                    commitUpdatedEntry(this, content);
-                    transferred = true;
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = exception;
-                }
-            }
-            if (!transferred) {
-                releaseStoredContent(content);
-            }
-            throwFailure(failure);
-        }
-
-        /// Ensures this channel is open.
-        private void ensureChannelOpen() throws ClosedChannelException {
-            if (!channelOpen) {
-                throw new ClosedChannelException();
-            }
-        }
-    }
-
     /// Records a written entry when its body stream is closed successfully.
     @NotNullByDefault
     private final class WrittenEntryOutputStream extends OutputStream {
@@ -3114,137 +2837,4 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         }
     }
 
-    /// Exposes a forward-only output stream as a writable byte channel.
-    @NotNullByDefault
-    private static final class WritableEntryByteChannel implements SeekableByteChannel {
-        /// The wrapped output stream.
-        private final OutputStream output;
-
-        /// The current sequential write position.
-        private long position;
-
-        /// Whether this channel is open.
-        private boolean open = true;
-
-        /// Creates a writable byte channel.
-        private WritableEntryByteChannel(OutputStream output) {
-            this.output = Objects.requireNonNull(output, "output");
-        }
-
-        /// Reads are not supported for forward-only output entries.
-        @Override
-        public int read(ByteBuffer destination) {
-            throw new NonReadableChannelException();
-        }
-
-        /// Writes bytes at the current forward-only position.
-        @Override
-        public int write(ByteBuffer source) throws IOException {
-            ensureOpen();
-            int length = source.remaining();
-            if (source.hasArray()) {
-                int offset = source.arrayOffset() + source.position();
-                output.write(source.array(), offset, length);
-                source.position(source.limit());
-            } else {
-                byte[] buffer = new byte[Math.min(length, 8192)];
-                int remaining = length;
-                while (remaining > 0) {
-                    int chunk = Math.min(remaining, buffer.length);
-                    source.get(buffer, 0, chunk);
-                    output.write(buffer, 0, chunk);
-                    remaining -= chunk;
-                }
-            }
-            position += length;
-            return length;
-        }
-
-        /// Returns the current write position.
-        @Override
-        public long position() throws IOException {
-            ensureOpen();
-            return position;
-        }
-
-        /// Allows only retaining the current forward-only position.
-        @Override
-        public SeekableByteChannel position(long newPosition) throws IOException {
-            ensureOpen();
-            if (newPosition != position) {
-                throw new UnsupportedOperationException("TAR output entry channels are forward-only");
-            }
-            return this;
-        }
-
-        /// Returns the current written size.
-        @Override
-        public long size() throws IOException {
-            ensureOpen();
-            return position;
-        }
-
-        /// Truncation is not supported for forward-only output entries.
-        @Override
-        public SeekableByteChannel truncate(long size) throws IOException {
-            ensureOpen();
-            if (size != position) {
-                throw new UnsupportedOperationException("TAR output entry channels cannot be truncated");
-            }
-            return this;
-        }
-
-        /// Returns whether this channel is open.
-        @Override
-        public boolean isOpen() {
-            return open;
-        }
-
-        /// Closes the wrapped output stream.
-        @Override
-        public void close() throws IOException {
-            if (!open) {
-                return;
-            }
-            open = false;
-            output.close();
-        }
-
-        /// Ensures this channel is open.
-        private void ensureOpen() throws ClosedChannelException {
-            if (!open) {
-                throw new ClosedChannelException();
-            }
-        }
-    }
-
-    /// Implements a directory stream over a fixed list.
-    @NotNullByDefault
-    private static final class ListDirectoryStream implements DirectoryStream<Path> {
-        /// The paths exposed by this stream.
-        private final @Unmodifiable List<Path> paths;
-
-        /// Whether this stream is open.
-        private boolean open = true;
-
-        /// Creates a directory stream.
-        private ListDirectoryStream(List<Path> paths) {
-            this.paths = List.copyOf(paths);
-        }
-
-        /// Returns an iterator over paths.
-        @Override
-        public Iterator<Path> iterator() {
-            if (!open) {
-                throw new IllegalStateException("TAR directory stream is closed");
-            }
-            return paths.iterator();
-        }
-
-        /// Closes this stream.
-        @Override
-        public void close() {
-            open = false;
-        }
-    }
 }

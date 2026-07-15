@@ -4,6 +4,7 @@ import java.util.Properties
 
 dependencies {
     api(project(":arkivo-codec"))
+    implementation(project(":arkivo-base"))
     testImplementation("com.github.luben:zstd-jni:1.5.7-9")
 }
 

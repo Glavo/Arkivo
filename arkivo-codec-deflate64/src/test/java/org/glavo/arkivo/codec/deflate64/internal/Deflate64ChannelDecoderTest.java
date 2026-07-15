@@ -3,12 +3,15 @@
 
 package org.glavo.arkivo.codec.deflate64.internal;
 
+import org.glavo.arkivo.codec.ChannelOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.util.Arrays;
 import java.util.zip.Deflater;
@@ -19,9 +22,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Tests native raw Deflate64 block and history decoding.
+/// Tests channel-first raw Deflate64 block and history decoding.
 @NotNullByDefault
-public final class Deflate64InputStreamTest {
+public final class Deflate64ChannelDecoderTest {
     /// Verifies stored blocks and zero-length reads.
     @Test
     public void decodesStoredBlock() throws IOException {
@@ -29,10 +32,10 @@ public final class Deflate64InputStreamTest {
         BitWriter writer = new BitWriter();
         writer.writeStoredBlock(true, expected);
 
-        try (Deflate64InputStream input = input(writer)) {
-            assertEquals(0, input.read(new byte[4], 0, 0));
-            assertArrayEquals(expected, input.readAllBytes());
-            assertEquals(-1, input.read());
+        try (Deflate64ChannelDecoder input = input(writer)) {
+            assertEquals(0, input.read(ByteBuffer.allocate(0)));
+            assertArrayEquals(expected, readAll(input));
+            assertEquals(-1, input.read(ByteBuffer.allocate(1)));
         }
     }
 
@@ -53,8 +56,8 @@ public final class Deflate64InputStreamTest {
         for (int index = 0; index < expected.length; index++) {
             expected[index] = (byte) ('a' + index % 3);
         }
-        try (Deflate64InputStream input = input(writer)) {
-            assertArrayEquals(expected, input.readAllBytes());
+        try (Deflate64ChannelDecoder input = input(writer)) {
+            assertArrayEquals(expected, readAll(input));
         }
     }
 
@@ -77,8 +80,8 @@ public final class Deflate64InputStreamTest {
 
         byte[] expected = Arrays.copyOf(history, history.length + 3);
         System.arraycopy(history, 0, expected, history.length, 3);
-        try (Deflate64InputStream input = input(writer)) {
-            assertArrayEquals(expected, input.readAllBytes());
+        try (Deflate64ChannelDecoder input = input(writer)) {
+            assertArrayEquals(expected, readAll(input));
         }
     }
 
@@ -86,8 +89,8 @@ public final class Deflate64InputStreamTest {
     @Test
     public void decodesDynamicHuffmanBlock() throws IOException {
         BitWriter writer = dynamicLiteralAWriter();
-        try (Deflate64InputStream input = input(writer)) {
-            assertArrayEquals(new byte[]{'A', 'A', 'A', 'A'}, input.readAllBytes());
+        try (Deflate64ChannelDecoder input = input(writer)) {
+            assertArrayEquals(new byte[]{'A', 'A', 'A', 'A'}, readAll(input));
         }
     }
 
@@ -108,9 +111,8 @@ public final class Deflate64InputStreamTest {
             deflater.end();
         }
 
-        try (Deflate64InputStream input =
-                     new Deflate64InputStream(new ByteArrayInputStream(compressed.toByteArray()))) {
-            assertArrayEquals(expected, input.readAllBytes());
+        try (Deflate64ChannelDecoder input = decoder(compressed.toByteArray())) {
+            assertArrayEquals(expected, readAll(input));
         }
     }
 
@@ -120,8 +122,8 @@ public final class Deflate64InputStreamTest {
         BitWriter reserved = new BitWriter();
         reserved.writeBits(1, 1);
         reserved.writeBits(3, 2);
-        try (Deflate64InputStream input = input(reserved)) {
-            assertThrows(IOException.class, input::read);
+        try (Deflate64ChannelDecoder input = input(reserved)) {
+            assertThrows(IOException.class, () -> input.read(ByteBuffer.allocate(1)));
         }
 
         BitWriter stored = new BitWriter();
@@ -130,8 +132,8 @@ public final class Deflate64InputStreamTest {
         stored.alignToByte();
         stored.writeLittleEndianShort(1);
         stored.writeLittleEndianShort(0);
-        try (Deflate64InputStream input = input(stored)) {
-            assertThrows(IOException.class, input::read);
+        try (Deflate64ChannelDecoder input = input(stored)) {
+            assertThrows(IOException.class, () -> input.read(ByteBuffer.allocate(1)));
         }
 
         BitWriter distance = new BitWriter();
@@ -139,16 +141,16 @@ public final class Deflate64InputStreamTest {
         distance.writeFixedLiteralLength(257);
         distance.writeFixedDistance(0);
         distance.writeFixedLiteralLength(256);
-        try (Deflate64InputStream input = input(distance)) {
-            IOException distanceException = assertThrows(IOException.class, input::read);
+        try (Deflate64ChannelDecoder input = input(distance)) {
+            IOException distanceException = assertThrows(IOException.class, () -> input.read(ByteBuffer.allocate(1)));
             assertTrue(distanceException.getMessage().contains("exceeds available history"));
         }
 
         BitWriter symbol = new BitWriter();
         symbol.writeFixedBlockHeader();
         symbol.writeFixedLiteralLength(286);
-        try (Deflate64InputStream input = input(symbol)) {
-            IOException symbolException = assertThrows(IOException.class, input::read);
+        try (Deflate64ChannelDecoder input = input(symbol)) {
+            IOException symbolException = assertThrows(IOException.class, () -> input.read(ByteBuffer.allocate(1)));
             assertTrue(symbolException.getMessage().contains("literal/length symbol"));
         }
 
@@ -162,8 +164,8 @@ public final class Deflate64InputStreamTest {
         dynamic.writeBits(1, 3);
         dynamic.writeBits(1, 3);
         dynamic.writeBits(0, 3);
-        try (Deflate64InputStream input = input(dynamic)) {
-            IOException treeException = assertThrows(IOException.class, input::read);
+        try (Deflate64ChannelDecoder input = input(dynamic)) {
+            IOException treeException = assertThrows(IOException.class, () -> input.read(ByteBuffer.allocate(1)));
             assertTrue(treeException.getMessage().contains("oversubscribed"));
         }
     }
@@ -171,15 +173,15 @@ public final class Deflate64InputStreamTest {
     /// Verifies truncated fields and missing end-of-block symbols.
     @Test
     public void rejectsTruncatedStreams() throws IOException {
-        try (Deflate64InputStream input = new Deflate64InputStream(new ByteArrayInputStream(new byte[0]))) {
-            assertThrows(IOException.class, input::read);
+        try (Deflate64ChannelDecoder input = decoder(new byte[0])) {
+            assertThrows(IOException.class, () -> input.read(ByteBuffer.allocate(1)));
         }
 
         BitWriter fixed = new BitWriter();
         fixed.writeFixedBlockHeader();
         fixed.writeFixedLiteral('x');
-        try (Deflate64InputStream input = input(fixed)) {
-            assertThrows(IOException.class, input::readAllBytes);
+        try (Deflate64ChannelDecoder input = input(fixed)) {
+            assertThrows(IOException.class, () -> readAll(input));
         }
     }
 
@@ -187,12 +189,15 @@ public final class Deflate64InputStreamTest {
     @Test
     public void closesSource() throws IOException {
         TrackingInputStream source = new TrackingInputStream(new byte[]{1, 0, 0, (byte) 0xff, (byte) 0xff});
-        Deflate64InputStream input = new Deflate64InputStream(source);
+        Deflate64ChannelDecoder input = new Deflate64ChannelDecoder(
+                Channels.newChannel(source),
+                ChannelOwnership.CLOSE
+        );
         input.close();
         input.close();
 
         assertEquals(1, source.closeCount());
-        assertThrows(ClosedChannelException.class, input::read);
+        assertThrows(ClosedChannelException.class, () -> input.read(ByteBuffer.allocate(1)));
     }
 
     /// Creates a dynamic block containing four `A` literals.
@@ -230,8 +235,36 @@ public final class Deflate64InputStreamTest {
     }
 
     /// Opens a decoder for one generated bitstream.
-    private static Deflate64InputStream input(BitWriter writer) {
-        return new Deflate64InputStream(new ByteArrayInputStream(writer.toByteArray()));
+    private static Deflate64ChannelDecoder input(BitWriter writer) {
+        return decoder(writer.toByteArray());
+    }
+
+    /// Opens a decoder over in-memory compressed bytes.
+    private static Deflate64ChannelDecoder decoder(byte[] compressed) {
+        return new Deflate64ChannelDecoder(
+                Channels.newChannel(new ByteArrayInputStream(compressed)),
+                ChannelOwnership.CLOSE
+        );
+    }
+
+    /// Reads all bytes from a channel decoder.
+    private static byte[] readAll(Deflate64ChannelDecoder decoder) throws IOException {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ByteBuffer target = ByteBuffer.allocateDirect(8192);
+        while (true) {
+            target.clear();
+            int read = decoder.read(target);
+            if (read < 0) {
+                return output.toByteArray();
+            }
+            if (read == 0) {
+                throw new IOException("Deflate64 decoder made no progress");
+            }
+            target.flip();
+            byte[] chunk = new byte[target.remaining()];
+            target.get(chunk);
+            output.writeBytes(chunk);
+        }
     }
 
     /// Writes Deflate64 fields in their format-specific bit order.

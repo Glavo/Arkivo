@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.zip.internal;
 
 import org.glavo.arkivo.archive.zip.ZipEncryption;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -221,8 +222,7 @@ final class ZipAesExtraField {
 
     /// Writes a little-endian unsigned 16-bit value to a byte array.
     private static void writeUnsignedShort(byte[] bytes, int offset, int value) {
-        bytes[offset] = (byte) value;
-        bytes[offset + 1] = (byte) (value >>> 8);
+        ByteArrayAccess.writeShortLittleEndian(bytes, offset, (short) value);
     }
 
     /// Reads WinZip AES extra field payload bytes.

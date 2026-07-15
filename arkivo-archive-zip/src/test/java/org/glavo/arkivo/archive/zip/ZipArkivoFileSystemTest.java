@@ -50,6 +50,8 @@ import java.nio.file.ClosedFileSystemException;
 import java.nio.file.DirectoryNotEmptyException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileSystemException;
+import java.nio.file.FileSystemLoopException;
 import java.nio.file.FileStore;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
@@ -59,9 +61,11 @@ import java.nio.file.NotLinkException;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
+import java.nio.file.ProviderMismatchException;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributeView;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFileAttributeView;
@@ -83,9 +87,7 @@ import java.util.Set;
 import java.util.stream.StreamSupport;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
-import java.util.zip.Inflater;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipException;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
@@ -1279,6 +1281,158 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies closing a partially consumed Deflate descriptor entry preserves the following entry.
+    @Test
+    public void streamingReaderDrainsDeflatedDataDescriptorEntriesOnClose() throws IOException {
+        byte[] password = "deflate close secret".getBytes(StandardCharsets.UTF_8);
+        byte[] content = "partially consumed Deflate descriptor content".repeat(128)
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] after = "after partially consumed Deflate".getBytes(StandardCharsets.UTF_8);
+
+        for (ZipEncryption encryption : new ZipEncryption[]{
+                ZipEncryption.none(),
+                ZipEncryption.traditional(),
+                ZipEncryption.winZipAes256()
+        }) {
+            byte[] archive = streamingDeflatedDataDescriptorArchive(encryption, password, content, after);
+            Map<String, Object> environment = Map.of(
+                    ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                    ArkivoPasswordProvider.fixed(password)
+            );
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
+                    new ByteArrayInputStream(archive),
+                    environment
+            )) {
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals(ZipMethod.deflated(), attributes.method());
+                assertEquals(encryption, attributes.encryption());
+                try (InputStream input = reader.openInputStream()) {
+                    assertEquals(Byte.toUnsignedInt(content[0]), input.read());
+                }
+
+                assertEquals(true, reader.next());
+                try (InputStream input = reader.openInputStream()) {
+                    assertArrayEquals(after, input.readAllBytes());
+                }
+                assertEquals(false, reader.next());
+            }
+        }
+    }
+
+    /// Verifies an invalid Deflate descriptor does not consume the following entry.
+    @Test
+    public void streamingReaderRejectsInvalidDeflatedDataDescriptorsWithoutLosingFollowingEntry() throws IOException {
+        byte[] password = "deflate mismatch secret".getBytes(StandardCharsets.UTF_8);
+        byte[] content = "Deflate descriptor CRC mismatch".repeat(128).getBytes(StandardCharsets.UTF_8);
+        byte[] after = "after invalid Deflate descriptor".getBytes(StandardCharsets.UTF_8);
+
+        for (ZipEncryption encryption : new ZipEncryption[]{
+                ZipEncryption.none(),
+                ZipEncryption.traditional(),
+                ZipEncryption.winZipAes256()
+        }) {
+            byte[] archive = tamperFirstDataDescriptorCrc(
+                    streamingDeflatedDataDescriptorArchive(encryption, password, content, after)
+            );
+            Map<String, Object> environment = Map.of(
+                    ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                    ArkivoPasswordProvider.fixed(password)
+            );
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
+                    new ByteArrayInputStream(archive),
+                    environment
+            )) {
+                assertEquals(true, reader.next());
+                InputStream input = reader.openInputStream();
+                IOException exception = assertThrows(IOException.class, input::readAllBytes);
+                assertEquals(true, exception.getMessage().contains("data descriptor"));
+                input.close();
+
+                assertEquals(true, reader.next());
+                try (InputStream afterInput = reader.openInputStream()) {
+                    assertArrayEquals(after, afterInput.readAllBytes());
+                }
+                assertEquals(false, reader.next());
+            }
+        }
+    }
+
+    /// Verifies closing a partially consumed LZMA descriptor entry preserves the following entry.
+    @Test
+    public void streamingReaderDrainsLzmaDataDescriptorEntriesOnClose() throws IOException {
+        byte[] password = "lzma close secret".getBytes(StandardCharsets.UTF_8);
+        byte[] content = "partially consumed LZMA descriptor content".repeat(128)
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] after = "after partially consumed LZMA".getBytes(StandardCharsets.UTF_8);
+
+        for (ZipEncryption encryption : new ZipEncryption[]{
+                ZipEncryption.none(),
+                ZipEncryption.traditional(),
+                ZipEncryption.winZipAes256()
+        }) {
+            byte[] archive = streamingLzmaDataDescriptorArchive(encryption, password, content, after);
+            Map<String, Object> environment = Map.of(
+                    ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                    ArkivoPasswordProvider.fixed(password)
+            );
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
+                    new ByteArrayInputStream(archive),
+                    environment
+            )) {
+                assertEquals(true, reader.next());
+                assertEquals(encryption, reader.readAttributes(ZipArkivoEntryAttributes.class).encryption());
+                try (InputStream input = reader.openInputStream()) {
+                    assertEquals(Byte.toUnsignedInt(content[0]), input.read());
+                }
+
+                assertEquals(true, reader.next());
+                try (InputStream input = reader.openInputStream()) {
+                    assertArrayEquals(after, input.readAllBytes());
+                }
+                assertEquals(false, reader.next());
+            }
+        }
+    }
+
+    /// Verifies an invalid LZMA descriptor does not consume the following entry.
+    @Test
+    public void streamingReaderRejectsInvalidLzmaDataDescriptorsWithoutLosingFollowingEntry() throws IOException {
+        byte[] password = "lzma mismatch secret".getBytes(StandardCharsets.UTF_8);
+        byte[] content = "LZMA descriptor CRC mismatch".repeat(128).getBytes(StandardCharsets.UTF_8);
+        byte[] after = "after invalid LZMA descriptor".getBytes(StandardCharsets.UTF_8);
+
+        for (ZipEncryption encryption : new ZipEncryption[]{
+                ZipEncryption.none(),
+                ZipEncryption.traditional(),
+                ZipEncryption.winZipAes256()
+        }) {
+            byte[] archive = tamperFirstDataDescriptorCrc(
+                    streamingLzmaDataDescriptorArchive(encryption, password, content, after)
+            );
+            Map<String, Object> environment = Map.of(
+                    ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                    ArkivoPasswordProvider.fixed(password)
+            );
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
+                    new ByteArrayInputStream(archive),
+                    environment
+            )) {
+                assertEquals(true, reader.next());
+                InputStream input = reader.openInputStream();
+                IOException exception = assertThrows(IOException.class, input::readAllBytes);
+                assertEquals(true, exception.getMessage().contains("data descriptor"));
+                input.close();
+
+                assertEquals(true, reader.next());
+                try (InputStream afterInput = reader.openInputStream()) {
+                    assertArrayEquals(after, afterInput.readAllBytes());
+                }
+                assertEquals(false, reader.next());
+            }
+        }
+    }
+
     /// Verifies that the streaming ZIP reader can read WinZip AES encrypted Zstandard data descriptors.
     @Test
     public void streamingReaderWinZipAesZstandardDataDescriptorFromWriter() throws IOException {
@@ -1869,9 +2023,13 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals(lastModifiedTime, fileAttributes.lastModifiedTime());
 
                 Path link = fileSystem.getPath("/meta/link");
-                ZipArkivoEntryAttributes linkAttributes = Files.readAttributes(link, ZipArkivoEntryAttributes.class);
+                ZipArkivoEntryAttributes linkAttributes = Files.readAttributes(
+                        link,
+                        ZipArkivoEntryAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
                 assertEquals(true, linkAttributes.isSymbolicLink());
-                assertEquals("stored.bin", Files.readString(link, StandardCharsets.UTF_8));
+                assertArrayEquals(content, Files.readAllBytes(link));
                 assertEquals(fileSystem.getPath("stored.bin"), Files.readSymbolicLink(link));
                 assertThrows(NotLinkException.class, () -> Files.readSymbolicLink(fileSystem.getPath("/meta/stored.bin")));
             }
@@ -2581,7 +2739,11 @@ public final class ZipArkivoFileSystemTest {
                 }
                 PosixFileAttributes directoryAttributes = Files.readAttributes(directory, PosixFileAttributes.class);
                 ZipArkivoEntryAttributes fileAttributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
-                ZipArkivoEntryAttributes linkAttributes = Files.readAttributes(link, ZipArkivoEntryAttributes.class);
+                ZipArkivoEntryAttributes linkAttributes = Files.readAttributes(
+                        link,
+                        ZipArkivoEntryAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
                 ZipArkivoEntryAttributeView fileAttributeView =
                         Files.getFileAttributeView(file, ZipArkivoEntryAttributeView.class);
                 Map<String, Object> namedAttributes = Files.readAttributes(file, "zip:size,compressedSize,method");
@@ -2614,6 +2776,15 @@ public final class ZipArkivoFileSystemTest {
                 }
                 assertEquals(List.of("/dir"), rootChildren);
                 assertEquals(List.of("/dir/channel.bin", "/dir/hello.txt", "/dir/link"), directoryChildren);
+
+                Files.createSymbolicLink(fileSystem.getPath("/dir-link"), Path.of("dir"));
+                Files.createSymbolicLink(
+                        fileSystem.getPath("/absolute-link"),
+                        fileSystem.getPath("/dir/hello.txt")
+                );
+                Files.createSymbolicLink(fileSystem.getPath("/cycle-a"), Path.of("cycle-b"));
+                Files.createSymbolicLink(fileSystem.getPath("/cycle-b"), Path.of("cycle-a"));
+                assertSymbolicLinkIdentity(fileSystem, false);
             }
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
@@ -2621,16 +2792,105 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals("hello", Files.readString(fileSystem.getPath("/dir/hello.txt"), StandardCharsets.UTF_8));
                 assertEquals("channel", Files.readString(fileSystem.getPath("/dir/channel.bin"), StandardCharsets.UTF_8));
                 Path link = fileSystem.getPath("/dir/link");
-                ZipArkivoEntryAttributes linkAttributes = Files.readAttributes(link, ZipArkivoEntryAttributes.class);
+                ZipArkivoEntryAttributes linkAttributes = Files.readAttributes(
+                        link,
+                        ZipArkivoEntryAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
                 assertEquals(false, linkAttributes.isRegularFile());
                 assertEquals(true, linkAttributes.isSymbolicLink());
                 assertEquals(0, linkAttributes.generalPurposeFlags() & (1 << 3));
-                assertEquals("hello.txt", Files.readString(link, StandardCharsets.UTF_8));
+                assertEquals("hello", Files.readString(link, StandardCharsets.UTF_8));
                 assertEquals(fileSystem.getPath("hello.txt"), Files.readSymbolicLink(link));
+                assertSymbolicLinkIdentity(fileSystem, true);
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(
+                            ArkivoFileSystem.OPEN_OPTIONS.key(),
+                            Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+                    )
+            )) {
+                assertSymbolicLinkIdentity(fileSystem, true);
             }
         } finally {
             deleteTemporaryArchive(archivePath);
         }
+    }
+
+    /// Verifies real-path resolution and file identity through persisted ZIP symbolic links.
+    /// @param contentReadable whether completed entry bodies are readable in the current file-system mode
+    private static void assertSymbolicLinkIdentity(
+            ZipArkivoFileSystem fileSystem,
+            boolean contentReadable
+    ) throws IOException {
+        Path file = fileSystem.getPath("/dir/hello.txt");
+        Path link = fileSystem.getPath("/dir/link");
+
+        assertEquals(file, file.toRealPath());
+        assertEquals(file, link.toRealPath());
+        assertEquals(link, link.toRealPath(LinkOption.NOFOLLOW_LINKS));
+        assertEquals(file, fileSystem.getPath("/dir-link/link").toRealPath());
+        assertEquals(file, fileSystem.getPath("/absolute-link").toRealPath());
+        assertEquals(file, fileSystem.getPath("dir/../dir/link").toRealPath());
+        if (contentReadable) {
+            assertEquals("hello", Files.readString(link, StandardCharsets.UTF_8));
+            try (SeekableByteChannel channel = Files.newByteChannel(link, StandardOpenOption.READ)) {
+                assertEquals(5L, channel.size());
+            }
+        } else {
+            assertThrows(IOException.class, () -> Files.readString(link, StandardCharsets.UTF_8));
+        }
+        assertEquals(true, Files.readAttributes(link, BasicFileAttributes.class).isRegularFile());
+        assertEquals(true, Files.readAttributes(
+                link,
+                BasicFileAttributes.class,
+                LinkOption.NOFOLLOW_LINKS
+        ).isSymbolicLink());
+        BasicFileAttributeView followedBasicView = Files.getFileAttributeView(
+                link,
+                BasicFileAttributeView.class
+        );
+        BasicFileAttributeView linkBasicView = Files.getFileAttributeView(
+                link,
+                BasicFileAttributeView.class,
+                LinkOption.NOFOLLOW_LINKS
+        );
+        assertNotNull(followedBasicView);
+        assertNotNull(linkBasicView);
+        assertEquals(true, followedBasicView.readAttributes().isRegularFile());
+        assertEquals(true, linkBasicView.readAttributes().isSymbolicLink());
+        ZipArkivoEntryAttributeView followedZipView = Files.getFileAttributeView(
+                link,
+                ZipArkivoEntryAttributeView.class
+        );
+        ZipArkivoEntryAttributeView linkZipView = Files.getFileAttributeView(
+                link,
+                ZipArkivoEntryAttributeView.class,
+                LinkOption.NOFOLLOW_LINKS
+        );
+        assertNotNull(followedZipView);
+        assertNotNull(linkZipView);
+        assertEquals("dir/hello.txt", followedZipView.readAttributes().path());
+        assertEquals("dir/link", linkZipView.readAttributes().path());
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(fileSystem.getPath("/dir-link"))) {
+            ArrayList<String> children = new ArrayList<>();
+            for (Path child : stream) {
+                children.add(child.toString());
+            }
+            assertEquals(Set.of("/dir/channel.bin", "/dir/hello.txt", "/dir/link"), Set.copyOf(children));
+        }
+        assertEquals(true, Files.isSameFile(file, link));
+        assertEquals(true, Files.isSameFile(file, fileSystem.getPath("/dir-link/hello.txt")));
+        assertEquals(false, Files.isSameFile(file, fileSystem.getPath("/dir/channel.bin")));
+        assertEquals(false, Files.isSameFile(file, Path.of("foreign")));
+        assertThrows(FileSystemLoopException.class, () -> fileSystem.getPath("/cycle-a").toRealPath());
+        assertThrows(NoSuchFileException.class, () -> fileSystem.getPath("/missing.txt").toRealPath());
+        assertThrows(
+                NoSuchFileException.class,
+                () -> Files.isSameFile(fileSystem.getPath("/missing.txt"), fileSystem.getPath("/missing.txt"))
+        );
     }
 
     /// Verifies that ZIP entries can be copied into a writable ZIP file system target.
@@ -2638,10 +2898,14 @@ public final class ZipArkivoFileSystemTest {
     public void fileSystemCreateCopiesEntryIntoWritableArchive() throws IOException {
         Path sourcePath = createTemporaryArchivePath("fs-copy-source-");
         Path targetPath = sourcePath.getParent().resolve("copy-target.zip");
+        FileTime lastModifiedTime = FileTime.fromMillis(1_893_456_000_000L);
 
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(sourcePath)) {
                 writer.beginFile("hello.txt");
+                ZipArkivoEntryAttributeView attributeView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(attributeView);
+                attributeView.setTimes(lastModifiedTime, null, null);
                 try (OutputStream output = writer.openOutputStream()) {
                     output.write("hello".getBytes(StandardCharsets.UTF_8));
                 }
@@ -2661,7 +2925,11 @@ public final class ZipArkivoFileSystemTest {
                  )) {
                 Path target = targetFileSystem.getPath("/copied.txt");
                 assertEquals(false, Files.exists(target));
-                Files.copy(sourceFileSystem.getPath("/hello.txt"), target);
+                Files.copy(
+                        sourceFileSystem.getPath("/hello.txt"),
+                        target,
+                        StandardCopyOption.COPY_ATTRIBUTES
+                );
                 assertEquals(true, Files.exists(target));
             }
 
@@ -2669,6 +2937,10 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals(
                         "hello",
                         Files.readString(targetFileSystem.getPath("/copied.txt"), StandardCharsets.UTF_8)
+                );
+                assertEquals(
+                        lastModifiedTime,
+                        Files.getLastModifiedTime(targetFileSystem.getPath("/copied.txt"))
                 );
             }
         } finally {
@@ -2718,8 +2990,15 @@ public final class ZipArkivoFileSystemTest {
                         "target",
                         Files.readString(targetFileSystem.getPath("/followed.txt"), StandardCharsets.UTF_8)
                 );
-                assertEquals(true, Files.readAttributes(copiedLink, ZipArkivoEntryAttributes.class).isSymbolicLink());
-                assertEquals("target.txt", Files.readString(copiedLink, StandardCharsets.UTF_8));
+                assertEquals(true, Files.readAttributes(
+                        copiedLink,
+                        ZipArkivoEntryAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                ).isSymbolicLink());
+                assertThrows(
+                        NoSuchFileException.class,
+                        () -> Files.readString(copiedLink, StandardCharsets.UTF_8)
+                );
                 assertEquals(targetFileSystem.getPath("target.txt"), Files.readSymbolicLink(copiedLink));
             }
         } finally {
@@ -2756,11 +3035,15 @@ public final class ZipArkivoFileSystemTest {
                     Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
             )) {
                 Path link = fileSystem.getPath("/link");
-                ZipArkivoEntryAttributes linkAttributes = Files.readAttributes(link, ZipArkivoEntryAttributes.class);
+                ZipArkivoEntryAttributes linkAttributes = Files.readAttributes(
+                        link,
+                        ZipArkivoEntryAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
                 assertEquals(true, linkAttributes.isSymbolicLink());
                 assertEquals(ZipEncryption.traditional(), linkAttributes.encryption());
                 assertEquals(0, linkAttributes.generalPurposeFlags() & (1 << 3));
-                assertEquals("target.txt", Files.readString(link, StandardCharsets.UTF_8));
+                assertThrows(NoSuchFileException.class, () -> Files.readString(link, StandardCharsets.UTF_8));
                 assertEquals(fileSystem.getPath("target.txt"), Files.readSymbolicLink(link));
             }
         } finally {
@@ -2828,7 +3111,11 @@ public final class ZipArkivoFileSystemTest {
                 Path link = fileSystem.getPath("/bin/latest");
                 PosixFileAttributes directoryAttributes = Files.readAttributes(directory, PosixFileAttributes.class);
                 PosixFileAttributes fileAttributes = Files.readAttributes(file, PosixFileAttributes.class);
-                PosixFileAttributes linkAttributes = Files.readAttributes(link, PosixFileAttributes.class);
+                PosixFileAttributes linkAttributes = Files.readAttributes(
+                        link,
+                        PosixFileAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
 
                 assertEquals(directoryPermissions, directoryAttributes.permissions());
                 assertEquals(filePermissions, fileAttributes.permissions());
@@ -2836,6 +3123,7 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals(linkPermissions, linkAttributes.permissions());
                 assertEquals(fileSystem.getPath("tool.sh"), Files.readSymbolicLink(link));
                 assertEquals("ok", Files.readString(file, StandardCharsets.UTF_8));
+                assertEquals("ok", Files.readString(link, StandardCharsets.UTF_8));
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -3080,6 +3368,363 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
+    /// Verifies complete-rewrite moves preserve entry bodies, metadata, links, and local-record names.
+    @Test
+    public void fileSystemUpdateMovesExistingAndWrittenEntries() throws IOException {
+        Path archivePath = createTemporaryArchivePath("fs-update-move-");
+        Path foreignTarget = archivePath.getParent().resolve("foreign-move-target");
+        byte[] extraData = extraField(0x7171, new byte[]{1, 2, 3, 4});
+        byte[] rawComment = new byte[]{5, 6, 7};
+        Map<String, Object> updateEnvironment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+        );
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath)) {
+                writer.beginDirectory("dir");
+                writer.endEntry();
+                writer.beginFile("dir/child.txt");
+                ZipArkivoEntryAttributeView childView = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(childView);
+                childView.setCentralDirectoryExtraData(extraData);
+                childView.setRawComment(rawComment);
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("child".getBytes(StandardCharsets.UTF_8));
+                }
+                writer.beginSymbolicLink("dir/link", "child.txt");
+                writer.endEntry();
+                writer.beginFile("target.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("old-target".getBytes(StandardCharsets.UTF_8));
+                }
+                writer.beginFile("replacement.txt");
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("new-target".getBytes(StandardCharsets.UTF_8));
+                }
+            }
+            byte[] originalCompressedChild = compressedEntryPayload(archivePath, "dir/child.txt");
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, updateEnvironment)) {
+                Path directory = fileSystem.getPath("/dir");
+                Path movedDirectory = fileSystem.getPath("/renamed-目录");
+                Files.move(directory, movedDirectory, StandardCopyOption.ATOMIC_MOVE);
+                assertEquals("child", Files.readString(
+                        movedDirectory.resolve("child.txt"),
+                        StandardCharsets.UTF_8
+                ));
+                assertEquals(
+                        "child.txt",
+                        Files.readSymbolicLink(movedDirectory.resolve("link")).toString()
+                );
+                assertEquals(false, Files.exists(directory, LinkOption.NOFOLLOW_LINKS));
+
+                Files.move(
+                        fileSystem.getPath("/replacement.txt"),
+                        fileSystem.getPath("/target.txt"),
+                        StandardCopyOption.REPLACE_EXISTING
+                );
+                assertEquals("new-target", Files.readString(
+                        fileSystem.getPath("/target.txt"),
+                        StandardCharsets.UTF_8
+                ));
+
+                Path written = fileSystem.getPath("/written.txt");
+                Files.writeString(written, "written", StandardCharsets.UTF_8);
+                Path movedWritten = fileSystem.getPath("/moved-written.txt");
+                Files.move(written, movedWritten);
+                assertEquals("written", Files.readString(movedWritten, StandardCharsets.UTF_8));
+
+                assertThrows(
+                        FileSystemException.class,
+                        () -> Files.move(movedDirectory, movedDirectory.resolve("nested"))
+                );
+                assertThrows(
+                        FileAlreadyExistsException.class,
+                        () -> Files.move(movedDirectory.resolve("link"), fileSystem.getPath("/target.txt"))
+                );
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> Files.move(movedWritten, fileSystem.getPath("/ignored.txt"), LinkOption.NOFOLLOW_LINKS)
+                );
+                assertThrows(
+                        ProviderMismatchException.class,
+                        () -> fileSystem.provider().move(movedWritten, foreignTarget)
+                );
+                Path crossFileSystemSource = fileSystem.getPath("/cross-file-system.txt");
+                Files.writeString(crossFileSystemSource, "cross", StandardCharsets.UTF_8);
+                Files.move(crossFileSystemSource, foreignTarget);
+                assertEquals("cross", Files.readString(foreignTarget, StandardCharsets.UTF_8));
+                assertEquals(false, Files.exists(crossFileSystemSource));
+                Files.move(movedWritten, movedWritten, StandardCopyOption.ATOMIC_MOVE);
+
+                assertEquals("child", Files.readString(
+                        movedDirectory.resolve("child.txt"),
+                        StandardCharsets.UTF_8
+                ));
+                assertEquals("written", Files.readString(movedWritten, StandardCharsets.UTF_8));
+                assertEquals(false, Files.exists(fileSystem.getPath("/ignored.txt")));
+                ZipArkivoEntryAttributes attributes = Files.readAttributes(
+                        movedDirectory.resolve("child.txt"),
+                        ZipArkivoEntryAttributes.class
+                );
+                assertArrayEquals(extraData, attributes.centralDirectoryExtraData());
+                assertArrayEquals(rawComment, attributes.rawComment());
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                Path movedDirectory = fileSystem.getPath("/renamed-目录");
+                assertEquals("child", Files.readString(
+                        movedDirectory.resolve("child.txt"),
+                        StandardCharsets.UTF_8
+                ));
+                assertEquals(
+                        "child.txt",
+                        Files.readSymbolicLink(movedDirectory.resolve("link")).toString()
+                );
+                assertEquals("new-target", Files.readString(
+                        fileSystem.getPath("/target.txt"),
+                        StandardCharsets.UTF_8
+                ));
+                assertEquals("written", Files.readString(
+                        fileSystem.getPath("/moved-written.txt"),
+                        StandardCharsets.UTF_8
+                ));
+                assertEquals(false, Files.exists(fileSystem.getPath("/dir"), LinkOption.NOFOLLOW_LINKS));
+                assertEquals(false, Files.exists(fileSystem.getPath("/replacement.txt")));
+                assertEquals(false, Files.exists(fileSystem.getPath("/written.txt")));
+                ZipArkivoEntryAttributes attributes = Files.readAttributes(
+                        movedDirectory.resolve("child.txt"),
+                        ZipArkivoEntryAttributes.class
+                );
+                assertArrayEquals(extraData, attributes.centralDirectoryExtraData());
+                assertArrayEquals(rawComment, attributes.rawComment());
+            }
+
+            Map<String, String> sequentialEntries = readSequentialTextEntries(archivePath);
+            assertEquals("child", sequentialEntries.get("renamed-目录/child.txt"));
+            assertEquals("child.txt", sequentialEntries.get("renamed-目录/link"));
+            assertEquals("new-target", sequentialEntries.get("target.txt"));
+            assertEquals("written", sequentialEntries.get("moved-written.txt"));
+            assertEquals(false, sequentialEntries.containsKey("dir/child.txt"));
+            assertEquals(false, sequentialEntries.containsKey("replacement.txt"));
+            assertEquals(false, sequentialEntries.containsKey("cross-file-system.txt"));
+            assertArrayEquals(
+                    originalCompressedChild,
+                    compressedEntryPayload(archivePath, "renamed-目录/child.txt")
+            );
+        } finally {
+            Files.deleteIfExists(foreignTarget);
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies complete-rewrite updates persist mutable ZIP metadata without rewriting entry payloads.
+    @Test
+    public void fileSystemUpdatePersistsEntryMetadata() throws IOException {
+        Path archivePath = createTemporaryArchivePath("fs-update-metadata-");
+        FileTime existingTime = FileTime.fromMillis(1_900_000_000_000L);
+        FileTime writtenTime = FileTime.fromMillis(1_910_000_000_000L);
+        FileTime encryptedTime = FileTime.fromMillis(1_800_000_000_000L);
+        FileTime rejectedEncryptedTime = FileTime.fromMillis(encryptedTime.toMillis() + 7_200_000L);
+        byte[] password = "metadata password".getBytes(StandardCharsets.UTF_8);
+        byte[] existingComment = "updated existing".getBytes(StandardCharsets.UTF_8);
+        byte[] writtenComment = "updated written".getBytes(StandardCharsets.UTF_8);
+        byte[] linkComment = "updated link".getBytes(StandardCharsets.UTF_8);
+        Set<PosixFilePermission> permissions = Set.of(
+                PosixFilePermission.OWNER_READ,
+                PosixFilePermission.OWNER_WRITE,
+                PosixFilePermission.GROUP_READ
+        );
+        Map<String, Object> updateEnvironment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
+                ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                ArkivoPasswordProvider.fixed(password)
+        );
+
+        try {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
+                    archivePath,
+                    Map.of(
+                            ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                            ArkivoPasswordProvider.fixed(password),
+                            ZipArkivoFileSystem.DEFAULT_ENCRYPTION.key(),
+                            ZipEncryption.traditional()
+                    )
+            )) {
+                writer.beginDirectory("dir");
+                writer.endEntry();
+                writer.beginFile("dir/existing.txt");
+                ZipArkivoEntryAttributeView existingWriteView = writer.attributeView(
+                        ZipArkivoEntryAttributeView.class
+                );
+                assertNotNull(existingWriteView);
+                existingWriteView.setEncryption(ZipEncryption.none());
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("existing payload".getBytes(StandardCharsets.UTF_8));
+                }
+                writer.beginSymbolicLink("dir/link", "existing.txt");
+                writer.endEntry();
+                writer.beginFile("dir/encrypted.txt");
+                ZipArkivoEntryAttributeView encryptedWriteView = writer.attributeView(
+                        ZipArkivoEntryAttributeView.class
+                );
+                assertNotNull(encryptedWriteView);
+                encryptedWriteView.setTimes(encryptedTime, null, null);
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write("encrypted payload".getBytes(StandardCharsets.UTF_8));
+                }
+            }
+            byte[] originalCompressedPayload = compressedEntryPayload(archivePath, "dir/existing.txt");
+            byte[] originalEncryptedPayload = compressedEntryPayload(archivePath, "dir/encrypted.txt");
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, updateEnvironment)) {
+                Path existing = fileSystem.getPath("/dir/existing.txt");
+                Path directory = fileSystem.getPath("/dir");
+                Files.setLastModifiedTime(existing, existingTime);
+                Files.setAttribute(existing, "zip:rawComment", existingComment);
+                ZipArkivoEntryAttributeView existingView = Files.getFileAttributeView(
+                        existing,
+                        ZipArkivoEntryAttributeView.class
+                );
+                assertNotNull(existingView);
+                existingView.setPermissions(permissions);
+                Path link = fileSystem.getPath("/dir/link");
+                ZipArkivoEntryAttributeView followedLinkView = Files.getFileAttributeView(
+                        link,
+                        ZipArkivoEntryAttributeView.class
+                );
+                ZipArkivoEntryAttributeView linkView = Files.getFileAttributeView(
+                        link,
+                        ZipArkivoEntryAttributeView.class,
+                        LinkOption.NOFOLLOW_LINKS
+                );
+                assertNotNull(followedLinkView);
+                assertNotNull(linkView);
+                followedLinkView.setInternalAttributes(7);
+                linkView.setRawComment(linkComment);
+                PosixFileAttributeView posixView = Files.getFileAttributeView(
+                        existing,
+                        PosixFileAttributeView.class
+                );
+                assertNotNull(posixView);
+                posixView.setOwner(posixView.getOwner());
+                posixView.setGroup(posixView.readAttributes().group());
+
+                ZipArkivoEntryAttributes beforeRejectedChanges = existingView.readAttributes();
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> existingView.setMethod(ZipMethod.stored())
+                );
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> existingView.setTimes(null, existingTime, null)
+                );
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () -> existingView.setInternalAttributes(0x1_0000)
+                );
+                assertEquals(beforeRejectedChanges.method(), existingView.readAttributes().method());
+                assertEquals(7, existingView.readAttributes().internalAttributes());
+                assertArrayEquals(linkComment, linkView.readAttributes().rawComment());
+
+                Path encrypted = fileSystem.getPath("/dir/encrypted.txt");
+                assertThrows(
+                        UnsupportedOperationException.class,
+                        () -> Files.setLastModifiedTime(encrypted, rejectedEncryptedTime)
+                );
+                assertEquals(encryptedTime, Files.getLastModifiedTime(encrypted));
+
+                long directoryExternalAttributes = 0x41ed_0010L;
+                Files.setAttribute(directory, "zip:externalAttributes", directoryExternalAttributes);
+                assertEquals(
+                        directoryExternalAttributes,
+                        Files.readAttributes(directory, ZipArkivoEntryAttributes.class).externalAttributes()
+                );
+
+                Path written = fileSystem.getPath("/dir/written.txt");
+                Files.writeString(written, "written payload", StandardCharsets.UTF_8);
+                ZipArkivoEntryAttributeView writtenView = Files.getFileAttributeView(
+                        written,
+                        ZipArkivoEntryAttributeView.class
+                );
+                assertNotNull(writtenView);
+                writtenView.setTimes(writtenTime, null, null);
+                writtenView.setPermissions(permissions);
+                writtenView.setInternalAttributes(9);
+                writtenView.setRawComment(writtenComment);
+
+                ZipArkivoEntryAttributes existingAttributes = existingView.readAttributes();
+                assertEquals(existingTime, existingAttributes.lastModifiedTime());
+                assertEquals(permissions, existingAttributes.permissions());
+                assertEquals(7, existingAttributes.internalAttributes());
+                assertArrayEquals(existingComment, existingAttributes.rawComment());
+                assertArrayEquals(linkComment, Files.readAttributes(
+                        fileSystem.getPath("/dir/link"),
+                        ZipArkivoEntryAttributes.class,
+                        LinkOption.NOFOLLOW_LINKS
+                ).rawComment());
+                ZipArkivoEntryAttributes writtenAttributes = writtenView.readAttributes();
+                assertEquals(writtenTime, writtenAttributes.lastModifiedTime());
+                assertEquals(permissions, writtenAttributes.permissions());
+                assertEquals(9, writtenAttributes.internalAttributes());
+                assertArrayEquals(writtenComment, writtenAttributes.rawComment());
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
+                    archivePath,
+                    Map.of(
+                            ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                            ArkivoPasswordProvider.fixed(password)
+                    )
+            )) {
+                ZipArkivoEntryAttributes existingAttributes = Files.readAttributes(
+                        fileSystem.getPath("/dir/existing.txt"),
+                        ZipArkivoEntryAttributes.class
+                );
+                assertEquals(existingTime, existingAttributes.lastModifiedTime());
+                assertEquals(permissions, existingAttributes.permissions());
+                assertEquals(7, existingAttributes.internalAttributes());
+                assertArrayEquals(existingComment, existingAttributes.rawComment());
+
+                ZipArkivoEntryAttributes writtenAttributes = Files.readAttributes(
+                        fileSystem.getPath("/dir/written.txt"),
+                        ZipArkivoEntryAttributes.class
+                );
+                assertEquals(writtenTime, writtenAttributes.lastModifiedTime());
+                assertEquals(permissions, writtenAttributes.permissions());
+                assertEquals(9, writtenAttributes.internalAttributes());
+                assertArrayEquals(writtenComment, writtenAttributes.rawComment());
+                assertEquals(
+                        0x41ed_0010L,
+                        Files.readAttributes(
+                                fileSystem.getPath("/dir"),
+                                ZipArkivoEntryAttributes.class
+                        ).externalAttributes()
+                );
+                assertEquals(encryptedTime, Files.getLastModifiedTime(fileSystem.getPath("/dir/encrypted.txt")));
+                assertEquals(
+                        "encrypted payload",
+                        Files.readString(fileSystem.getPath("/dir/encrypted.txt"), StandardCharsets.UTF_8)
+                );
+            }
+
+            assertArrayEquals(
+                    originalCompressedPayload,
+                    compressedEntryPayload(archivePath, "dir/existing.txt")
+            );
+            assertArrayEquals(
+                    originalEncryptedPayload,
+                    compressedEntryPayload(archivePath, "dir/encrypted.txt")
+            );
+            assertLocalAndCentralTimestampMatch(archivePath, "dir/existing.txt");
+            assertLocalAndCentralTimestampMatch(archivePath, "dir/written.txt");
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
     /// Verifies that read/write update mode can add, replace, and delete ZIP entries.
     @Test
     public void fileSystemUpdateAddsReplacesAndDeletesEntries() throws IOException {
@@ -3126,6 +3771,123 @@ public final class ZipArkivoFileSystemTest {
                         StandardCharsets.UTF_8
                 ));
             }
+        } finally {
+            deleteTemporaryArchive(archivePath);
+        }
+    }
+
+    /// Verifies complete-rewrite channels provide random-access NIO mutation semantics.
+    @Test
+    public void fileSystemUpdateSupportsRandomAccessEntryChannels() throws IOException {
+        Path archivePath = createTemporaryArchivePath("fs-update-random-");
+        byte[] removedBody = "random-update-original-secret".getBytes(StandardCharsets.UTF_8);
+        Map<String, Object> updateEnvironment = Map.of(
+                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+        );
+
+        try {
+            try (ZipOutputStream output = new ZipOutputStream(Files.newOutputStream(archivePath))) {
+                writeStoredZipEntry(output, "patch.txt", "abcdef".getBytes(StandardCharsets.UTF_8), null, null);
+                writeStoredZipEntry(output, "append.txt", "left".getBytes(StandardCharsets.UTF_8), null, null);
+                writeStoredZipEntry(output, "truncate.txt", "lengthy".getBytes(StandardCharsets.UTF_8), null, null);
+                writeStoredZipEntry(output, "replace.txt", removedBody, null, null);
+                writeStoredZipEntry(output, "conflict.txt", "stable".getBytes(StandardCharsets.UTF_8), null, null);
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, updateEnvironment)) {
+                Path patch = fileSystem.getPath("/patch.txt");
+                try (SeekableByteChannel channel = Files.newByteChannel(
+                        patch,
+                        Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+                )) {
+                    ByteBuffer prefix = ByteBuffer.allocate(2);
+                    assertEquals(2, channel.read(prefix));
+                    assertArrayEquals("ab".getBytes(StandardCharsets.UTF_8), prefix.array());
+                    channel.position(2L);
+                    assertEquals(2, channel.write(ByteBuffer.wrap("XY".getBytes(StandardCharsets.UTF_8))));
+                }
+                assertEquals("abXYef", Files.readString(patch, StandardCharsets.UTF_8));
+
+                Path append = fileSystem.getPath("/append.txt");
+                try (SeekableByteChannel channel = Files.newByteChannel(
+                        append,
+                        Set.of(StandardOpenOption.APPEND)
+                )) {
+                    channel.position(0L);
+                    channel.write(ByteBuffer.wrap("right".getBytes(StandardCharsets.UTF_8)));
+                }
+                assertEquals("leftright", Files.readString(append, StandardCharsets.UTF_8));
+
+                Path truncate = fileSystem.getPath("/truncate.txt");
+                try (SeekableByteChannel channel = Files.newByteChannel(
+                        truncate,
+                        Set.of(StandardOpenOption.WRITE)
+                )) {
+                    channel.truncate(3L);
+                }
+                assertEquals("len", Files.readString(truncate, StandardCharsets.UTF_8));
+
+                Path created = fileSystem.getPath("/created.txt");
+                try (SeekableByteChannel channel = Files.newByteChannel(
+                        created,
+                        Set.of(
+                                StandardOpenOption.READ,
+                                StandardOpenOption.WRITE,
+                                StandardOpenOption.CREATE_NEW
+                        )
+                )) {
+                    channel.write(ByteBuffer.wrap("created".getBytes(StandardCharsets.UTF_8)));
+                    channel.position(0L);
+                    ByteBuffer content = ByteBuffer.allocate(7);
+                    assertEquals(7, channel.read(content));
+                    assertArrayEquals("created".getBytes(StandardCharsets.UTF_8), content.array());
+                }
+                assertEquals("created", Files.readString(created, StandardCharsets.UTF_8));
+
+                assertThrows(FileAlreadyExistsException.class, () -> {
+                    try (SeekableByteChannel ignored = Files.newByteChannel(
+                            patch,
+                            Set.of(StandardOpenOption.WRITE, StandardOpenOption.CREATE_NEW)
+                    )) {
+                        throw new AssertionError("CREATE_NEW unexpectedly opened an existing ZIP entry");
+                    }
+                });
+                assertThrows(NoSuchFileException.class, () -> {
+                    try (SeekableByteChannel ignored = Files.newByteChannel(
+                            fileSystem.getPath("/missing.txt"),
+                            Set.of(StandardOpenOption.WRITE)
+                    )) {
+                        throw new AssertionError("WRITE unexpectedly opened a missing ZIP entry");
+                    }
+                });
+
+                Path conflict = fileSystem.getPath("/conflict.txt");
+                try (SeekableByteChannel ignored = Files.newByteChannel(
+                        conflict,
+                        Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+                )) {
+                    assertThrows(IOException.class, () -> Files.delete(fileSystem.getPath("/append.txt")));
+                }
+                assertEquals("stable", Files.readString(conflict, StandardCharsets.UTF_8));
+
+                try (SeekableByteChannel channel = Files.newByteChannel(
+                        fileSystem.getPath("/replace.txt"),
+                        Set.of(StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)
+                )) {
+                    channel.write(ByteBuffer.wrap("new".getBytes(StandardCharsets.UTF_8)));
+                }
+                assertEquals("new", Files.readString(fileSystem.getPath("/replace.txt"), StandardCharsets.UTF_8));
+            }
+
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
+                assertEquals("abXYef", Files.readString(fileSystem.getPath("/patch.txt"), StandardCharsets.UTF_8));
+                assertEquals("leftright", Files.readString(fileSystem.getPath("/append.txt"), StandardCharsets.UTF_8));
+                assertEquals("len", Files.readString(fileSystem.getPath("/truncate.txt"), StandardCharsets.UTF_8));
+                assertEquals("created", Files.readString(fileSystem.getPath("/created.txt"), StandardCharsets.UTF_8));
+                assertEquals("new", Files.readString(fileSystem.getPath("/replace.txt"), StandardCharsets.UTF_8));
+            }
+            assertEquals(false, containsBytes(Files.readAllBytes(archivePath), removedBody));
         } finally {
             deleteTemporaryArchive(archivePath);
         }
@@ -4188,131 +4950,6 @@ public final class ZipArkivoFileSystemTest {
         input.close();
     }
 
-    /// Verifies that deflated entry close preserves an invalid deflate failure when validation also fails.
-    @Test
-    public void deflatedEntryCloseFailureSuppressesValidationFailure() throws Exception {
-        byte[] content = "deflated entry close failure".getBytes(StandardCharsets.UTF_8);
-        byte[] compressed = deflateRaw(content);
-        compressed[0] = (byte) 0xff;
-        InputStream input = newEntryInflaterInputStream(
-                new ByteArrayInputStream(compressed),
-                new Inflater(true),
-                null,
-                false,
-                compressed.length,
-                crc32(content),
-                content.length
-        );
-
-        IOException exception = assertThrows(IOException.class, input::close);
-        assertEquals(true, exception instanceof ZipException);
-        assertEquals(1, exception.getSuppressed().length);
-        assertEquals(true, exception.getSuppressed()[0].getMessage().contains(
-                "ZIP entry data does not match local header"
-        ));
-        assertThrows(IOException.class, input::read);
-        input.close();
-    }
-
-    /// Verifies that runtime deflated entry drain failures still close the delegate stream.
-    @Test
-    public void deflatedEntryRuntimeDrainFailureClosesDelegate() throws Exception {
-        byte[] content = "deflated runtime drain failure".getBytes(StandardCharsets.UTF_8);
-        ReadFailingCloseTrackingInputStream delegate = new ReadFailingCloseTrackingInputStream(content, 0);
-        InputStream input = newEntryInflaterInputStream(
-                delegate,
-                new Inflater(true),
-                null,
-                false,
-                ZipArkivoEntryAttributes.UNKNOWN_SIZE,
-                ZipArkivoEntryAttributes.UNKNOWN_CRC32,
-                ZipArkivoEntryAttributes.UNKNOWN_SIZE
-        );
-
-        RuntimeException exception = assertThrows(RuntimeException.class, input::close);
-
-        assertEquals("read failed", exception.getMessage());
-        assertEquals(true, delegate.closed());
-        assertThrows(IOException.class, input::read);
-        input.close();
-    }
-
-    /// Verifies that runtime WinZip AES descriptor drain failures still run finish cleanup.
-    @Test
-    public void aesDataDescriptorInflaterRuntimeDrainFailureRunsFinish() throws Exception {
-        byte[] password = "secret".getBytes(StandardCharsets.UTF_8);
-        ReadFailingCloseTrackingInputStream delegate = new ReadFailingCloseTrackingInputStream(new byte[0], 0);
-        InputStream input = newAesDataDescriptorInflaterInputStream(
-                new PushbackInputStream(delegate, 32),
-                newWinZipAesDecryptor(password),
-                10,
-                28,
-                false
-        );
-
-        RuntimeException exception = assertThrows(RuntimeException.class, input::close);
-
-        assertEquals("read failed", exception.getMessage());
-        assertEquals(1, exception.getSuppressed().length);
-        assertEquals("read failed", exception.getSuppressed()[0].getMessage());
-        assertThrows(IOException.class, input::read);
-        input.close();
-    }
-
-    /// Verifies that AES authentication failure remains primary when descriptor reading fails at runtime.
-    @Test
-    public void aesDataDescriptorInflaterAuthenticationFailureSuppressesRuntimeDescriptorFailure() throws Exception {
-        byte[] password = "secret".getBytes(StandardCharsets.UTF_8);
-        byte[] content = "AES descriptor authentication failure".getBytes(StandardCharsets.UTF_8);
-        byte[] encryptedBody = winZipAesEncryptedBody(password, deflateRaw(content));
-        byte[] encryptedContentAndAuthentication = Arrays.copyOfRange(
-                encryptedBody,
-                winZipAesTestSalt().length + 2,
-                encryptedBody.length
-        );
-        encryptedContentAndAuthentication[encryptedContentAndAuthentication.length - 1] ^= 1;
-        ReadFailingCloseTrackingInputStream delegate = new ReadFailingCloseTrackingInputStream(
-                encryptedContentAndAuthentication,
-                encryptedContentAndAuthentication.length
-        );
-        InputStream input = newAesDataDescriptorInflaterInputStream(
-                new PushbackInputStream(delegate, 32),
-                newWinZipAesDecryptor(password),
-                10,
-                28,
-                false
-        );
-
-        IOException exception = assertThrows(IOException.class, input::close);
-
-        assertEquals("WinZip AES authentication failed", exception.getMessage());
-        assertEquals(1, exception.getSuppressed().length);
-        assertEquals(IllegalStateException.class, exception.getSuppressed()[0].getClass());
-        assertEquals("read failed", exception.getSuppressed()[0].getMessage());
-        assertThrows(IOException.class, input::read);
-        input.close();
-    }
-
-    /// Verifies that runtime encrypted descriptor drain failures still run finish cleanup.
-    @Test
-    public void encryptedDataDescriptorInflaterRuntimeDrainFailureRunsFinish() throws Exception {
-        byte[] password = "secret".getBytes(StandardCharsets.UTF_8);
-        ReadFailingCloseTrackingInputStream delegate = new ReadFailingCloseTrackingInputStream(new byte[0], 0);
-        InputStream input = newEncryptedDataDescriptorInflaterInputStream(
-                new PushbackInputStream(delegate, 32),
-                newTraditionalDecryptor(password),
-                false
-        );
-
-        RuntimeException exception = assertThrows(RuntimeException.class, input::close);
-
-        assertEquals("read failed", exception.getMessage());
-        assertEquals(1, exception.getSuppressed().length);
-        assertEquals("read failed", exception.getSuppressed()[0].getMessage());
-        assertThrows(IOException.class, input::read);
-        input.close();
-    }
-
     /// Verifies that deflated streaming ZIP entry data must match known local header metadata.
     @Test
     public void streamingReaderDeflatedKnownSizeMismatchIsRejected() throws IOException {
@@ -4505,6 +5142,165 @@ public final class ZipArkivoFileSystemTest {
                 assertArrayEquals(content, input.readAllBytes());
             }
             assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies Deflate64 data descriptors with and without signatures preserve the following entry.
+    @Test
+    public void streamingReaderReadsDeflate64DataDescriptorEntries() throws IOException {
+        byte[] firstName = "deflate64-descriptor.txt".getBytes(StandardCharsets.UTF_8);
+        byte[] firstContent = "Deflate64 descriptor content".repeat(128).getBytes(StandardCharsets.UTF_8);
+        byte[] secondName = "after.txt".getBytes(StandardCharsets.UTF_8);
+        byte[] secondContent = "after Deflate64 descriptor".getBytes(StandardCharsets.UTF_8);
+
+        for (boolean signedDescriptor : new boolean[]{true, false}) {
+            byte[] archive = streamingDeflate64DataDescriptorArchive(
+                    firstName,
+                    firstContent,
+                    signedDescriptor,
+                    secondName,
+                    secondContent
+            );
+            try (ZipArkivoStreamingReader reader =
+                         ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals("deflate64-descriptor.txt", attributes.path());
+                assertEquals(ZipMethod.deflate64(), attributes.method());
+                assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.compressedSize());
+                assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.size());
+                try (InputStream input = reader.openInputStream()) {
+                    assertArrayEquals(firstContent, input.readAllBytes());
+                }
+
+                assertEquals(true, reader.next());
+                assertEquals("after.txt", reader.readAttributes(ZipArkivoEntryAttributes.class).path());
+                try (InputStream input = reader.openInputStream()) {
+                    assertArrayEquals(secondContent, input.readAllBytes());
+                }
+                assertEquals(false, reader.next());
+            }
+        }
+    }
+
+    /// Verifies closing a partial Deflate64 descriptor entry drains to the following local header.
+    @Test
+    public void streamingReaderDrainsDeflate64DataDescriptorEntryOnClose() throws IOException {
+        byte[] firstContent = "partially consumed Deflate64 descriptor".repeat(256)
+                .getBytes(StandardCharsets.UTF_8);
+        byte[] secondContent = "entry after partial close".getBytes(StandardCharsets.UTF_8);
+        byte[] archive = streamingDeflate64DataDescriptorArchive(
+                "partial.txt".getBytes(StandardCharsets.UTF_8),
+                firstContent,
+                true,
+                "after.txt".getBytes(StandardCharsets.UTF_8),
+                secondContent
+        );
+
+        try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
+            assertEquals(true, reader.next());
+            try (InputStream input = reader.openInputStream()) {
+                assertEquals(Byte.toUnsignedInt(firstContent[0]), input.read());
+            }
+            assertEquals(true, reader.next());
+            try (InputStream input = reader.openInputStream()) {
+                assertArrayEquals(secondContent, input.readAllBytes());
+            }
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies encrypted Deflate64 descriptor entries preserve authentication and following-entry boundaries.
+    @Test
+    public void streamingReaderReadsEncryptedDeflate64DataDescriptorEntries() throws IOException {
+        byte[] password = "deflate64 secret".getBytes(StandardCharsets.UTF_8);
+        byte[] content = "encrypted Deflate64 descriptor content".repeat(128).getBytes(StandardCharsets.UTF_8);
+        byte[] after = "after encrypted Deflate64".getBytes(StandardCharsets.UTF_8);
+        Map<String, Object> environment = Map.of(
+                ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                ArkivoPasswordProvider.fixed(password)
+        );
+
+        for (ZipEncryption encryption : new ZipEncryption[]{
+                ZipEncryption.traditional(),
+                ZipEncryption.winZipAes256()
+        }) {
+            ByteArrayOutputStream archive = new ByteArrayOutputStream();
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(archive, environment)) {
+                writer.beginFile("secret.txt");
+                ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(view);
+                view.setMethod(ZipMethod.deflate64());
+                view.setEncryption(encryption);
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write(content);
+                }
+
+                writer.beginFile("after.txt");
+                view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+                assertNotNull(view);
+                view.setMethod(ZipMethod.stored());
+                try (OutputStream output = writer.openOutputStream()) {
+                    output.write(after);
+                }
+            }
+
+            try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
+                    new ByteArrayInputStream(archive.toByteArray()),
+                    environment
+            )) {
+                assertEquals(true, reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                assertEquals(ZipMethod.deflate64(), attributes.method());
+                assertEquals(encryption, attributes.encryption());
+                try (InputStream input = reader.openInputStream()) {
+                    assertArrayEquals(content, input.readAllBytes());
+                }
+
+                assertEquals(true, reader.next());
+                try (InputStream input = reader.openInputStream()) {
+                    assertArrayEquals(after, input.readAllBytes());
+                }
+                assertEquals(false, reader.next());
+            }
+        }
+    }
+
+    /// Verifies corrupt and truncated Deflate64 data descriptors fail before parsing another record.
+    @Test
+    public void streamingReaderRejectsInvalidDeflate64DataDescriptors() throws IOException {
+        byte[] name = "invalid-deflate64.txt".getBytes(StandardCharsets.UTF_8);
+        byte[] content = "invalid Deflate64 descriptor".getBytes(StandardCharsets.UTF_8);
+        byte[] compressed = deflate64StoredBlock(content);
+        byte[] archive = streamingDeflate64DataDescriptorArchive(
+                name,
+                content,
+                true,
+                "after.txt".getBytes(StandardCharsets.UTF_8),
+                new byte[]{1}
+        );
+        int descriptorOffset = 30 + name.length + compressed.length;
+
+        byte[] corrupt = archive.clone();
+        corrupt[descriptorOffset + Integer.BYTES] ^= 1;
+        try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(corrupt))) {
+            assertEquals(true, reader.next());
+            IOException exception = assertThrows(IOException.class, () -> {
+                try (InputStream input = reader.openInputStream()) {
+                    input.readAllBytes();
+                }
+            });
+            assertEquals(true, exception.getMessage().contains("data descriptor"));
+        }
+
+        byte[] truncated = Arrays.copyOf(archive, descriptorOffset + Integer.BYTES + Integer.BYTES);
+        try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(truncated))) {
+            assertEquals(true, reader.next());
+            assertThrows(IOException.class, () -> {
+                try (InputStream input = reader.openInputStream()) {
+                    input.readAllBytes();
+                }
+            });
         }
     }
 
@@ -5493,7 +6289,17 @@ public final class ZipArkivoFileSystemTest {
                 assertPreambleContent(preamble, fileSystem);
                 assertEquals("keep", Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8));
                 assertEquals("replace", Files.readString(fileSystem.getPath("/replace.txt"), StandardCharsets.UTF_8));
-                Files.writeString(fileSystem.getPath("/replace.txt"), "new", StandardCharsets.UTF_8);
+                try (SeekableByteChannel entry = Files.newByteChannel(
+                        fileSystem.getPath("/replace.txt"),
+                        Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+                )) {
+                    ByteBuffer prefix = ByteBuffer.allocate(3);
+                    assertEquals(3, entry.read(prefix));
+                    assertArrayEquals("rep".getBytes(StandardCharsets.UTF_8), prefix.array());
+                    entry.position(0L);
+                    entry.write(ByteBuffer.wrap("new".getBytes(StandardCharsets.UTF_8)));
+                    entry.truncate(3L);
+                }
                 assertEquals("new", Files.readString(fileSystem.getPath("/replace.txt"), StandardCharsets.UTF_8));
                 Files.delete(fileSystem.getPath("/remove.txt"));
                 assertThrows(NoSuchFileException.class, () -> Files.readAllBytes(fileSystem.getPath("/remove.txt")));
@@ -6137,9 +6943,9 @@ public final class ZipArkivoFileSystemTest {
         }
     }
 
-    /// Verifies that decoded seekable entry channels reject entries too large to materialize in memory.
+    /// Verifies that decoded seekable channels stage sizes beyond array limits and still validate actual content.
     @Test
-    public void rejectsOversizedDecodedSeekableEntry() throws IOException {
+    public void validatesOversizedDecodedSeekableEntryWithoutArrayLimit() throws IOException {
         byte[] name = "huge-deflated.txt".getBytes(StandardCharsets.UTF_8);
         long uncompressedSize = (long) Integer.MAX_VALUE + 1L;
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithRawNameAndLocalCentralMetadata(
@@ -6162,9 +6968,7 @@ public final class ZipArkivoFileSystemTest {
                         IOException.class,
                         () -> Files.newByteChannel(fileSystem.getPath("/huge-deflated.txt"))
                 );
-                assertEquals(true, exception.getMessage().contains(
-                        "ZIP entry is too large for seekable decoded access"
-                ));
+                assertEquals("Unexpected end of raw deflate stream", exception.getMessage());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -6996,7 +7800,7 @@ public final class ZipArkivoFileSystemTest {
 
     /// Verifies that closing a writable ZIP file system opened by URI unregisters it immediately.
     @Test
-    public void writableUriCloseUnregistersFileSystem() throws Exception {
+    public void writableUriCloseUnregistersFileSystem() throws IOException {
         Path archivePath = createTemporaryArchivePath("uri-writable-close-");
         ZipArkivoFileSystemProvider provider = new ZipArkivoFileSystemProvider();
         URI fileSystemUri = URI.create(ZipArkivoFileSystemProvider.SCHEME + ":" + archivePath.toUri());
@@ -7011,11 +7815,10 @@ public final class ZipArkivoFileSystemTest {
 
         try {
             ArkivoFileSystem fileSystem = provider.newFileSystem(fileSystemUri, environment);
-            assertEquals(1, providerFileSystemCount(provider));
+            assertEquals(fileSystem, provider.getFileSystem(fileSystemUri));
 
             fileSystem.close();
 
-            assertEquals(0, providerFileSystemCount(provider));
             assertThrows(FileSystemNotFoundException.class, () -> provider.getFileSystem(fileSystemUri));
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -7247,6 +8050,101 @@ public final class ZipArkivoFileSystemTest {
             }
         }
         return Map.copyOf(entries);
+    }
+
+    /// Returns the exact compressed payload bytes for one non-ZIP64 test entry.
+    private static byte[] compressedEntryPayload(Path archivePath, String expectedName) throws IOException {
+        byte[] archive = Files.readAllBytes(archivePath);
+        ByteBuffer buffer = ByteBuffer.wrap(archive).order(ByteOrder.LITTLE_ENDIAN);
+        int endOffset = -1;
+        for (int offset = archive.length - 22; offset >= 0; offset--) {
+            if (buffer.getInt(offset) == 0x06054b50
+                    && offset + 22 + Short.toUnsignedInt(buffer.getShort(offset + 20)) == archive.length) {
+                endOffset = offset;
+                break;
+            }
+        }
+        if (endOffset < 0) {
+            throw new IOException("Test ZIP end record not found");
+        }
+
+        int centralDirectoryOffset = buffer.getInt(endOffset + 16);
+        int centralDirectorySize = buffer.getInt(endOffset + 12);
+        int centralDirectoryEnd = centralDirectoryOffset + centralDirectorySize;
+        for (int offset = centralDirectoryOffset; offset < centralDirectoryEnd; ) {
+            if (buffer.getInt(offset) != 0x02014b50) {
+                throw new IOException("Test ZIP central directory entry not found");
+            }
+            int nameLength = Short.toUnsignedInt(buffer.getShort(offset + 28));
+            int extraLength = Short.toUnsignedInt(buffer.getShort(offset + 30));
+            int commentLength = Short.toUnsignedInt(buffer.getShort(offset + 32));
+            String name = new String(
+                    archive,
+                    offset + 46,
+                    nameLength,
+                    StandardCharsets.UTF_8
+            );
+            if (expectedName.equals(name)) {
+                int compressedSize = Math.toIntExact(Integer.toUnsignedLong(buffer.getInt(offset + 20)));
+                int localHeaderOffset = Math.toIntExact(Integer.toUnsignedLong(buffer.getInt(offset + 42)));
+                if (buffer.getInt(localHeaderOffset) != 0x04034b50) {
+                    throw new IOException("Test ZIP local header not found");
+                }
+                int localNameLength = Short.toUnsignedInt(buffer.getShort(localHeaderOffset + 26));
+                int localExtraLength = Short.toUnsignedInt(buffer.getShort(localHeaderOffset + 28));
+                int dataOffset = localHeaderOffset + 30 + localNameLength + localExtraLength;
+                return Arrays.copyOfRange(archive, dataOffset, dataOffset + compressedSize);
+            }
+            offset += 46 + nameLength + extraLength + commentLength;
+        }
+        throw new NoSuchFileException(expectedName);
+    }
+
+    /// Asserts that one non-ZIP64 test entry stores matching local and central DOS timestamps.
+    private static void assertLocalAndCentralTimestampMatch(Path archivePath, String expectedName) throws IOException {
+        byte[] archive = Files.readAllBytes(archivePath);
+        ByteBuffer buffer = ByteBuffer.wrap(archive).order(ByteOrder.LITTLE_ENDIAN);
+        int endOffset = -1;
+        for (int offset = archive.length - 22; offset >= 0; offset--) {
+            if (buffer.getInt(offset) == 0x06054b50
+                    && offset + 22 + Short.toUnsignedInt(buffer.getShort(offset + 20)) == archive.length) {
+                endOffset = offset;
+                break;
+            }
+        }
+        if (endOffset < 0) {
+            throw new IOException("Test ZIP end record not found");
+        }
+
+        int centralDirectoryOffset = buffer.getInt(endOffset + 16);
+        int centralDirectorySize = buffer.getInt(endOffset + 12);
+        int centralDirectoryEnd = centralDirectoryOffset + centralDirectorySize;
+        for (int offset = centralDirectoryOffset; offset < centralDirectoryEnd; ) {
+            if (buffer.getInt(offset) != 0x02014b50) {
+                throw new IOException("Test ZIP central directory entry not found");
+            }
+            int nameLength = Short.toUnsignedInt(buffer.getShort(offset + 28));
+            int extraLength = Short.toUnsignedInt(buffer.getShort(offset + 30));
+            int commentLength = Short.toUnsignedInt(buffer.getShort(offset + 32));
+            String name = new String(archive, offset + 46, nameLength, StandardCharsets.UTF_8);
+            if (expectedName.equals(name)) {
+                int localHeaderOffset = Math.toIntExact(Integer.toUnsignedLong(buffer.getInt(offset + 42)));
+                if (buffer.getInt(localHeaderOffset) != 0x04034b50) {
+                    throw new IOException("Test ZIP local header not found");
+                }
+                assertEquals(
+                        Short.toUnsignedInt(buffer.getShort(offset + 12)),
+                        Short.toUnsignedInt(buffer.getShort(localHeaderOffset + 10))
+                );
+                assertEquals(
+                        Short.toUnsignedInt(buffer.getShort(offset + 14)),
+                        Short.toUnsignedInt(buffer.getShort(localHeaderOffset + 12))
+                );
+                return;
+            }
+            offset += 46 + nameLength + extraLength + commentLength;
+        }
+        throw new NoSuchFileException(expectedName);
     }
 
     /// Writes one stored JDK ZIP entry with optional extra data and comment metadata.
@@ -7503,14 +8401,6 @@ public final class ZipArkivoFileSystemTest {
                  0L,
                  metadata
         );
-    }
-
-    /// Returns the number of file systems currently registered in the provider.
-    private static int providerFileSystemCount(ZipArkivoFileSystemProvider provider) throws ReflectiveOperationException {
-        Field field = ZipArkivoFileSystemProvider.class.getDeclaredField("fileSystems");
-        field.setAccessible(true);
-        Map<?, ?> fileSystems = (Map<?, ?>) field.get(provider);
-        return fileSystems.size();
     }
 
     /// Returns a ZIP update fixture with a preamble and three regular entries.
@@ -8366,6 +9256,123 @@ public final class ZipArkivoFileSystemTest {
         buffer.putShort((short) 0);
         buffer.put(name);
         buffer.put(compressed);
+        return buffer.array();
+    }
+
+    /// Returns a writer-produced Deflate descriptor entry followed by one stored entry.
+    private static byte[] streamingDeflatedDataDescriptorArchive(
+            ZipEncryption encryption,
+            byte[] password,
+            byte[] content,
+            byte[] after
+    ) throws IOException {
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        Map<String, Object> environment = Map.of(
+                ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                ArkivoPasswordProvider.fixed(password)
+        );
+        try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(archive, environment)) {
+            writer.beginFile("deflated.txt");
+            ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+            assertNotNull(view);
+            view.setMethod(ZipMethod.deflated());
+            view.setEncryption(encryption);
+            try (OutputStream output = writer.openOutputStream()) {
+                output.write(content);
+            }
+
+            writer.beginFile("after.txt");
+            view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+            assertNotNull(view);
+            view.setMethod(ZipMethod.stored());
+            try (OutputStream output = writer.openOutputStream()) {
+                output.write(after);
+            }
+        }
+        return archive.toByteArray();
+    }
+
+    /// Returns a writer-produced LZMA descriptor entry followed by one stored entry.
+    private static byte[] streamingLzmaDataDescriptorArchive(
+            ZipEncryption encryption,
+            byte[] password,
+            byte[] content,
+            byte[] after
+    ) throws IOException {
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        Map<String, Object> environment = Map.of(
+                ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                ArkivoPasswordProvider.fixed(password)
+        );
+        try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(archive, environment)) {
+            writer.beginFile("lzma.txt");
+            ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+            assertNotNull(view);
+            view.setMethod(ZipMethod.lzma());
+            view.setEncryption(encryption);
+            try (OutputStream output = writer.openOutputStream()) {
+                output.write(content);
+            }
+
+            writer.beginFile("after.txt");
+            view = writer.attributeView(ZipArkivoEntryAttributeView.class);
+            assertNotNull(view);
+            view.setMethod(ZipMethod.stored());
+            try (OutputStream output = writer.openOutputStream()) {
+                output.write(after);
+            }
+        }
+        return archive.toByteArray();
+    }
+
+    /// Returns a Deflate64 descriptor entry followed by one known-size stored entry.
+    private static byte[] streamingDeflate64DataDescriptorArchive(
+            byte[] firstName,
+            byte[] firstContent,
+            boolean signedDescriptor,
+            byte[] secondName,
+            byte[] secondContent
+    ) {
+        byte[] compressed = deflate64StoredBlock(firstContent);
+        int descriptorSize = Integer.BYTES * (signedDescriptor ? 4 : 3);
+        ByteBuffer buffer = ByteBuffer.allocate(
+                30 + firstName.length + compressed.length + descriptorSize
+                        + 30 + secondName.length + secondContent.length
+        ).order(ByteOrder.LITTLE_ENDIAN);
+
+        buffer.putInt(0x04034b50);
+        buffer.putShort((short) DEFLATE64_VERSION_NEEDED);
+        buffer.putShort((short) (1 << 3));
+        buffer.putShort((short) ZipMethod.DEFLATE64_ID);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putInt(0);
+        buffer.putInt(0);
+        buffer.putInt(0);
+        buffer.putShort((short) firstName.length);
+        buffer.putShort((short) 0);
+        buffer.put(firstName);
+        buffer.put(compressed);
+        if (signedDescriptor) {
+            buffer.putInt(0x08074b50);
+        }
+        buffer.putInt((int) crc32(firstContent));
+        buffer.putInt(compressed.length);
+        buffer.putInt(firstContent.length);
+
+        buffer.putInt(0x04034b50);
+        buffer.putShort((short) 20);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) ZipMethod.STORED_ID);
+        buffer.putShort((short) 0);
+        buffer.putShort((short) 0);
+        buffer.putInt((int) crc32(secondContent));
+        buffer.putInt(secondContent.length);
+        buffer.putInt(secondContent.length);
+        buffer.putShort((short) secondName.length);
+        buffer.putShort((short) 0);
+        buffer.put(secondName);
+        buffer.put(secondContent);
         return buffer.array();
     }
 
@@ -9700,117 +10707,6 @@ public final class ZipArkivoFileSystemTest {
         );
         constructor.setAccessible(true);
         return (InputStream) constructor.newInstance(owner, input, decryptor, zip64DataDescriptor);
-    }
-
-    /// Creates an inflater entry input stream through its private constructor.
-    private static InputStream newEntryInflaterInputStream(
-            InputStream input,
-            Inflater inflater,
-            @Nullable PushbackInputStream pushbackInput,
-            boolean zip64DataDescriptor,
-            long expectedCompressedSize,
-            long expectedCrc32,
-            long expectedUncompressedSize
-    ) throws ReflectiveOperationException {
-        Class<?> ownerType = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl"
-        );
-        Constructor<?> ownerConstructor = ownerType.getConstructor(
-                ReadableByteChannel.class,
-                ZipArkivoFileSystemConfig.class
-        );
-        Object owner = ownerConstructor.newInstance(
-                Channels.newChannel(InputStream.nullInputStream()),
-                ZipArkivoFileSystemConfig.DEFAULTS
-        );
-        Class<?> type = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl$EntryInflaterInputStream"
-        );
-        Constructor<?> constructor = type.getDeclaredConstructor(
-                ownerType,
-                InputStream.class,
-                Inflater.class,
-                PushbackInputStream.class,
-                boolean.class,
-                long.class,
-                long.class,
-                long.class
-        );
-        constructor.setAccessible(true);
-        return (InputStream) constructor.newInstance(
-                owner,
-                input,
-                inflater,
-                pushbackInput,
-                zip64DataDescriptor,
-                expectedCompressedSize,
-                expectedCrc32,
-                expectedUncompressedSize
-        );
-    }
-
-    /// Creates a WinZip AES data descriptor inflater input stream through its private constructor.
-    private static InputStream newAesDataDescriptorInflaterInputStream(
-            PushbackInputStream input,
-            Object decryptor,
-            int authenticationCodeSize,
-            int overheadSize,
-            boolean zip64DataDescriptor
-    ) throws ReflectiveOperationException {
-        Class<?> ownerType = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl"
-        );
-        Object owner = newZipStreamingReader(ownerType);
-        Class<?> decryptorType = Class.forName("org.glavo.arkivo.archive.zip.internal.ZipAesCrypto$Decryptor");
-        Class<?> type = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl$AesDataDescriptorInflaterInputStream"
-        );
-        Constructor<?> constructor = type.getDeclaredConstructor(
-                ownerType,
-                PushbackInputStream.class,
-                decryptorType,
-                int.class,
-                int.class,
-                boolean.class
-        );
-        constructor.setAccessible(true);
-        return (InputStream) constructor.newInstance(
-                owner,
-                input,
-                decryptor,
-                authenticationCodeSize,
-                overheadSize,
-                zip64DataDescriptor
-        );
-    }
-
-    /// Creates an encrypted data descriptor inflater input stream through its private constructor.
-    private static InputStream newEncryptedDataDescriptorInflaterInputStream(
-            PushbackInputStream input,
-            Object decryptor,
-            boolean zip64DataDescriptor
-    ) throws ReflectiveOperationException {
-        Class<?> ownerType = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl"
-        );
-        Object owner = newZipStreamingReader(ownerType);
-        Class<?> decryptorType = Class.forName("org.glavo.arkivo.archive.zip.internal.ZipTraditionalCrypto$Decryptor");
-        Class<?> type = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.ZipArkivoStreamingReaderImpl$EncryptedDataDescriptorInflaterInputStream"
-        );
-        Constructor<?> constructor = type.getDeclaredConstructor(
-                ownerType,
-                PushbackInputStream.class,
-                decryptorType,
-                boolean.class
-        );
-        constructor.setAccessible(true);
-        return (InputStream) constructor.newInstance(
-                owner,
-                input,
-                decryptor,
-                zip64DataDescriptor
-        );
     }
 
     /// Creates a ZIP streaming reader through its public constructor.

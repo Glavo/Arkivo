@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 package org.glavo.arkivo.archive.rar.internal;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -61,11 +62,11 @@ final class Rar3StandardFilters {
             position++;
             filePosition++;
             if (opcode != 0xe8 && (!includeE9 || opcode != 0xe9)) continue;
-            int address = readInt32(result, position);
+            int address = ByteArrayAccess.readIntLittleEndian(result, position);
             if (address < 0) {
-                if (address + filePosition >= 0) writeInt32(result, position, address + X86_ADDRESS_SPACE);
+                if (address + filePosition >= 0) ByteArrayAccess.writeIntLittleEndian(result, position, address + X86_ADDRESS_SPACE);
             } else if (address < X86_ADDRESS_SPACE) {
-                writeInt32(result, position, address - filePosition);
+                ByteArrayAccess.writeIntLittleEndian(result, position, address - filePosition);
             }
             position += 4;
             filePosition += 4;
@@ -203,25 +204,10 @@ final class Rar3StandardFilters {
         }
     }
 
-    /// Reads a little-endian 32-bit integer.
-    private static int readInt32(byte[] data, int offset) {
-        return data[offset] & 0xff | (data[offset + 1] & 0xff) << 8
-                | (data[offset + 2] & 0xff) << 16 | data[offset + 3] << 24;
-    }
-
-    /// Writes a little-endian 32-bit integer.
-    private static void writeInt32(byte[] data, int offset, int value) {
-        data[offset] = (byte) value;
-        data[offset + 1] = (byte) (value >>> 8);
-        data[offset + 2] = (byte) (value >>> 16);
-        data[offset + 3] = (byte) (value >>> 24);
-    }
-
     /// Reads an unaligned field from a little-endian Itanium bundle.
     private static int getLittleEndianBits(byte[] data, int base, int position, int count) {
         int byteOffset = base + (position >>> 3);
-        long value = (data[byteOffset] & 0xffL) | (data[byteOffset + 1] & 0xffL) << 8
-                | (data[byteOffset + 2] & 0xffL) << 16 | (data[byteOffset + 3] & 0xffL) << 24;
+        long value = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(data, byteOffset));
         return (int) (value >>> (position & 7) & (1L << count) - 1L);
     }
 
@@ -229,13 +215,9 @@ final class Rar3StandardFilters {
     private static void setLittleEndianBits(byte[] data, int base, int position, int bits) {
         int byteOffset = base + (position >>> 3);
         int shift = position & 7;
-        long value = (data[byteOffset] & 0xffL) | (data[byteOffset + 1] & 0xffL) << 8
-                | (data[byteOffset + 2] & 0xffL) << 16 | (data[byteOffset + 3] & 0xffL) << 24;
+        long value = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(data, byteOffset));
         long fieldMask = ((1L << 20) - 1L) << shift;
         value = value & ~fieldMask | ((long) bits << shift & fieldMask);
-        data[byteOffset] = (byte) value;
-        data[byteOffset + 1] = (byte) (value >>> 8);
-        data[byteOffset + 2] = (byte) (value >>> 16);
-        data[byteOffset + 3] = (byte) (value >>> 24);
+        ByteArrayAccess.writeIntLittleEndian(data, byteOffset, (int) value);
     }
 }

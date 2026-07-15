@@ -51,6 +51,9 @@ public final class XzChannelDecoder implements CompressionDecoder {
     /// The maximum permitted LZMA2 dictionary size, or the unknown sentinel.
     private final long maximumWindowSize;
 
+    /// Whether supported block integrity checks are calculated and compared.
+    private final boolean verifyChecksums;
+
     /// Completed block records awaiting validation against the Index.
     private final List<BlockRecord> records = new ArrayList<>();
 
@@ -77,7 +80,7 @@ public final class XzChannelDecoder implements CompressionDecoder {
 
     /// Creates a decoder accepting concatenated XZ streams and stream padding.
     public XzChannelDecoder(ReadableByteChannel source, ChannelOwnership ownership) throws IOException {
-        this(source, ownership, true, CompressionCodec.UNKNOWN_SIZE);
+        this(source, ownership, true, CompressionCodec.UNKNOWN_SIZE, true);
     }
 
     /// Creates a decoder with explicit concatenated-stream behavior.
@@ -86,7 +89,7 @@ public final class XzChannelDecoder implements CompressionDecoder {
             ChannelOwnership ownership,
             boolean concatenated
     ) throws IOException {
-        this(source, ownership, concatenated, CompressionCodec.UNKNOWN_SIZE);
+        this(source, ownership, concatenated, CompressionCodec.UNKNOWN_SIZE, true);
     }
 
     /// Creates a decoder with explicit concatenation and maximum-window behavior.
@@ -96,10 +99,22 @@ public final class XzChannelDecoder implements CompressionDecoder {
             boolean concatenated,
             long maximumWindowSize
     ) throws IOException {
+        this(source, ownership, concatenated, maximumWindowSize, true);
+    }
+
+    /// Creates a decoder with explicit concatenation, window, and block-check behavior.
+    public XzChannelDecoder(
+            ReadableByteChannel source,
+            ChannelOwnership ownership,
+            boolean concatenated,
+            long maximumWindowSize,
+            boolean verifyChecksums
+    ) throws IOException {
         this.source = Objects.requireNonNull(source, "source");
         this.sourceCloser = new OwnedChannelCloser(source, ownership);
         this.concatenated = concatenated;
         this.maximumWindowSize = maximumWindowSize;
+        this.verifyChecksums = verifyChecksums;
         input = new XzChannelInput(source);
         try {
             startStream();
@@ -227,7 +242,10 @@ public final class XzChannelDecoder implements CompressionDecoder {
             throw new IOException("Unsupported XZ Stream Header flags");
         }
         checkType = Byte.toUnsignedInt(header[7]);
-        XzCheck.create(checkType);
+        XzCheck.sizeOf(checkType);
+        if (verifyChecksums) {
+            XzCheck.create(checkType);
+        }
         records.clear();
         currentBlock = null;
     }
@@ -361,8 +379,11 @@ public final class XzChannelDecoder implements CompressionDecoder {
         /// The complete reverse decoding filter chain.
         private final ReadableByteChannel filterChain;
 
-        /// The block integrity-check calculator.
-        private final XzCheck check;
+        /// The block integrity-check calculator, or `null` when verification is disabled.
+        private final @Nullable XzCheck check;
+
+        /// The encoded integrity-check field size.
+        private final int checkSize;
 
         /// The reusable decoded-byte buffer.
         private final byte[] decodedBuffer = new byte[8192];
@@ -425,7 +446,8 @@ public final class XzChannelDecoder implements CompressionDecoder {
                 validateFilterChain(filters);
                 declaredCompressedSize = compressedSize;
                 declaredUncompressedSize = outputSize;
-                check = XzCheck.create(checkType);
+                checkSize = XzCheck.sizeOf(checkType);
+                check = verifyChecksums ? XzCheck.create(checkType) : null;
                 compressedInput = new CountingChannel(
                         compressedSize >= 0L ? compressedSize : Long.MAX_VALUE
                 );
@@ -456,7 +478,10 @@ public final class XzChannelDecoder implements CompressionDecoder {
             if (count == 0) {
                 throw new IOException("XZ filter chain made no progress");
             }
-            check.update(decodedBuffer, 0, count);
+            @Nullable XzCheck activeCheck = check;
+            if (activeCheck != null) {
+                activeCheck.update(decodedBuffer, 0, count);
+            }
             if (uncompressedSize > Long.MAX_VALUE - count) {
                 throw new IOException("XZ block uncompressed size overflow");
             }
@@ -476,7 +501,7 @@ public final class XzChannelDecoder implements CompressionDecoder {
 
         /// Returns this block's unpadded size.
         private long unpaddedSize() {
-            return headerSize + compressedInput.count() + check.size();
+            return headerSize + compressedInput.count() + checkSize;
         }
 
         /// Returns this block's decoded size.
@@ -501,11 +526,12 @@ public final class XzChannelDecoder implements CompressionDecoder {
                     throw new IOException("Nonzero XZ block padding");
                 }
             }
-            byte[] storedCheck = readFully(check.size());
-            if (!Arrays.equals(storedCheck, check.finish())) {
+            byte[] storedCheck = readFully(checkSize);
+            @Nullable XzCheck activeCheck = check;
+            if (activeCheck != null && !Arrays.equals(storedCheck, activeCheck.finish())) {
                 throw new IOException("XZ block integrity check mismatch");
             }
-            long size = headerSize + compressedSize + check.size();
+            long size = headerSize + compressedSize + checkSize;
             if (size < 0L) {
                 throw new IOException("XZ block unpadded size overflow");
             }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 package org.glavo.arkivo.codec.zstd.internal;
+import org.glavo.arkivo.internal.ByteArrayAccess;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -515,8 +516,7 @@ final class ZstdBlockDecoder {
 
     /// Reads an unsigned little-endian 16-bit value.
     private static int readUnsignedShort(byte[] source, int offset) {
-        return Byte.toUnsignedInt(source[offset])
-                | Byte.toUnsignedInt(source[offset + 1]) << 8;
+        return Short.toUnsignedInt(ByteArrayAccess.readShortLittleEndian(source, offset));
     }
 
     /// Reads an unsigned little-endian 24-bit value.
@@ -527,10 +527,7 @@ final class ZstdBlockDecoder {
 
     /// Reads an unsigned little-endian 32-bit value.
     private static long readUnsignedInt(byte[] source) {
-        return Integer.toUnsignedLong(
-                readUnsigned24(source)
-                        | source[3] << 24
-        );
+        return Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(source, 0));
     }
 
     /// Reads an unsigned little-endian 40-bit value.

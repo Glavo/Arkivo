@@ -41,6 +41,7 @@ import java.nio.file.FileSystem;
 import java.nio.file.FileSystemAlreadyExistsException;
 import java.nio.file.FileSystemNotFoundException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.ReadOnlyFileSystemException;
@@ -331,7 +332,11 @@ public final class RarArkivoStreamingReaderTest {
                 source,
                 Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage)
         )) {
+            assertEquals(0, storage.createdContentCount());
+            assertEquals(content.length, Files.size(fileSystem.getPath("/value.txt")));
+            assertEquals(0, storage.createdContentCount());
             assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/value.txt")));
+            assertEquals(1, storage.createdContentCount());
         }
         assertEquals(1, source.closeCount());
         assertEquals(true, source.allOpenedChannelsClosed());
@@ -370,6 +375,7 @@ public final class RarArkivoStreamingReaderTest {
                 Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage)
         );
         try {
+            assertEquals(0, storage.createdContentCount());
             assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/source.txt")));
             assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/hard.txt")));
             assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/copy.txt")));
@@ -377,7 +383,7 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals("content close failed", failure.getMessage());
             assertEquals(1, storage.createdContentCount());
             assertEquals(1, storage.contentCloseCount());
-            assertEquals(1, storage.closeCount());
+            assertEquals(0, storage.closeCount());
 
             fileSystem.close();
             fileSystem.close();
@@ -390,6 +396,96 @@ public final class RarArkivoStreamingReaderTest {
                 Files.deleteIfExists(archivePath);
             }
         }
+    }
+
+    /// Verifies only accessed bodies are decoded and cached.
+    @Test
+    public void fileSystemMaterializesOnlyAccessedBodies() throws IOException {
+        byte[] first = "first lazy body".getBytes(StandardCharsets.UTF_8);
+        byte[] second = "second lazy body".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("rar-lazy-content-");
+        Files.write(archivePath, archive(
+                storedFile("first.bin", 1_700_000_000L, 0100644, first, null),
+                storedFile("second.bin", 1_700_000_001L, 0100644, second, null)
+        ));
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                archivePath,
+                Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage)
+        )) {
+            assertEquals(0, storage.createdContentCount());
+            assertEquals(first.length, Files.size(fileSystem.getPath("/first.bin")));
+            assertEquals(second.length, Files.size(fileSystem.getPath("/second.bin")));
+            assertEquals(0, storage.createdContentCount());
+
+            assertArrayEquals(second, Files.readAllBytes(fileSystem.getPath("/second.bin")));
+            assertEquals(1, storage.createdContentCount());
+            assertArrayEquals(second, Files.readAllBytes(fileSystem.getPath("/second.bin")));
+            assertEquals(1, storage.createdContentCount());
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+        assertEquals(1, storage.contentCloseCount());
+        assertEquals(1, storage.closeCount());
+    }
+
+    /// Verifies cached storage remains alive until a channel opened before file-system close is released.
+    @Test
+    public void fileSystemDefersCachedStorageCloseForOpenChannels() throws IOException {
+        byte[] content = "deferred cached body".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("rar-deferred-storage-");
+        Files.write(archivePath, archive(
+                storedFile("value.bin", 1_700_000_000L, 0100644, content, null)
+        ));
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                archivePath,
+                Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage)
+        );
+        SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/value.bin"));
+        try {
+            fileSystem.close();
+            assertEquals(0, storage.contentCloseCount());
+            assertEquals(0, storage.closeCount());
+
+            channel.close();
+            assertEquals(1, storage.contentCloseCount());
+            assertEquals(1, storage.closeCount());
+        } finally {
+            try {
+                channel.close();
+            } finally {
+                fileSystem.close();
+                Files.deleteIfExists(archivePath);
+            }
+        }
+    }
+
+    /// Verifies body integrity failures are deferred from metadata indexing to explicit content access.
+    @Test
+    public void fileSystemDefersStoredBodyValidationUntilRead() throws IOException {
+        byte[] content = "bad lazy body".getBytes(StandardCharsets.UTF_8);
+        Path archivePath = createTemporaryArchivePath("rar-lazy-crc-");
+        Files.write(archivePath, archive(
+                storedFileWithCrc("bad.bin", 1_700_000_000L, 0100644, content, 0L)
+        ));
+        TrackingEditStorage storage = new TrackingEditStorage(false);
+        try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
+                archivePath,
+                Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage)
+        )) {
+            Path entry = fileSystem.getPath("/bad.bin");
+            assertEquals(content.length, Files.size(entry));
+            assertEquals(0, storage.createdContentCount());
+
+            IOException exception = assertThrows(IOException.class, () -> Files.readAllBytes(entry));
+            assertEquals(true, exception.getMessage().contains("Invalid RAR entry CRC32"));
+            assertEquals(1, storage.createdContentCount());
+            assertEquals(1, storage.contentCloseCount());
+        } finally {
+            Files.deleteIfExists(archivePath);
+        }
+        assertEquals(1, storage.closeCount());
     }
 
     /// Verifies common read limits apply to RAR streaming readers and file systems.
@@ -717,6 +813,7 @@ public final class RarArkivoStreamingReaderTest {
         byte[] hash = HELLO_BLAKE2SP.clone();
         Path archivePath = createTemporaryArchivePath("rar-fs-");
         Path copiedDirectory = archivePath.getParent().resolve("copied-dir");
+        Path copiedFile = archivePath.getParent().resolve("copied-file");
         Path existingFile = archivePath.getParent().resolve("existing-file");
         Files.write(archivePath, archive(
                 directory("dir/", 1_700_000_000L, 040755),
@@ -842,6 +939,13 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals(true, fileStore.supportsFileAttributeView("owner"));
             assertEquals(true, fileStore.supportsFileAttributeView("posix"));
             assertArrayEquals(content, Files.readAllBytes(file));
+            Files.copy(
+                    file,
+                    copiedFile,
+                    LinkOption.NOFOLLOW_LINKS,
+                    StandardCopyOption.COPY_ATTRIBUTES
+            );
+            assertArrayEquals(content, Files.readAllBytes(copiedFile));
 
             Path backslashFile = fileSystem.getPath("/windows/path/backslash.txt");
             assertArrayEquals(backslashContent, Files.readAllBytes(backslashFile));
@@ -917,13 +1021,30 @@ public final class RarArkivoStreamingReaderTest {
             assertArrayEquals(splitContent, Files.readAllBytes(splitFile));
 
             Path link = fileSystem.getPath("/link");
-            RarArkivoEntryAttributes linkAttributes = Files.readAttributes(link, RarArkivoEntryAttributes.class);
+            RarArkivoEntryAttributes linkAttributes = Files.readAttributes(
+                    link,
+                    RarArkivoEntryAttributes.class,
+                    LinkOption.NOFOLLOW_LINKS
+            );
             assertEquals(true, linkAttributes.isSymbolicLink());
+            RarArkivoEntryAttributeView followedView = Objects.requireNonNull(
+                    Files.getFileAttributeView(link, RarArkivoEntryAttributeView.class)
+            );
+            RarArkivoEntryAttributeView linkView = Objects.requireNonNull(Files.getFileAttributeView(
+                    link,
+                    RarArkivoEntryAttributeView.class,
+                    LinkOption.NOFOLLOW_LINKS
+            ));
+            assertEquals(true, followedView.readAttributes().isRegularFile());
+            assertEquals("dir/hello.txt", followedView.readAttributes().path());
+            assertEquals(true, linkView.readAttributes().isSymbolicLink());
+            assertEquals("link", linkView.readAttributes().path());
             assertEquals(fileSystem.getPath("dir/hello.txt"), Files.readSymbolicLink(link));
             Map<String, Object> selectedLinkAttributes = Files.readAttributes(
                     link,
                     "rar:isSymbolicLink,linkName,redirectionType,redirectionFlags,redirectionTarget,"
-                            + "redirectionTargetDirectory"
+                            + "redirectionTargetDirectory",
+                    LinkOption.NOFOLLOW_LINKS
             );
             assertEquals(true, selectedLinkAttributes.get("isSymbolicLink"));
             assertEquals("dir/hello.txt", selectedLinkAttributes.get("linkName"));
@@ -934,6 +1055,7 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals(0L, selectedLinkAttributes.get("redirectionFlags"));
             assertEquals("dir/hello.txt", selectedLinkAttributes.get("redirectionTarget"));
             assertEquals(false, selectedLinkAttributes.get("redirectionTargetDirectory"));
+            assertArrayEquals(content, Files.readAllBytes(link));
 
             try (SeekableByteChannel channel = Files.newByteChannel(file, StandardOpenOption.READ)) {
                 assertEquals(content.length, channel.size());
@@ -968,6 +1090,7 @@ public final class RarArkivoStreamingReaderTest {
         }
 
         assertThrows(ClosedFileSystemException.class, () -> fileSystem.getPath("/dir"));
+        Files.deleteIfExists(copiedFile);
         Files.deleteIfExists(existingFile);
         Files.deleteIfExists(copiedDirectory);
         deleteTemporaryArchive(archivePath);
@@ -2228,7 +2351,7 @@ public final class RarArkivoStreamingReaderTest {
             )) {
                 assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/secret.txt")));
             }
-            assertEquals(3, suppliedPasswords.size());
+            assertEquals(4, suppliedPasswords.size());
             for (byte[] suppliedPassword : suppliedPasswords) {
                 assertArrayEquals(new byte[suppliedPassword.length], suppliedPassword);
             }
@@ -2403,7 +2526,7 @@ public final class RarArkivoStreamingReaderTest {
             )) {
                 assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/secret.txt")));
             }
-            assertEquals(2, suppliedPasswords.size());
+            assertEquals(3, suppliedPasswords.size());
             for (byte[] suppliedPassword : suppliedPasswords) {
                 assertArrayEquals(new byte[suppliedPassword.length], suppliedPassword);
             }

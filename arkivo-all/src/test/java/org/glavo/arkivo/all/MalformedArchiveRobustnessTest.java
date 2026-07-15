@@ -42,11 +42,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /// Verifies archive parsers fail predictably for deterministically damaged input.
 @NotNullByDefault
 final class MalformedArchiveRobustnessTest {
-    /// Stable archive formats that support both file-system and streaming reads.
-    private static final @Unmodifiable List<String> FORMATS = List.of("ar", "tar", "zip", "7z");
+    /// Stable archive formats exercised by the malformed-input suite.
+    private static final @Unmodifiable List<String> FORMATS = List.of("ar", "tar", "zip", "7z", "rar");
 
     /// Formats whose readers can operate without random access.
-    private static final @Unmodifiable Set<String> STREAMING_FORMATS = Set.of("ar", "tar", "zip");
+    private static final @Unmodifiable Set<String> STREAMING_FORMATS = Set.of("ar", "tar", "zip", "rar");
 
     /// Deterministic content stored in every generated archive.
     private static final byte @Unmodifiable [] CONTENT = (
@@ -65,7 +65,7 @@ final class MalformedArchiveRobustnessTest {
     private static final long MAX_CONSUMED_BYTES = 1L << 20;
 
     /// Number of deterministic mutations applied to each valid archive.
-    private static final int MUTATION_COUNT = 32;
+    private static final int MUTATION_COUNT = 128;
 
     /// Reproducible seed for archive mutations.
     private static final long MUTATION_SEED = 0x41524b49564f4d41L;
@@ -102,6 +102,9 @@ final class MalformedArchiveRobustnessTest {
 
     /// Creates one valid single-entry archive entirely in memory.
     private static byte[] createArchive(String format) throws IOException {
+        if ("rar".equals(format)) {
+            return ArchiveTestFixtures.createRar4Archive("payload.bin", CONTENT);
+        }
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter(format, output)) {
             writer.beginFile("payload.bin");
@@ -130,10 +133,12 @@ final class MalformedArchiveRobustnessTest {
                 () -> readFileSystem(format, archivePath),
                 context + " file system"
         );
-        tolerateMalformedFailure(
-                () -> readStreaming(format, archive),
-                context + " streaming reader"
-        );
+        if (STREAMING_FORMATS.contains(format)) {
+            tolerateMalformedFailure(
+                    () -> readStreaming(format, archive),
+                    context + " streaming reader"
+            );
+        }
     }
 
     /// Reads every regular entry through the named archive file-system implementation.
@@ -252,7 +257,7 @@ final class MalformedArchiveRobustnessTest {
         assertDoesNotThrow(() -> {
             try {
                 operation.execute();
-            } catch (IOException | UnsupportedOperationException expected) {
+            } catch (IOException expected) {
                 // A damaged archive may be rejected during setup, iteration, body decoding, or close.
             }
         }, context);

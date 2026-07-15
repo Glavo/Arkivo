@@ -9,6 +9,9 @@ import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
+import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
+import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
+import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.rar.RarArkivoFileSystem;
@@ -23,6 +26,8 @@ import java.io.InputStream;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
+import java.nio.channels.ClosedChannelException;
+import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.AccessMode;
 import java.nio.file.ClosedFileSystemException;
@@ -57,6 +62,7 @@ import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -78,8 +84,11 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     /// The archive URI used by generated entry URIs, or `null` when backed by explicit volumes.
     private final @Nullable URI archiveUri;
 
-    /// The volume source, or `null` when this file system is backed by a single archive path.
-    private final @Nullable ArkivoVolumeSource volumes;
+    /// The repeatable volume source used for metadata scans and lazy entry decoding.
+    private final ArkivoVolumeSource volumes;
+
+    /// The immutable environment reused by lazy entry decoders.
+    private final @Unmodifiable Map<String, ?> environment;
 
     /// The action invoked when this file system closes.
     private final Runnable closeAction;
@@ -99,6 +108,12 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     /// Cached stored-entry bodies owned by this file system, tracked by identity for redirections.
     private final Set<ArkivoStoredContent> ownedContents;
 
+    /// The lock protecting lazy content materialization and storage lifecycle state.
+    private final Object contentLifecycleLock = new Object();
+
+    /// Active channel counts for cached bodies, tracked by content identity.
+    private final IdentityHashMap<ArkivoStoredContent, Integer> activeContentUseCounts = new IdentityHashMap<>();
+
     /// Whether this file system is open.
     private volatile boolean open = true;
 
@@ -116,24 +131,23 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             RarArkivoFileSystemProvider provider,
             @Nullable Path archivePath,
             @Nullable URI archiveUri,
-            @Nullable ArkivoVolumeSource volumes,
+            ArkivoVolumeSource volumes,
             ArkivoFileSystemThreadSafety threadSafety,
             Map<String, Node> nodes,
             ArkivoEditStorage editStorage,
             Set<ArkivoStoredContent> ownedContents,
+            Map<String, ?> environment,
             Runnable closeAction
     ) {
         super(threadSafety);
         if ((archivePath == null) != (archiveUri == null)) {
             throw new IllegalArgumentException("archivePath and archiveUri must both be present or absent");
         }
-        if (archivePath == null && volumes == null) {
-            throw new IllegalArgumentException("archivePath or volumes must be provided");
-        }
         this.provider = Objects.requireNonNull(provider, "provider");
         this.archivePath = archivePath != null ? archivePath.toAbsolutePath().normalize() : null;
         this.archiveUri = archiveUri;
-        this.volumes = volumes;
+        this.volumes = Objects.requireNonNull(volumes, "volumes");
+        this.environment = Collections.unmodifiableMap(new LinkedHashMap<>(environment));
         this.closeAction = Objects.requireNonNull(closeAction, "closeAction");
         this.nodes = Map.copyOf(nodes);
         this.editStorage = Objects.requireNonNull(editStorage, "editStorage");
@@ -165,33 +179,31 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         }
 
         List<Path> splitVolumePaths = RarSplitVolumePaths.discover(archivePath);
-        ArkivoEditStorage editStorage = editStorage(environment);
-        Set<ArkivoStoredContent> ownedContents = identityContentSet();
+        ArkivoVolumeSource volumes = ArkivoVolumeSource.of(
+                splitVolumePaths != null ? splitVolumePaths : List.of(archivePath)
+        );
+        ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(environment);
+        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
         try {
             Map<String, Node> nodes;
-            try (InputStream input = splitVolumePaths != null
-                    ? new RarVolumeInputStream(index -> {
-                if (index < 0 || index >= splitVolumePaths.size()) {
-                    return null;
-                }
-                return Files.newByteChannel(splitVolumePaths.get((int) index), openOptions);
-            })
-                    : Files.newInputStream(archivePath, openOptions.toArray(OpenOption[]::new))) {
-                nodes = readNodes(input, editStorage, ownedContents, environment);
+            try (InputStream input = new RarVolumeInputStream(volumes)) {
+                nodes = readNodes(input, environment);
             }
             return new RarArkivoFileSystemImpl(
                     provider,
                     archivePath,
                     archiveUri,
-                    null,
+                    volumes,
                     threadSafety,
                     nodes,
                     editStorage,
                     ownedContents,
+                    environment,
                     closeAction
             );
         } catch (IOException | RuntimeException | Error exception) {
-            closeOpenedStorage(editStorage, ownedContents, exception);
+            StoredContentSupport.closeAfterOpenFailure(editStorage, ownedContents, exception);
+            closeSourceAfterOpenFailure(volumes, exception);
             throw exception;
         }
     }
@@ -227,7 +239,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
 
         ArkivoEditStorage editStorage;
         try {
-            editStorage = editStorage(environment);
+            editStorage = StoredContentSupport.selectStorage(environment);
         } catch (RuntimeException | Error exception) {
             try {
                 volumes.close();
@@ -236,11 +248,11 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             }
             throw exception;
         }
-        Set<ArkivoStoredContent> ownedContents = identityContentSet();
+        Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
         try {
             Map<String, Node> nodes;
             try (InputStream input = new RarVolumeInputStream(volumes)) {
-                nodes = readNodes(input, editStorage, ownedContents, environment);
+                nodes = readNodes(input, environment);
             }
             return new RarArkivoFileSystemImpl(
                     provider,
@@ -251,11 +263,12 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                     nodes,
                     editStorage,
                     ownedContents,
+                    environment,
                     () -> {
                     }
             );
         } catch (IOException | RuntimeException | Error exception) {
-            closeOpenedStorage(editStorage, ownedContents, exception);
+            StoredContentSupport.closeAfterOpenFailure(editStorage, ownedContents, exception);
             try {
                 volumes.close();
             } catch (IOException | RuntimeException | Error closeException) {
@@ -275,16 +288,17 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     @Override
     public void close() throws IOException {
         try (CloseOperation ignored = beginCloseOperation()) {
-            if (!open && ownedContents.isEmpty() && editStorageClosed && volumesClosed && closeActionCompleted) {
+            if (!open
+                    && isEditStorageClosed()
+                    && volumesClosed
+                    && closeActionCompleted) {
                 return;
             }
             open = false;
             @Nullable Throwable failure = closeIndexedStorage(null);
             if (!volumesClosed) {
                 try {
-                    if (volumes != null) {
-                        volumes.close();
-                    }
+                    volumes.close();
                     volumesClosed = true;
                 } catch (IOException | RuntimeException | Error exception) {
                     failure = appendFailure(failure, exception);
@@ -302,24 +316,38 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         }
     }
 
-    /// Closes cached entry bodies and their owning storage, retaining failed resources for a later close retry.
-    private @Nullable Throwable closeIndexedStorage(@Nullable Throwable failure) {
-        Iterator<ArkivoStoredContent> iterator = ownedContents.iterator();
-        while (iterator.hasNext()) {
-            ArkivoStoredContent content = iterator.next();
-            try {
-                content.close();
-                iterator.remove();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = appendFailure(failure, exception);
-            }
+    /// Returns whether cached content and its owning storage have completed cleanup.
+    private boolean isEditStorageClosed() {
+        synchronized (contentLifecycleLock) {
+            return editStorageClosed;
         }
-        if (!editStorageClosed) {
-            try {
-                editStorage.close();
-                editStorageClosed = true;
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = appendFailure(failure, exception);
+    }
+
+    /// Closes inactive cached bodies and their storage, retaining active or failed resources for a later retry.
+    private @Nullable Throwable closeIndexedStorage(@Nullable Throwable failure) {
+        synchronized (contentLifecycleLock) {
+            Iterator<ArkivoStoredContent> iterator = ownedContents.iterator();
+            while (iterator.hasNext()) {
+                ArkivoStoredContent content = iterator.next();
+                if (activeContentUseCounts.containsKey(content)) {
+                    continue;
+                }
+                try {
+                    content.close();
+                    iterator.remove();
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = appendFailure(failure, exception);
+                }
+            }
+            if (!editStorageClosed
+                    && ownedContents.isEmpty()
+                    && activeContentUseCounts.isEmpty()) {
+                try {
+                    editStorage.close();
+                    editStorageClosed = true;
+                } catch (IOException | RuntimeException | Error exception) {
+                    failure = appendFailure(failure, exception);
+                }
             }
         }
         return failure;
@@ -428,13 +456,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             if (node.directory()) {
                 throw new FileSystemException(path.toString(), null, "RAR entry is a directory");
             }
-            @Nullable ArkivoStoredContent content = node.content();
-            if (content == null) {
-                throw new IOException("RAR entry content is not available: " + path);
-            }
-            return manageInputStream(Channels.newInputStream(
-                    content.openChannel(Set.of(StandardOpenOption.READ))
-            ));
+            return manageInputStream(Channels.newInputStream(openContentChannel(node)));
         }
     }
 
@@ -451,11 +473,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             if (node.directory()) {
                 throw new FileSystemException(path.toString(), null, "RAR entry is a directory");
             }
-            @Nullable ArkivoStoredContent content = node.content();
-            if (content == null) {
-                throw new IOException("RAR entry content is not available: " + path);
-            }
-            return manageReadChannel(content.openChannel(Set.of(StandardOpenOption.READ)));
+            return manageReadChannel(openContentChannel(node));
         }
     }
 
@@ -480,7 +498,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                     throw new DirectoryIteratorException(exception);
                 }
             }
-            return manageDirectoryStream(new ListDirectoryStream(accepted));
+            return manageDirectoryStream(new FixedDirectoryStream<>(accepted));
         }
     }
 
@@ -524,18 +542,19 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     ) {
         try (Operation ignored = beginReadOperation()) {
             Objects.requireNonNull(type, "type");
-            Objects.requireNonNull(options, "options");
+            ArkivoFileSystemProviderSupport.AttributeViewPath viewPath =
+                    ArkivoFileSystemProviderSupport.attributeViewPath(path, options);
             if (type == BasicFileAttributeView.class) {
-                return type.cast(new BasicView(path));
+                return type.cast(new BasicView(viewPath));
             }
             if (type == FileOwnerAttributeView.class) {
-                return type.cast(new OwnerView(path));
+                return type.cast(new OwnerView(viewPath));
             }
             if (type == PosixFileAttributeView.class) {
-                return type.cast(new PosixView(path));
+                return type.cast(new PosixView(viewPath));
             }
             if (type == RarArkivoEntryAttributeView.class) {
-                return type.cast(new RarView(path));
+                return type.cast(new RarView(viewPath));
             }
             return null;
         }
@@ -753,90 +772,12 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             }
         }
     }
-
-    /// Returns identity-based content ownership storage for this file system.
-    private static Set<ArkivoStoredContent> identityContentSet() {
-        return Collections.newSetFromMap(new IdentityHashMap<>());
-    }
-
-    /// Returns configured cached-content storage or the default temporary-file storage.
-    private static ArkivoEditStorage editStorage(Map<String, ?> environment) {
-        @Nullable ArkivoEditStorage configured = ArkivoFileSystem.EDIT_STORAGE.read(environment);
-        return configured != null
-                ? configured
-                : ArkivoEditStorage.temporaryFiles(defaultEditStorageDirectory());
-    }
-
-    /// Returns the directory used by default cached-content storage.
-    private static Path defaultEditStorageDirectory() {
-        return Path.of(System.getProperty("java.io.tmpdir", ".")).toAbsolutePath().normalize();
-    }
-
-    /// Closes resources allocated while opening a file system and suppresses cleanup failures.
-    private static void closeOpenedStorage(
-            ArkivoEditStorage editStorage,
-            Set<ArkivoStoredContent> ownedContents,
-            Throwable failure
-    ) {
-        for (ArkivoStoredContent content : ownedContents) {
-            try {
-                content.close();
-            } catch (IOException | RuntimeException | Error cleanupFailure) {
-                failure.addSuppressed(cleanupFailure);
-            }
-        }
-        try {
-            editStorage.close();
-        } catch (IOException | RuntimeException | Error cleanupFailure) {
-            failure.addSuppressed(cleanupFailure);
-        }
-    }
-
-    /// Streams one stored entry body into newly allocated cached content storage.
-    private static ArkivoStoredContent storeInput(
-            ArkivoEditStorage editStorage,
-            Set<ArkivoStoredContent> ownedContents,
-            String path,
-            long expectedSize,
-            InputStream input
-    ) throws IOException {
-        ArkivoStoredContent content = editStorage.createContent(path, expectedSize);
-        try {
-            try (SeekableByteChannel output = content.openChannel(Set.of(
-                    StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE
-            ))) {
-                byte[] buffer = new byte[64 * 1024];
-                ByteBuffer bytes = ByteBuffer.wrap(buffer);
-                while (true) {
-                    int count = input.read(buffer);
-                    if (count < 0) {
-                        break;
-                    }
-                    bytes.clear();
-                    bytes.limit(count);
-                    while (bytes.hasRemaining()) {
-                        output.write(bytes);
-                    }
-                }
-            }
-            ownedContents.add(content);
-            return content;
-        } catch (IOException | RuntimeException | Error exception) {
-            try {
-                content.close();
-            } catch (IOException | RuntimeException | Error cleanupFailure) {
-                ownedContents.add(content);
-                exception.addSuppressed(cleanupFailure);
-            }
-            throw exception;
-        }
-    }
-
     /// Adds a secondary failure as suppressed when a primary failure already exists.
     private static Throwable appendFailure(@Nullable Throwable failure, Throwable exception) {
         if (failure != null) {
-            failure.addSuppressed(exception);
+            if (failure != exception) {
+                failure.addSuppressed(exception);
+            }
             return failure;
         }
         return exception;
@@ -855,54 +796,190 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         }
     }
 
-    /// Reads all entry nodes from a RAR stream.
+    /// Opens one independently positioned channel over a lazily materialized body.
+    private SeekableByteChannel openContentChannel(Node node) throws IOException {
+        synchronized (contentLifecycleLock) {
+            ensureOpen();
+            ArkivoStoredContent content = materializeContent(node, new LinkedHashSet<>());
+            SeekableByteChannel channel = content.openChannel(Set.of(StandardOpenOption.READ));
+            activeContentUseCounts.merge(content, 1, Integer::sum);
+            return new CachedContentReadByteChannel(content, channel);
+        }
+    }
+
+    /// Resolves or decodes one entry body while holding the content lifecycle lock.
+    private ArkivoStoredContent materializeContent(Node node, Set<String> redirectionPath) throws IOException {
+        @Nullable ArkivoStoredContent cached = node.content();
+        if (cached != null) {
+            return cached;
+        }
+
+        @Nullable String targetPath = node.redirectionTarget();
+        if (targetPath != null) {
+            if (!redirectionPath.add(node.path())) {
+                throw new IOException("Cyclic RAR content redirection: " + node.path());
+            }
+            Node target = nodes.get(targetPath);
+            if (target == null || target.directory()) {
+                throw new IOException("RAR redirected entry target is unavailable: " + targetPath);
+            }
+            ArkivoStoredContent content = materializeContent(target, redirectionPath);
+            node.setContent(content);
+            return content;
+        }
+        if (!node.bodyReadable()) {
+            throw new IOException("RAR entry content is not available: " + node.path());
+        }
+
+        try (InputStream input = new RarVolumeInputStream(volumes);
+             RarArkivoStreamingReader reader = new RarArkivoStreamingReaderImpl(
+                     input,
+                     RarArkivoFileSystem.PASSWORD_PROVIDER.read(environment),
+                     environment,
+                     false
+             )) {
+            RarArkivoStreamingReaderImpl readerImpl = (RarArkivoStreamingReaderImpl) reader;
+            while (reader.next()) {
+                RarEntryAttributes attributes =
+                        (RarEntryAttributes) reader.readAttributes(RarArkivoEntryAttributes.class);
+                String path = normalizeEntryPath(attributes.path());
+                if (!node.path().equals(path)) {
+                    continue;
+                }
+                requireMatchingContentMetadata(node.attributes(), attributes);
+                if (!readerImpl.isCurrentBodyReadable()) {
+                    throw new IOException("RAR entry content is no longer readable: " + node.path());
+                }
+                ArkivoStoredContent content;
+                try (InputStream entryInput = reader.openInputStream()) {
+                    content = StoredContentSupport.storeInput(
+                            editStorage,
+                            ownedContents,
+                            node.path(),
+                            node.attributes().unpackedSize(),
+                            entryInput
+                    );
+                }
+                node.setContent(content);
+                return content;
+            }
+        }
+        throw new IOException("RAR entry disappeared while materializing content: " + node.path());
+    }
+
+    /// Rejects source content whose physical metadata no longer matches the indexed entry.
+    private static void requireMatchingContentMetadata(
+            RarEntryAttributes indexed,
+            RarEntryAttributes current
+    ) throws IOException {
+        if (indexed.compressionMethod() != current.compressionMethod()
+                || indexed.packedSize() != current.packedSize()
+                || indexed.unpackedSize() != current.unpackedSize()
+                || indexed.dataCrc32() != current.dataCrc32()
+                || indexed.isEncrypted() != current.isEncrypted()
+                || indexed.continuesFromPreviousVolume() != current.continuesFromPreviousVolume()
+                || indexed.continuesInNextVolume() != current.continuesInNextVolume()) {
+            throw new IOException("RAR entry changed after the file system index was created: " + indexed.path());
+        }
+    }
+
+    /// Releases one cached-body channel and advances deferred storage cleanup after file system close.
+    private @Nullable Throwable releaseContentUse(
+            ArkivoStoredContent content,
+            @Nullable Throwable failure
+    ) {
+        synchronized (contentLifecycleLock) {
+            Integer count = activeContentUseCounts.get(content);
+            if (count == null) {
+                return appendFailure(failure, new IOException("RAR cached content use was not registered"));
+            }
+            if (count == 1) {
+                activeContentUseCounts.remove(content);
+            } else {
+                activeContentUseCounts.put(content, count - 1);
+            }
+            return open ? failure : closeIndexedStorage(failure);
+        }
+    }
+
+    /// Closes a volume source after file-system setup fails.
+    private static void closeSourceAfterOpenFailure(ArkivoVolumeSource volumes, Throwable failure) {
+        try {
+            volumes.close();
+        } catch (IOException | RuntimeException | Error exception) {
+            if (failure != exception) {
+                failure.addSuppressed(exception);
+            }
+        }
+    }
+    /// Reads entry metadata without retaining decoded file bodies.
     private static Map<String, Node> readNodes(
             InputStream input,
-            ArkivoEditStorage editStorage,
-            Set<ArkivoStoredContent> ownedContents,
             Map<String, ?> environment
     ) throws IOException {
         LinkedHashMap<String, Node> nodes = new LinkedHashMap<>();
-        Node root = new Node("", rootAttributes(), true, null);
+        Node root = new Node("", rootAttributes(), true, false, null);
         nodes.put("", root);
         boolean encryptedContentAvailable = RarArkivoFileSystem.PASSWORD_PROVIDER.read(environment) != null;
 
-        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(input, environment)) {
+        try (RarArkivoStreamingReader reader = new RarArkivoStreamingReaderImpl(
+                input,
+                RarArkivoFileSystem.PASSWORD_PROVIDER.read(environment),
+                environment,
+                false
+        )) {
             RarArkivoStreamingReaderImpl readerImpl = (RarArkivoStreamingReaderImpl) reader;
             while (reader.next()) {
-                RarEntryAttributes attributes = (RarEntryAttributes) reader.readAttributes(RarArkivoEntryAttributes.class);
+                RarEntryAttributes attributes =
+                        (RarEntryAttributes) reader.readAttributes(RarArkivoEntryAttributes.class);
                 String path = normalizeEntryPath(attributes.path());
                 ensureParents(nodes, path);
-                RarEntryAttributes nodeAttributes = attributes;
-                @Nullable ArkivoStoredContent content = null;
-                if (isContentRedirection(attributes)) {
-                    @Nullable String targetPath = normalizeRedirectionTargetPath(attributes.redirectionTarget());
-                    Node target = targetPath != null ? nodes.get(targetPath) : null;
-                    @Nullable ArkivoStoredContent targetContent =
-                            target != null && !target.directory() ? target.content() : null;
-                    if (targetContent != null) {
-                        content = targetContent;
-                        nodeAttributes = attributesWithResolvedSize(attributes, content.size());
-                    }
-                } else if (attributes.isRegularFile() && readerImpl.isCurrentBodyReadable()
+                @Nullable String redirectionTarget = isContentRedirection(attributes)
+                        ? normalizeRedirectionTargetPath(attributes.redirectionTarget())
+                        : null;
+                boolean bodyReadable = redirectionTarget == null
+                        && attributes.isRegularFile()
+                        && readerImpl.isCurrentBodyReadable()
                         && (!attributes.isEncrypted() || encryptedContentAvailable)
-                        && !attributes.continuesFromPreviousVolume()) {
-                    try (InputStream entryInput = reader.openInputStream()) {
-                        content = storeInput(
-                                editStorage,
-                                ownedContents,
-                                path,
-                                attributes.unpackedSize(),
-                                entryInput
-                        );
-                    }
-                }
-                putNode(nodes, new Node(path, nodeAttributes, nodeAttributes.isDirectory(), content));
+                        && !attributes.continuesFromPreviousVolume();
+                putNode(nodes, new Node(
+                        path,
+                        attributes,
+                        attributes.isDirectory(),
+                        bodyReadable,
+                        redirectionTarget
+                ));
             }
         }
+        resolveRedirectionSizes(nodes);
         return nodes;
     }
 
+    /// Resolves redirected entry sizes after every possible target has been indexed.
+    private static void resolveRedirectionSizes(Map<String, Node> nodes) {
+        for (int pass = 0; pass < nodes.size(); pass++) {
+            boolean changed = false;
+            for (Node node : nodes.values()) {
+                @Nullable String targetPath = node.redirectionTarget();
+                if (targetPath == null) {
+                    continue;
+                }
+                Node target = nodes.get(targetPath);
+                if (target == null || target.directory()) {
+                    continue;
+                }
+                long targetSize = target.attributes().unpackedSize();
+                if (targetSize != RarArkivoEntryAttributes.UNKNOWN_NUMERIC_VALUE
+                        && node.attributes().unpackedSize() != targetSize) {
+                    node.setAttributes(attributesWithResolvedSize(node.attributes(), targetSize));
+                    changed = true;
+                }
+            }
+            if (!changed) {
+                return;
+            }
+        }
+    }
     /// Returns whether an entry redirects content to another archive member.
     private static boolean isContentRedirection(RarEntryAttributes attributes) {
         int redirectionType = attributes.redirectionType();
@@ -971,7 +1048,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             String parent = path.substring(0, separator);
             if (!parent.isEmpty() && !nodes.containsKey(parent)) {
                 ensureParents(nodes, parent);
-                putNode(nodes, new Node(parent, syntheticDirectoryAttributes(parent), true, null));
+                putNode(nodes, new Node(parent, syntheticDirectoryAttributes(parent), true, false, null));
             }
             separator = path.indexOf('/', separator + 1);
         }
@@ -1114,35 +1191,43 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         }
     }
 
-    /// Stores one RAR file system node.
+    /// Stores one RAR file system node and its lazily materialized content.
     @NotNullByDefault
     private static final class Node {
         /// The normalized archive path.
         private final String path;
 
-        /// The node attributes.
-        private final RarEntryAttributes attributes;
+        /// The node attributes, including any resolved redirection size.
+        private RarEntryAttributes attributes;
 
         /// Whether this node is a directory.
         private final boolean directory;
 
-        /// The cached stored file content, or `null` when unavailable.
-        private final @Nullable ArkivoStoredContent content;
+        /// Whether this node has a directly decodable physical body.
+        private final boolean bodyReadable;
+
+        /// The normalized content-redirection target, or `null` for physical entries.
+        private final @Nullable String redirectionTarget;
+
+        /// The cached stored file content, or `null` before materialization or when unavailable.
+        private @Nullable ArkivoStoredContent content;
 
         /// Child node paths keyed by child name.
         private final LinkedHashMap<String, String> children = new LinkedHashMap<>();
 
-        /// Creates one node.
+        /// Creates one indexed node.
         private Node(
                 String path,
                 RarEntryAttributes attributes,
                 boolean directory,
-                @Nullable ArkivoStoredContent content
+                boolean bodyReadable,
+                @Nullable String redirectionTarget
         ) {
             this.path = Objects.requireNonNull(path, "path");
             this.attributes = Objects.requireNonNull(attributes, "attributes");
             this.directory = directory;
-            this.content = content;
+            this.bodyReadable = bodyReadable;
+            this.redirectionTarget = redirectionTarget;
         }
 
         /// Returns the normalized archive path.
@@ -1155,14 +1240,34 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             return attributes;
         }
 
+        /// Replaces attributes after resolving redirected content size.
+        private void setAttributes(RarEntryAttributes attributes) {
+            this.attributes = Objects.requireNonNull(attributes, "attributes");
+        }
+
         /// Returns whether this node is a directory.
         private boolean directory() {
             return directory;
         }
 
-        /// Returns the cached stored file content, or `null` when unavailable.
+        /// Returns whether this node has a directly decodable physical body.
+        private boolean bodyReadable() {
+            return bodyReadable;
+        }
+
+        /// Returns the normalized content-redirection target, or `null`.
+        private @Nullable String redirectionTarget() {
+            return redirectionTarget;
+        }
+
+        /// Returns the cached stored file content, or `null` before materialization.
         private @Nullable ArkivoStoredContent content() {
             return content;
+        }
+
+        /// Installs cached content after successful materialization.
+        private void setContent(ArkivoStoredContent content) {
+            this.content = Objects.requireNonNull(content, "content");
         }
 
         /// Returns whether this is an implicit directory.
@@ -1175,15 +1280,107 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             return children;
         }
     }
+    /// Exposes one cached body through an independently positioned read-only channel.
+    @NotNullByDefault
+    private final class CachedContentReadByteChannel implements SeekableByteChannel {
+        /// The cached body whose active-use count is released on close.
+        private final ArkivoStoredContent content;
 
+        /// The independently positioned stored-content channel.
+        private final SeekableByteChannel channel;
+
+        /// Whether this wrapper remains open.
+        private boolean channelOpen = true;
+
+        /// Creates one registered channel over cached content.
+        private CachedContentReadByteChannel(ArkivoStoredContent content, SeekableByteChannel channel) {
+            this.content = Objects.requireNonNull(content, "content");
+            this.channel = Objects.requireNonNull(channel, "channel");
+        }
+
+        /// Reads cached entry bytes.
+        @Override
+        public int read(ByteBuffer destination) throws IOException {
+            Objects.requireNonNull(destination, "destination");
+            ensureChannelOpen();
+            return channel.read(destination);
+        }
+
+        /// Rejects writes to cached read-only content.
+        @Override
+        public int write(ByteBuffer source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            ensureChannelOpen();
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns the current cached-content position.
+        @Override
+        public long position() throws IOException {
+            ensureChannelOpen();
+            return channel.position();
+        }
+
+        /// Changes the current cached-content position.
+        @Override
+        public SeekableByteChannel position(long newPosition) throws IOException {
+            ensureChannelOpen();
+            channel.position(newPosition);
+            return this;
+        }
+
+        /// Returns the cached body size.
+        @Override
+        public long size() throws IOException {
+            ensureChannelOpen();
+            return channel.size();
+        }
+
+        /// Rejects truncation of cached read-only content.
+        @Override
+        public SeekableByteChannel truncate(long size) throws IOException {
+            ensureChannelOpen();
+            throw new NonWritableChannelException();
+        }
+
+        /// Returns whether this wrapper and its stored-content channel remain open.
+        @Override
+        public boolean isOpen() {
+            return channelOpen && channel.isOpen();
+        }
+
+        /// Closes this channel and releases its active cached-content use.
+        @Override
+        public void close() throws IOException {
+            if (!channelOpen) {
+                return;
+            }
+            channelOpen = false;
+            @Nullable Throwable failure = null;
+            try {
+                channel.close();
+            } catch (IOException | RuntimeException | Error exception) {
+                failure = exception;
+            }
+            failure = releaseContentUse(content, failure);
+            throwFailure(failure);
+        }
+
+        /// Requires this channel to remain open.
+        private void ensureChannelOpen() throws ClosedChannelException {
+            if (!channelOpen) {
+                throw new ClosedChannelException();
+            }
+        }
+    }
     /// Implements a read-only basic attribute view.
     @NotNullByDefault
     private final class BasicView implements BasicFileAttributeView {
         /// The path whose attributes are exposed.
-        private final Path path;
+        private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates an attribute view.
-        private BasicView(Path path) {
+        private BasicView(ArkivoFileSystemProviderSupport.AttributeViewPath path) {
             this.path = Objects.requireNonNull(path, "path");
         }
 
@@ -1196,7 +1393,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         /// Reads this path's attributes.
         @Override
         public BasicFileAttributes readAttributes() throws IOException {
-            return RarArkivoFileSystemImpl.this.readAttributes(path, BasicFileAttributes.class);
+            return RarArkivoFileSystemImpl.this.readAttributes(path.resolve(), BasicFileAttributes.class);
         }
 
         /// RAR attributes are read-only.
@@ -1214,17 +1411,17 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     @NotNullByDefault
     private final class RarView implements RarArkivoEntryAttributeView {
         /// The path whose attributes are exposed.
-        private final Path path;
+        private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates a RAR attribute view.
-        private RarView(Path path) {
+        private RarView(ArkivoFileSystemProviderSupport.AttributeViewPath path) {
             this.path = Objects.requireNonNull(path, "path");
         }
 
         /// Reads this path's RAR attributes.
         @Override
         public RarArkivoEntryAttributes readAttributes() throws IOException {
-            return RarArkivoFileSystemImpl.this.readAttributes(path, RarArkivoEntryAttributes.class);
+            return RarArkivoFileSystemImpl.this.readAttributes(path.resolve(), RarArkivoEntryAttributes.class);
         }
 
         /// RAR attributes are read-only.
@@ -1242,10 +1439,10 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     @NotNullByDefault
     private final class OwnerView implements FileOwnerAttributeView {
         /// The path whose owner is exposed.
-        private final Path path;
+        private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates an owner attribute view.
-        private OwnerView(Path path) {
+        private OwnerView(ArkivoFileSystemProviderSupport.AttributeViewPath path) {
             this.path = Objects.requireNonNull(path, "path");
         }
 
@@ -1258,7 +1455,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         /// Returns this path's owner.
         @Override
         public UserPrincipal getOwner() throws IOException {
-            return RarArkivoFileSystemImpl.this.readAttributes(path, PosixFileAttributes.class).owner();
+            return RarArkivoFileSystemImpl.this.readAttributes(path.resolve(), PosixFileAttributes.class).owner();
         }
 
         /// RAR attributes are read-only.
@@ -1273,10 +1470,10 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     @NotNullByDefault
     private final class PosixView implements PosixFileAttributeView {
         /// The path whose POSIX attributes are exposed.
-        private final Path path;
+        private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates a POSIX attribute view.
-        private PosixView(Path path) {
+        private PosixView(ArkivoFileSystemProviderSupport.AttributeViewPath path) {
             this.path = Objects.requireNonNull(path, "path");
         }
 
@@ -1289,7 +1486,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         /// Reads this path's POSIX attributes.
         @Override
         public PosixFileAttributes readAttributes() throws IOException {
-            return RarArkivoFileSystemImpl.this.readAttributes(path, PosixFileAttributes.class);
+            return RarArkivoFileSystemImpl.this.readAttributes(path.resolve(), PosixFileAttributes.class);
         }
 
         /// Returns this path's owner.
@@ -1399,33 +1596,4 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         }
     }
 
-    /// Implements a directory stream over a fixed list.
-    @NotNullByDefault
-    private static final class ListDirectoryStream implements DirectoryStream<Path> {
-        /// The paths exposed by this stream.
-        private final @Unmodifiable List<Path> paths;
-
-        /// Whether this stream is open.
-        private boolean open = true;
-
-        /// Creates a directory stream.
-        private ListDirectoryStream(List<Path> paths) {
-            this.paths = List.copyOf(paths);
-        }
-
-        /// Returns an iterator over paths.
-        @Override
-        public Iterator<Path> iterator() {
-            if (!open) {
-                throw new IllegalStateException("RAR directory stream is closed");
-            }
-            return paths.iterator();
-        }
-
-        /// Closes this stream.
-        @Override
-        public void close() {
-            open = false;
-        }
-    }
 }

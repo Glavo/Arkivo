@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.codec.internal;
 
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -280,6 +281,15 @@ public final class StreamChannelAdapters {
                 if (target.write(source) == 0) {
                     throw new IOException("Writable channel made no progress");
                 }
+            }
+        }
+
+        /// Flushes a codec encoder when the backing channel exposes compression flush semantics.
+        @Override
+        public void flush() throws IOException {
+            ensureOpen();
+            if (target instanceof CompressionEncoder encoder) {
+                encoder.flush();
             }
         }
 

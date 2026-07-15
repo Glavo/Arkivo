@@ -10,17 +10,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-/// Plans sparse frame-wide matches beyond the normal block hash-chain distance.
+/// Plans configurable frame-wide matches beyond the normal block match-finder distance.
 @NotNullByDefault
 final class ZstdLongDistanceMatcher {
-    /// Number of bytes hashed at each candidate position.
-    private static final int HASH_BYTES = 8;
-
-    /// Minimum match length emitted by the long-distance planner.
-    private static final int MINIMUM_MATCH = 64;
-
-    /// Number of low hash bits used for content-dependent sampling.
-    private static final int SAMPLE_LOG = 6;
+    /// Maximum number of bytes mixed into one content hash.
+    private static final int MAX_HASH_BYTES = 8;
 
     /// Sentinel stored in hash slots without a prior sampled position.
     private static final long NO_POSITION = -1L;
@@ -34,11 +28,29 @@ final class ZstdLongDistanceMatcher {
     /// Distance at or below which the normal block matcher is preferred.
     private final int minimumDistance;
 
-    /// Mask selecting one slot in the sampled-position table.
-    private final int tableMask;
+    /// Number of source bytes mixed into one content hash.
+    private final int hashBytes;
 
-    /// Latest absolute frame position assigned to each sampled hash slot.
+    /// Minimum match length emitted by the long-distance planner.
+    private final int minimumMatch;
+
+    /// Number of low hash bits required to be zero for a sampled position.
+    private final int hashRateLog;
+
+    /// Number of candidate positions retained in each collision bucket.
+    private final int bucketSize;
+
+    /// Mask wrapping a candidate index inside one collision bucket.
+    private final int bucketMask;
+
+    /// Mask selecting one collision bucket from a sampled hash.
+    private final int bucketCountMask;
+
+    /// Retained absolute positions grouped into collision buckets.
     private final long[] positions;
+
+    /// Next replacement slot inside each collision bucket.
+    private final int[] bucketOffsets;
 
     /// Dynamically sized circular buffer containing the retained frame tail.
     private byte[] history = new byte[0];
@@ -52,21 +64,31 @@ final class ZstdLongDistanceMatcher {
     /// Absolute frame position immediately after the retained and discarded history.
     private long framePosition;
 
-    /// Creates a planner for the effective window and ordinary match distance.
+    /// Creates a planner from effective long-distance and ordinary match parameters.
     ZstdLongDistanceMatcher(ZstdEncoderParameters parameters) {
         this.windowSize = parameters.windowLog() >= 31
-                ? Integer.MAX_VALUE - 8
+                ? Integer.MAX_VALUE - MAX_HASH_BYTES
                 : 1 << parameters.windowLog();
         this.minimumDistance = parameters.chainLimit();
-        int tableSize = 1 << Math.min(parameters.hashLog(), 20);
-        this.tableMask = tableSize - 1;
-        this.positions = new long[tableSize];
+        this.minimumMatch = parameters.longDistanceMinimumMatch();
+        this.hashBytes = Math.min(MAX_HASH_BYTES, minimumMatch);
+        this.hashRateLog = parameters.longDistanceHashRateLog();
+
+        int hashLog = parameters.longDistanceHashLog();
+        int bucketSizeLog = parameters.longDistanceBucketSizeLog();
+        int entryCount = 1 << hashLog;
+        this.bucketSize = 1 << bucketSizeLog;
+        this.bucketMask = bucketSize - 1;
+        this.bucketCountMask = (entryCount >>> bucketSizeLog) - 1;
+        this.positions = new long[entryCount];
+        this.bucketOffsets = new int[bucketCountMask + 1];
         reset();
     }
 
     /// Clears frame-local positions while retaining allocated working memory.
     void reset() {
         Arrays.fill(positions, NO_POSITION);
+        Arrays.fill(bucketOffsets, 0);
         historyStart = 0;
         historySize = 0;
         framePosition = 0L;
@@ -82,28 +104,22 @@ final class ZstdLongDistanceMatcher {
         long historyFirstPosition = blockStart - historySize;
         ArrayList<Match> matches = new ArrayList<>();
         int position = 0;
-        int lastPosition = length - HASH_BYTES;
+        int lastPosition = length - hashBytes;
         while (position <= lastPosition) {
             long hash = hash(source, position);
             if (isSample(hash)) {
-                long candidate = positions[tableIndex(hash)];
-                long distance = blockStart + position - candidate;
-                if (candidate >= historyFirstPosition
-                        && distance > minimumDistance
-                        && distance <= windowSize
-                        && distance <= Integer.MAX_VALUE) {
-                    int matchLength = commonLength(
-                            source,
-                            length,
-                            position,
-                            candidate,
-                            blockStart
-                    );
-                    if (matchLength >= MINIMUM_MATCH) {
-                        matches.add(new Match(position, matchLength, (int) distance));
-                        position += matchLength;
-                        continue;
-                    }
+                Candidate best = findBestCandidate(
+                        source,
+                        length,
+                        position,
+                        hash,
+                        historyFirstPosition,
+                        blockStart
+                );
+                if (best.length() >= minimumMatch) {
+                    matches.add(new Match(position, best.length(), best.distance()));
+                    position += best.length();
+                    continue;
                 }
             }
             position++;
@@ -114,14 +130,65 @@ final class ZstdLongDistanceMatcher {
         return List.copyOf(matches);
     }
 
-    /// Indexes content-dependent samples from one block at absolute frame positions.
-    private void indexBlock(byte[] source, int length, long blockStart) {
-        for (int position = 0; position + HASH_BYTES <= length; position++) {
-            long hash = hash(source, position);
-            if (isSample(hash)) {
-                positions[tableIndex(hash)] = blockStart + position;
+    /// Finds the longest valid retained candidate in one collision bucket.
+    private Candidate findBestCandidate(
+            byte[] source,
+            int sourceLength,
+            int position,
+            long hash,
+            long historyFirstPosition,
+            long blockStart
+    ) {
+        int bucket = bucketIndex(hash);
+        int bucketBase = bucket * bucketSize;
+        int next = bucketOffsets[bucket];
+        int bestLength = 0;
+        int bestDistance = 0;
+        for (int offset = 0; offset < bucketSize; offset++) {
+            int slot = bucketBase + ((next - 1 - offset) & bucketMask);
+            long candidate = positions[slot];
+            long distance = blockStart + position - candidate;
+            if (candidate < historyFirstPosition
+                    || distance <= minimumDistance
+                    || distance > windowSize
+                    || distance > Integer.MAX_VALUE) {
+                continue;
+            }
+
+            int matchLength = commonLength(
+                    source,
+                    sourceLength,
+                    position,
+                    candidate,
+                    blockStart
+            );
+            if (matchLength > bestLength) {
+                bestLength = matchLength;
+                bestDistance = (int) distance;
+                if (matchLength == sourceLength - position) {
+                    break;
+                }
             }
         }
+        return new Candidate(bestLength, bestDistance);
+    }
+
+    /// Indexes content-dependent samples from one block at absolute frame positions.
+    private void indexBlock(byte[] source, int length, long blockStart) {
+        for (int position = 0; position + hashBytes <= length; position++) {
+            long hash = hash(source, position);
+            if (isSample(hash)) {
+                insert(hash, blockStart + position);
+            }
+        }
+    }
+
+    /// Inserts one sampled position into its collision bucket.
+    private void insert(long hash, long position) {
+        int bucket = bucketIndex(hash);
+        int offset = bucketOffsets[bucket];
+        positions[bucket * bucketSize + offset] = position;
+        bucketOffsets[bucket] = (offset + 1) & bucketMask;
     }
 
     /// Returns the common length between retained history and one current-block position.
@@ -213,19 +280,20 @@ final class ZstdLongDistanceMatcher {
     }
 
     /// Returns whether a mixed content hash participates in the sparse index.
-    private static boolean isSample(long hash) {
-        return (hash & ((1L << SAMPLE_LOG) - 1L)) == 0L;
+    private boolean isSample(long hash) {
+        return hashRateLog == 0
+                || (hash & ((1L << hashRateLog) - 1L)) == 0L;
     }
 
-    /// Selects one sampled-position table slot from a mixed content hash.
-    private int tableIndex(long hash) {
-        return (int) (hash >>> SAMPLE_LOG) & tableMask;
+    /// Selects one collision bucket from a sampled content hash.
+    private int bucketIndex(long hash) {
+        return (int) (hash >>> hashRateLog) & bucketCountMask;
     }
 
-    /// Hashes eight bytes with a stable little-endian 64-bit avalanche.
-    private static long hash(byte[] source, int offset) {
+    /// Hashes the configured number of bytes with a stable little-endian 64-bit avalanche.
+    private long hash(byte[] source, int offset) {
         long value = 0L;
-        for (int index = 0; index < HASH_BYTES; index++) {
+        for (int index = 0; index < hashBytes; index++) {
             value |= (long) Byte.toUnsignedInt(source[offset + index]) << (index * 8);
         }
         value ^= value >>> 33;
@@ -233,6 +301,13 @@ final class ZstdLongDistanceMatcher {
         value ^= value >>> 33;
         value *= 0xc4ce_b9fe_1a85_ec53L;
         return value ^ value >>> 33;
+    }
+
+    /// Holds the best retained candidate in one collision bucket.
+    ///
+    /// @param length common-byte count
+    /// @param distance backward match distance
+    private record Candidate(int length, int distance) {
     }
 
     /// Describes one verified match against earlier frame content.

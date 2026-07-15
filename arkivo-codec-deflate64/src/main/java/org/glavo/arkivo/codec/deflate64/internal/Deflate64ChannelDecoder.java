@@ -13,9 +13,7 @@ import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.EOFException;
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
-import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.util.Arrays;
@@ -26,7 +24,7 @@ import java.util.Objects;
 /// Deflate64 retains the Deflate bitstream grammar while extending the history window to 64 KiB, defining distance
 /// symbols 30 and 31, and assigning sixteen extra bits to length symbol 285.
 @NotNullByDefault
-public final class Deflate64InputStream extends InputStream implements CompressionDecoder {
+public final class Deflate64ChannelDecoder implements CompressionDecoder {
     /// The Deflate64 history-window size.
     private static final int WINDOW_SIZE = 1 << 16;
 
@@ -87,9 +85,6 @@ public final class Deflate64InputStream extends InputStream implements Compressi
     /// The fixed 32-symbol distance tree.
     private static final HuffmanTree FIXED_DISTANCE_TREE = fixedDistanceTree();
 
-    /// The raw Deflate64 source.
-    private final ReadableByteChannel source;
-
     /// Tracks closure of the owned compressed-data source.
     private final OwnedChannelCloser sourceCloser;
 
@@ -129,65 +124,17 @@ public final class Deflate64InputStream extends InputStream implements Compressi
     /// Whether the final block has ended.
     private boolean endReached;
 
-    /// Whether this stream has closed.
+    /// Whether this decoder has closed.
     private boolean closed;
 
-    /// The number of decoded bytes returned through read operations.
+    /// The number of decoded bytes returned through channel reads.
     private long outputBytes;
 
-    /// Creates a decoder over a raw Deflate64 stream.
-    public Deflate64InputStream(InputStream input) {
-        this(Channels.newChannel(Objects.requireNonNull(input, "input")), ChannelOwnership.CLOSE, 1);
-    }
-
-    /// Creates a direct decoder over a raw Deflate64 channel.
-    public Deflate64InputStream(ReadableByteChannel source, ChannelOwnership ownership) {
-        this(source, ownership, INPUT_BUFFER_SIZE);
-    }
-
-    /// Creates a decoder with an explicit compressed-input staging size.
-    private Deflate64InputStream(
-            ReadableByteChannel source,
-            ChannelOwnership ownership,
-            int inputBufferSize
-    ) {
-        this.source = Objects.requireNonNull(source, "source");
+    /// Creates a decoder over a raw Deflate64 channel with explicit ownership.
+    public Deflate64ChannelDecoder(ReadableByteChannel source, ChannelOwnership ownership) {
+        Objects.requireNonNull(source, "source");
         this.sourceCloser = new OwnedChannelCloser(source, ownership);
-        this.bits = new BitInput(source, inputBufferSize);
-    }
-
-    /// Reads one decoded byte.
-    @Override
-    public int read() throws IOException {
-        ensureOpen();
-        int value = readDecodedByte();
-        if (value >= 0) {
-            outputBytes++;
-        }
-        return value;
-    }
-
-    /// Reads decoded bytes into the destination array.
-    @Override
-    public int read(byte[] buffer, int offset, int length) throws IOException {
-        Objects.checkFromIndexSize(offset, length, buffer.length);
-        ensureOpen();
-        if (length == 0) {
-            return 0;
-        }
-
-        int count = 0;
-        while (count < length) {
-            int value = readDecodedByte();
-            if (value < 0) {
-                outputBytes += count;
-                return count == 0 ? -1 : count;
-            }
-            buffer[offset + count] = (byte) value;
-            count++;
-        }
-        outputBytes += count;
-        return count;
+        this.bits = new BitInput(source, INPUT_BUFFER_SIZE);
     }
 
     /// Reads decoded bytes directly into the target buffer.
@@ -209,33 +156,6 @@ public final class Deflate64InputStream extends InputStream implements Compressi
         int count = target.position() - start;
         outputBytes += count;
         return count == 0 ? -1 : count;
-    }
-
-    /// Skips decoded bytes.
-    @Override
-    public long skip(long count) throws IOException {
-        ensureOpen();
-        if (count <= 0L) {
-            return 0L;
-        }
-        byte[] discard = new byte[(int) Math.min(8192L, count)];
-        long skipped = 0L;
-        while (skipped < count) {
-            int read = read(discard, 0, (int) Math.min(discard.length, count - skipped));
-            if (read < 0) {
-                break;
-            }
-            skipped += read;
-        }
-        return skipped;
-    }
-
-    /// Returns the immediately available decoded byte count known without parsing another symbol.
-    @Override
-    public int available() throws IOException {
-        ensureOpen();
-        long available = (long) matchRemaining + storedRemaining;
-        return (int) Math.min(Integer.MAX_VALUE, available);
     }
 
     /// Returns the number of logical compressed bytes consumed.

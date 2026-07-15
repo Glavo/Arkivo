@@ -6,27 +6,51 @@ package org.glavo.arkivo.all;
 import org.glavo.arkivo.archive.ArkivoFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoFormat;
 import org.glavo.arkivo.archive.ArkivoFormats;
+import org.glavo.arkivo.archive.ArkivoStreamingWriter;
+import org.glavo.arkivo.archive.ar.ArArkivoFileSystemProvider;
+import org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter;
+import org.glavo.arkivo.archive.rar.RarArkivoFileSystemProvider;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystemProvider;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
+import org.glavo.arkivo.archive.tar.TarArkivoFileSystemProvider;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CodecOptions;
+import org.glavo.arkivo.codec.lzma.LZMAOptions;
+import org.glavo.arkivo.codec.ppmd.PPMdCodecOptions;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter;
+import org.glavo.arkivo.archive.zip.ZipArkivoFileSystemProvider;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystem;
+import java.nio.file.FileSystemAlreadyExistsException;
+import java.nio.file.FileSystemNotFoundException;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.ProviderNotFoundException;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.zip.CRC32;
+import java.util.zip.GZIPOutputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
+import java.nio.file.spi.FileSystemProvider;
 import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -55,9 +79,97 @@ final class AllAggregationTest {
         assertEquals(Set.of("7z", "ar", "rar", "tar", "zip"), archiveNames);
         assertTrue(ArkivoFormats.installed().stream().allMatch(ArkivoFileSystemFormat.class::isInstance));
         assertEquals(
-                Set.of("bzip2", "deflate", "deflate64", "gzip", "lzma", "ppmd", "xz", "zlib", "zstd"),
+                Set.of(
+                        "bzip2",
+                        "deflate",
+                        "deflate64",
+                        "gzip",
+                        "lzma",
+                        "lzma-raw",
+                        "lzma2",
+                        "ppmd",
+                        "xz",
+                        "zlib",
+                        "zstd"
+                ),
                 codecNames
         );
+    }
+
+    /// Verifies every installed archive provider through the standard JDK URI and path entry points.
+    @Test
+    @SuppressWarnings("resource")
+    void opensInstalledFileSystemProviders(@TempDir Path temporaryDirectory) throws IOException {
+        byte[] content = "value".getBytes(StandardCharsets.UTF_8);
+        Path arArchive = temporaryDirectory.resolve("sample.ar");
+        Path tarArchive = temporaryDirectory.resolve("sample.tar");
+        Path zipArchive = temporaryDirectory.resolve("sample.zip");
+        Path sevenZipArchive = temporaryDirectory.resolve("sample.7z");
+        Path rarArchive = temporaryDirectory.resolve("sample.rar");
+        createArFixture(arArchive, content);
+        createTarFixture(tarArchive, content);
+        createZipFixture(zipArchive, content);
+        createSevenZipFixture(sevenZipArchive, content);
+        createRarFixture(rarArchive, content);
+
+        Map<String, Path> archives = Map.of(
+                ArArkivoFileSystemProvider.SCHEME, arArchive,
+                TarArkivoFileSystemProvider.SCHEME, tarArchive,
+                ZipArkivoFileSystemProvider.SCHEME, zipArchive,
+                SevenZipArkivoFileSystemProvider.SCHEME, sevenZipArchive,
+                RarArkivoFileSystemProvider.SCHEME, rarArchive
+        );
+        Set<String> installedSchemes = FileSystemProvider.installedProviders()
+                .stream()
+                .map(FileSystemProvider::getScheme)
+                .filter(scheme -> scheme.startsWith("arkivo+"))
+                .collect(Collectors.toUnmodifiableSet());
+        assertEquals(archives.keySet(), installedSchemes);
+
+        for (Map.Entry<String, Path> archive : archives.entrySet()) {
+            URI fileSystemUri = URI.create(archive.getKey() + ":" + archive.getValue().toUri().toASCIIString());
+            URI entryUri = URI.create(fileSystemUri + "!/value.txt");
+            try (FileSystem fileSystem = FileSystems.newFileSystem(fileSystemUri, Map.of())) {
+                assertEquals(fileSystem, FileSystems.getFileSystem(fileSystemUri));
+                Path entry = Path.of(entryUri);
+                assertEquals(entryUri, entry.toUri());
+                assertArrayEquals(content, Files.readAllBytes(entry), archive.getKey());
+                assertThrows(
+                        FileSystemAlreadyExistsException.class,
+                        () -> FileSystems.newFileSystem(fileSystemUri, Map.of()),
+                        archive.getKey()
+                );
+            }
+            assertThrows(
+                    FileSystemNotFoundException.class,
+                    () -> FileSystems.getFileSystem(fileSystemUri),
+                    archive.getKey()
+            );
+        }
+
+        for (Map.Entry<String, Path> archive : archives.entrySet()) {
+            assertPathFileSystem(archive.getValue(), archive.getKey(), content);
+
+            Path extensionlessArchive = temporaryDirectory.resolve(
+                    "extensionless-" + archive.getKey().substring("arkivo+".length())
+            );
+            Files.copy(archive.getValue(), extensionlessArchive);
+            assertPathFileSystem(extensionlessArchive, archive.getKey(), content);
+        }
+
+        Path misleadingZipArchive = temporaryDirectory.resolve("zip-content.ar");
+        Files.copy(zipArchive, misleadingZipArchive);
+        assertPathFileSystem(misleadingZipArchive, ZipArkivoFileSystemProvider.SCHEME, content);
+
+        Path compressedTarArchive = temporaryDirectory.resolve("sample.tar.gz");
+        try (OutputStream output = new GZIPOutputStream(Files.newOutputStream(compressedTarArchive))) {
+            output.write(Files.readAllBytes(tarArchive));
+        }
+        assertPathFileSystem(compressedTarArchive, TarArkivoFileSystemProvider.SCHEME, content);
+
+        Path unknownArchive = temporaryDirectory.resolve("unknown.bin");
+        Files.write(unknownArchive, new byte[]{1, 2, 3, 4});
+        assertThrows(ProviderNotFoundException.class, () -> FileSystems.newFileSystem(unknownArchive));
     }
 
     /// Verifies unified signature detection and archive format descriptors.
@@ -72,7 +184,23 @@ final class AllAggregationTest {
 
         assertEquals("7z", requireFormat("SeVeNzIp").name());
         assertEquals(List.of("zip", "jar"), requireFormat("zip").fileExtensions());
-        assertEquals(List.of("tar"), requireFormat("tar").fileExtensions());
+        assertEquals(
+                List.of(
+                        "tar",
+                        "tar.gz",
+                        "tgz",
+                        "tar.bz2",
+                        "tbz2",
+                        "tbz",
+                        "tar.xz",
+                        "txz",
+                        "tar.lzma",
+                        "tlz",
+                        "tar.zst",
+                        "tzst"
+                ),
+                requireFormat("tar").fileExtensions()
+        );
         assertEquals(List.of("7z"), requireFormat("7z").fileExtensions());
         assertEquals(List.of("rar"), requireFormat("rar").fileExtensions());
         assertEquals(List.of("a", "ar", "deb"), requireFormat("ar").fileExtensions());
@@ -166,9 +294,25 @@ final class AllAggregationTest {
             int decodedStart = 2;
             decoded.position(decodedStart);
             decoded.limit(decodedStart + expected.length);
-            codec.decompress(compressed, decoded);
+            CodecOptions decoderOptions;
+            if ("ppmd".equals(codec.name())) {
+                decoderOptions = CodecOptions.builder()
+                        .set(PPMdCodecOptions.MAXIMUM_ORDER, 6L)
+                        .set(PPMdCodecOptions.MEMORY_SIZE, 16L << 20)
+                        .set(PPMdCodecOptions.DECODED_SIZE, (long) expected.length)
+                        .build();
+            } else if ("lzma-raw".equals(codec.name()) || "lzma2".equals(codec.name())) {
+                decoderOptions = CodecOptions.builder()
+                        .set(LZMAOptions.DICTIONARY_SIZE, 1L << 20)
+                        .build();
+            } else {
+                decoderOptions = CodecOptions.EMPTY;
+            }
+            codec.decompress(compressed, decoded, decoderOptions);
 
-            assertFalse(compressed.hasRemaining(), codec.name());
+            if (!"ppmd".equals(codec.name())) {
+                assertFalse(compressed.hasRemaining(), codec.name());
+            }
             assertEquals(decoded.limit(), decoded.position(), codec.name());
             assertArrayEquals(expected, bufferBytes(decoded, decodedStart, decoded.position()), codec.name());
         }
@@ -228,6 +372,118 @@ final class AllAggregationTest {
             }
         }
         return output.toByteArray();
+    }
+
+    /// Creates an AR fixture containing one stored entry.
+    private static void createArFixture(Path path, byte[] content) throws IOException {
+        try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(path)) {
+            writeStreamingEntry(writer, content);
+        }
+    }
+
+    /// Creates a TAR fixture containing one stored entry.
+    private static void createTarFixture(Path path, byte[] content) throws IOException {
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(path)) {
+            writeStreamingEntry(writer, content);
+        }
+    }
+
+    /// Creates a ZIP fixture containing one Deflate entry.
+    private static void createZipFixture(Path path, byte[] content) throws IOException {
+        try (ZipOutputStream output = new ZipOutputStream(Files.newOutputStream(path))) {
+            output.putNextEntry(new ZipEntry("value.txt"));
+            output.write(content);
+            output.closeEntry();
+        }
+    }
+
+    /// Creates a 7z fixture containing one Copy entry.
+    private static void createSevenZipFixture(Path path, byte[] content) throws IOException {
+        try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(path)) {
+            writeStreamingEntry(writer, content);
+        }
+    }
+
+    /// Writes one regular entry through a format-independent streaming writer.
+    private static void writeStreamingEntry(ArkivoStreamingWriter writer, byte[] content) throws IOException {
+        writer.beginFile("value.txt");
+        try (OutputStream body = writer.openOutputStream()) {
+            body.write(content);
+        }
+    }
+
+    /// Opens an archive through JDK path discovery and verifies its provider and fixture entry.
+    private static void assertPathFileSystem(Path archive, String expectedScheme, byte[] expectedContent)
+            throws IOException {
+        try (FileSystem fileSystem = FileSystems.newFileSystem(archive)) {
+            String expectedPathScheme = ZipArkivoFileSystemProvider.SCHEME.equals(expectedScheme)
+                    ? "jar"
+                    : expectedScheme;
+            assertEquals(expectedPathScheme, fileSystem.provider().getScheme());
+            assertArrayEquals(expectedContent, Files.readAllBytes(fileSystem.getPath("/value.txt")), expectedScheme);
+        }
+    }
+
+    /// Creates a minimal RAR4 fixture containing one stored entry.
+    private static void createRarFixture(Path path, byte[] content) throws IOException {
+        byte[] name = "value.txt".getBytes(StandardCharsets.UTF_8);
+        CRC32 contentCrc32 = new CRC32();
+        contentCrc32.update(content);
+
+        ByteArrayOutputStream fileFields = new ByteArrayOutputStream();
+        writeUInt32(fileFields, content.length);
+        writeUInt32(fileFields, content.length);
+        fileFields.write(3);
+        writeUInt32(fileFields, contentCrc32.getValue());
+        writeUInt32(fileFields, 0L);
+        fileFields.write(29);
+        fileFields.write(0x30);
+        writeUInt16(fileFields, name.length);
+        writeUInt32(fileFields, 33_188L);
+        fileFields.write(name);
+
+        ByteArrayOutputStream archive = new ByteArrayOutputStream();
+        archive.write(new byte[]{'R', 'a', 'r', '!', 0x1a, 0x07, 0x00});
+        writeRar4Block(archive, 0x73, 0L, new byte[6], new byte[0]);
+        writeRar4Block(archive, 0x74, 0x8000L, fileFields.toByteArray(), content);
+        writeRar4Block(archive, 0x7b, 0L, new byte[0], new byte[0]);
+        Files.write(path, archive.toByteArray());
+    }
+
+    /// Writes one complete RAR4 block.
+    private static void writeRar4Block(
+            ByteArrayOutputStream output,
+            int type,
+            long flags,
+            byte[] fields,
+            byte[] data
+    ) throws IOException {
+        ByteArrayOutputStream headerData = new ByteArrayOutputStream();
+        headerData.write(type);
+        writeUInt16(headerData, flags);
+        writeUInt16(headerData, 7L + fields.length);
+        headerData.write(fields);
+
+        byte[] headerBytes = headerData.toByteArray();
+        CRC32 headerCrc32 = new CRC32();
+        headerCrc32.update(headerBytes);
+        writeUInt16(output, headerCrc32.getValue());
+        output.write(headerBytes);
+        output.write(data);
+    }
+
+    /// Writes one unsigned 16-bit little-endian value.
+    private static void writeUInt16(ByteArrayOutputStream output, long value) {
+        output.write((int) value & 0xff);
+        output.write((int) (value >>> 8) & 0xff);
+    }
+
+    /// Writes one unsigned 32-bit little-endian value.
+    private static void writeUInt32(ByteArrayOutputStream output, long value) {
+        output.write((int) value & 0xff);
+        output.write((int) (value >>> 8) & 0xff);
+        output.write((int) (value >>> 16) & 0xff);
+        output.write((int) (value >>> 24) & 0xff);
     }
 
     /// Asserts that a prefix is detected as the expected installed format.

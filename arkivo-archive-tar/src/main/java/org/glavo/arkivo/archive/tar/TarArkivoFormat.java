@@ -63,7 +63,20 @@ public final class TarArkivoFormat implements
     /// Returns common TAR archive file extensions.
     @Override
     public @Unmodifiable List<String> fileExtensions() {
-        return List.of("tar");
+        return List.of(
+                "tar",
+                "tar.gz",
+                "tgz",
+                "tar.bz2",
+                "tbz2",
+                "tbz",
+                "tar.xz",
+                "txz",
+                "tar.lzma",
+                "tlz",
+                "tar.zst",
+                "tzst"
+        );
     }
 
     /// Returns the number of leading bytes used to identify headers and empty TAR archives.

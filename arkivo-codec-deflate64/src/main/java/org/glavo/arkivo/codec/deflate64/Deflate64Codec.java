@@ -13,7 +13,7 @@ import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.glavo.arkivo.codec.deflate64.internal.Deflate64ChannelEncoder;
-import org.glavo.arkivo.codec.deflate64.internal.Deflate64InputStream;
+import org.glavo.arkivo.codec.deflate64.internal.Deflate64ChannelDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -117,7 +117,7 @@ public final class Deflate64Codec implements CompressionCodec {
         StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, DECODING_WINDOW_SIZE);
         long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
         return StandardCodecOptionSupport.limitOutput(
-                new Deflate64InputStream(source, ownership),
+                new Deflate64ChannelDecoder(source, ownership),
                 maximumOutputSize
         );
     }

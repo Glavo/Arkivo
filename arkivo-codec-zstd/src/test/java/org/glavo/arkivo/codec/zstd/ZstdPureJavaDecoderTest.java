@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.zstd;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ChecksumMode;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressionDecoder;
@@ -96,6 +97,58 @@ public final class ZstdPureJavaDecoderTest {
         byte[] corrupt = CHECKSUM_FRAME.clone();
         corrupt[corrupt.length - 1] ^= 1;
         assertThrows(IOException.class, () -> decompress(corrupt));
+
+        CodecOptions disabled = CodecOptions.builder()
+                .set(StandardCodecOptions.CHECKSUM, ChecksumMode.DISABLED)
+                .build();
+        assertArrayEquals(
+                "abcabc".getBytes(StandardCharsets.US_ASCII),
+                decompress(concatenate(corrupt, RAW_FRAME), disabled)
+        );
+
+        CodecOptions enabled = CodecOptions.builder()
+                .set(StandardCodecOptions.CHECKSUM, ChecksumMode.ENABLED)
+                .build();
+        assertThrows(IOException.class, () -> decompress(corrupt, enabled));
+    }
+
+    /// Decodes explicitly selected magicless frames without confusing their boundaries.
+    @Test
+    public void decodesFixedMagiclessFrames() throws IOException {
+        byte[] raw = java.util.Arrays.copyOfRange(RAW_FRAME, Integer.BYTES, RAW_FRAME.length);
+        byte[] rle = java.util.Arrays.copyOfRange(RLE_FRAME, Integer.BYTES, RLE_FRAME.length);
+        CodecOptions options = CodecOptions.builder()
+                .set(ZstdCodec.FRAME_FORMAT, ZstdFrameFormat.MAGICLESS)
+                .build();
+
+        byte[] frames = concatenate(raw, rle);
+        assertArrayEquals(
+                "abcxxxxx".getBytes(StandardCharsets.US_ASCII),
+                decompress(frames, options)
+        );
+        assertThrows(IOException.class, () -> decompress(raw));
+
+        ByteBuffer output = ByteBuffer.allocate(8);
+        try (CompressionDecoder decoder = new ZstdCodec().openDecoder(
+                Channels.newChannel(new ByteArrayInputStream(frames)),
+                options,
+                ChannelOwnership.RETAIN
+        )) {
+            CodecResult first = decoder.decode(output, DecodeDirective.STOP_AT_FRAME);
+            assertEquals(CodecStatus.FRAME_FINISHED, first.status());
+            output.flip();
+            byte[] firstContent = new byte[output.remaining()];
+            output.get(firstContent);
+            assertArrayEquals("abc".getBytes(StandardCharsets.US_ASCII), firstContent);
+
+            output.clear();
+            CodecResult second = decoder.decode(output, DecodeDirective.STOP_AT_FRAME);
+            assertEquals(CodecStatus.FRAME_FINISHED, second.status());
+            output.flip();
+            byte[] secondContent = new byte[output.remaining()];
+            output.get(secondContent);
+            assertArrayEquals("xxxxx".getBytes(StandardCharsets.US_ASCII), secondContent);
+        }
     }
 
     /// Supports the full frame-window descriptor range without eagerly allocating the declared window.
@@ -135,6 +188,37 @@ public final class ZstdPureJavaDecoderTest {
         ));
     }
 
+    /// Reports a skippable frame boundary and preserves a prefetched standard frame.
+    @Test
+    public void preservesSkippableFrameBoundaryAndReadAhead() throws IOException {
+        byte[] encoded = concatenate(SKIPPABLE_FRAME, RAW_FRAME);
+        ByteBuffer output = ByteBuffer.allocate(16);
+        try (CompressionDecoder decoder = new ZstdCodec().openDecoder(
+                Channels.newChannel(new ByteArrayInputStream(encoded)),
+                CodecOptions.EMPTY,
+                ChannelOwnership.RETAIN
+        )) {
+            CodecResult skipped = decoder.decode(output, DecodeDirective.STOP_AT_FRAME);
+
+            assertEquals(CodecStatus.FRAME_FINISHED, skipped.status());
+            assertEquals(SKIPPABLE_FRAME.length, skipped.inputBytes());
+            assertEquals(0L, skipped.outputBytes());
+            assertEquals(SKIPPABLE_FRAME.length, decoder.inputBytes());
+            assertEquals(encoded.length, decoder.sourceBytes());
+            assertEquals(RAW_FRAME.length, decoder.unconsumedInput().remaining());
+            assertEquals(0, output.position());
+
+            CodecResult decoded = decoder.decode(output, DecodeDirective.STOP_AT_FRAME);
+            assertEquals(CodecStatus.FRAME_FINISHED, decoded.status());
+            assertEquals(RAW_FRAME.length, decoded.inputBytes());
+            assertEquals(3L, decoded.outputBytes());
+            output.flip();
+            byte[] content = new byte[output.remaining()];
+            output.get(content);
+            assertArrayEquals("abc".getBytes(StandardCharsets.US_ASCII), content);
+        }
+    }
+
     /// Stops at a verified frame without logically consuming prefetched bytes from the next frame.
     @Test
     public void preservesFrameBoundaryAndReadAhead() throws IOException {
@@ -160,10 +244,16 @@ public final class ZstdPureJavaDecoderTest {
 
     /// Decompresses all bytes through the public channel API.
     private static byte[] decompress(byte[] encoded) throws IOException {
+        return decompress(encoded, CodecOptions.EMPTY);
+    }
+
+    /// Decompresses all bytes through the configured public channel API.
+    private static byte[] decompress(byte[] encoded, CodecOptions options) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         new ZstdCodec().decompress(
                 Channels.newChannel(new ByteArrayInputStream(encoded)),
-                Channels.newChannel(output)
+                Channels.newChannel(output),
+                options
         );
         return output.toByteArray();
     }
