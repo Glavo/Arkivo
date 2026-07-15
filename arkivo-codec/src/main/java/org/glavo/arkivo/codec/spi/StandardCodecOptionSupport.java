@@ -8,6 +8,7 @@ import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionStrategy;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
@@ -90,11 +91,23 @@ public final class StandardCodecOptionSupport {
         }
     }
 
+    /// Applies a validated maximum output size to a transport-independent decoder.
+    ///
+    /// A negative value leaves the decoder unchanged. Non-negative values are enforced without returning the hidden
+    /// probe byte used to distinguish an exact-size frame from excess output.
+    public static CompressionDecoder limitOutput(CompressionDecoder decoder, long maximumOutputSize) {
+        Objects.requireNonNull(decoder, "decoder");
+        if (maximumOutputSize < 0L) {
+            return decoder;
+        }
+        return new OutputLimitingCompressionDecoder(decoder, maximumOutputSize);
+    }
+
     /// Applies a validated maximum output size to a decoder.
     ///
     /// A negative value leaves the decoder unchanged. Non-negative values are enforced against bytes returned to
     /// callers, with one additional decoded byte used only to distinguish exact-limit EOF from excess output.
-    public static CompressionDecoder limitOutput(CompressionDecoder decoder, long maximumOutputSize) {
+    public static DecompressingReadableByteChannel limitOutput(DecompressingReadableByteChannel decoder, long maximumOutputSize) {
         Objects.requireNonNull(decoder, "decoder");
         if (maximumOutputSize < 0L) {
             return decoder;
@@ -104,9 +117,9 @@ public final class StandardCodecOptionSupport {
 
     /// Enforces one maximum decompressed output size over a decoder context.
     @NotNullByDefault
-    private static final class OutputLimitingDecoder implements CompressionDecoder {
+    private static final class OutputLimitingDecoder implements DecompressingReadableByteChannel {
         /// The algorithm-specific decoder.
-        private final CompressionDecoder decoder;
+        private final DecompressingReadableByteChannel decoder;
 
         /// The maximum number of bytes that may be returned.
         private final long maximumOutputSize;
@@ -121,7 +134,7 @@ public final class StandardCodecOptionSupport {
         private boolean exceeded;
 
         /// Creates an output-limiting decoder.
-        private OutputLimitingDecoder(CompressionDecoder decoder, long maximumOutputSize) {
+        private OutputLimitingDecoder(DecompressingReadableByteChannel decoder, long maximumOutputSize) {
             this.decoder = decoder;
             this.maximumOutputSize = maximumOutputSize;
         }

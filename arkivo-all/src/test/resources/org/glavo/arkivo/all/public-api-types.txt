@@ -82,9 +82,11 @@ org.glavo.arkivo.codec.ChecksumMode
 org.glavo.arkivo.codec.CodecOption
 org.glavo.arkivo.codec.CodecOptions
 org.glavo.arkivo.codec.CodecOptions$Builder
+org.glavo.arkivo.codec.CodecOutcome
 org.glavo.arkivo.codec.CodecResult
 org.glavo.arkivo.codec.CodecStatus
 org.glavo.arkivo.codec.CodecTransferResult
+org.glavo.arkivo.codec.CompressingWritableByteChannel
 org.glavo.arkivo.codec.CompressionCapabilities
 org.glavo.arkivo.codec.CompressionCodec
 org.glavo.arkivo.codec.CompressionCodecs
@@ -95,6 +97,7 @@ org.glavo.arkivo.codec.CompressionFeature
 org.glavo.arkivo.codec.CompressionProbeResult
 org.glavo.arkivo.codec.CompressionStrategy
 org.glavo.arkivo.codec.DecodeDirective
+org.glavo.arkivo.codec.DecompressingReadableByteChannel
 org.glavo.arkivo.codec.DecompressionLimitException
 org.glavo.arkivo.codec.DecompressionWindowLimitException
 org.glavo.arkivo.codec.EncodeDirective

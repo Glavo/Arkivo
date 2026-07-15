@@ -9,8 +9,8 @@ import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecTransferResult;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
-import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -50,7 +50,7 @@ final class CodecFactoryTest {
             }
 
             TrackingWritableChannel target = new TrackingWritableChannel();
-            try (CompressionEncoder encoder = CompressionCodecs.openEncoder(
+            try (CompressingWritableByteChannel encoder = CompressionCodecs.openEncoder(
                     codec.name(),
                     target,
                     CodecOptions.EMPTY,
@@ -61,7 +61,7 @@ final class CodecFactoryTest {
             assertFalse(target.isOpen(), codec.name());
 
             TrackingReadableChannel source = new TrackingReadableChannel(target.bytes());
-            try (CompressionDecoder decoder = CompressionCodecs.openDecoder(
+            try (DecompressingReadableByteChannel decoder = CompressionCodecs.openDecoder(
                     codec.name(),
                     source,
                     CodecContractOptions.decoderOptions(codec, CONTENT.length),
@@ -77,13 +77,13 @@ final class CodecFactoryTest {
     @Test
     void opensNamedAliasesWhileRetainingChannels() throws IOException {
         TrackingWritableChannel target = new TrackingWritableChannel();
-        try (CompressionEncoder encoder = CompressionCodecs.openEncoder("bz2", target)) {
+        try (CompressingWritableByteChannel encoder = CompressionCodecs.openEncoder("bz2", target)) {
             writeAll(encoder, CONTENT);
         }
         assertTrue(target.isOpen());
 
         TrackingReadableChannel source = new TrackingReadableChannel(target.bytes());
-        try (CompressionDecoder decoder = CompressionCodecs.openDecoder(
+        try (DecompressingReadableByteChannel decoder = CompressionCodecs.openDecoder(
                 "BZIP2",
                 source,
                 CodecOptions.EMPTY
@@ -112,7 +112,7 @@ final class CodecFactoryTest {
             }
             byte[] encoded = encode(codec.name());
             TrackingReadableChannel source = new TrackingReadableChannel(encoded);
-            try (CompressionDecoder decoder = CompressionCodecs.openDecoder(
+            try (DecompressingReadableByteChannel decoder = CompressionCodecs.openDecoder(
                     source,
                     ChannelOwnership.CLOSE
             )) {
@@ -327,7 +327,7 @@ final class CodecFactoryTest {
     /// Encodes the shared content through one named codec.
     private static byte[] encode(String codecName) throws IOException {
         TrackingWritableChannel target = new TrackingWritableChannel();
-        try (CompressionEncoder encoder = CompressionCodecs.openEncoder(
+        try (CompressingWritableByteChannel encoder = CompressionCodecs.openEncoder(
                 codecName,
                 target,
                 CodecOptions.EMPTY,

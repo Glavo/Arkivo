@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.spi;
 
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
@@ -147,7 +147,7 @@ final class StandardCodecOptionSupportTest {
     @Test
     void acceptsExactLimitAndPreservesBufferLimit() throws IOException {
         TestDecoder delegate = new TestDecoder(new byte[]{1, 2, 3});
-        CompressionDecoder decoder = StandardCodecOptionSupport.limitOutput(delegate, 3L);
+        DecompressingReadableByteChannel decoder = StandardCodecOptionSupport.limitOutput(delegate, 3L);
         ByteBuffer target = ByteBuffer.allocate(8);
         target.limit(7);
 
@@ -164,10 +164,10 @@ final class StandardCodecOptionSupportTest {
     /// Verifies zero permits empty output while rejecting the first decoded byte.
     @Test
     void handlesZeroLimit() throws IOException {
-        CompressionDecoder empty = StandardCodecOptionSupport.limitOutput(new TestDecoder(new byte[0]), 0L);
+        DecompressingReadableByteChannel empty = StandardCodecOptionSupport.limitOutput(new TestDecoder(new byte[0]), 0L);
         assertEquals(-1, empty.read(ByteBuffer.allocate(1)));
 
-        CompressionDecoder nonempty = StandardCodecOptionSupport.limitOutput(new TestDecoder(new byte[]{1}), 0L);
+        DecompressingReadableByteChannel nonempty = StandardCodecOptionSupport.limitOutput(new TestDecoder(new byte[]{1}), 0L);
         assertEquals(0, nonempty.read(ByteBuffer.allocate(0)));
         DecompressionLimitException exception = assertThrows(
                 DecompressionLimitException.class,
@@ -181,7 +181,7 @@ final class StandardCodecOptionSupportTest {
     @Test
     void rejectsExcessOutput() throws IOException {
         TestDecoder delegate = new TestDecoder(new byte[]{1, 2, 3, 4});
-        CompressionDecoder decoder = StandardCodecOptionSupport.limitOutput(delegate, 3L);
+        DecompressingReadableByteChannel decoder = StandardCodecOptionSupport.limitOutput(delegate, 3L);
         ByteBuffer target = ByteBuffer.allocate(8);
 
         assertEquals(3, decoder.read(target));
@@ -198,7 +198,7 @@ final class StandardCodecOptionSupportTest {
 
     /// Supplies identity-decoded bytes with explicit counters and lifecycle state.
     @NotNullByDefault
-    private static final class TestDecoder implements CompressionDecoder {
+    private static final class TestDecoder implements DecompressingReadableByteChannel {
         /// The decoded bytes returned by this decoder.
         private final ByteBuffer content;
 

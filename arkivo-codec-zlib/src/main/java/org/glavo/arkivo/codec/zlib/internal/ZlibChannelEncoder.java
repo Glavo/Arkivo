@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.zlib.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.spi.DeflateStrategySupport;
@@ -22,7 +22,7 @@ import java.util.zip.Deflater;
 
 /// Encodes zlib data directly between ByteBuffers and a target channel.
 @NotNullByDefault
-public final class ZlibChannelEncoder implements CompressionEncoder {
+public final class ZlibChannelEncoder implements CompressingWritableByteChannel {
     /// The native output staging-buffer size.
     private static final int OUTPUT_BUFFER_SIZE = 8192;
 

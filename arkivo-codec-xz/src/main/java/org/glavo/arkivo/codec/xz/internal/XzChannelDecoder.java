@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
@@ -35,7 +35,7 @@ import java.util.zip.CRC32;
 
 /// Decodes XZ streams and their filter chains directly from a channel.
 @NotNullByDefault
-public final class XzChannelDecoder implements CompressionDecoder {
+public final class XzChannelDecoder implements DecompressingReadableByteChannel {
     /// The compressed-data source.
     private final ReadableByteChannel source;
 

@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -133,7 +133,7 @@ final class MalformedCodecRobustnessTest {
             byte[] frame,
             CodecOptions options
     ) throws IOException {
-        try (CompressionDecoder decoder = codec.openDecoder(
+        try (DecompressingReadableByteChannel decoder = codec.openDecoder(
                 Channels.newChannel(new ByteArrayInputStream(frame)),
                 options,
                 ChannelOwnership.RETAIN
@@ -144,7 +144,7 @@ final class MalformedCodecRobustnessTest {
 
     /// Decodes a frame through generic signature detection.
     private static byte[] decodeDetected(byte[] frame, CodecOptions options) throws IOException {
-        try (CompressionDecoder decoder = CompressionCodecs.openDecoder(
+        try (DecompressingReadableByteChannel decoder = CompressionCodecs.openDecoder(
                 Channels.newChannel(new ByteArrayInputStream(frame)),
                 options
         )) {
@@ -153,7 +153,7 @@ final class MalformedCodecRobustnessTest {
     }
 
     /// Fully consumes one decoder while independently enforcing output progress and size.
-    private static byte[] consumeDecoder(CompressionDecoder decoder) throws IOException {
+    private static byte[] consumeDecoder(DecompressingReadableByteChannel decoder) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         ByteBuffer target = ByteBuffer.allocate(4096);
         while (true) {

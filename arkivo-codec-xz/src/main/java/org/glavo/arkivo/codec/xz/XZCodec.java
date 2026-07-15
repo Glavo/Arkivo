@@ -9,8 +9,8 @@ import org.glavo.arkivo.codec.CodecOption;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
@@ -119,7 +119,7 @@ public final class XZCodec implements CompressionCodec {
 
     /// Opens a configured XZ encoder over the target channel.
     @Override
-    public CompressionEncoder openEncoder(
+    public CompressingWritableByteChannel openEncoder(
             WritableByteChannel target,
             CodecOptions options,
             ChannelOwnership ownership
@@ -158,7 +158,7 @@ public final class XZCodec implements CompressionCodec {
 
     /// Opens a configured XZ decoder over the source channel.
     @Override
-    public CompressionDecoder openDecoder(
+    public DecompressingReadableByteChannel openDecoder(
             ReadableByteChannel source,
             CodecOptions options,
             ChannelOwnership ownership

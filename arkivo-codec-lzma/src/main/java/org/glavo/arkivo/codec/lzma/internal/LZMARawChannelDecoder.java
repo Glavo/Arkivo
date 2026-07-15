@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.lzma.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -19,7 +19,7 @@ import java.util.Objects;
 
 /// Decodes a headerless LZMA range-coded stream with externally supplied properties.
 @NotNullByDefault
-public final class LZMARawChannelDecoder implements CompressionDecoder {
+public final class LZMARawChannelDecoder implements DecompressingReadableByteChannel {
     /// Tracks closure of the compressed-data source.
     private final OwnedChannelCloser sourceCloser;
 

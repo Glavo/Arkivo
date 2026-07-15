@@ -7,63 +7,38 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.WritableByteChannel;
-import java.util.Objects;
 
-/// Accepts uncompressed bytes and writes encoded bytes to a backing channel.
+/// Incrementally encodes one compression frame between caller-owned byte buffers.
+///
+/// Implementations are stateful and not safe for concurrent use. They must not retain a reference to a source or target
+/// buffer after an operation returns. Buffer positions are the authoritative record of bytes consumed and produced.
 @NotNullByDefault
-public interface CompressionEncoder extends WritableByteChannel {
-    /// Processes all remaining source bytes and applies the requested frame directive.
-    default CodecResult encode(ByteBuffer source, EncodeDirective directive) throws IOException {
-        Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(directive, "directive");
-        long inputBefore = inputBytes();
-        long outputBefore = outputBytes();
-        while (source.hasRemaining()) {
-            if (write(source) == 0) {
-                throw new IOException("Compression encoder made no progress");
-            }
-        }
-
-        CodecStatus status;
-        if (directive == EncodeDirective.FLUSH) {
-            flush();
-            status = CodecStatus.FLUSHED;
-        } else if (directive == EncodeDirective.END_FRAME) {
-            finishFrame();
-            status = CodecStatus.FRAME_FINISHED;
-        } else {
-            status = CodecStatus.ACTIVE;
-        }
-        return new CodecResult(inputBytes() - inputBefore, outputBytes() - outputBefore, status);
-    }
-
-    /// Flushes currently pending output without ending the current frame.
+public interface CompressionEncoder extends AutoCloseable {
+    /// Consumes uncompressed source bytes and produces encoded bytes until either buffer prevents further progress.
     ///
-    /// A codec that does not advertise `CompressionFeature.FLUSH` may only flush transport buffers.
-    void flush() throws IOException;
+    /// @return `CodecOutcome.NEEDS_INPUT` when all source bytes were consumed, or
+    /// `CodecOutcome.NEEDS_OUTPUT` when the target was filled first
+    CodecOutcome encode(ByteBuffer source, ByteBuffer target) throws IOException;
 
-    /// Finishes the current frame.
+    /// Emits all currently pending output to a decodable boundary without ending the frame.
     ///
-    /// An encoder advertising `CompressionFeature.MULTI_FRAME` remains open and starts another frame lazily.
-    /// Other encoders finish and release their resources.
-    default void finishFrame() throws IOException {
-        finish();
-    }
-
-    /// Finishes the active frame and releases encoder resources without necessarily closing the backing channel.
+    /// Callers repeat this operation with fresh target space after `CodecOutcome.NEEDS_OUTPUT`.
     ///
-    /// The encoder is no longer open after finalization is attempted, even when this method throws. If closing an owned
-    /// target fails, a later `finish()` or `close()` retries only target closure and does not emit the frame trailer again.
-    void finish() throws IOException;
+    /// @return `CodecOutcome.FLUSHED` when flushing completed, or `CodecOutcome.NEEDS_OUTPUT` otherwise
+    CodecOutcome flush(ByteBuffer target) throws IOException;
 
-    /// Returns the number of uncompressed bytes accepted by this encoder.
-    long inputBytes();
+    /// Finishes the current frame and emits its remaining payload and trailer.
+    ///
+    /// Callers repeat this operation with fresh target space after `CodecOutcome.NEEDS_OUTPUT`.
+    ///
+    /// @return `CodecOutcome.FRAME_FINISHED` when finalization completed, or
+    /// `CodecOutcome.NEEDS_OUTPUT` otherwise
+    CodecOutcome finishFrame(ByteBuffer target) throws IOException;
 
-    /// Returns the number of compressed bytes written to the backing channel.
-    long outputBytes();
+    /// Abandons the current frame and restores the encoder's original immutable configuration.
+    void reset();
 
-    /// Finishes this encoder and retries incomplete owned-target closure when necessary.
+    /// Releases encoder resources without implicitly finishing the current frame.
     @Override
-    void close() throws IOException;
+    void close();
 }

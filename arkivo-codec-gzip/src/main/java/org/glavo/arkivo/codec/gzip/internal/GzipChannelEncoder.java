@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.gzip.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.spi.DeflateStrategySupport;
@@ -22,7 +22,7 @@ import java.util.zip.Deflater;
 
 /// Encodes gzip members directly between ByteBuffers and a target channel.
 @NotNullByDefault
-public final class GzipChannelEncoder implements CompressionEncoder {
+public final class GzipChannelEncoder implements CompressingWritableByteChannel {
     /// The owned input staging-buffer size.
     private static final int INPUT_BUFFER_SIZE = 8192;
 

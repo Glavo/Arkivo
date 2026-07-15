@@ -6,7 +6,7 @@ package org.glavo.arkivo.codec.gzip.internal;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.glavo.arkivo.codec.DecodeDirective;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -24,7 +24,7 @@ import java.util.zip.Inflater;
 
 /// Decodes and validates concatenated gzip members directly through NIO buffers.
 @NotNullByDefault
-public final class GzipChannelDecoder implements CompressionDecoder {
+public final class GzipChannelDecoder implements DecompressingReadableByteChannel {
     /// The compressed-input staging-buffer size.
     private static final int INPUT_BUFFER_SIZE = 8192;
 

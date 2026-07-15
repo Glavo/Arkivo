@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.zstd.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -26,7 +26,7 @@ import java.util.concurrent.Future;
 
 /// Encodes Zstandard frames directly over a writable byte channel in pure Java.
 @NotNullByDefault
-public final class ZstdChannelEncoder implements CompressionEncoder {
+public final class ZstdChannelEncoder implements CompressingWritableByteChannel {
     /// Compressed-data target.
     private final WritableByteChannel target;
 

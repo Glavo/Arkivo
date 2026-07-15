@@ -4,8 +4,9 @@
 package org.glavo.arkivo.codec;
 
 import org.glavo.arkivo.codec.internal.ByteBufferCodecSupport;
-import org.glavo.arkivo.codec.internal.StreamChannelAdapters;
 import org.glavo.arkivo.codec.internal.CodecTransferSupport;
+import org.glavo.arkivo.codec.internal.StreamChannelAdapters;
+import org.glavo.arkivo.codec.internal.CodecChannelAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -18,7 +19,7 @@ import java.nio.channels.WritableByteChannel;
 import java.util.List;
 import java.util.Objects;
 
-/// Describes a compression algorithm and creates configured channel contexts.
+/// Describes a compression algorithm and creates configured buffer engines and channel adapters.
 @NotNullByDefault
 public interface CompressionCodec {
     /// The sentinel returned when a size cannot be calculated or is not known.
@@ -104,27 +105,63 @@ public interface CompressionCodec {
         throw new UnsupportedOperationException("Compression levels are not supported by " + name());
     }
 
+    /// Creates a configured transport-independent encoder.
+    ///
+    /// The default implementation rejects codecs that do not advertise CompressionFeature.BUFFER_COMPRESSION.
+    default CompressionEncoder newEncoder(CodecOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
+        throw new UnsupportedOperationException("Buffer compression is not supported by " + name());
+    }
+
+    /// Creates a default transport-independent encoder.
+    default CompressionEncoder newEncoder() throws IOException {
+        return newEncoder(CodecOptions.EMPTY);
+    }
+
+    /// Creates a configured transport-independent decoder.
+    ///
+    /// The default implementation rejects codecs that do not advertise CompressionFeature.BUFFER_DECOMPRESSION.
+    default CompressionDecoder newDecoder(CodecOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
+        throw new UnsupportedOperationException("Buffer decompression is not supported by " + name());
+    }
+
+    /// Creates a default transport-independent decoder.
+    default CompressionDecoder newDecoder() throws IOException {
+        return newDecoder(CodecOptions.EMPTY);
+    }
+
     /// Opens a configured encoder context over the target channel.
-    CompressionEncoder openEncoder(
+    default CompressingWritableByteChannel openEncoder(
             WritableByteChannel target,
             CodecOptions options,
             ChannelOwnership ownership
-    ) throws IOException;
+    ) throws IOException {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(options, "options");
+        Objects.requireNonNull(ownership, "ownership");
+        return CodecChannelAdapters.openEncoder(target, ownership, () -> newEncoder(options));
+    }
 
     /// Opens a default encoder and retains ownership of the target channel.
-    default CompressionEncoder openEncoder(WritableByteChannel target) throws IOException {
+    default CompressingWritableByteChannel openEncoder(WritableByteChannel target) throws IOException {
         return openEncoder(target, CodecOptions.EMPTY, ChannelOwnership.RETAIN);
     }
 
     /// Opens a configured decoder context over the source channel.
-    CompressionDecoder openDecoder(
+    default DecompressingReadableByteChannel openDecoder(
             ReadableByteChannel source,
             CodecOptions options,
             ChannelOwnership ownership
-    ) throws IOException;
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(options, "options");
+        Objects.requireNonNull(ownership, "ownership");
+        return CodecChannelAdapters.openDecoder(source, ownership, () -> newDecoder(options));
+    }
 
     /// Opens a default decoder and retains ownership of the source channel.
-    default CompressionDecoder openDecoder(ReadableByteChannel source) throws IOException {
+    default DecompressingReadableByteChannel openDecoder(ReadableByteChannel source) throws IOException {
         return openDecoder(source, CodecOptions.EMPTY, ChannelOwnership.RETAIN);
     }
 

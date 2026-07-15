@@ -653,7 +653,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             }
             return startDecodedInput(
                     packedInput,
-                    new Rar4CompressionDecoder(session, compressionInfo),
+                    new Rar4DecompressingReadableByteChannel(session, compressionInfo),
                     attributes
             );
         } catch (IOException | RuntimeException | Error exception) {
@@ -699,7 +699,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             }
             return startDecodedInput(
                     packedInput,
-                    new Rar5CompressionDecoder(session, compressionInfo),
+                    new Rar5DecompressingReadableByteChannel(session, compressionInfo),
                     attributes
             );
         } catch (IOException | RuntimeException | Error exception) {
@@ -713,7 +713,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// Starts one bounded decompression worker and installs its current-entry state.
     private DecodedInputStream startDecodedInput(
             InputStream packedInput,
-            CompressionDecoder decoder,
+            DecompressingReadableByteChannel decoder,
             RarEntryAttributes attributes
     ) throws IOException {
         DecodedInputStream decodedInput = new DecodedInputStream(packedInput, decoder, attributes);
@@ -3382,7 +3382,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     }
     /// Defines one format-specific compressed-entry operation used by the shared streaming worker.
     @NotNullByDefault
-    private interface CompressionDecoder {
+    private interface DecompressingReadableByteChannel {
         /// Decompresses one packed entry and returns its unsigned output CRC32.
         long decode(InputStream input, OutputStream output, long unpackedSize) throws IOException;
 
@@ -3398,7 +3398,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Adapts one RAR4 decoder session to the shared streaming worker.
     @NotNullByDefault
-    private final class Rar4CompressionDecoder implements CompressionDecoder {
+    private final class Rar4DecompressingReadableByteChannel implements DecompressingReadableByteChannel {
         /// The stateful RAR4 decoder session.
         private final Rar4Decoder.Session session;
 
@@ -3406,7 +3406,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         private final Rar4CompressionInfo compressionInfo;
 
         /// Creates one RAR4 compressed-entry operation.
-        private Rar4CompressionDecoder(
+        private Rar4DecompressingReadableByteChannel(
                 Rar4Decoder.Session session,
                 Rar4CompressionInfo compressionInfo
         ) {
@@ -3448,7 +3448,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Adapts one RAR5 decoder session to the shared streaming worker.
     @NotNullByDefault
-    private final class Rar5CompressionDecoder implements CompressionDecoder {
+    private final class Rar5DecompressingReadableByteChannel implements DecompressingReadableByteChannel {
         /// The stateful RAR5 decoder session.
         private final Rar5Decoder.Session session;
 
@@ -3456,7 +3456,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         private final Rar5CompressionInfo compressionInfo;
 
         /// Creates one RAR5 compressed-entry operation.
-        private Rar5CompressionDecoder(
+        private Rar5DecompressingReadableByteChannel(
                 Rar5Decoder.Session session,
                 Rar5CompressionInfo compressionInfo
         ) {
@@ -3541,7 +3541,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         private final InputStream packedInput;
 
         /// The format-specific decompression operation.
-        private final CompressionDecoder decoder;
+        private final DecompressingReadableByteChannel decoder;
 
         /// The public attributes used for size and checksum validation.
         private final RarEntryAttributes attributes;
@@ -3576,7 +3576,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         /// Creates and starts one bounded decompression worker.
         private DecodedInputStream(
                 InputStream packedInput,
-                CompressionDecoder decoder,
+                DecompressingReadableByteChannel decoder,
                 RarEntryAttributes attributes
         ) throws IOException {
             this.packedInput = Objects.requireNonNull(packedInput, "packedInput");

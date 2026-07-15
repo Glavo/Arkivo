@@ -6,7 +6,7 @@ package org.glavo.arkivo.codec.zstd.internal;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
@@ -22,7 +22,7 @@ import java.util.Objects;
 
 /// Decodes Zstandard frames with the pure Java block and entropy engine.
 @NotNullByDefault
-public final class ZstdChannelDecoder implements CompressionDecoder {
+public final class ZstdChannelDecoder implements DecompressingReadableByteChannel {
     /// The empty pending-output buffer.
     private static final ByteBuffer EMPTY = ByteBuffer.allocate(0).asReadOnlyBuffer();
 

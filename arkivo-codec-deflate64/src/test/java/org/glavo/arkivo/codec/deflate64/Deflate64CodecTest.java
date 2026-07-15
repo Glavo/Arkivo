@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.deflate64;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOptions;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -48,7 +48,7 @@ final class Deflate64CodecTest {
         assertTrue(codec.capabilities().supports(CompressionFeature.DIRECT_BYTE_BUFFER));
 
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(compressed));
-        CompressionDecoder decoder = codec.openDecoder(
+        DecompressingReadableByteChannel decoder = codec.openDecoder(
                 source,
                 CodecOptions.EMPTY,
                 ChannelOwnership.CLOSE
@@ -68,7 +68,7 @@ final class Deflate64CodecTest {
         assertArrayEquals(content, actual);
 
         ReadableByteChannel retained = Channels.newChannel(new ByteArrayInputStream(compressed));
-        CompressionDecoder retainedDecoder = codec.openDecoder(
+        DecompressingReadableByteChannel retainedDecoder = codec.openDecoder(
                 retained,
                 CodecOptions.EMPTY,
                 ChannelOwnership.RETAIN
@@ -79,7 +79,7 @@ final class Deflate64CodecTest {
         byte[] corrupt = compressed.clone();
         corrupt[3] ^= 1;
         assertThrows(IOException.class, () -> {
-            try (CompressionDecoder invalid = codec.openDecoder(
+            try (DecompressingReadableByteChannel invalid = codec.openDecoder(
                     Channels.newChannel(new ByteArrayInputStream(corrupt))
             )) {
                 invalid.read(ByteBuffer.allocateDirect(content.length));

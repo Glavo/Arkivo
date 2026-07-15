@@ -8,8 +8,8 @@ import org.glavo.arkivo.codec.CodecOption;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
-import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2ChannelDecoder;
@@ -219,7 +219,7 @@ public final class LZMACodecTest {
                 .set(LZMAOptions.POSITION_BITS, 1L)
                 .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) content.length)
                 .build();
-        try (CompressionEncoder encoder = new LZMACodec().openEncoder(
+        try (CompressingWritableByteChannel encoder = new LZMACodec().openEncoder(
                 Channels.newChannel(compressed),
                 options,
                 ChannelOwnership.RETAIN
@@ -267,7 +267,7 @@ public final class LZMACodecTest {
         CodecOptions options = CodecOptions.builder()
                 .set(LZMAOptions.DICTIONARY_SIZE, (long) dictionarySize)
                 .build();
-        try (CompressionEncoder encoder = new LZMA2Codec().openEncoder(
+        try (CompressingWritableByteChannel encoder = new LZMA2Codec().openEncoder(
                 Channels.newChannel(compressed),
                 options,
                 ChannelOwnership.RETAIN
@@ -340,7 +340,7 @@ public final class LZMACodecTest {
                 )
         );
 
-        CompressionEncoder encoder = new LZMACodec().openEncoder(
+        CompressingWritableByteChannel encoder = new LZMACodec().openEncoder(
                 Channels.newChannel(new ByteArrayOutputStream()),
                 CodecOptions.builder()
                         .set(LZMAOptions.DICTIONARY_SIZE, 1L << 14)
@@ -448,7 +448,7 @@ public final class LZMACodecTest {
         );
 
         ByteArrayOutputStream incomplete = new ByteArrayOutputStream();
-        CompressionEncoder encoder = codec.openEncoder(
+        CompressingWritableByteChannel encoder = codec.openEncoder(
                 Channels.newChannel(incomplete),
                 CodecOptions.builder()
                         .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) content.length + 1L)
@@ -487,7 +487,7 @@ public final class LZMACodecTest {
                 .set(LZMACodec.DICTIONARY_SIZE, 1L << 16)
                 .build();
 
-        CompressionEncoder encoder = new LZMACodec().openEncoder(
+        CompressingWritableByteChannel encoder = new LZMACodec().openEncoder(
                 compressedTarget,
                 options,
                 ChannelOwnership.RETAIN
@@ -502,7 +502,7 @@ public final class LZMACodecTest {
         assertEquals(1 << 16, littleEndianInt(encoded, 1));
 
         ReadableByteChannel compressedSource = Channels.newChannel(new ByteArrayInputStream(encoded));
-        CompressionDecoder decoder = new LZMACodec().openDecoder(
+        DecompressingReadableByteChannel decoder = new LZMACodec().openDecoder(
                 compressedSource,
                 CodecOptions.EMPTY,
                 ChannelOwnership.CLOSE

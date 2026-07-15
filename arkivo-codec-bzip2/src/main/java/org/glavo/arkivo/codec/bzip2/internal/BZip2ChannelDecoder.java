@@ -6,7 +6,7 @@ package org.glavo.arkivo.codec.bzip2.internal;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -27,7 +27,7 @@ import java.util.Objects;
 /// inverse Burrows-Wheeler transform. The final run-length stage is produced lazily so a highly compressible block does
 /// not require an output-sized allocation.
 @NotNullByDefault
-public final class BZip2ChannelDecoder implements CompressionDecoder {
+public final class BZip2ChannelDecoder implements DecompressingReadableByteChannel {
     /// The BZip2 block marker.
     private static final long BLOCK_MAGIC = 0x314159265359L;
 

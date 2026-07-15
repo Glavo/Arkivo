@@ -8,8 +8,8 @@ import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -49,7 +49,7 @@ public final class ByteBufferCodecSupport {
         int initialCapacity = compressionInitialCapacity(codec, source.remaining());
         GrowingByteBuffer bytes = new GrowingByteBuffer(initialCapacity, Integer.MAX_VALUE);
         try (GrowingByteBufferChannel output = new GrowingByteBufferChannel(bytes);
-             CompressionEncoder compressor = codec.openEncoder(
+             CompressingWritableByteChannel compressor = codec.openEncoder(
                      output,
                      options,
                      ChannelOwnership.RETAIN
@@ -87,7 +87,7 @@ public final class ByteBufferCodecSupport {
                 maximumCapacity
         );
         ByteBufferReadableChannel input = new ByteBufferReadableChannel(source);
-        CompressionDecoder decompressor = openDecoder(codec, source, input, options);
+        DecompressingReadableByteChannel decompressor = openDecoder(codec, source, input, options);
         try (input; decompressor) {
             try {
                 while (true) {
@@ -141,7 +141,7 @@ public final class ByteBufferCodecSupport {
                 maximumCapacity
         );
         ByteBufferReadableChannel input = new ByteBufferReadableChannel(source);
-        CompressionDecoder decompressor = openDecoder(codec, source, input, options);
+        DecompressingReadableByteChannel decompressor = openDecoder(codec, source, input, options);
         try (input; decompressor) {
             try {
                 while (true) {
@@ -212,7 +212,7 @@ public final class ByteBufferCodecSupport {
         validateBuffers(source, target);
 
         try (ByteBufferWritableChannel output = new ByteBufferWritableChannel(target);
-             CompressionEncoder compressor = codec.openEncoder(output, options, ChannelOwnership.RETAIN)) {
+             CompressingWritableByteChannel compressor = codec.openEncoder(output, options, ChannelOwnership.RETAIN)) {
             while (source.hasRemaining()) {
                 int sourcePosition = source.position();
                 int written = compressor.write(source);
@@ -240,7 +240,7 @@ public final class ByteBufferCodecSupport {
         validateBuffers(source, target);
 
         ByteBufferReadableChannel input = new ByteBufferReadableChannel(source);
-        CompressionDecoder decompressor = openDecoder(codec, source, input, options);
+        DecompressingReadableByteChannel decompressor = openDecoder(codec, source, input, options);
         try (input; decompressor) {
             try {
                 while (target.hasRemaining()) {
@@ -280,7 +280,7 @@ public final class ByteBufferCodecSupport {
         validateBuffers(source, target);
 
         ByteBufferReadableChannel input = new ByteBufferReadableChannel(source);
-        CompressionDecoder decompressor = openDecoder(codec, source, input, options);
+        DecompressingReadableByteChannel decompressor = openDecoder(codec, source, input, options);
         try (input; decompressor) {
             try {
                 while (target.hasRemaining()) {
@@ -325,7 +325,7 @@ public final class ByteBufferCodecSupport {
     }
 
     /// Opens a decoder while restoring the source position if context construction fails.
-    private static CompressionDecoder openDecoder(
+    private static DecompressingReadableByteChannel openDecoder(
             CompressionCodec codec,
             ByteBuffer source,
             ByteBufferReadableChannel input,
@@ -342,7 +342,7 @@ public final class ByteBufferCodecSupport {
     }
 
     /// Restores bytes read ahead but not logically consumed by the decoder.
-    private static void restoreUnconsumedInput(ByteBuffer source, CompressionDecoder decoder) {
+    private static void restoreUnconsumedInput(ByteBuffer source, DecompressingReadableByteChannel decoder) {
         int count = decoder.unconsumedInput().remaining();
         source.position(source.position() - count);
     }

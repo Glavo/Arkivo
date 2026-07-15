@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
@@ -3743,7 +3743,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         private final OutputStream entryOutput;
 
         /// The optional channel-first compression encoder used by this entry.
-        private final @Nullable CompressionEncoder compressionEncoder;
+        private final @Nullable CompressingWritableByteChannel compressionEncoder;
 
         /// The optional storage stream that preserves uncompressed bytes for update-session reads.
         private final @Nullable OutputStream stagedEntryOutput;
@@ -3797,28 +3797,28 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 dataOutput = entryAesOutput;
             }
             this.aesOutput = entryAesOutput;
-            CompressionEncoder entryCompressionEncoder = null;
+            CompressingWritableByteChannel entryCompressingWritableByteChannel = null;
             if (metadata.method == DEFLATED_METHOD) {
-                entryCompressionEncoder = ZipCompressionCodecs.openEncoder("deflate", dataOutput);
-                this.entryOutput = StreamChannelAdapters.outputStream(entryCompressionEncoder);
+                entryCompressingWritableByteChannel = ZipCompressionCodecs.openEncoder("deflate", dataOutput);
+                this.entryOutput = StreamChannelAdapters.outputStream(entryCompressingWritableByteChannel);
             } else if (metadata.method == DEFLATE64_METHOD) {
-                entryCompressionEncoder = ZipCompressionCodecs.openEncoder("deflate64", dataOutput);
-                this.entryOutput = StreamChannelAdapters.outputStream(entryCompressionEncoder);
+                entryCompressingWritableByteChannel = ZipCompressionCodecs.openEncoder("deflate64", dataOutput);
+                this.entryOutput = StreamChannelAdapters.outputStream(entryCompressingWritableByteChannel);
             } else if (metadata.method == BZIP2_METHOD) {
-                entryCompressionEncoder = ZipCompressionCodecs.openEncoder("bzip2", dataOutput);
-                this.entryOutput = StreamChannelAdapters.outputStream(entryCompressionEncoder);
+                entryCompressingWritableByteChannel = ZipCompressionCodecs.openEncoder("bzip2", dataOutput);
+                this.entryOutput = StreamChannelAdapters.outputStream(entryCompressingWritableByteChannel);
             } else if (isZstandardMethod(metadata.method)) {
-                entryCompressionEncoder = ZipCompressionCodecs.openEncoder("zstd", dataOutput);
-                this.entryOutput = StreamChannelAdapters.outputStream(entryCompressionEncoder);
+                entryCompressingWritableByteChannel = ZipCompressionCodecs.openEncoder("zstd", dataOutput);
+                this.entryOutput = StreamChannelAdapters.outputStream(entryCompressingWritableByteChannel);
             } else if (metadata.method == LZMA_METHOD) {
                 this.entryOutput = new ZipLZMAOutputStream(dataOutput);
             } else if (metadata.method == XZ_METHOD) {
-                entryCompressionEncoder = ZipCompressionCodecs.openEncoder("xz", dataOutput);
-                this.entryOutput = StreamChannelAdapters.outputStream(entryCompressionEncoder);
+                entryCompressingWritableByteChannel = ZipCompressionCodecs.openEncoder("xz", dataOutput);
+                this.entryOutput = StreamChannelAdapters.outputStream(entryCompressingWritableByteChannel);
             } else {
                 this.entryOutput = dataOutput;
             }
-            this.compressionEncoder = entryCompressionEncoder;
+            this.compressionEncoder = entryCompressingWritableByteChannel;
             this.stagedEntryOutput = openStagedEntryOutput(entryName);
         }
 
@@ -3873,9 +3873,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     if (stagedOutput != null) {
                         stagedOutput.close();
                     }
-                    CompressionEncoder entryCompressionEncoder = compressionEncoder;
-                    if (entryCompressionEncoder != null) {
-                        entryCompressionEncoder.finish();
+                    CompressingWritableByteChannel entryCompressingWritableByteChannel = compressionEncoder;
+                    if (entryCompressingWritableByteChannel != null) {
+                        entryCompressingWritableByteChannel.finish();
                     } else if (entryOutput instanceof ZipLZMAOutputStream lzmaOutput) {
                         lzmaOutput.finish();
                     }

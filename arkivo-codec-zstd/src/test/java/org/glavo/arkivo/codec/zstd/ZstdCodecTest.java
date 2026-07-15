@@ -11,7 +11,7 @@ import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.ChecksumMode;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.EncodeDirective;
 import org.glavo.arkivo.codec.StandardCodecOptions;
@@ -272,7 +272,7 @@ public final class ZstdCodecTest {
         ZstdCodec codec = new ZstdCodec();
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
 
-        CompressionEncoder encoder = codec.openEncoder(
+        CompressingWritableByteChannel encoder = codec.openEncoder(
                 Channels.newChannel(compressed),
                 options,
                 ChannelOwnership.RETAIN
@@ -473,7 +473,7 @@ public final class ZstdCodecTest {
                 .build();
 
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        try (CompressionEncoder encoder = codec.openEncoder(
+        try (CompressingWritableByteChannel encoder = codec.openEncoder(
                 Channels.newChannel(encoded),
                 compressionOptions,
                 ChannelOwnership.RETAIN

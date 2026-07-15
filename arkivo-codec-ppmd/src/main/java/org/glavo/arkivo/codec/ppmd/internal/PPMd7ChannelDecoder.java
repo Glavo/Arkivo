@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.ppmd.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -16,7 +16,7 @@ import java.util.Objects;
 
 /// Exposes one exactly sized raw PPMd7 stream as a decoded byte channel.
 @NotNullByDefault
-public final class PPMd7ChannelDecoder implements CompressionDecoder {
+public final class PPMd7ChannelDecoder implements DecompressingReadableByteChannel {
     /// Tracks closure of the compressed source.
     private final OwnedChannelCloser sourceCloser;
 

@@ -4,60 +4,50 @@
 package org.glavo.arkivo.codec;
 
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.ReadableByteChannel;
 import java.util.Objects;
 
-/// Reads compressed bytes from a backing channel and exposes decoded bytes.
+/// Incrementally decodes one compression frame between caller-owned byte buffers.
+///
+/// Implementations are stateful and not safe for concurrent use. They must not retain a reference to a source or target
+/// buffer after an operation returns. A completed frame leaves trailing bytes unconsumed in the source buffer.
 @NotNullByDefault
-public interface CompressionDecoder extends ReadableByteChannel {
-    /// Decodes bytes into the target and reports progress and end-of-input state.
-    default CodecResult decode(ByteBuffer target) throws IOException {
-        return decode(target, DecodeDirective.CONTINUE);
+public interface CompressionDecoder extends AutoCloseable {
+    /// Decodes compressed source bytes while allowing additional source bytes in a later operation.
+    default CodecOutcome decode(ByteBuffer source, ByteBuffer target) throws IOException {
+        return decode(source, target, false);
     }
 
-    /// Decodes bytes with the requested frame-boundary behavior.
+    /// Decodes compressed source bytes until input, output space, a dictionary, or the frame boundary stops progress.
     ///
-    /// Decoders advertising concatenated-frame support implement the STOP_AT_FRAME directive.
-    /// Other decoders retain their ordinary end-of-input behavior.
-    default CodecResult decode(ByteBuffer target, DecodeDirective directive) throws IOException {
-        Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(directive, "directive");
-        long inputBefore = inputBytes();
-        long outputBefore = outputBytes();
-        int read = read(target);
-        CodecStatus status = read < 0 ? CodecStatus.END_OF_INPUT : CodecStatus.ACTIVE;
-        return new CodecResult(inputBytes() - inputBefore, outputBytes() - outputBefore, status);
+    /// When `endOfInput` is true, exhausting the source before a complete frame is an error. Buffer positions are the
+    /// authoritative record of bytes consumed and produced.
+    ///
+    /// @return the actionable reason this operation returned
+    CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException;
+
+    /// Returns the format-specific identifier of the requested dictionary.
+    ///
+    /// This method is valid after `CodecOutcome.NEEDS_DICTIONARY`. Formats without an available identifier return
+    /// `CompressionDictionary.UNKNOWN_ID`.
+    default long requiredDictionaryId() {
+        return CompressionDictionary.UNKNOWN_ID;
     }
 
-    /// Returns the number of compressed bytes logically consumed by the decoder.
-    long inputBytes();
-
-    /// Returns the number of compressed bytes obtained from the backing source, including buffered read-ahead.
+    /// Supplies the dictionary requested by the most recent decode operation.
     ///
-    /// The returned value is never less than inputBytes(). Decoders without observable read-ahead return inputBytes().
-    default long sourceBytes() {
-        return inputBytes();
+    /// The default implementation rejects decoders that do not support late dictionary binding.
+    default void provideDictionary(CompressionDictionary dictionary) throws IOException {
+        Objects.requireNonNull(dictionary, "dictionary");
+        throw new UnsupportedOperationException("Late dictionary binding is not supported");
     }
 
-    /// Returns a read-only view of source bytes obtained but not logically consumed.
-    ///
-    /// The remaining byte count equals sourceBytes() minus inputBytes(). The view's position and limit are independent,
-    /// but its content is valid only until the decoder performs another read or decode operation.
-    default @UnmodifiableView ByteBuffer unconsumedInput() {
-        return ByteBuffer.allocate(0).asReadOnlyBuffer();
-    }
+    /// Abandons the current frame and restores the decoder's original immutable configuration.
+    void reset();
 
-    /// Returns the number of uncompressed bytes returned to callers.
-    long outputBytes();
-
-    /// Releases decoder resources and closes an owned source.
-    ///
-    /// The decoder is no longer open after release is attempted. If owned-source closure fails, a later `close()` retries
-    /// only source closure and does not release decoder state again.
+    /// Releases decoder resources without consuming additional input.
     @Override
-    void close() throws IOException;
+    void close();
 }

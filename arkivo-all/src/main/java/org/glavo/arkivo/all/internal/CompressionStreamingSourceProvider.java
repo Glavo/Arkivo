@@ -9,7 +9,7 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressionProbeResult;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -48,7 +48,7 @@ public final class CompressionStreamingSourceProvider implements ArkivoStreaming
         }
 
         try {
-            CompressionDecoder decoder = codec.openDecoder(
+            DecompressingReadableByteChannel decoder = codec.openDecoder(
                     probe.channel(),
                     CodecOptions.EMPTY,
                     ChannelOwnership.CLOSE

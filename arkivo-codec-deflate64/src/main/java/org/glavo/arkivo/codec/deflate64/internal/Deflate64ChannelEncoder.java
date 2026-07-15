@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.deflate64.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -19,7 +19,7 @@ import java.util.Objects;
 
 /// Encodes raw Deflate64 blocks with fixed Huffman codes and bounded hash-chain matching.
 @NotNullByDefault
-public final class Deflate64ChannelEncoder implements CompressionEncoder {
+public final class Deflate64ChannelEncoder implements CompressingWritableByteChannel {
     /// The Deflate64 history-window size.
     private static final int WINDOW_SIZE = 1 << 16;
 

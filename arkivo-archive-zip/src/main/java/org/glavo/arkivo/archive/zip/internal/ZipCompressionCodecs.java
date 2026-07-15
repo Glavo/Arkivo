@@ -8,8 +8,8 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOption;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodecs;
-import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -49,7 +49,7 @@ final class ZipCompressionCodecs {
     }
 
     /// Opens a named encoder that retains the entry's compressed-data target.
-    static CompressionEncoder openEncoder(String codecName, OutputStream target) throws IOException {
+    static CompressingWritableByteChannel openEncoder(String codecName, OutputStream target) throws IOException {
         return CompressionCodecs.openEncoder(
                 codecName,
                 StreamChannelAdapters.writableChannel(target),
@@ -58,7 +58,7 @@ final class ZipCompressionCodecs {
     }
 
     /// Opens a named decoder that owns the compressed entry stream.
-    static CompressionDecoder openDecoder(String codecName, InputStream source) throws IOException {
+    static DecompressingReadableByteChannel openDecoder(String codecName, InputStream source) throws IOException {
         return CompressionCodecs.openDecoder(
                 codecName,
                 StreamChannelAdapters.readableChannel(source),
@@ -81,7 +81,7 @@ final class ZipCompressionCodecs {
                 .set(LZMA_DICTIONARY_SIZE, dictionarySize)
                 .set(LZMA_END_MARKER, endMarker)
                 .build();
-        CompressionEncoder encoder = CompressionCodecs.openEncoder(
+        CompressingWritableByteChannel encoder = CompressionCodecs.openEncoder(
                 "lzma-raw",
                 StreamChannelAdapters.writableChannel(target),
                 options,
@@ -106,7 +106,7 @@ final class ZipCompressionCodecs {
     }
 
     /// Opens a raw LZMA decoder context with externally stored ZIP properties.
-    static CompressionDecoder openRawLZMADecoderContext(
+    static DecompressingReadableByteChannel openRawLZMADecoderContext(
             InputStream source,
             int property,
             long dictionarySize,

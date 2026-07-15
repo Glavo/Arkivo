@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.zlib.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
@@ -24,7 +24,7 @@ import java.util.zip.Inflater;
 
 /// Decodes zlib data directly between a source channel and ByteBuffers.
 @NotNullByDefault
-public final class ZlibChannelDecoder implements CompressionDecoder {
+public final class ZlibChannelDecoder implements DecompressingReadableByteChannel {
     /// The compressed-input staging-buffer size.
     private static final int INPUT_BUFFER_SIZE = 8192;
 

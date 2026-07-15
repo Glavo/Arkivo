@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecTransferResult;
 import org.glavo.arkivo.codec.CompressionCodecs;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.StandardCodecOptions;
@@ -176,7 +176,7 @@ final class PPMdCodecTest {
         );
 
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(new byte[5]));
-        try (CompressionDecoder decoder = codec.openDecoder(
+        try (DecompressingReadableByteChannel decoder = codec.openDecoder(
                 source,
                 options(0L),
                 ChannelOwnership.CLOSE

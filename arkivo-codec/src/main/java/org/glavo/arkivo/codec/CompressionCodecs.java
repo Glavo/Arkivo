@@ -166,7 +166,7 @@ public final class CompressionCodecs {
     }
 
     /// Opens a default encoder for the named installed codec while retaining the target channel.
-    public static CompressionEncoder openEncoder(
+    public static CompressingWritableByteChannel openEncoder(
             String codecName,
             WritableByteChannel target
     ) throws IOException {
@@ -174,7 +174,7 @@ public final class CompressionCodecs {
     }
 
     /// Opens a default encoder for the named installed codec with explicit target ownership.
-    public static CompressionEncoder openEncoder(
+    public static CompressingWritableByteChannel openEncoder(
             String codecName,
             WritableByteChannel target,
             ChannelOwnership ownership
@@ -183,7 +183,7 @@ public final class CompressionCodecs {
     }
 
     /// Opens a configured encoder for the named installed codec while retaining the target channel.
-    public static CompressionEncoder openEncoder(
+    public static CompressingWritableByteChannel openEncoder(
             String codecName,
             WritableByteChannel target,
             CodecOptions options
@@ -194,7 +194,7 @@ public final class CompressionCodecs {
     /// Opens a configured encoder for the named installed codec with explicit target ownership.
     ///
     /// After argument validation, CLOSE transfers ownership before codec lookup and setup.
-    public static CompressionEncoder openEncoder(
+    public static CompressingWritableByteChannel openEncoder(
             String codecName,
             WritableByteChannel target,
             CodecOptions options,
@@ -220,7 +220,7 @@ public final class CompressionCodecs {
     }
 
     /// Opens a default decoder for the named installed codec while retaining the source channel.
-    public static CompressionDecoder openDecoder(
+    public static DecompressingReadableByteChannel openDecoder(
             String codecName,
             ReadableByteChannel source
     ) throws IOException {
@@ -228,7 +228,7 @@ public final class CompressionCodecs {
     }
 
     /// Opens a default decoder for the named installed codec with explicit source ownership.
-    public static CompressionDecoder openDecoder(
+    public static DecompressingReadableByteChannel openDecoder(
             String codecName,
             ReadableByteChannel source,
             ChannelOwnership ownership
@@ -237,7 +237,7 @@ public final class CompressionCodecs {
     }
 
     /// Opens a configured decoder for the named installed codec while retaining the source channel.
-    public static CompressionDecoder openDecoder(
+    public static DecompressingReadableByteChannel openDecoder(
             String codecName,
             ReadableByteChannel source,
             CodecOptions options
@@ -249,7 +249,7 @@ public final class CompressionCodecs {
     ///
     /// This method bypasses signature detection. After argument validation, CLOSE transfers ownership before codec
     /// lookup and setup.
-    public static CompressionDecoder openDecoder(
+    public static DecompressingReadableByteChannel openDecoder(
             String codecName,
             ReadableByteChannel source,
             CodecOptions options,
@@ -275,12 +275,12 @@ public final class CompressionCodecs {
     }
 
     /// Detects a signed stream and opens a default decoder while retaining the source channel.
-    public static CompressionDecoder openDecoder(ReadableByteChannel source) throws IOException {
+    public static DecompressingReadableByteChannel openDecoder(ReadableByteChannel source) throws IOException {
         return openDecoder(source, CodecOptions.EMPTY, ChannelOwnership.RETAIN);
     }
 
     /// Detects a signed stream and opens a configured decoder while retaining the source channel.
-    public static CompressionDecoder openDecoder(
+    public static DecompressingReadableByteChannel openDecoder(
             ReadableByteChannel source,
             CodecOptions options
     ) throws IOException {
@@ -288,7 +288,7 @@ public final class CompressionCodecs {
     }
 
     /// Detects a signed stream and opens a default decoder with explicit source ownership.
-    public static CompressionDecoder openDecoder(
+    public static DecompressingReadableByteChannel openDecoder(
             ReadableByteChannel source,
             ChannelOwnership ownership
     ) throws IOException {
@@ -300,7 +300,7 @@ public final class CompressionCodecs {
     /// The decoder receives every byte consumed by detection. Codecs without a reliable signature must be opened by
     /// name. Closing the decoder closes its replay channel; that channel applies the requested ownership to the original
     /// source.
-    public static CompressionDecoder openDecoder(
+    public static DecompressingReadableByteChannel openDecoder(
             ReadableByteChannel source,
             CodecOptions options,
             ChannelOwnership ownership
@@ -401,7 +401,7 @@ public final class CompressionCodecs {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(options, "options");
-        try (CompressionDecoder decoder = openDecoder(
+        try (DecompressingReadableByteChannel decoder = openDecoder(
                 source,
                 options,
                 ChannelOwnership.RETAIN

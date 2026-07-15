@@ -168,7 +168,7 @@ final class CompressionCodecBufferTest {
 
     /// Implements a decoder that prefetches its complete source but exposes only one logical prefix.
     @NotNullByDefault
-    private static final class ReadAheadDecoder implements CompressionDecoder {
+    private static final class ReadAheadDecoder implements DecompressingReadableByteChannel {
         /// The prefetched source bytes.
         private final ByteBuffer content;
 
@@ -296,7 +296,7 @@ final class CompressionCodecBufferTest {
 
         /// Opens an identity encoder.
         @Override
-        public CompressionEncoder openEncoder(
+        public CompressingWritableByteChannel openEncoder(
                 WritableByteChannel target,
                 CodecOptions options,
                 ChannelOwnership ownership
@@ -307,7 +307,7 @@ final class CompressionCodecBufferTest {
 
         /// Opens a read-ahead decoder or fails after consuming one source byte.
         @Override
-        public CompressionDecoder openDecoder(
+        public DecompressingReadableByteChannel openDecoder(
                 ReadableByteChannel source,
                 CodecOptions options,
                 ChannelOwnership ownership
@@ -350,7 +350,7 @@ final class CompressionCodecBufferTest {
 
         /// Opens an identity encoder.
         @Override
-        public CompressionEncoder openEncoder(
+        public CompressingWritableByteChannel openEncoder(
                 WritableByteChannel target,
                 CodecOptions options,
                 ChannelOwnership ownership
@@ -361,7 +361,7 @@ final class CompressionCodecBufferTest {
 
         /// Opens an identity decoder.
         @Override
-        public CompressionDecoder openDecoder(
+        public DecompressingReadableByteChannel openDecoder(
                 ReadableByteChannel source,
                 CodecOptions options,
                 ChannelOwnership ownership

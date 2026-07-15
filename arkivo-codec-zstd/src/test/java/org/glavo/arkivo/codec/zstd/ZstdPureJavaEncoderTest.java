@@ -8,7 +8,7 @@ import com.github.luben.zstd.ZstdDecompressCtx;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.ChecksumMode;
 import org.glavo.arkivo.codec.CodecOptions;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.WorkerCount;
@@ -310,7 +310,7 @@ public final class ZstdPureJavaEncoderTest {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         ZstdCodec codec = new ZstdCodec();
         int firstFrameSize;
-        try (CompressionEncoder encoder = codec.openEncoder(
+        try (CompressingWritableByteChannel encoder = codec.openEncoder(
                 Channels.newChannel(encoded),
                 options,
                 ChannelOwnership.RETAIN
@@ -397,7 +397,7 @@ public final class ZstdPureJavaEncoderTest {
         byte[] second = "final block".getBytes(StandardCharsets.UTF_8);
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         ZstdCodec codec = new ZstdCodec();
-        try (CompressionEncoder encoder = codec.openEncoder(
+        try (CompressingWritableByteChannel encoder = codec.openEncoder(
                 Channels.newChannel(encoded),
                 CodecOptions.EMPTY,
                 ChannelOwnership.RETAIN
@@ -436,7 +436,7 @@ public final class ZstdPureJavaEncoderTest {
                 .set(ZstdCodec.JOB_SIZE, 512L * 1024L)
                 .set(ZstdCodec.OVERLAP_LOG, 9L)
                 .build();
-        try (CompressionEncoder encoder = codec.openEncoder(
+        try (CompressingWritableByteChannel encoder = codec.openEncoder(
                 Channels.newChannel(encoded),
                 options,
                 ChannelOwnership.RETAIN

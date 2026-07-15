@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.lzma.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -18,7 +18,7 @@ import java.util.Objects;
 
 /// Encodes an EOS-terminated LZMA-alone stream directly to a channel.
 @NotNullByDefault
-public final class LZMAChannelEncoder implements CompressionEncoder {
+public final class LZMAChannelEncoder implements CompressingWritableByteChannel {
     /// The compressed-data target.
     private final WritableByteChannel target;
 

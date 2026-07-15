@@ -7,8 +7,8 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecTransferResult;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -39,7 +39,7 @@ public final class CodecTransferSupport {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(options, "options");
 
-        try (CompressionEncoder encoder = codec.openEncoder(target, options, ChannelOwnership.RETAIN)) {
+        try (CompressingWritableByteChannel encoder = codec.openEncoder(target, options, ChannelOwnership.RETAIN)) {
             transferIntoEncoder(source, encoder);
             encoder.finish();
             return new CodecTransferResult(encoder.inputBytes(), encoder.outputBytes());
@@ -58,14 +58,14 @@ public final class CodecTransferSupport {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(options, "options");
 
-        try (CompressionDecoder decoder = codec.openDecoder(source, options, ChannelOwnership.RETAIN)) {
+        try (DecompressingReadableByteChannel decoder = codec.openDecoder(source, options, ChannelOwnership.RETAIN)) {
             return decompress(decoder, target);
         }
     }
 
     /// Transfers every decoded byte without closing the decoder or target channel.
     public static CodecTransferResult decompress(
-            CompressionDecoder decoder,
+            DecompressingReadableByteChannel decoder,
             WritableByteChannel target
     ) throws IOException {
         Objects.requireNonNull(decoder, "decoder");
@@ -77,7 +77,7 @@ public final class CodecTransferSupport {
     /// Copies all source bytes into an encoder with deterministic progress checks.
     private static void transferIntoEncoder(
             ReadableByteChannel source,
-            CompressionEncoder encoder
+            CompressingWritableByteChannel encoder
     ) throws IOException {
         ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);
         while (true) {
@@ -97,7 +97,7 @@ public final class CodecTransferSupport {
 
     /// Copies all decoded bytes to the target and returns the written byte count.
     private static long transferFromDecoder(
-            CompressionDecoder decoder,
+            DecompressingReadableByteChannel decoder,
             WritableByteChannel target
     ) throws IOException {
         ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);

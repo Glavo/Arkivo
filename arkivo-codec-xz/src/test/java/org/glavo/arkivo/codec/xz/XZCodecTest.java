@@ -10,8 +10,8 @@ import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
-import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.StandardCodecOptions;
@@ -358,7 +358,7 @@ public final class XZCodecTest {
         byte[] trailer = {0x50, 0x4b, 0x07, 0x08, 0x11, 0x22, 0x33, 0x44};
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(concatenate(stream, trailer)));
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
-        try (CompressionDecoder decoder = new XZCodec().openDecoder(
+        try (DecompressingReadableByteChannel decoder = new XZCodec().openDecoder(
                 source,
                 CodecOptions.EMPTY,
                 ChannelOwnership.RETAIN
@@ -476,7 +476,7 @@ public final class XZCodecTest {
                 .set(XZCodec.DICTIONARY_SIZE, 1L << 16)
                 .set(XZCodec.CHECK_TYPE, XZCheckType.SHA256)
                 .build();
-        CompressionEncoder encoder = new XZCodec().openEncoder(
+        CompressingWritableByteChannel encoder = new XZCodec().openEncoder(
                 compressedTarget,
                 options,
                 ChannelOwnership.RETAIN
@@ -497,7 +497,7 @@ public final class XZCodecTest {
         }
 
         ReadableByteChannel compressedSource = Channels.newChannel(new ByteArrayInputStream(encoded));
-        CompressionDecoder decoder = new XZCodec().openDecoder(
+        DecompressingReadableByteChannel decoder = new XZCodec().openDecoder(
                 compressedSource,
                 CodecOptions.EMPTY,
                 ChannelOwnership.CLOSE
@@ -520,7 +520,7 @@ public final class XZCodecTest {
                 .set(StandardCodecOptions.CHECKSUM, ChecksumMode.DISABLED)
                 .build();
         ByteArrayOutputStream uncheckedBytes = new ByteArrayOutputStream();
-        try (CompressionEncoder unchecked = new XZCodec().openEncoder(
+        try (CompressingWritableByteChannel unchecked = new XZCodec().openEncoder(
                 Channels.newChannel(uncheckedBytes),
                 disabled,
                 ChannelOwnership.RETAIN

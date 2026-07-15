@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.ChecksumMode;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.StandardCodecOptions;
@@ -129,7 +129,7 @@ public final class ZstdPureJavaDecoderTest {
         assertThrows(IOException.class, () -> decompress(raw));
 
         ByteBuffer output = ByteBuffer.allocate(8);
-        try (CompressionDecoder decoder = new ZstdCodec().openDecoder(
+        try (DecompressingReadableByteChannel decoder = new ZstdCodec().openDecoder(
                 Channels.newChannel(new ByteArrayInputStream(frames)),
                 options,
                 ChannelOwnership.RETAIN
@@ -193,7 +193,7 @@ public final class ZstdPureJavaDecoderTest {
     public void preservesSkippableFrameBoundaryAndReadAhead() throws IOException {
         byte[] encoded = concatenate(SKIPPABLE_FRAME, RAW_FRAME);
         ByteBuffer output = ByteBuffer.allocate(16);
-        try (CompressionDecoder decoder = new ZstdCodec().openDecoder(
+        try (DecompressingReadableByteChannel decoder = new ZstdCodec().openDecoder(
                 Channels.newChannel(new ByteArrayInputStream(encoded)),
                 CodecOptions.EMPTY,
                 ChannelOwnership.RETAIN
@@ -224,7 +224,7 @@ public final class ZstdPureJavaDecoderTest {
     public void preservesFrameBoundaryAndReadAhead() throws IOException {
         byte[] encoded = concatenate(RAW_FRAME, RLE_FRAME);
         ByteBuffer output = ByteBuffer.allocate(16);
-        try (CompressionDecoder decoder = new ZstdCodec().openDecoder(
+        try (DecompressingReadableByteChannel decoder = new ZstdCodec().openDecoder(
                 Channels.newChannel(new ByteArrayInputStream(encoded)),
                 CodecOptions.EMPTY,
                 ChannelOwnership.RETAIN

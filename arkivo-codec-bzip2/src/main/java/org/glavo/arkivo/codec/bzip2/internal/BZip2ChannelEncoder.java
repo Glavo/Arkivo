@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.bzip2.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -24,7 +24,7 @@ import java.util.PriorityQueue;
 /// The encoder performs the two BZip2 run-length stages, a cyclic Burrows-Wheeler transform, move-to-front coding,
 /// and canonical length-limited Huffman coding without delegating any format stage to an external library.
 @NotNullByDefault
-public final class BZip2ChannelEncoder implements CompressionEncoder {
+public final class BZip2ChannelEncoder implements CompressingWritableByteChannel {
     /// The BZip2 block marker.
     private static final long BLOCK_MAGIC = 0x314159265359L;
 

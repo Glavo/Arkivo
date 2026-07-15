@@ -7,8 +7,8 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
-import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -77,7 +77,7 @@ public final class BZip2CodecTest {
                 .set(StandardCodecOptions.COMPRESSION_LEVEL, 1L)
                 .build();
 
-        CompressionEncoder encoder = new BZip2Codec().openEncoder(
+        CompressingWritableByteChannel encoder = new BZip2Codec().openEncoder(
                 compressedTarget,
                 options,
                 ChannelOwnership.RETAIN
@@ -92,7 +92,7 @@ public final class BZip2CodecTest {
         assertEquals('1', compressedBytes.toByteArray()[3]);
 
         WritableByteChannel ownedTarget = Channels.newChannel(new ByteArrayOutputStream());
-        CompressionEncoder owningEncoder = new BZip2Codec().openEncoder(
+        CompressingWritableByteChannel owningEncoder = new BZip2Codec().openEncoder(
                 ownedTarget,
                 CodecOptions.EMPTY,
                 ChannelOwnership.CLOSE
@@ -104,7 +104,7 @@ public final class BZip2CodecTest {
         ReadableByteChannel compressedSource = Channels.newChannel(
                 new ByteArrayInputStream(compressedBytes.toByteArray())
         );
-        CompressionDecoder decoder = new BZip2Codec().openDecoder(
+        DecompressingReadableByteChannel decoder = new BZip2Codec().openDecoder(
                 compressedSource,
                 CodecOptions.EMPTY,
                 ChannelOwnership.CLOSE

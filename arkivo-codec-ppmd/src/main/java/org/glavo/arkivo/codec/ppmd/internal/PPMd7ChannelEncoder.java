@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.ppmd.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -17,7 +17,7 @@ import java.util.Objects;
 
 /// Exposes one raw PPMd7 arithmetic stream as an encoding byte channel.
 @NotNullByDefault
-public final class PPMd7ChannelEncoder implements CompressionEncoder {
+public final class PPMd7ChannelEncoder implements CompressingWritableByteChannel {
     /// Tracks closure of the compressed target.
     private final OwnedChannelCloser targetCloser;
 

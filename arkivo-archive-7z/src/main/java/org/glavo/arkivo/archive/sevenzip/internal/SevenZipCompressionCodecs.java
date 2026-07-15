@@ -8,8 +8,8 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOption;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodecs;
-import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -69,7 +69,7 @@ final class SevenZipCompressionCodecs {
         CodecOptions options = CodecOptions.builder()
                 .set(StandardCodecOptions.COMPRESSION_LEVEL, (long) compressionLevel)
                 .build();
-        CompressionEncoder encoder = CompressionCodecs.openEncoder(
+        CompressingWritableByteChannel encoder = CompressionCodecs.openEncoder(
                 codecName,
                 StreamChannelAdapters.writableChannel(target),
                 options,
@@ -88,7 +88,7 @@ final class SevenZipCompressionCodecs {
                 .set(PPMD_MAXIMUM_ORDER, (long) maximumOrder)
                 .set(PPMD_MEMORY_SIZE, memorySize)
                 .build();
-        CompressionEncoder encoder = CompressionCodecs.openEncoder(
+        CompressingWritableByteChannel encoder = CompressionCodecs.openEncoder(
                 "ppmd",
                 StreamChannelAdapters.writableChannel(target),
                 options,
@@ -107,7 +107,7 @@ final class SevenZipCompressionCodecs {
                 .set(LZMA_DICTIONARY_SIZE, dictionarySize)
                 .set(LZMA_END_MARKER, endMarker)
                 .build();
-        CompressionEncoder encoder = CompressionCodecs.openEncoder(
+        CompressingWritableByteChannel encoder = CompressionCodecs.openEncoder(
                 "lzma-raw",
                 StreamChannelAdapters.writableChannel(target),
                 options,
@@ -121,7 +121,7 @@ final class SevenZipCompressionCodecs {
         CodecOptions options = CodecOptions.builder()
                 .set(LZMA_DICTIONARY_SIZE, dictionarySize)
                 .build();
-        CompressionEncoder encoder = CompressionCodecs.openEncoder(
+        CompressingWritableByteChannel encoder = CompressionCodecs.openEncoder(
                 "lzma2",
                 StreamChannelAdapters.writableChannel(target),
                 options,
@@ -139,7 +139,7 @@ final class SevenZipCompressionCodecs {
         CodecOptions options = CodecOptions.builder()
                 .set(StandardCodecOptions.MAX_OUTPUT_SIZE, maximumOutputSize)
                 .build();
-        CompressionDecoder decoder = CompressionCodecs.openDecoder(
+        DecompressingReadableByteChannel decoder = CompressionCodecs.openDecoder(
                 codecName,
                 StreamChannelAdapters.readableChannel(source),
                 options,
@@ -161,7 +161,7 @@ final class SevenZipCompressionCodecs {
                 .set(PPMD_DECODED_SIZE, decodedSize)
                 .set(StandardCodecOptions.MAX_OUTPUT_SIZE, decodedSize)
                 .build();
-        CompressionDecoder decoder = CompressionCodecs.openDecoder(
+        DecompressingReadableByteChannel decoder = CompressionCodecs.openDecoder(
                 "ppmd",
                 StreamChannelAdapters.readableChannel(source),
                 options,
@@ -190,7 +190,7 @@ final class SevenZipCompressionCodecs {
                 .set(LZMA_DECODED_SIZE, decodedSize)
                 .set(StandardCodecOptions.MAX_OUTPUT_SIZE, decodedSize)
                 .build();
-        CompressionDecoder decoder = CompressionCodecs.openDecoder(
+        DecompressingReadableByteChannel decoder = CompressionCodecs.openDecoder(
                 "lzma-raw",
                 StreamChannelAdapters.readableChannel(source),
                 options,
@@ -209,7 +209,7 @@ final class SevenZipCompressionCodecs {
                 .set(LZMA_DICTIONARY_SIZE, dictionarySize)
                 .set(StandardCodecOptions.MAX_OUTPUT_SIZE, maximumOutputSize)
                 .build();
-        CompressionDecoder decoder = CompressionCodecs.openDecoder(
+        DecompressingReadableByteChannel decoder = CompressionCodecs.openDecoder(
                 "lzma2",
                 StreamChannelAdapters.readableChannel(source),
                 options,

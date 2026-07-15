@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.lzma.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -19,7 +19,7 @@ import java.util.Objects;
 
 /// Encodes a raw LZMA2 stream directly to a channel.
 @NotNullByDefault
-public final class LZMA2ChannelEncoder implements CompressionEncoder {
+public final class LZMA2ChannelEncoder implements CompressingWritableByteChannel {
     /// The largest uncompressed chunk considered by this encoder.
     private static final int BLOCK_SIZE = 1 << 16;
 

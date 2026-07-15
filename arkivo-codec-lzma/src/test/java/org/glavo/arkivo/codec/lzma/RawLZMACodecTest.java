@@ -6,7 +6,7 @@ package org.glavo.arkivo.codec.lzma;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodecs;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -109,7 +109,7 @@ public final class RawLZMACodecTest {
                 .build();
 
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
-        try (CompressionDecoder decoder = new RawLZMACodec().openDecoder(
+        try (DecompressingReadableByteChannel decoder = new RawLZMACodec().openDecoder(
                 Channels.newChannel(source),
                 decodingOptions,
                 ChannelOwnership.RETAIN

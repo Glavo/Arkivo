@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
 
 import org.jetbrains.annotations.NotNullByDefault;
@@ -97,8 +97,8 @@ final class StreamChannelAdaptersTest {
 
     /// Verifies output-stream flush reaches a channel-first compression encoder.
     @Test
-    void flushesCompressionEncoderThroughOutputStream() throws IOException {
-        TrackingCompressionEncoder encoder = new TrackingCompressionEncoder();
+    void flushesCompressingWritableByteChannelThroughOutputStream() throws IOException {
+        TrackingCompressingWritableByteChannel encoder = new TrackingCompressingWritableByteChannel();
         try (OutputStream output = StreamChannelAdapters.outputStream(encoder)) {
             output.write(new byte[]{1, 2, 3});
             output.flush();
@@ -174,7 +174,7 @@ final class StreamChannelAdaptersTest {
 
     /// Records calls made through a stream view of a compression encoder.
     @NotNullByDefault
-    private static final class TrackingCompressionEncoder implements CompressionEncoder {
+    private static final class TrackingCompressingWritableByteChannel implements CompressingWritableByteChannel {
         /// The number of accepted source bytes.
         private long inputBytes;
 

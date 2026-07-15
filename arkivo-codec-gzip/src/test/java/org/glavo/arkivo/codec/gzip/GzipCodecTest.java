@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.EncodeDirective;
 import org.glavo.arkivo.codec.StandardCodecOptions;
@@ -117,7 +117,7 @@ public final class GzipCodecTest {
         GzipCodec codec = new GzipCodec();
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
 
-        CompressionEncoder encoder = codec.openEncoder(
+        CompressingWritableByteChannel encoder = codec.openEncoder(
                 Channels.newChannel(compressed),
                 options,
                 ChannelOwnership.RETAIN

@@ -3,8 +3,8 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
-import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -55,10 +55,10 @@ public final class ZipOptionalCodecProbe {
 
     /// Requires the mandatory raw Deflate provider to remain available without optional codecs.
     private static void requireCoreDeflateCodec() throws IOException {
-        try (CompressionDecoder ignoredDecoder = ZipCompressionCodecs.openDecoder(
+        try (DecompressingReadableByteChannel ignoredDecoder = ZipCompressionCodecs.openDecoder(
                 "deflate",
                 new ByteArrayInputStream(new byte[0])
-        ); CompressionEncoder ignoredEncoder = ZipCompressionCodecs.openEncoder(
+        ); CompressingWritableByteChannel ignoredEncoder = ZipCompressionCodecs.openEncoder(
                 "deflate",
                 new ByteArrayOutputStream()
         )) {

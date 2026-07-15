@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.deflate64.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -24,7 +24,7 @@ import java.util.Objects;
 /// Deflate64 retains the Deflate bitstream grammar while extending the history window to 64 KiB, defining distance
 /// symbols 30 and 31, and assigning sixteen extra bits to length symbol 285.
 @NotNullByDefault
-public final class Deflate64ChannelDecoder implements CompressionDecoder {
+public final class Deflate64ChannelDecoder implements DecompressingReadableByteChannel {
     /// The Deflate64 history-window size.
     private static final int WINDOW_SIZE = 1 << 16;
 

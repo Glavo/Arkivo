@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.internal;
 
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -288,7 +288,7 @@ public final class StreamChannelAdapters {
         @Override
         public void flush() throws IOException {
             ensureOpen();
-            if (target instanceof CompressionEncoder encoder) {
+            if (target instanceof CompressingWritableByteChannel encoder) {
                 encoder.flush();
             }
         }

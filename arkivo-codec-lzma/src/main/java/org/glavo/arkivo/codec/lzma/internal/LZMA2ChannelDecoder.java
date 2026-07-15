@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.lzma.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.UnmodifiableView;
@@ -21,7 +21,7 @@ import java.util.Objects;
 
 /// Decodes a raw LZMA2 stream directly from a channel.
 @NotNullByDefault
-public final class LZMA2ChannelDecoder implements CompressionDecoder {
+public final class LZMA2ChannelDecoder implements DecompressingReadableByteChannel {
     /// The largest compressed LZMA2 chunk size.
     private static final int MAXIMUM_COMPRESSED_SIZE = 1 << 16;
 

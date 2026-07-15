@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.xz.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.delta.DeltaTransform;
@@ -30,7 +30,7 @@ import java.util.Objects;
 
 /// Encodes standards-compliant multi-Block and concatenated XZ streams directly to a channel.
 @NotNullByDefault
-public final class XzChannelEncoder implements CompressionEncoder {
+public final class XzChannelEncoder implements CompressingWritableByteChannel {
     /// The default LZMA2 dictionary size.
     public static final int DEFAULT_DICTIONARY_SIZE = 8 * 1024 * 1024;
 

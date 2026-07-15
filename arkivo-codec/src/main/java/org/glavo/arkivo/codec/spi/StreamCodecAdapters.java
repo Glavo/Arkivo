@@ -4,8 +4,8 @@
 package org.glavo.arkivo.codec.spi;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.internal.StreamChannelAdapters;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -29,7 +29,7 @@ public final class StreamCodecAdapters {
     }
 
     /// Opens an encoder around a stream-based codec implementation.
-    public static CompressionEncoder openEncoder(
+    public static CompressingWritableByteChannel openEncoder(
             WritableByteChannel target,
             ChannelOwnership ownership,
             OutputStreamFactory factory
@@ -45,7 +45,7 @@ public final class StreamCodecAdapters {
         );
         try {
             OutputStream codecOutput = factory.open(countingOutput);
-            return new StreamCompressionEncoder(
+            return new StreamCompressingWritableByteChannel(
                     codecOutput,
                     countingOutput,
                     targetCloser
@@ -57,7 +57,7 @@ public final class StreamCodecAdapters {
     }
 
     /// Opens a decoder around a stream-based codec implementation.
-    public static CompressionDecoder openDecoder(
+    public static DecompressingReadableByteChannel openDecoder(
             ReadableByteChannel source,
             ChannelOwnership ownership,
             InputStreamFactory factory
@@ -73,7 +73,7 @@ public final class StreamCodecAdapters {
         );
         try {
             InputStream codecInput = factory.open(countingInput);
-            return new StreamCompressionDecoder(
+            return new StreamDecompressingReadableByteChannel(
                     codecInput,
                     countingInput,
                     sourceCloser
@@ -102,7 +102,7 @@ public final class StreamCodecAdapters {
 
     /// Implements an encoder context over a codec output stream.
     @NotNullByDefault
-    private static final class StreamCompressionEncoder implements CompressionEncoder {
+    private static final class StreamCompressingWritableByteChannel implements CompressingWritableByteChannel {
         /// The codec output stream.
         private final OutputStream output;
 
@@ -119,7 +119,7 @@ public final class StreamCodecAdapters {
         private boolean open = true;
 
         /// Creates an encoder context.
-        private StreamCompressionEncoder(
+        private StreamCompressingWritableByteChannel(
                 OutputStream output,
                 CountingOutputStream counter,
                 OwnedChannelCloser targetCloser
@@ -217,7 +217,7 @@ public final class StreamCodecAdapters {
 
     /// Implements a decoder context over a codec input stream.
     @NotNullByDefault
-    private static final class StreamCompressionDecoder implements CompressionDecoder {
+    private static final class StreamDecompressingReadableByteChannel implements DecompressingReadableByteChannel {
         /// The readable channel view of the codec input stream.
         private final ReadableByteChannel channel;
 
@@ -234,7 +234,7 @@ public final class StreamCodecAdapters {
         private boolean open = true;
 
         /// Creates a decoder context.
-        private StreamCompressionDecoder(
+        private StreamDecompressingReadableByteChannel(
                 InputStream input,
                 CountingInputStream counter,
                 OwnedChannelCloser sourceCloser

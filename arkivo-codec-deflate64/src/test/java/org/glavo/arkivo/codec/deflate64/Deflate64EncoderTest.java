@@ -8,8 +8,8 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
-import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.EncodeDirective;
 import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -91,7 +91,7 @@ final class Deflate64EncoderTest {
         System.arraycopy(second, 0, expected, first.length, second.length);
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         WritableByteChannel target = Channels.newChannel(bytes);
-        CompressionEncoder encoder = CODEC.openEncoder(target);
+        CompressingWritableByteChannel encoder = CODEC.openEncoder(target);
 
         CodecResult flushed = encoder.encode(ByteBuffer.wrap(first), EncodeDirective.FLUSH);
         int flushedSize = bytes.size();
@@ -137,7 +137,7 @@ final class Deflate64EncoderTest {
                 .set(StandardCodecOptions.COMPRESSION_LEVEL, level)
                 .build();
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        try (CompressionEncoder encoder = CODEC.openEncoder(
+        try (CompressingWritableByteChannel encoder = CODEC.openEncoder(
                 Channels.newChannel(bytes),
                 options,
                 ChannelOwnership.RETAIN
@@ -150,7 +150,7 @@ final class Deflate64EncoderTest {
     /// Decodes raw Deflate64 with Arkivo's channel decoder.
     private static byte[] decodeWithArkivo(byte[] compressed) throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        try (CompressionDecoder decoder = CODEC.openDecoder(
+        try (DecompressingReadableByteChannel decoder = CODEC.openDecoder(
                 Channels.newChannel(new ByteArrayInputStream(compressed))
         )) {
             ByteBuffer output = ByteBuffer.allocate(8_192);

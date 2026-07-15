@@ -29,6 +29,12 @@ public enum CompressionFeature {
     /// The codec has a specialized direct-ByteBuffer data path.
     DIRECT_BYTE_BUFFER,
 
+    /// The codec provides a transport-independent incremental compression engine.
+    BUFFER_COMPRESSION,
+
+    /// The codec provides a transport-independent incremental decompression engine.
+    BUFFER_DECOMPRESSION,
+
     /// One encoder context can emit multiple independent frames.
     MULTI_FRAME,
 

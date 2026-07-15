@@ -7,7 +7,7 @@ import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecodeDirective;
 
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
@@ -1241,7 +1241,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             long expectedCrc32,
             long expectedUncompressedSize
     ) throws IOException {
-        CompressionDecoder decoder = ZipCompressionCodecs.openDecoder("deflate", compressedInput);
+        DecompressingReadableByteChannel decoder = ZipCompressionCodecs.openDecoder("deflate", compressedInput);
         return new KnownSizeEntryInputStream(
                 decoder,
                 compressedSizeOffset,
@@ -1354,7 +1354,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                     ZipArkivoEntryAttributes.UNKNOWN_SIZE,
                     flags
             );
-            CompressionDecoder decoder = ZipCompressionCodecs.openRawLZMADecoderContext(
+            DecompressingReadableByteChannel decoder = ZipCompressionCodecs.openRawLZMADecoderContext(
                     dataDescriptorDecoderSource(compressedInput, pushbackSourceRemainder),
                     parameters.property(),
                     parameters.dictionarySize(),
@@ -1633,7 +1633,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         private final InputStream input;
 
         /// The decoder that reports compressed progress, or `null` for non-codec streams.
-        private final @Nullable CompressionDecoder decoder;
+        private final @Nullable DecompressingReadableByteChannel decoder;
 
         /// The compressed bytes consumed before the decoder source.
         private final long compressedSizeOffset;
@@ -1673,7 +1673,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
         /// Creates a known-size entry stream over a channel-first decoder.
         private KnownSizeEntryInputStream(
-                CompressionDecoder decoder,
+                DecompressingReadableByteChannel decoder,
                 long compressedSizeOffset,
                 long expectedCompressedSize,
                 long expectedCrc32,
@@ -1692,7 +1692,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         /// Creates a known-size entry stream with optional compressed-progress validation.
         private KnownSizeEntryInputStream(
                 InputStream input,
-                @Nullable CompressionDecoder decoder,
+                @Nullable DecompressingReadableByteChannel decoder,
                 long compressedSizeOffset,
                 long expectedCompressedSize,
                 long expectedCrc32,
@@ -1793,7 +1793,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 return;
             }
             finishedEntry = true;
-            CompressionDecoder codecDecoder = decoder;
+            DecompressingReadableByteChannel codecDecoder = decoder;
             validateKnownEntryData(
                     codecDecoder == null
                             ? ZipArkivoEntryAttributes.UNKNOWN_SIZE
@@ -1910,7 +1910,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         private final PushbackInputStream input;
 
         /// The channel-first compression decoder.
-        private final CompressionDecoder decoder;
+        private final DecompressingReadableByteChannel decoder;
 
         /// The codec name used in diagnostics.
         private final String codecDisplayName;
@@ -2020,7 +2020,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 DecodeDirective decodeDirective,
                 CodecStatus terminalStatus,
                 PushbackInputStream input,
-                CompressionDecoder decoder,
+                DecompressingReadableByteChannel decoder,
                 long compressedSizeOffset,
                 @Nullable ZipAesCrypto.Decryptor aesDecryptor,
                 int authenticationCodeSize,
