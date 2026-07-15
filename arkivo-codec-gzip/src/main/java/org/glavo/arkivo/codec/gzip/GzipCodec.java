@@ -7,13 +7,16 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.gzip.internal.GzipDecoder;
+import org.glavo.arkivo.codec.gzip.internal.GzipEncoder;
+import org.glavo.arkivo.codec.spi.CodecChannelAdapters;
 import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
-import org.glavo.arkivo.codec.gzip.internal.GzipChannelDecoder;
-import org.glavo.arkivo.codec.gzip.internal.GzipChannelEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -23,10 +26,11 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.zip.Deflater;
 
-/// Provides gzip compression and decompression channels.
+/// Provides gzip member buffer engines and concatenated-member channel adapters.
 @NotNullByDefault
 public final class GzipCodec implements CompressionCodec {
     /// The stable gzip codec name.
@@ -41,6 +45,8 @@ public final class GzipCodec implements CompressionCodec {
                     CompressionFeature.ONE_SHOT_DECOMPRESSION,
                     CompressionFeature.FLUSH,
                     CompressionFeature.DIRECT_BYTE_BUFFER,
+                    CompressionFeature.BUFFER_COMPRESSION,
+                    CompressionFeature.BUFFER_DECOMPRESSION,
                     CompressionFeature.MULTI_FRAME,
                     CompressionFeature.CONCATENATED_FRAMES
             ),
@@ -106,20 +112,34 @@ public final class GzipCodec implements CompressionCodec {
                 && Byte.toUnsignedInt(prefix.get(position + 1)) == 0x8b;
     }
 
-    /// Opens a configured gzip encoder over the target channel.
+    /// Creates a configured transport-independent gzip member encoder.
+    @Override
+    public CompressionEncoder newEncoder(CodecOptions options) {
+        options.requireSupported(CAPABILITIES.compressionOptions(), "gzip compression");
+        return new GzipEncoder(
+                compressionLevel(options),
+                StandardCodecOptionSupport.compressionStrategy(options)
+        );
+    }
+
+    /// Opens the transport-independent gzip encoder through the shared blocking channel adapter.
     @Override
     public CompressingWritableByteChannel openEncoder(
             WritableByteChannel target,
             CodecOptions options,
             ChannelOwnership ownership
     ) throws IOException {
-        options.requireSupported(CAPABILITIES.compressionOptions(), "gzip compression");
-        return new GzipChannelEncoder(
-                target,
-                ownership,
-                compressionLevel(options),
-                StandardCodecOptionSupport.compressionStrategy(options)
-        );
+        return CompressionCodec.super.openEncoder(target, options, ownership);
+    }
+
+    /// Creates a configured transport-independent gzip member decoder.
+    @Override
+    public CompressionDecoder newDecoder(CodecOptions options) throws IOException {
+        options.requireSupported(CAPABILITIES.decompressionOptions(), "gzip decompression");
+        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
+        StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, DECODING_WINDOW_SIZE);
+        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
+        return StandardCodecOptionSupport.limitOutput(new GzipDecoder(), maximumOutputSize);
     }
 
     /// Opens a configured gzip decoder over the source channel.
@@ -130,11 +150,13 @@ public final class GzipCodec implements CompressionCodec {
             ChannelOwnership ownership
     ) throws IOException {
         options.requireSupported(CAPABILITIES.decompressionOptions(), "gzip decompression");
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(ownership, "ownership");
         long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
         StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, DECODING_WINDOW_SIZE);
         long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
         return StandardCodecOptionSupport.limitOutput(
-                new GzipChannelDecoder(source, ownership),
+                CodecChannelAdapters.openDecoder(source, ownership, true, GzipDecoder::new),
                 maximumOutputSize
         );
     }
