@@ -169,7 +169,7 @@ final class DirectByteBufferCodecSupportTest {
 
         /// Rejects accidental use of the channel encoding path.
         @Override
-        public CompressingWritableByteChannel.FlushableFramed openEncoder(
+        public CompressingWritableByteChannel.FlushableFramed newWritableByteChannel(
                 WritableByteChannel target,
                 ChannelOwnership ownership
         ) {
@@ -178,7 +178,7 @@ final class DirectByteBufferCodecSupportTest {
 
         /// Rejects accidental use of the channel decoding path.
         @Override
-        public DecompressingReadableByteChannel.Framed openDecoder(
+        public DecompressingReadableByteChannel.Framed newReadableByteChannel(
                 ReadableByteChannel source,
                 DecompressionLimits limits,
                 ChannelOwnership ownership

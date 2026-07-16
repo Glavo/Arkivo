@@ -45,7 +45,7 @@ final class CodecCloseRetryContractTest {
             CompressionCodec<?> codec = format.defaultCodec();
 
             FailingCloseWritableChannel target = new FailingCloseWritableChannel();
-            CompressingWritableByteChannel encoder = codec.openEncoder(
+            CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                     target,
                     ChannelOwnership.CLOSE
             );
@@ -74,7 +74,7 @@ final class CodecCloseRetryContractTest {
             FailingCloseReadableChannel source = new FailingCloseReadableChannel(compress(codec, CONTENT));
             CompressionCodec<?> decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
-            DecompressingReadableByteChannel decoder = decoderCodec.openDecoder(
+            DecompressingReadableByteChannel decoder = decoderCodec.newReadableByteChannel(
                     source,
                     ChannelOwnership.CLOSE
             );
@@ -100,7 +100,7 @@ final class CodecCloseRetryContractTest {
                 WriteFailingWritableChannel target = new WriteFailingWritableChannel();
                 @Nullable CompressingWritableByteChannel encoder = null;
                 try {
-                    encoder = codec.openEncoder(target, ChannelOwnership.CLOSE);
+                    encoder = codec.newWritableByteChannel(target, ChannelOwnership.CLOSE);
                     assertThrows(IOException.class, encoder::finish, codec.format().name());
                 } catch (IOException exception) {
                     assertEquals("write failed", exception.getMessage(), codec.format().name());
@@ -118,7 +118,7 @@ final class CodecCloseRetryContractTest {
                 ReadFailingReadableChannel source = new ReadFailingReadableChannel();
                 @Nullable DecompressingReadableByteChannel decoder = null;
                 try {
-                    decoder = decoderCodec(codec, 0L).openDecoder(source, ChannelOwnership.CLOSE);
+                    decoder = decoderCodec(codec, 0L).newReadableByteChannel(source, ChannelOwnership.CLOSE);
                 } catch (IOException exception) {
                     assertEquals("read failed", exception.getMessage(), codec.format().name());
                 } finally {
@@ -141,7 +141,7 @@ final class CodecCloseRetryContractTest {
                 WriteFailingWritableChannel target = new WriteFailingWritableChannel();
                 @Nullable CompressingWritableByteChannel encoder = null;
                 try {
-                    encoder = codec.openEncoder(target, ChannelOwnership.RETAIN);
+                    encoder = codec.newWritableByteChannel(target, ChannelOwnership.RETAIN);
                     assertThrows(IOException.class, encoder::finish, codec.format().name());
                 } catch (IOException exception) {
                     assertEquals("write failed", exception.getMessage(), codec.format().name());
@@ -159,7 +159,7 @@ final class CodecCloseRetryContractTest {
                 ReadFailingReadableChannel source = new ReadFailingReadableChannel();
                 @Nullable DecompressingReadableByteChannel decoder = null;
                 try {
-                    decoder = decoderCodec(codec, 0L).openDecoder(source, ChannelOwnership.RETAIN);
+                    decoder = decoderCodec(codec, 0L).newReadableByteChannel(source, ChannelOwnership.RETAIN);
                 } catch (IOException exception) {
                     assertEquals("read failed", exception.getMessage(), codec.format().name());
                 } finally {
@@ -185,7 +185,7 @@ final class CodecCloseRetryContractTest {
             CompressionCodec<?> codec = format.defaultCodec();
 
             FailingCloseOutputStream target = new FailingCloseOutputStream();
-            OutputStream output = codec.openEncoder(target, ChannelOwnership.CLOSE);
+            OutputStream output = codec.newOutputStream(target, ChannelOwnership.CLOSE);
             output.write(CONTENT);
             IOException failure = assertThrows(IOException.class, output::close, codec.format().name());
             assertEquals("close failed", failure.getMessage(), codec.format().name());
@@ -206,7 +206,7 @@ final class CodecCloseRetryContractTest {
             CompressionCodec<?> codec = format.defaultCodec();
 
             FailingCloseInputStream source = new FailingCloseInputStream(compress(codec, CONTENT));
-            InputStream input = decoderCodec(codec, CONTENT.length).openDecoder(
+            InputStream input = decoderCodec(codec, CONTENT.length).newInputStream(
                     source,
                     ChannelOwnership.CLOSE
             );

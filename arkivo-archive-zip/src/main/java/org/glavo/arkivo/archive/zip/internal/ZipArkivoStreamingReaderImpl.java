@@ -26,7 +26,6 @@ import java.io.PushbackInputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.nio.file.attribute.PosixFileAttributes;
 import java.util.ArrayDeque;
 import java.util.Objects;
 import java.util.concurrent.locks.ReentrantLock;
@@ -1159,17 +1158,17 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
     /// Opens a Deflate64 decoding stream and owns the compressed stream.
     private static InputStream openDeflate64InputStream(InputStream input) throws IOException {
-        return ZipCompressionFormats.openInputStream("deflate64", input);
+        return ZipCompressionFormats.newInputStream("deflate64", input);
     }
 
     /// Opens a BZip2 decoding stream and owns the compressed stream.
     private static InputStream openBzip2InputStream(InputStream input) throws IOException {
-        return ZipCompressionFormats.openInputStream("bzip2", input);
+        return ZipCompressionFormats.newInputStream("bzip2", input);
     }
 
     /// Opens a Zstandard decoding stream and owns the compressed stream.
     private static InputStream openZstandardInputStream(InputStream input) throws IOException {
-        return ZipCompressionFormats.openInputStream("zstd", input);
+        return ZipCompressionFormats.newInputStream("zstd", input);
     }
 
     /// Opens a ZIP LZMA decoding stream and closes the compressed stream if setup fails.
@@ -1226,7 +1225,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
     /// Opens an XZ decoding stream and owns the compressed stream.
     private static InputStream openXzInputStream(InputStream input) throws IOException {
-        return ZipCompressionFormats.openInputStream("xz", input);
+        return ZipCompressionFormats.newInputStream("xz", input);
     }
 
     /// Opens a raw Deflate decoder for an entry with known metadata.
@@ -1237,7 +1236,10 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             long expectedCrc32,
             long expectedUncompressedSize
     ) throws IOException {
-        DecompressingReadableByteChannel decoder = ZipCompressionFormats.openDecoder("deflate", compressedInput);
+        DecompressingReadableByteChannel decoder = ZipCompressionFormats.newReadableByteChannel(
+                "deflate",
+                compressedInput
+        );
         return new KnownSizeEntryInputStream(
                 decoder,
                 compressedSizeOffset,
@@ -1997,7 +1999,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                     stopAtFrame,
                     terminalStatus,
                     input,
-                    ZipCompressionFormats.openDecoder(
+                    ZipCompressionFormats.newReadableByteChannel(
                             formatName,
                             dataDescriptorDecoderSource(compressedInput, pushbackSourceRemainder)
                     ),

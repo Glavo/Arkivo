@@ -40,7 +40,7 @@ public final class CompressionStreamingSourceProvider implements ArkivoStreaming
             return new ArkivoStreamingSource(false, replay);
         }
         try {
-            DecompressingReadableByteChannel decoder = format.defaultCodec().openDecoder(
+            DecompressingReadableByteChannel decoder = format.defaultCodec().newReadableByteChannel(
                     replay,
                     ChannelOwnership.CLOSE
             );

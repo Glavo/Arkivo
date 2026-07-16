@@ -119,7 +119,7 @@ public final class ZstdPureJavaDecoderTest {
         assertThrows(IOException.class, () -> decompress(raw));
 
         ByteBuffer output = ByteBuffer.allocate(8);
-        try (DecompressingReadableByteChannel.Framed decoder = codec.openDecoder(
+        try (DecompressingReadableByteChannel.Framed decoder = codec.newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(frames)),
                 ChannelOwnership.RETAIN
         )) {
@@ -171,7 +171,7 @@ public final class ZstdPureJavaDecoderTest {
     public void preservesSkippableFrameBoundaryAndReadAhead() throws IOException {
         byte[] encoded = concatenate(SKIPPABLE_FRAME, RAW_FRAME);
         ByteBuffer output = ByteBuffer.allocate(16);
-        try (DecompressingReadableByteChannel.Framed decoder = new ZstdCodec().openDecoder(
+        try (DecompressingReadableByteChannel.Framed decoder = new ZstdCodec().newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(encoded)),
                 ChannelOwnership.RETAIN
         )) {
@@ -201,7 +201,7 @@ public final class ZstdPureJavaDecoderTest {
     public void preservesFrameBoundaryAndReadAhead() throws IOException {
         byte[] encoded = concatenate(RAW_FRAME, RLE_FRAME);
         ByteBuffer output = ByteBuffer.allocate(16);
-        try (DecompressingReadableByteChannel.Framed decoder = new ZstdCodec().openDecoder(
+        try (DecompressingReadableByteChannel.Framed decoder = new ZstdCodec().newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(encoded)),
                 ChannelOwnership.RETAIN
         )) {

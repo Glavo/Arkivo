@@ -115,7 +115,7 @@ final class StreamChannelAdaptersTest {
         WritableByteChannel ownedTarget = Channels.newChannel(new ByteArrayOutputStream());
         IOException encoderFailure = assertThrows(
                 IOException.class,
-                () -> StreamCodecAdapters.openEncoder(
+                () -> StreamCodecAdapters.newWritableByteChannel(
                         ownedTarget,
                         ChannelOwnership.CLOSE,
                         output -> {
@@ -129,7 +129,7 @@ final class StreamChannelAdaptersTest {
         ReadableByteChannel retainedSource = Channels.newChannel(new ByteArrayInputStream(new byte[0]));
         IOException decoderFailure = assertThrows(
                 IOException.class,
-                () -> StreamCodecAdapters.openDecoder(
+                () -> StreamCodecAdapters.newReadableByteChannel(
                         retainedSource,
                         ChannelOwnership.RETAIN,
                         input -> {

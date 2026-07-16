@@ -125,7 +125,7 @@ final class MalformedCodecRobustnessTest {
             byte[] frame,
             DecompressionLimits limits
     ) throws IOException {
-        try (DecompressingReadableByteChannel decoder = codec.openDecoder(
+        try (DecompressingReadableByteChannel decoder = codec.newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(frame)),
                 limits,
                 ChannelOwnership.RETAIN
@@ -136,7 +136,7 @@ final class MalformedCodecRobustnessTest {
 
     /// Decodes a frame through generic signature detection.
     private static byte[] decodeDetected(byte[] frame, DecompressionLimits limits) throws IOException {
-        try (DecompressingReadableByteChannel decoder = CompressionFormats.openDecoder(
+        try (DecompressingReadableByteChannel decoder = CompressionFormats.newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(frame)),
                 limits
         )) {

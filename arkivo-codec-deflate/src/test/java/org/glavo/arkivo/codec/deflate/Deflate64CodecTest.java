@@ -45,7 +45,7 @@ final class Deflate64CodecTest {
         Deflate64Codec codec = new Deflate64Codec();
 
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(compressed));
-        DecompressingReadableByteChannel decoder = codec.openDecoder(
+        DecompressingReadableByteChannel decoder = codec.newReadableByteChannel(
                 source,
                 ChannelOwnership.CLOSE
         );
@@ -64,7 +64,7 @@ final class Deflate64CodecTest {
         assertArrayEquals(content, actual);
 
         ReadableByteChannel retained = Channels.newChannel(new ByteArrayInputStream(compressed));
-        DecompressingReadableByteChannel retainedDecoder = codec.openDecoder(
+        DecompressingReadableByteChannel retainedDecoder = codec.newReadableByteChannel(
                 retained,
                 ChannelOwnership.RETAIN
         );
@@ -74,7 +74,7 @@ final class Deflate64CodecTest {
         byte[] corrupt = compressed.clone();
         corrupt[3] ^= 1;
         assertThrows(IOException.class, () -> {
-            try (DecompressingReadableByteChannel invalid = codec.openDecoder(
+            try (DecompressingReadableByteChannel invalid = codec.newReadableByteChannel(
                     Channels.newChannel(new ByteArrayInputStream(corrupt))
             )) {
                 invalid.read(ByteBuffer.allocateDirect(content.length));

@@ -3,13 +3,10 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
-import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.lzma.LZMA2Codec;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
@@ -21,7 +18,6 @@ import org.jetbrains.annotations.Nullable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
 /// Resolves optional compression formats and adapts their immutable codecs to 7z coder streams.
@@ -40,8 +36,8 @@ final class SevenZipCompressionFormats {
     private SevenZipCompressionFormats() {
     }
 
-    /// Opens a compression-level-configured encoder that owns the downstream coder stream.
-    static OutputStream openEncoder(
+    /// Creates a compression-level-configured output stream that owns the downstream coder stream.
+    static OutputStream newOutputStream(
             String formatName,
             int compressionLevel,
             OutputStream target
@@ -52,7 +48,7 @@ final class SevenZipCompressionFormats {
                     "Compression codec does not support compression levels: " + codec.format().name()
             );
         }
-        return openOwningEncoder(
+        return newOwningOutputStream(
                 configurableCodec.withCompressionLevel(compressionLevel),
                 target
         );
@@ -68,7 +64,7 @@ final class SevenZipCompressionFormats {
         if (!(codec instanceof PPMdCodec ppmdCodec)) {
             throw incompatibleCodec(PPMD_NAME);
         }
-        return openOwningEncoder(
+        return newOwningOutputStream(
                 ppmdCodec.withMaximumOrder(maximumOrder).withMemorySize(memorySize),
                 target
         );
@@ -84,7 +80,7 @@ final class SevenZipCompressionFormats {
         if (!(codec instanceof RawLZMACodec rawCodec)) {
             throw incompatibleCodec(RAW_LZMA_NAME);
         }
-        return openOwningEncoder(
+        return newOwningOutputStream(
                 rawCodec
                         .withDictionarySize(Math.toIntExact(dictionarySize))
                         .withEndMarker(endMarker),
@@ -98,25 +94,24 @@ final class SevenZipCompressionFormats {
         if (!(codec instanceof LZMA2Codec lzma2Codec)) {
             throw incompatibleCodec(LZMA2_NAME);
         }
-        return openOwningEncoder(
+        return newOwningOutputStream(
                 lzma2Codec.withDictionarySize(Math.toIntExact(dictionarySize)),
                 target
         );
     }
 
-    /// Opens a size-limited decoder that owns the packed coder stream.
-    static InputStream openDecoder(
+    /// Creates a size-limited input stream that owns the packed coder stream.
+    static InputStream newInputStream(
             String formatName,
             InputStream source,
             long maximumOutputSize
     ) throws IOException {
-        DecompressingReadableByteChannel decoder = CompressionFormats.openDecoder(
+        return CompressionFormats.newInputStream(
                 formatName,
-                StreamChannelAdapters.readableChannel(source),
+                source,
                 DecompressionLimits.ofMaximumOutputSize(maximumOutputSize),
                 ChannelOwnership.CLOSE
         );
-        return StreamChannelAdapters.inputStream(decoder);
     }
 
     /// Opens an exactly sized PPMd7 decoder through the optional compression format.
@@ -134,7 +129,7 @@ final class SevenZipCompressionFormats {
                 .withMaximumOrder(maximumOrder)
                 .withMemorySize(memorySize)
                 .withDecodedSize(decodedSize);
-        return openOwningDecoder(
+        return newOwningInputStream(
                 configured,
                 source,
                 DecompressionLimits.ofMaximumOutputSize(decodedSize)
@@ -159,7 +154,7 @@ final class SevenZipCompressionFormats {
         RawLZMACodec configured = rawCodec
                 .withProperties(properties)
                 .withDecodedSize(decodedSize);
-        return openOwningDecoder(
+        return newOwningInputStream(
                 configured,
                 source,
                 DecompressionLimits.ofMaximumOutputSize(decodedSize)
@@ -176,28 +171,25 @@ final class SevenZipCompressionFormats {
         if (!(codec instanceof LZMA2Codec lzma2Codec)) {
             throw incompatibleCodec(LZMA2_NAME);
         }
-        return openOwningDecoder(
+        return newOwningInputStream(
                 lzma2Codec.withDictionarySize(Math.toIntExact(dictionarySize)),
                 source,
                 DecompressionLimits.ofMaximumOutputSize(maximumOutputSize)
         );
     }
 
-    /// Opens an owning output-stream view over a configured codec.
-    private static OutputStream openOwningEncoder(
+    /// Creates an owning output-stream view over a configured codec.
+    private static OutputStream newOwningOutputStream(
             CompressionCodec<?> codec,
             OutputStream target
     ) throws IOException {
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(target, "target");
-        WritableByteChannel targetChannel = StreamChannelAdapters.writableChannel(target);
-        CompressingWritableByteChannel encoder =
-                codec.openEncoder(targetChannel, ChannelOwnership.CLOSE);
-        return StreamChannelAdapters.outputStream(encoder);
+        return codec.newOutputStream(target, ChannelOwnership.CLOSE);
     }
 
-    /// Opens an owning input-stream view over a configured codec.
-    private static InputStream openOwningDecoder(
+    /// Creates an owning input-stream view over a configured codec.
+    private static InputStream newOwningInputStream(
             CompressionCodec<?> codec,
             InputStream source,
             DecompressionLimits limits
@@ -205,12 +197,11 @@ final class SevenZipCompressionFormats {
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(limits, "limits");
-        DecompressingReadableByteChannel decoder = codec.openDecoder(
-                StreamChannelAdapters.readableChannel(source),
+        return codec.newInputStream(
+                source,
                 limits,
                 ChannelOwnership.CLOSE
         );
-        return StreamChannelAdapters.inputStream(decoder);
     }
 
     /// Returns the default codec for an installed optional format or reports the stable missing-format diagnostic.

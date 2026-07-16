@@ -28,12 +28,12 @@ public final class SevenZipOptionalFormatProbe {
     /// Checks both coder directions without optional compression formats on the runtime class path.
     public static void main(String @Unmodifiable [] arguments) throws Exception {
         for (String formatName : OPTIONAL_FORMAT_NAMES) {
-            requireMissingFormat(formatName, () -> SevenZipCompressionFormats.openDecoder(
+            requireMissingFormat(formatName, () -> SevenZipCompressionFormats.newInputStream(
                     formatName,
                     new ByteArrayInputStream(new byte[0]),
                     0L
             ));
-            requireMissingFormat(formatName, () -> SevenZipCompressionFormats.openEncoder(
+            requireMissingFormat(formatName, () -> SevenZipCompressionFormats.newOutputStream(
                     formatName,
                     1,
                     new ByteArrayOutputStream()

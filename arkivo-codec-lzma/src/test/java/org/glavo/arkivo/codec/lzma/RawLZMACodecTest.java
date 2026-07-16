@@ -111,7 +111,7 @@ public final class RawLZMACodecTest {
         RawLZMACodec decodingCodec = RAW_CODEC.withDecodedSize(content.length);
 
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
-        try (DecompressingReadableByteChannel decoder = decodingCodec.openDecoder(
+        try (DecompressingReadableByteChannel decoder = decodingCodec.newReadableByteChannel(
                 Channels.newChannel(source),
                 ChannelOwnership.RETAIN
         )) {
@@ -174,7 +174,7 @@ public final class RawLZMACodecTest {
         );
         assertThrows(
                 DecompressionWindowLimitException.class,
-                () -> LZMA2_CODEC.openDecoder(
+                () -> LZMA2_CODEC.newReadableByteChannel(
                         Channels.newChannel(new ByteArrayInputStream(new byte[0])),
                         DecompressionLimits.ofMaximumWindowSize(DICTIONARY_SIZE - 1L),
                         ChannelOwnership.RETAIN

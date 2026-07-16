@@ -83,7 +83,7 @@ public final class XZCodecTest {
     public void pureJavaWriterInteroperability() throws IOException {
         byte[] content = patternedContent(410_321);
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-        try (OutputStream output = new XZCodec().openEncoder(compressed)) {
+        try (OutputStream output = new XZCodec().newOutputStream(compressed)) {
             output.write(content, 0, 19);
             for (int index = 19; index < content.length; index++) {
                 output.write(content[index]);
@@ -116,7 +116,7 @@ public final class XZCodecTest {
 
             byte[] encoded = compressed.toByteArray();
             byte[] expected = concatenate(first, second);
-            try (InputStream input = new XZCodec().openDecoder(new ByteArrayInputStream(encoded))) {
+            try (InputStream input = new XZCodec().newInputStream(new ByteArrayInputStream(encoded))) {
                 assertArrayEquals(expected, input.readAllBytes());
             }
             assertArrayEquals(expected, readCodec(encoded));
@@ -150,7 +150,7 @@ public final class XZCodecTest {
             }
 
             byte[] encoded = compressed.toByteArray();
-            try (InputStream input = new XZCodec().openDecoder(new ByteArrayInputStream(encoded))) {
+            try (InputStream input = new XZCodec().newInputStream(new ByteArrayInputStream(encoded))) {
                 assertArrayEquals(content, input.readAllBytes(), filter.getClass().getSimpleName());
             }
             assertArrayEquals(content, readCodec(encoded), filter.getClass().getSimpleName());
@@ -297,7 +297,7 @@ public final class XZCodecTest {
         concatenated.write(secondStream);
 
         byte[] encoded = concatenated.toByteArray();
-        try (InputStream input = new XZCodec().openDecoder(new ByteArrayInputStream(encoded))) {
+        try (InputStream input = new XZCodec().newInputStream(new ByteArrayInputStream(encoded))) {
             assertArrayEquals(concatenate(first, second), input.readAllBytes());
         }
         assertArrayEquals(concatenate(first, second), readCodec(encoded));
@@ -307,7 +307,7 @@ public final class XZCodecTest {
     @Test
     public void pureJavaWriterProducesValidEmptyStream() throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-        try (OutputStream ignored = new XZCodec().openEncoder(compressed)) {
+        try (OutputStream ignored = new XZCodec().newOutputStream(compressed)) {
         }
 
         try (org.tukaani.xz.XZInputStream input = new org.tukaani.xz.XZInputStream(
@@ -316,7 +316,7 @@ public final class XZCodecTest {
             assertArrayEquals(new byte[0], input.readAllBytes());
         }
         byte[] encoded = compressed.toByteArray();
-        try (InputStream input = new XZCodec().openDecoder(new ByteArrayInputStream(encoded))) {
+        try (InputStream input = new XZCodec().newInputStream(new ByteArrayInputStream(encoded))) {
             assertArrayEquals(new byte[0], input.readAllBytes());
         }
         assertArrayEquals(new byte[0], readCodec(encoded));
@@ -330,7 +330,7 @@ public final class XZCodecTest {
         byte[] trailer = {0x50, 0x4b, 0x07, 0x08, 0x11, 0x22, 0x33, 0x44};
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(concatenate(stream, trailer)));
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
-        try (DecompressingReadableByteChannel.Framed decoder = new XZCodec().openDecoder(
+        try (DecompressingReadableByteChannel.Framed decoder = new XZCodec().newReadableByteChannel(
                 source,
                 ChannelOwnership.RETAIN
         )) {
@@ -440,7 +440,7 @@ public final class XZCodecTest {
                 .dictionarySize(1 << 16)
                 .checkType(XZCheckType.SHA256)
                 .build();
-        CompressingWritableByteChannel encoder = configured.openEncoder(
+        CompressingWritableByteChannel encoder = configured.newWritableByteChannel(
                 compressedTarget,
                 ChannelOwnership.RETAIN
         );
@@ -460,7 +460,7 @@ public final class XZCodecTest {
         }
 
         ReadableByteChannel compressedSource = Channels.newChannel(new ByteArrayInputStream(encoded));
-        DecompressingReadableByteChannel decoder = new XZCodec().openDecoder(
+        DecompressingReadableByteChannel decoder = new XZCodec().newReadableByteChannel(
                 compressedSource,
                 ChannelOwnership.CLOSE
         );
@@ -481,7 +481,7 @@ public final class XZCodecTest {
         ByteArrayOutputStream uncheckedBytes = new ByteArrayOutputStream();
         try (CompressingWritableByteChannel unchecked = new XZCodec()
                 .withCheckType(XZCheckType.NONE)
-                .openEncoder(Channels.newChannel(uncheckedBytes), ChannelOwnership.RETAIN)) {
+                .newWritableByteChannel(Channels.newChannel(uncheckedBytes), ChannelOwnership.RETAIN)) {
             unchecked.finish();
         }
         assertEquals(XZ.CHECK_NONE, Byte.toUnsignedInt(uncheckedBytes.toByteArray()[7]));
@@ -568,11 +568,11 @@ public final class XZCodecTest {
     /// Compresses and decompresses the given bytes.
     private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-        try (OutputStream output = codec.openEncoder(compressed)) {
+        try (OutputStream output = codec.newOutputStream(compressed)) {
             output.write(input);
         }
 
-        try (InputStream inputStream = codec.openDecoder(new ByteArrayInputStream(compressed.toByteArray()))) {
+        try (InputStream inputStream = codec.newInputStream(new ByteArrayInputStream(compressed.toByteArray()))) {
             return inputStream.readAllBytes();
         }
     }
@@ -639,7 +639,7 @@ public final class XZCodecTest {
     }
     /// Reads one byte array through the public InputStream adapter.
     private static byte[] readStreamAdapter(byte[] compressed) throws IOException {
-        try (InputStream input = new XZCodec().openDecoder(new ByteArrayInputStream(compressed))) {
+        try (InputStream input = new XZCodec().newInputStream(new ByteArrayInputStream(compressed))) {
             return input.readAllBytes();
         }
     }

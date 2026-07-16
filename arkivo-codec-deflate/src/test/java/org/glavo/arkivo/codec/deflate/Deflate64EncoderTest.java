@@ -87,7 +87,7 @@ final class Deflate64EncoderTest {
         System.arraycopy(second, 0, expected, first.length, second.length);
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         WritableByteChannel target = Channels.newChannel(bytes);
-        CompressingWritableByteChannel.Flushable encoder = CODEC.openEncoder(target);
+        CompressingWritableByteChannel.Flushable encoder = CODEC.newWritableByteChannel(target);
 
         CodecResult flushed = encoder.flush(ByteBuffer.wrap(first));
         int flushedSize = bytes.size();
@@ -130,7 +130,7 @@ final class Deflate64EncoderTest {
     private static byte[] encode(byte[] input, long level) throws IOException {
         Deflate64Codec codec = CODEC.withCompressionLevel(level);
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        try (CompressingWritableByteChannel encoder = codec.openEncoder(
+        try (CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                 Channels.newChannel(bytes),
                 ChannelOwnership.RETAIN
         )) {
@@ -142,7 +142,7 @@ final class Deflate64EncoderTest {
     /// Decodes raw Deflate64 with Arkivo's channel decoder.
     private static byte[] decodeWithArkivo(byte[] compressed) throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        try (DecompressingReadableByteChannel decoder = CODEC.openDecoder(
+        try (DecompressingReadableByteChannel decoder = CODEC.newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(compressed))
         )) {
             ByteBuffer output = ByteBuffer.allocate(8_192);

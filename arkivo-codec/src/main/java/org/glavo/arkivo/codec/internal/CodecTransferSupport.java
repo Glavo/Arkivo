@@ -38,7 +38,7 @@ public final class CodecTransferSupport {
         Objects.requireNonNull(target, "target");
 
         try (CompressingWritableByteChannel encoder =
-                     codec.openEncoder(target, ChannelOwnership.RETAIN)) {
+                     codec.newWritableByteChannel(target, ChannelOwnership.RETAIN)) {
             transferIntoEncoder(source, encoder);
             encoder.finish();
             return new CodecTransferResult(encoder.inputBytes(), encoder.outputBytes());
@@ -58,7 +58,7 @@ public final class CodecTransferSupport {
         Objects.requireNonNull(limits, "limits");
 
         try (DecompressingReadableByteChannel decoder =
-                     codec.openDecoder(source, limits, ChannelOwnership.RETAIN)) {
+                     codec.newReadableByteChannel(source, limits, ChannelOwnership.RETAIN)) {
             return decompress(decoder, target);
         }
     }

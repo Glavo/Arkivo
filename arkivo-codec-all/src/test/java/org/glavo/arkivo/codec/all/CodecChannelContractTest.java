@@ -9,9 +9,7 @@ import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
-import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.RawCompressionDictionary;
-import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimitException;
@@ -98,7 +96,7 @@ final class CodecChannelContractTest {
             byte[] compressed = compressFrame(codec, content);
             CompressionCodec<?> decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, content.length);
-            try (DecompressingReadableByteChannel decoder = decoderCodec.openDecoder(
+            try (DecompressingReadableByteChannel decoder = decoderCodec.newReadableByteChannel(
                     Channels.newChannel(new ByteArrayInputStream(compressed)),
                     ChannelOwnership.RETAIN
             )) {
@@ -144,7 +142,7 @@ final class CodecChannelContractTest {
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
             WritableByteChannel target = Channels.newChannel(compressedBytes);
             CompressionCodec.Flushable<?> flushableCodec = (CompressionCodec.Flushable<?>) codec;
-            CompressingWritableByteChannel.Flushable encoder = flushableCodec.openEncoder(target);
+            CompressingWritableByteChannel.Flushable encoder = flushableCodec.newWritableByteChannel(target);
             try {
                 ByteBuffer firstSource = ByteBuffer.allocateDirect(first.length).put(first).flip();
                 int beforeFlush = compressedBytes.size();
@@ -240,7 +238,7 @@ final class CodecChannelContractTest {
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
             WritableByteChannel target = Channels.newChannel(compressedBytes);
             CompressionCodec.Framed<?> framedCodec = (CompressionCodec.Framed<?>) codec;
-            CompressingWritableByteChannel.Framed encoder = framedCodec.openEncoder(target);
+            CompressingWritableByteChannel.Framed encoder = framedCodec.newWritableByteChannel(target);
             CodecResult firstResult = encoder.finishFrame(ByteBuffer.wrap(first));
             int firstFrameSize = compressedBytes.size();
 
@@ -289,7 +287,7 @@ final class CodecChannelContractTest {
 
             CompressionCodec.Framed<?> framedCodec = (CompressionCodec.Framed<?>) codec;
             ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-            try (CompressingWritableByteChannel.Framed encoder = framedCodec.openEncoder(
+            try (CompressingWritableByteChannel.Framed encoder = framedCodec.newWritableByteChannel(
                     Channels.newChannel(compressed),
                     ChannelOwnership.RETAIN
             )) {
@@ -311,7 +309,7 @@ final class CodecChannelContractTest {
                 assertEquals(completeSize, compressed.size(), codec.format().name());
             }
 
-            try (DecompressingReadableByteChannel.Framed decoder = framedCodec.openDecoder(
+            try (DecompressingReadableByteChannel.Framed decoder = framedCodec.newReadableByteChannel(
                     Channels.newChannel(new ByteArrayInputStream(compressed.toByteArray()))
             )) {
                 CodecResult empty = decoder.decodeFrame(ByteBuffer.allocate(3));
@@ -367,7 +365,7 @@ final class CodecChannelContractTest {
             byte[] compressedStream = compressed.toByteArray();
 
             try (DecompressingReadableByteChannel.Framed decoder =
-                         ((CompressionCodec.Framed<?>) codec).openDecoder(
+                         ((CompressionCodec.Framed<?>) codec).newReadableByteChannel(
                                  Channels.newChannel(new ByteArrayInputStream(compressedStream)),
                     limits,
                     ChannelOwnership.RETAIN
@@ -665,7 +663,7 @@ final class CodecChannelContractTest {
             CompressionCodec<?> configured =
                     levelCodec.withCompressionLevel(levelCodec.defaultCompressionLevel());
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
-            try (CompressingWritableByteChannel encoder = configured.openEncoder(
+            try (CompressingWritableByteChannel encoder = configured.newWritableByteChannel(
                     Channels.newChannel(compressedBytes),
                     ChannelOwnership.RETAIN
             )) {
@@ -673,7 +671,7 @@ final class CodecChannelContractTest {
             }
 
             ByteBuffer decoded = ByteBuffer.allocate(input.length);
-            try (DecompressingReadableByteChannel decoder = configured.openDecoder(
+            try (DecompressingReadableByteChannel decoder = configured.newReadableByteChannel(
                     Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray()))
             )) {
                 while (decoded.hasRemaining()) {
@@ -755,7 +753,7 @@ final class CodecChannelContractTest {
                 CompressionCodec<?> configured =
                         strategyCodec.withCompressionStrategy(strategy);
                 ByteArrayOutputStream emptyCompressed = new ByteArrayOutputStream();
-                try (CompressingWritableByteChannel encoder = configured.openEncoder(
+                try (CompressingWritableByteChannel encoder = configured.newWritableByteChannel(
                         Channels.newChannel(emptyCompressed),
                         ChannelOwnership.RETAIN
                 )) {
@@ -842,7 +840,7 @@ final class CodecChannelContractTest {
             }
 
             ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-            try (CompressingWritableByteChannel encoder = pledgedCodec.openEncoder(
+            try (CompressingWritableByteChannel encoder = pledgedCodec.newWritableByteChannel(
                     Channels.newChannel(compressed),
                     input.length,
                     ChannelOwnership.RETAIN
@@ -862,7 +860,7 @@ final class CodecChannelContractTest {
             assertThrows(
                     Exception.class,
                     () -> {
-                        try (CompressingWritableByteChannel encoder = pledgedCodec.openEncoder(
+                        try (CompressingWritableByteChannel encoder = pledgedCodec.newWritableByteChannel(
                                 Channels.newChannel(new ByteArrayOutputStream()),
                                 input.length - 1L,
                                 ChannelOwnership.RETAIN
@@ -928,7 +926,7 @@ final class CodecChannelContractTest {
             );
             assertThrows(
                     IllegalArgumentException.class,
-                    () -> decoderCodec.openDecoder(
+                    () -> decoderCodec.newReadableByteChannel(
                             invalidSource,
                             DecompressionLimits.ofMaximumOutputSize(-2L),
                             ChannelOwnership.RETAIN
@@ -976,7 +974,7 @@ final class CodecChannelContractTest {
             int expectedSize
     ) throws IOException {
         ByteBuffer decoded = ByteBuffer.allocateDirect(expectedSize);
-        try (DecompressingReadableByteChannel decoder = codec.openDecoder(
+        try (DecompressingReadableByteChannel decoder = codec.newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(compressed))
         )) {
             while (decoded.hasRemaining()) {
@@ -1100,7 +1098,7 @@ final class CodecChannelContractTest {
             );
             assertThrows(
                     IllegalArgumentException.class,
-                    () -> decoderCodec.openDecoder(
+                    () -> decoderCodec.newReadableByteChannel(
                             invalidSource,
                             DecompressionLimits.ofMaximumWindowSize(-2L),
                             ChannelOwnership.RETAIN

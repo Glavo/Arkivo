@@ -30,33 +30,33 @@ final class ZipCompressionFormats {
     private ZipCompressionFormats() {
     }
 
-    /// Opens the default encoder for a named format and retains the entry's compressed-data target.
-    static CompressingWritableByteChannel openEncoder(
+    /// Creates a default compressing channel for a named format and retains the entry's compressed-data target.
+    static CompressingWritableByteChannel newWritableByteChannel(
             String formatName,
             OutputStream target
     ) throws IOException {
-        return CompressionFormats.openEncoder(
+        return CompressionFormats.newWritableByteChannel(
                 formatName,
                 StreamChannelAdapters.writableChannel(target),
                 ChannelOwnership.RETAIN
         );
     }
 
-    /// Opens the default decoder for a named format and owns the compressed entry stream.
-    static DecompressingReadableByteChannel openDecoder(
+    /// Creates a default decompressing channel for a named format and owns the compressed entry stream.
+    static DecompressingReadableByteChannel newReadableByteChannel(
             String formatName,
             InputStream source
     ) throws IOException {
-        return CompressionFormats.openDecoder(
+        return CompressionFormats.newReadableByteChannel(
                 formatName,
                 StreamChannelAdapters.readableChannel(source),
                 ChannelOwnership.CLOSE
         );
     }
 
-    /// Opens an input-stream view over the owning default decoder for a named format.
-    static InputStream openInputStream(String formatName, InputStream source) throws IOException {
-        return StreamChannelAdapters.inputStream(openDecoder(formatName, source));
+    /// Creates an input-stream view over the owning default decoder for a named format.
+    static InputStream newInputStream(String formatName, InputStream source) throws IOException {
+        return StreamChannelAdapters.inputStream(newReadableByteChannel(formatName, source));
     }
 
     /// Opens a raw LZMA encoder that retains the compressed entry target.
@@ -72,7 +72,7 @@ final class ZipCompressionFormats {
         RawLZMACodec configured = rawCodec
                 .withDictionarySize(Math.toIntExact(dictionarySize))
                 .withEndMarker(endMarker);
-        CompressingWritableByteChannel encoder = configured.openEncoder(
+        CompressingWritableByteChannel encoder = configured.newWritableByteChannel(
                 StreamChannelAdapters.writableChannel(target),
                 ChannelOwnership.RETAIN
         );
@@ -115,7 +115,7 @@ final class ZipCompressionFormats {
             configured = configured.withDecodedSize(decodedSize);
             limits = DecompressionLimits.ofMaximumOutputSize(decodedSize);
         }
-        return configured.openDecoder(
+        return configured.newReadableByteChannel(
                 StreamChannelAdapters.readableChannel(source),
                 limits,
                 ChannelOwnership.CLOSE

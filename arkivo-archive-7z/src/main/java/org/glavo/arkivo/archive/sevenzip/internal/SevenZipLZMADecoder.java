@@ -575,7 +575,7 @@ final class SevenZipLZMADecoder {
         if (properties.length != 0) {
             throw new IOException("7z Deflate coder properties must be empty");
         }
-        return SevenZipCompressionFormats.openDecoder("deflate", input, maximumOutputSize);
+        return SevenZipCompressionFormats.newInputStream("deflate", input, maximumOutputSize);
     }
 
     /// Opens a size-limited Deflate64 decoder for 7z coder properties.
@@ -589,7 +589,7 @@ final class SevenZipLZMADecoder {
         if (properties.length != 0) {
             throw new IOException("7z Deflate64 coder properties must be empty");
         }
-        return SevenZipCompressionFormats.openDecoder("deflate64", input, maximumOutputSize);
+        return SevenZipCompressionFormats.newInputStream("deflate64", input, maximumOutputSize);
     }
 
     /// Opens a size-limited BZip2 decoder for 7z coder properties.
@@ -603,7 +603,7 @@ final class SevenZipLZMADecoder {
         if (properties.length != 0) {
             throw new IOException("7z BZip2 coder properties must be empty");
         }
-        return SevenZipCompressionFormats.openDecoder("bzip2", input, maximumOutputSize);
+        return SevenZipCompressionFormats.newInputStream("bzip2", input, maximumOutputSize);
     }
 
     /// Opens a size-limited Zstandard decoder for 7z coder properties.
@@ -620,7 +620,7 @@ final class SevenZipLZMADecoder {
                 && properties.length != 5) {
             throw new IOException("7z Zstandard coder properties must contain zero, one, three, or five bytes");
         }
-        return SevenZipCompressionFormats.openDecoder("zstd", input, maximumOutputSize);
+        return SevenZipCompressionFormats.newInputStream("zstd", input, maximumOutputSize);
     }
 
     /// Opens an exactly sized PPMd7 decoder for 7z coder properties.

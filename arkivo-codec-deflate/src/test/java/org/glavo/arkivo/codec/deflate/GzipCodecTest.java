@@ -69,7 +69,7 @@ public final class GzipCodecTest {
         GzipCodec codec = new GzipCodec();
 
         ByteArrayOutputStream encodedByCodec = new ByteArrayOutputStream();
-        try (OutputStream output = codec.openEncoder(encodedByCodec)) {
+        try (OutputStream output = codec.newOutputStream(encodedByCodec)) {
             output.write(input);
         }
         try (InputStream inputStream = new GZIPInputStream(
@@ -79,7 +79,7 @@ public final class GzipCodecTest {
         }
 
         byte[] encodedByJdk = gzip(input);
-        try (InputStream inputStream = codec.openDecoder(new ByteArrayInputStream(encodedByJdk))) {
+        try (InputStream inputStream = codec.newInputStream(new ByteArrayInputStream(encodedByJdk))) {
             assertArrayEquals(input, inputStream.readAllBytes());
         }
     }
@@ -93,7 +93,7 @@ public final class GzipCodecTest {
         concatenated.writeBytes(gzip(first));
         concatenated.writeBytes(gzip(second));
 
-        try (InputStream input = new GzipCodec().openDecoder(
+        try (InputStream input = new GzipCodec().newInputStream(
                 new ByteArrayInputStream(concatenated.toByteArray())
         )) {
             assertArrayEquals(
@@ -112,7 +112,7 @@ public final class GzipCodecTest {
                 .withCompressionStrategy(CompressionStrategy.HUFFMAN_ONLY);
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
 
-        CompressingWritableByteChannel.FlushableFramed encoder = codec.openEncoder(
+        CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(
                 Channels.newChannel(compressed),
                 ChannelOwnership.RETAIN
         );
@@ -145,13 +145,13 @@ public final class GzipCodecTest {
         byte[] content = "optional gzip header".getBytes(StandardCharsets.UTF_8);
         byte[] member = gzipWithOptionalHeader(content);
 
-        try (InputStream input = new GzipCodec().openDecoder(new ByteArrayInputStream(member))) {
+        try (InputStream input = new GzipCodec().newInputStream(new ByteArrayInputStream(member))) {
             assertArrayEquals(content, input.readAllBytes());
         }
 
         member[12] ^= 1;
         assertThrows(IOException.class, () -> {
-            try (InputStream input = new GzipCodec().openDecoder(new ByteArrayInputStream(member))) {
+            try (InputStream input = new GzipCodec().newInputStream(new ByteArrayInputStream(member))) {
                 input.readAllBytes();
             }
         });
@@ -164,7 +164,7 @@ public final class GzipCodecTest {
         member[member.length - 8] ^= 1;
 
         assertThrows(IOException.class, () -> {
-            try (InputStream input = new GzipCodec().openDecoder(new ByteArrayInputStream(member))) {
+            try (InputStream input = new GzipCodec().newInputStream(new ByteArrayInputStream(member))) {
                 input.readAllBytes();
             }
         });
@@ -206,11 +206,11 @@ public final class GzipCodecTest {
     /// Compresses and decompresses the given bytes.
     private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-        try (OutputStream output = codec.openEncoder(compressed)) {
+        try (OutputStream output = codec.newOutputStream(compressed)) {
             output.write(input);
         }
 
-        try (InputStream inputStream = codec.openDecoder(new ByteArrayInputStream(compressed.toByteArray()))) {
+        try (InputStream inputStream = codec.newInputStream(new ByteArrayInputStream(compressed.toByteArray()))) {
             return inputStream.readAllBytes();
         }
     }

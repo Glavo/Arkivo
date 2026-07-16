@@ -439,15 +439,15 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             case LZMA -> openLzma(compression.parameter(), output);
             case LZMA2 -> openLzma2(compression.parameter(), output);
             case BZIP2 -> new CompressionOutput(
-                    SevenZipCompressionFormats.openEncoder("bzip2", compression.parameter(), output),
+                    SevenZipCompressionFormats.newOutputStream("bzip2", compression.parameter(), output),
                     new MethodDescriptor(BZIP2_METHOD_ID, new byte[0])
             );
             case DEFLATE -> new CompressionOutput(
-                    SevenZipCompressionFormats.openEncoder("deflate", compression.parameter(), output),
+                    SevenZipCompressionFormats.newOutputStream("deflate", compression.parameter(), output),
                     new MethodDescriptor(DEFLATE_METHOD_ID, new byte[0])
             );
             case DEFLATE64 -> new CompressionOutput(
-                    SevenZipCompressionFormats.openEncoder("deflate64", compression.parameter(), output),
+                    SevenZipCompressionFormats.newOutputStream("deflate64", compression.parameter(), output),
                     new MethodDescriptor(DEFLATE64_METHOD_ID, new byte[0])
             );
             case PPMD -> openPpmd(
@@ -456,7 +456,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                     output
             );
             case ZSTANDARD -> new CompressionOutput(
-                    SevenZipCompressionFormats.openEncoder("zstd", compression.parameter(), output),
+                    SevenZipCompressionFormats.newOutputStream("zstd", compression.parameter(), output),
                     new MethodDescriptor(ZSTANDARD_METHOD_ID, new byte[0])
             );
         };

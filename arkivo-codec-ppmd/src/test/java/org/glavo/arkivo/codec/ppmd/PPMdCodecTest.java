@@ -132,7 +132,7 @@ final class PPMdCodecTest {
 
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         WritableByteChannel ownedTarget = Channels.newChannel(encoded);
-        try (var encoder = modelCodec().openEncoder(ownedTarget, ChannelOwnership.CLOSE)) {
+        try (var encoder = modelCodec().newWritableByteChannel(ownedTarget, ChannelOwnership.CLOSE)) {
             encoder.write(ByteBuffer.wrap(new byte[]{1, 2, 3, 4}));
             assertEquals(4L, encoder.inputBytes());
         }
@@ -147,13 +147,13 @@ final class PPMdCodecTest {
         ReadableByteChannel missingOptions = Channels.newChannel(new ByteArrayInputStream(new byte[0]));
         assertThrows(
                 IllegalStateException.class,
-                () -> codec.openDecoder(missingOptions, ChannelOwnership.RETAIN)
+                () -> codec.newReadableByteChannel(missingOptions, ChannelOwnership.RETAIN)
         );
 
         ByteBuffer singleByteFrame = modelCodec().compress(ByteBuffer.wrap(new byte[]{1}));
         byte[] singleByteFrameBytes = new byte[singleByteFrame.remaining()];
         singleByteFrame.get(singleByteFrameBytes);
-        try (DecompressingReadableByteChannel limitedDecoder = decoderCodec(1L).openDecoder(
+        try (DecompressingReadableByteChannel limitedDecoder = decoderCodec(1L).newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(singleByteFrameBytes)),
                 DecompressionLimits.ofMaximumOutputSize(0L),
                 ChannelOwnership.RETAIN
@@ -165,7 +165,7 @@ final class PPMdCodecTest {
         }
 
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(new byte[5]));
-        try (DecompressingReadableByteChannel decoder = decoderCodec(0L).openDecoder(
+        try (DecompressingReadableByteChannel decoder = decoderCodec(0L).newReadableByteChannel(
                 source,
                 ChannelOwnership.CLOSE
         )) {

@@ -181,7 +181,7 @@ public final class ZstdBufferEngineTest {
         byte[] frame = encoded.toByteArray();
         assertEquals(frame.length, CODEC.frameCompressedSize(ByteBuffer.wrap(frame)));
 
-        try (DecompressingReadableByteChannel.Framed decoder = CODEC.openDecoder(
+        try (DecompressingReadableByteChannel.Framed decoder = CODEC.newReadableByteChannel(
                 Channels.newChannel(new java.io.ByteArrayInputStream(frame))
         )) {
             ByteBuffer target = ByteBuffer.allocate(input.length);

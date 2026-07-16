@@ -30,11 +30,11 @@ public final class ZipOptionalFormatProbe {
     public static void main(String @Unmodifiable [] arguments) throws Exception {
         requireDeflateFamilyFormats();
         for (String formatName : OPTIONAL_FORMAT_NAMES) {
-            requireMissingFormat(formatName, () -> ZipCompressionFormats.openDecoder(
+            requireMissingFormat(formatName, () -> ZipCompressionFormats.newReadableByteChannel(
                     formatName,
                     new ByteArrayInputStream(new byte[0])
             ));
-            requireMissingFormat(formatName, () -> ZipCompressionFormats.openEncoder(
+            requireMissingFormat(formatName, () -> ZipCompressionFormats.newWritableByteChannel(
                     formatName,
                     new ByteArrayOutputStream()
             ));
@@ -60,10 +60,10 @@ public final class ZipOptionalFormatProbe {
 
     /// Requires the default codec for one bundled format to open both directions.
     private static void requireBundledFormat(String formatName) throws IOException {
-        try (DecompressingReadableByteChannel ignoredDecoder = ZipCompressionFormats.openDecoder(
+        try (DecompressingReadableByteChannel ignoredDecoder = ZipCompressionFormats.newReadableByteChannel(
                 formatName,
                 new ByteArrayInputStream(new byte[0])
-        ); CompressingWritableByteChannel ignoredEncoder = ZipCompressionFormats.openEncoder(
+        ); CompressingWritableByteChannel ignoredEncoder = ZipCompressionFormats.newWritableByteChannel(
                 formatName,
                 new ByteArrayOutputStream()
         )) {

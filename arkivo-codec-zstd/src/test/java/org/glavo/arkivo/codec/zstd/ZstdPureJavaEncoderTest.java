@@ -296,7 +296,7 @@ public final class ZstdPureJavaEncoderTest {
                 .build();
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         int firstFrameSize;
-        try (CompressingWritableByteChannel.FlushableFramed encoder = codec.openEncoder(
+        try (CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(
                 Channels.newChannel(encoded),
                 input.length,
                 ChannelOwnership.RETAIN
@@ -381,7 +381,7 @@ public final class ZstdPureJavaEncoderTest {
         byte[] second = "final block".getBytes(StandardCharsets.UTF_8);
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         ZstdCodec codec = new ZstdCodec();
-        try (CompressingWritableByteChannel.FlushableFramed encoder = codec.openEncoder(
+        try (CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(
                 Channels.newChannel(encoded),
                 ChannelOwnership.RETAIN
         )) {
@@ -389,7 +389,7 @@ public final class ZstdPureJavaEncoderTest {
             encoder.flush();
 
             ByteBuffer prefix = ByteBuffer.allocate(first.length);
-            try (var decoder = codec.openDecoder(
+            try (var decoder = codec.newReadableByteChannel(
                     Channels.newChannel(new ByteArrayInputStream(encoded.toByteArray()))
             )) {
                 while (prefix.hasRemaining()) {
@@ -418,7 +418,7 @@ public final class ZstdPureJavaEncoderTest {
                 .jobSize(512L * 1024L)
                 .overlapLog(9)
                 .build();
-        try (CompressingWritableByteChannel.FlushableFramed encoder = codec.openEncoder(
+        try (CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(
                 Channels.newChannel(encoded),
                 ChannelOwnership.RETAIN
         )) {
@@ -426,7 +426,7 @@ public final class ZstdPureJavaEncoderTest {
             encoder.flush();
 
             ByteBuffer prefix = ByteBuffer.allocate(first.length);
-            try (var decoder = codec.openDecoder(
+            try (var decoder = codec.newReadableByteChannel(
                     Channels.newChannel(new ByteArrayInputStream(encoded.toByteArray()))
             )) {
                 while (prefix.hasRemaining()) {
@@ -986,7 +986,7 @@ public final class ZstdPureJavaEncoderTest {
             long pledgedSourceSize
     ) throws IOException {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        try (CompressingWritableByteChannel encoder = codec.openEncoder(
+        try (CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                 Channels.newChannel(encoded),
                 pledgedSourceSize
         )) {

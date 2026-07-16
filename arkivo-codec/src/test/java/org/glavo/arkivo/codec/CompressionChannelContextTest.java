@@ -34,7 +34,7 @@ final class CompressionChannelContextTest {
     void encodesIncrementallyAndRetainsTargetByDefault() throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         WritableByteChannel target = Channels.newChannel(bytes);
-        CompressingWritableByteChannel.FlushableFramed encoder = CODEC.openEncoder(target);
+        CompressingWritableByteChannel.FlushableFramed encoder = CODEC.newWritableByteChannel(target);
 
         CodecResult flushed = encoder.flush(ByteBuffer.wrap(new byte[]{1, 2, 3}));
         CodecResult finished = encoder.finishFrame(ByteBuffer.wrap(new byte[]{4}));
@@ -55,7 +55,7 @@ final class CompressionChannelContextTest {
     void decodesIncrementallyAndRetainsSourceByDefault() throws IOException {
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(new byte[]{5, 6, 7}));
         ByteBuffer output = ByteBuffer.allocate(3);
-        DecompressingReadableByteChannel decoder = CODEC.openDecoder(source);
+        DecompressingReadableByteChannel decoder = CODEC.newReadableByteChannel(source);
 
         CodecResult decoded = decoder.decode(output);
         CodecResult ended = decoder.decode(ByteBuffer.allocate(1));
@@ -71,7 +71,7 @@ final class CompressionChannelContextTest {
     @Test
     void closesOwnedBackingChannels() throws IOException {
         WritableByteChannel target = Channels.newChannel(new ByteArrayOutputStream());
-        try (CompressingWritableByteChannel.Framed encoder = CODEC.openEncoder(
+        try (CompressingWritableByteChannel.Framed encoder = CODEC.newWritableByteChannel(
                 target,
                 ChannelOwnership.CLOSE
         )) {
@@ -80,7 +80,7 @@ final class CompressionChannelContextTest {
         assertFalse(target.isOpen());
 
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(new byte[]{1}));
-        try (DecompressingReadableByteChannel decoder = CODEC.openDecoder(
+        try (DecompressingReadableByteChannel decoder = CODEC.newReadableByteChannel(
                 source,
                 ChannelOwnership.CLOSE
         )) {
@@ -93,7 +93,7 @@ final class CompressionChannelContextTest {
     @Test
     void retriesOwnedStreamAdapterEndpoints() throws IOException {
         FailingCloseWritableChannel target = new FailingCloseWritableChannel();
-        CompressingWritableByteChannel encoder = CODEC.openEncoder(
+        CompressingWritableByteChannel encoder = CODEC.newWritableByteChannel(
                 target,
                 ChannelOwnership.CLOSE
         );
@@ -107,7 +107,7 @@ final class CompressionChannelContextTest {
         assertArrayEquals(new byte[]{1, 2, 3}, target.bytes());
 
         FailingCloseReadableChannel source = new FailingCloseReadableChannel(new byte[]{4, 5, 6});
-        DecompressingReadableByteChannel decoder = CODEC.openDecoder(
+        DecompressingReadableByteChannel decoder = CODEC.newReadableByteChannel(
                 source,
                 ChannelOwnership.CLOSE
         );

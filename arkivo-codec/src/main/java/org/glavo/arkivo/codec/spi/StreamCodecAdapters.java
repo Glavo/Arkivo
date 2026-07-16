@@ -28,8 +28,8 @@ public final class StreamCodecAdapters {
     private StreamCodecAdapters() {
     }
 
-    /// Opens an encoder around a stream-based codec implementation.
-    public static CompressingWritableByteChannel openEncoder(
+    /// Creates an encoding channel around a stream-based codec implementation.
+    public static CompressingWritableByteChannel newWritableByteChannel(
             WritableByteChannel target,
             ChannelOwnership ownership,
             OutputStreamFactory factory
@@ -56,8 +56,8 @@ public final class StreamCodecAdapters {
         }
     }
 
-    /// Opens a decoder around a stream-based codec implementation.
-    public static DecompressingReadableByteChannel openDecoder(
+    /// Creates a decoding channel around a stream-based codec implementation.
+    public static DecompressingReadableByteChannel newReadableByteChannel(
             ReadableByteChannel source,
             ChannelOwnership ownership,
             InputStreamFactory factory

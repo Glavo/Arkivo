@@ -33,7 +33,7 @@ public final class CodecChannelAdapters {
     }
 
     /// Creates an encoding channel whose runtime capabilities match the created engine.
-    public static CompressingWritableByteChannel openEncoder(
+    public static CompressingWritableByteChannel newWritableByteChannel(
             WritableByteChannel target,
             ChannelOwnership ownership,
             EncoderFactory<? extends CompressionEncoder> factory
@@ -56,7 +56,7 @@ public final class CodecChannelAdapters {
     }
 
     /// Creates an encoding channel with nonterminal flush support.
-    public static CompressingWritableByteChannel.Flushable openFlushableEncoder(
+    public static CompressingWritableByteChannel.Flushable newFlushableWritableByteChannel(
             WritableByteChannel target,
             ChannelOwnership ownership,
             EncoderFactory<? extends CompressionEncoder.Flushable> factory
@@ -73,7 +73,7 @@ public final class CodecChannelAdapters {
     }
 
     /// Creates an encoding channel that can finish independently terminated frames.
-    public static CompressingWritableByteChannel.Framed openFramedEncoder(
+    public static CompressingWritableByteChannel.Framed newFramedWritableByteChannel(
             WritableByteChannel target,
             ChannelOwnership ownership,
             EncoderFactory<? extends CompressionEncoder.Framed> factory
@@ -90,7 +90,7 @@ public final class CodecChannelAdapters {
     }
 
     /// Creates an encoding channel with both frame-boundary and nonterminal-flush support.
-    public static CompressingWritableByteChannel.FlushableFramed openFlushableFramedEncoder(
+    public static CompressingWritableByteChannel.FlushableFramed newFlushableFramedWritableByteChannel(
             WritableByteChannel target,
             ChannelOwnership ownership,
             EncoderFactory<? extends CompressionEncoder.FlushableFramed> factory
@@ -104,7 +104,7 @@ public final class CodecChannelAdapters {
     }
 
     /// Creates a decoding channel whose runtime frame capability matches the created engine.
-    public static DecompressingReadableByteChannel openDecoder(
+    public static DecompressingReadableByteChannel newReadableByteChannel(
             ReadableByteChannel source,
             ChannelOwnership ownership,
             DecoderFactory<? extends CompressionDecoder> factory
@@ -121,7 +121,7 @@ public final class CodecChannelAdapters {
     }
 
     /// Creates a decoding channel that can stop at independently terminated frame boundaries.
-    public static DecompressingReadableByteChannel.Framed openFramedDecoder(
+    public static DecompressingReadableByteChannel.Framed newFramedReadableByteChannel(
             ReadableByteChannel source,
             ChannelOwnership ownership,
             DecoderFactory<? extends CompressionDecoder.Framed> factory

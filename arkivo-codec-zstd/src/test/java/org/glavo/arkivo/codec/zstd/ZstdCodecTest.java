@@ -256,7 +256,7 @@ public final class ZstdCodecTest {
         ZstdCodec codec = new ZstdCodec();
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
 
-        CompressingWritableByteChannel.FlushableFramed encoder = codec.openEncoder(
+        CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(
                 Channels.newChannel(compressed),
                 frame.length,
                 ChannelOwnership.RETAIN
@@ -324,7 +324,7 @@ public final class ZstdCodecTest {
         ).repeat(128).getBytes(StandardCharsets.UTF_8);
         ZstdCodec checksumCodec = codec.withFrameChecksum(true);
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        try (CompressingWritableByteChannel encoder = checksumCodec.openEncoder(
+        try (CompressingWritableByteChannel encoder = checksumCodec.newWritableByteChannel(
                 Channels.newChannel(encoded),
                 content.length
         )) {
@@ -352,7 +352,7 @@ public final class ZstdCodecTest {
 
         ZstdCodec noContentSize = codec.toBuilder().contentSize(false).build();
         ByteArrayOutputStream noContentEncoded = new ByteArrayOutputStream();
-        try (CompressingWritableByteChannel encoder = noContentSize.openEncoder(
+        try (CompressingWritableByteChannel encoder = noContentSize.newWritableByteChannel(
                 Channels.newChannel(noContentEncoded),
                 content.length
         )) {
@@ -410,7 +410,7 @@ public final class ZstdCodecTest {
                 ZstdCodec.class,
                 Objects.requireNonNull(CompressionFormats.detect(ByteBuffer.wrap(prefixedFrame))).defaultCodec().getClass()
         );
-        try (InputStream decodedAfterSkippable = CompressionFormats.openDecoder(
+        try (InputStream decodedAfterSkippable = CompressionFormats.newInputStream(
                 new ByteArrayInputStream(prefixedFrame)
         )) {
             assertArrayEquals(content, decodedAfterSkippable.readAllBytes());
@@ -454,7 +454,7 @@ public final class ZstdCodecTest {
         byte[] second = "second magicless frame".repeat(96).getBytes(StandardCharsets.UTF_8);
 
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        try (CompressingWritableByteChannel.FlushableFramed encoder = codec.openEncoder(
+        try (CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(
                 Channels.newChannel(encoded),
                 ChannelOwnership.RETAIN
         )) {
@@ -622,11 +622,11 @@ public final class ZstdCodecTest {
     /// Compresses and decompresses the given bytes.
     private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-        try (OutputStream output = codec.openEncoder(compressed)) {
+        try (OutputStream output = codec.newOutputStream(compressed)) {
             output.write(input);
         }
 
-        try (InputStream inputStream = codec.openDecoder(new ByteArrayInputStream(compressed.toByteArray()))) {
+        try (InputStream inputStream = codec.newInputStream(new ByteArrayInputStream(compressed.toByteArray()))) {
             return inputStream.readAllBytes();
         }
     }

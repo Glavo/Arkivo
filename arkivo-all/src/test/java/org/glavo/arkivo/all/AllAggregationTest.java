@@ -323,7 +323,7 @@ final class AllAggregationTest {
                 continue;
             }
             ByteArrayOutputStream output = new ByteArrayOutputStream();
-            try (OutputStream compressor = codec.openEncoder(output)) {
+            try (OutputStream compressor = codec.newOutputStream(output)) {
                 compressor.write(content);
             }
             byte[] compressed = output.toByteArray();

@@ -70,7 +70,7 @@ public final class BZip2CodecTest {
         WritableByteChannel compressedTarget = Channels.newChannel(compressedBytes);
         BZip2Codec codec = new BZip2Codec().withCompressionLevel(1L);
 
-        CompressingWritableByteChannel encoder = codec.openEncoder(
+        CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                 compressedTarget,
                 ChannelOwnership.RETAIN
         );
@@ -84,7 +84,7 @@ public final class BZip2CodecTest {
         assertEquals('1', compressedBytes.toByteArray()[3]);
 
         WritableByteChannel ownedTarget = Channels.newChannel(new ByteArrayOutputStream());
-        CompressingWritableByteChannel owningEncoder = new BZip2Codec().openEncoder(
+        CompressingWritableByteChannel owningEncoder = new BZip2Codec().newWritableByteChannel(
                 ownedTarget,
                 ChannelOwnership.CLOSE
         );
@@ -95,7 +95,7 @@ public final class BZip2CodecTest {
         ReadableByteChannel compressedSource = Channels.newChannel(
                 new ByteArrayInputStream(compressedBytes.toByteArray())
         );
-        DecompressingReadableByteChannel decoder = new BZip2Codec().openDecoder(
+        DecompressingReadableByteChannel decoder = new BZip2Codec().newReadableByteChannel(
                 compressedSource,
                 ChannelOwnership.CLOSE
         );
@@ -128,11 +128,11 @@ public final class BZip2CodecTest {
     /// Compresses and decompresses the given bytes.
     private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-        try (OutputStream output = codec.openEncoder(compressed)) {
+        try (OutputStream output = codec.newOutputStream(compressed)) {
             output.write(input);
         }
 
-        try (InputStream inputStream = codec.openDecoder(new ByteArrayInputStream(compressed.toByteArray()))) {
+        try (InputStream inputStream = codec.newInputStream(new ByteArrayInputStream(compressed.toByteArray()))) {
             return inputStream.readAllBytes();
         }
     }

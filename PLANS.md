@@ -189,10 +189,13 @@ buffers in any source and target combination, including read-only sources and no
 writable, and one buffer instance cannot serve as both source and target. Immutable codec configurations and
 operation-scoped `DecompressionLimits` follow the same validation and exception contract across adapters.
 
-`CompressionFormats` should find format identities and open their default encoder and decoder contexts by stable format
-name. It should automatically open decoders for streams with reliable signatures. Context factories should apply explicit
-channel ownership consistently during lookup, detection, setup, and close. Channel and stream adapters retain caller
-endpoints by default and transfer ownership only when `ChannelOwnership.CLOSE` is selected explicitly.
+`CompressionFormats` should find format identities and create adapters for their default codecs by stable format name.
+Codec factories use `newEncoder()` and `newDecoder()` for transport-independent engines,
+`newWritableByteChannel()` and `newReadableByteChannel()` for channel contexts, and `newOutputStream()` and
+`newInputStream()` for stream adapters. Decoder factories should automatically detect streams with reliable signatures.
+Adapter factories should apply explicit channel ownership consistently during lookup, detection, setup, and close.
+Channel and stream adapters retain caller endpoints by default and transfer ownership only when
+`ChannelOwnership.CLOSE` is selected explicitly.
 
 Zstandard signature detection recognizes the standard frame magic and all sixteen skippable-frame identifiers without
 changing the probe buffer. Generic decoder factories accept streams beginning with skippable frames, and framed decoder

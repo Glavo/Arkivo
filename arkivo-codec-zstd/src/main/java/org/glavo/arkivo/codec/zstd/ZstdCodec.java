@@ -440,29 +440,29 @@ public final class ZstdCodec
         );
     }
 
-    /// Opens a frame- and flush-capable encoder with exact source-size metadata.
+    /// Creates a frame- and flush-capable compressing channel with exact source-size metadata and explicit ownership.
     @Override
-    public CompressingWritableByteChannel.FlushableFramed openEncoder(
+    public CompressingWritableByteChannel.FlushableFramed newWritableByteChannel(
             WritableByteChannel target,
             long pledgedSourceSize,
             ChannelOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(ownership, "ownership");
-        return CodecChannelAdapters.openFlushableFramedEncoder(
+        return CodecChannelAdapters.newFlushableFramedWritableByteChannel(
                 target,
                 ownership,
                 () -> newEncoder(pledgedSourceSize)
         );
     }
 
-    /// Opens a frame- and flush-capable encoder with exact source-size metadata and retains target ownership.
+    /// Creates a frame- and flush-capable compressing channel with exact source-size metadata and retained ownership.
     @Override
-    public CompressingWritableByteChannel.FlushableFramed openEncoder(
+    public CompressingWritableByteChannel.FlushableFramed newWritableByteChannel(
             WritableByteChannel target,
             long pledgedSourceSize
     ) throws IOException {
-        return openEncoder(target, pledgedSourceSize, ChannelOwnership.RETAIN);
+        return newWritableByteChannel(target, pledgedSourceSize, ChannelOwnership.RETAIN);
     }
 
     /// Creates an unrestricted dictionary-aware framed decoder.
