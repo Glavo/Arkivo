@@ -13,18 +13,14 @@ import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionLevelCodec;
 import org.glavo.arkivo.codec.CompressionStrategy;
-import org.glavo.arkivo.codec.CompressionStrategyCodec;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DictionaryCompressionCodec;
 import org.glavo.arkivo.codec.EncodeDirective;
-import org.glavo.arkivo.codec.PledgedSourceSizeCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -657,12 +653,16 @@ final class CodecChannelContractTest {
 
         for (CompressionFormat format : CompressionFormats.installed()) {
             CompressionCodec codec = format.defaultCodec();
-            assertEquals(levelCodecs.contains(codec.format().name()), codec instanceof CompressionLevelCodec, codec.format().name());
-            if (!(codec instanceof CompressionLevelCodec levelCodec)) {
+            assertEquals(
+                    levelCodecs.contains(codec.format().name()),
+                    codec instanceof CompressionCodec.LevelConfigurable,
+                    codec.format().name()
+            );
+            if (!(codec instanceof CompressionCodec.LevelConfigurable levelCodec)) {
                 continue;
             }
 
-            CompressionLevelCodec configured =
+            CompressionCodec.LevelConfigurable configured =
                     levelCodec.withCompressionLevel(levelCodec.defaultCompressionLevel());
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
             try (CompressingWritableByteChannel encoder = configured.openEncoder(
@@ -697,15 +697,15 @@ final class CodecChannelContractTest {
         for (CompressionFormat format : CompressionFormats.installed()) {
             CompressionCodec codec = format.defaultCodec();
             boolean expected = strategyCodecs.contains(codec.format().name());
-            assertEquals(expected, codec instanceof CompressionStrategyCodec, codec.format().name());
-            if (!(codec instanceof CompressionStrategyCodec strategyCodec)) {
+            assertEquals(expected, codec instanceof CompressionCodec.StrategyConfigurable, codec.format().name());
+            if (!(codec instanceof CompressionCodec.StrategyConfigurable strategyCodec)) {
                 continue;
             }
 
             long defaultSize = CompressionCodec.UNKNOWN_SIZE;
             long huffmanOnlySize = CompressionCodec.UNKNOWN_SIZE;
             for (CompressionStrategy strategy : CompressionStrategy.values()) {
-                CompressionStrategyCodec configured =
+                CompressionCodec.StrategyConfigurable configured =
                         strategyCodec.withCompressionStrategy(strategy);
                 ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
                 configured.compress(
@@ -732,7 +732,7 @@ final class CodecChannelContractTest {
                     CompressionStrategy.FILTERED,
                     CompressionStrategy.HUFFMAN_ONLY
             )) {
-                CompressionStrategyCodec configured =
+                CompressionCodec.StrategyConfigurable configured =
                         strategyCodec.withCompressionStrategy(strategy);
                 ByteArrayOutputStream emptyCompressed = new ByteArrayOutputStream();
                 try (CompressingWritableByteChannel encoder = configured.openEncoder(
@@ -772,15 +772,15 @@ final class CodecChannelContractTest {
             CompressionCodec codec = format.defaultCodec();
             assertEquals(
                     dictionaryCodecs.contains(codec.format().name()),
-                    codec instanceof DictionaryCompressionCodec,
+                    codec instanceof CompressionCodec.DictionaryConfigurable,
                     codec.format().name()
             );
-            if (!(codec instanceof DictionaryCompressionCodec dictionaryCodec)) {
+            if (!(codec instanceof CompressionCodec.DictionaryConfigurable dictionaryCodec)) {
                 continue;
             }
 
             CompressionCodec configured = dictionaryCodec.withDictionary(dictionary);
-            if (configured instanceof CompressionStrategyCodec strategyCodec) {
+            if (configured instanceof CompressionCodec.StrategyConfigurable strategyCodec) {
                 configured = strategyCodec.withCompressionStrategy(CompressionStrategy.FILTERED);
             }
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
@@ -808,8 +808,12 @@ final class CodecChannelContractTest {
         for (CompressionFormat format : CompressionFormats.installed()) {
             CompressionCodec codec = format.defaultCodec();
             boolean expected = pledgedSizeCodecs.contains(codec.format().name());
-            assertEquals(expected, codec instanceof PledgedSourceSizeCodec, codec.format().name());
-            if (!(codec instanceof PledgedSourceSizeCodec pledgedCodec)) {
+            assertEquals(
+                    expected,
+                    codec instanceof CompressionCodec.PledgedSourceSizeEncoderFactory,
+                    codec.format().name()
+            );
+            if (!(codec instanceof CompressionCodec.PledgedSourceSizeEncoderFactory pledgedCodec)) {
                 continue;
             }
 

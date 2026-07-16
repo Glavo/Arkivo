@@ -4,13 +4,11 @@
 package org.glavo.arkivo.codec.zstd;
 
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.CompressionLevelCodec;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.DecompressionLimits;
-import org.glavo.arkivo.codec.DictionaryCompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.PledgedSourceSizeCodec;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.zstd.internal.ZstdCompressionFormat;
 import org.glavo.arkivo.codec.zstd.internal.ZstdDecoder;
@@ -28,7 +26,9 @@ import java.util.Objects;
 /// Provides an immutable Zstandard configuration and transport-independent frame engines.
 @NotNullByDefault
 public final class ZstdCodec
-        implements CompressionLevelCodec, DictionaryCompressionCodec, PledgedSourceSizeCodec {
+        implements CompressionCodec.LevelConfigurable,
+        CompressionCodec.DictionaryConfigurable,
+        CompressionCodec.PledgedSourceSizeEncoderFactory {
     /// The stable Zstandard compression format name.
     public static final String NAME = "zstd";
 

@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressionLimits;
-import org.glavo.arkivo.codec.PledgedSourceSizeCodec;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.lzma.internal.LZMARawDecoder;
 import org.glavo.arkivo.codec.lzma.internal.RawLZMACompressionFormat;
 import org.glavo.arkivo.codec.lzma.internal.LZMARawEncoder;
@@ -19,7 +19,7 @@ import java.util.Objects;
 
 /// Provides an immutable headerless LZMA configuration for containers that carry model properties separately.
 @NotNullByDefault
-public final class RawLZMACodec implements PledgedSourceSizeCodec {
+public final class RawLZMACodec implements CompressionCodec.PledgedSourceSizeEncoderFactory {
     /// The stable raw LZMA compression format name.
     public static final String NAME = "lzma-raw";
 

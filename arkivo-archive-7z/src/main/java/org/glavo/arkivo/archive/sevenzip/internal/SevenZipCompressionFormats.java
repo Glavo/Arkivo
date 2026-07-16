@@ -9,7 +9,6 @@ import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
-import org.glavo.arkivo.codec.CompressionLevelCodec;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.lzma.LZMA2Codec;
@@ -48,7 +47,7 @@ final class SevenZipCompressionFormats {
             OutputStream target
     ) throws IOException {
         CompressionCodec codec = requireDefaultCodec(formatName);
-        if (!(codec instanceof CompressionLevelCodec configurableCodec)) {
+        if (!(codec instanceof CompressionCodec.LevelConfigurable configurableCodec)) {
             throw new UnsupportedOperationException(
                     "Compression codec does not support compression levels: " + codec.format().name()
             );

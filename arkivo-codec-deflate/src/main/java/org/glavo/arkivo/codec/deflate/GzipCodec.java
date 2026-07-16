@@ -5,9 +5,8 @@ package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionFormat;
-import org.glavo.arkivo.codec.CompressionLevelCodec;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionStrategy;
-import org.glavo.arkivo.codec.CompressionStrategyCodec;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.GzipCompressionFormat;
@@ -21,7 +20,7 @@ import java.util.Objects;
 
 /// Provides an immutable gzip configuration and pure Java member engines.
 @NotNullByDefault
-public final class GzipCodec implements CompressionLevelCodec, CompressionStrategyCodec {
+public final class GzipCodec implements CompressionCodec.LevelConfigurable, CompressionCodec.StrategyConfigurable {
     /// The stable gzip compression format name.
     public static final String NAME = "gzip";
 

@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.bzip2;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionFormat;
-import org.glavo.arkivo.codec.CompressionLevelCodec;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2ChannelEncoder;
@@ -18,7 +18,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 /// Provides an immutable BZip2 compression configuration and creates transport-independent engines.
 @NotNullByDefault
-public final class BZip2Codec implements CompressionLevelCodec {
+public final class BZip2Codec implements CompressionCodec.LevelConfigurable {
     /// The stable BZip2 compression format name.
     public static final String NAME = "bzip2";
 

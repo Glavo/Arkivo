@@ -9,7 +9,7 @@ import org.glavo.arkivo.codec.internal.StreamChannelAdapters;
 import org.glavo.arkivo.codec.spi.CodecChannelAdapters;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
-
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -243,5 +243,86 @@ public interface CompressionCodec {
             DecompressionLimits limits
     ) throws IOException {
         ByteBufferCodecSupport.decompressFrame(this, source, target, limits);
+    }
+
+    /// Describes an immutable codec configuration with a selectable compression level.
+    @NotNullByDefault
+    interface LevelConfigurable extends CompressionCodec {
+        /// Returns the configured compression level.
+        long compressionLevel();
+
+        /// Returns the minimum supported compression level.
+        long minimumCompressionLevel();
+
+        /// Returns the maximum supported compression level.
+        long maximumCompressionLevel();
+
+        /// Returns the format implementation's default compression level.
+        long defaultCompressionLevel();
+
+        /// Returns an immutable codec configured with the requested compression level.
+        LevelConfigurable withCompressionLevel(long compressionLevel);
+    }
+
+    /// Describes an immutable codec configuration with a selectable generic compression strategy.
+    @NotNullByDefault
+    interface StrategyConfigurable extends CompressionCodec {
+        /// Returns the configured compression strategy.
+        CompressionStrategy compressionStrategy();
+
+        /// Returns an immutable codec configured with the requested compression strategy.
+        StrategyConfigurable withCompressionStrategy(CompressionStrategy compressionStrategy);
+    }
+
+    /// Describes an immutable codec configuration with an optional shared compression dictionary.
+    @NotNullByDefault
+    interface DictionaryConfigurable extends CompressionCodec {
+        /// Returns the configured dictionary, or `null` when dictionary-free operation is selected.
+        @Nullable CompressionDictionary dictionary();
+
+        /// Returns an immutable codec configured with the requested dictionary.
+        DictionaryConfigurable withDictionary(CompressionDictionary dictionary);
+
+        /// Returns an immutable codec configured without a dictionary.
+        DictionaryConfigurable withoutDictionary();
+    }
+
+    /// Creates encoders that can receive an exact uncompressed source size as operation-scoped metadata.
+    @NotNullByDefault
+    interface PledgedSourceSizeEncoderFactory extends CompressionCodec {
+        /// Creates an encoder for a source with the requested exact byte count.
+        ///
+        /// `pledgedSourceSize` may be `CompressionCodec.UNKNOWN_SIZE` when the size is not known before encoding
+        /// starts.
+        CompressionEncoder newEncoder(long pledgedSourceSize) throws IOException;
+
+        /// Opens an encoder context with exact uncompressed source-size metadata.
+        default CompressingWritableByteChannel openEncoder(
+                WritableByteChannel target,
+                long pledgedSourceSize,
+                ChannelOwnership ownership
+        ) throws IOException {
+            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(ownership, "ownership");
+            return CodecChannelAdapters.openEncoder(
+                    target,
+                    ownership,
+                    () -> newEncoder(pledgedSourceSize)
+            );
+        }
+
+        /// Opens an encoder with exact source-size metadata and retains target ownership.
+        default CompressingWritableByteChannel openEncoder(
+                WritableByteChannel target,
+                long pledgedSourceSize
+        ) throws IOException {
+            return openEncoder(target, pledgedSourceSize, ChannelOwnership.RETAIN);
+        }
+
+        /// Creates an encoder without a known source size.
+        @Override
+        default CompressionEncoder newEncoder() throws IOException {
+            return newEncoder(UNKNOWN_SIZE);
+        }
     }
 }

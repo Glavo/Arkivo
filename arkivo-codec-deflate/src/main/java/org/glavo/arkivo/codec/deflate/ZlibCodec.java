@@ -6,11 +6,9 @@ package org.glavo.arkivo.codec.deflate;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.CompressionLevelCodec;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionStrategy;
-import org.glavo.arkivo.codec.CompressionStrategyCodec;
 import org.glavo.arkivo.codec.DecompressionLimits;
-import org.glavo.arkivo.codec.DictionaryCompressionCodec;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.ZlibCompressionFormat;
 import org.glavo.arkivo.codec.deflate.internal.ZlibDecoder;
@@ -24,7 +22,9 @@ import java.util.Objects;
 /// Provides an immutable zlib configuration and pure Java stream engines.
 @NotNullByDefault
 public final class ZlibCodec
-        implements CompressionLevelCodec, CompressionStrategyCodec, DictionaryCompressionCodec {
+        implements CompressionCodec.LevelConfigurable,
+        CompressionCodec.StrategyConfigurable,
+        CompressionCodec.DictionaryConfigurable {
     /// The stable zlib compression format name.
     public static final String NAME = "zlib";
 

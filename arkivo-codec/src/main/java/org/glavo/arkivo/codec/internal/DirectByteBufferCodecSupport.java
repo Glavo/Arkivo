@@ -9,7 +9,6 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
-import org.glavo.arkivo.codec.PledgedSourceSizeCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -99,7 +98,7 @@ final class DirectByteBufferCodecSupport {
 
     /// Creates an encoder and supplies the exact one-shot source size when the codec supports it.
     private static CompressionEncoder newEncoder(CompressionCodec codec, long sourceSize) throws IOException {
-        if (codec instanceof PledgedSourceSizeCodec pledgedSourceSizeCodec) {
+        if (codec instanceof CompressionCodec.PledgedSourceSizeEncoderFactory pledgedSourceSizeCodec) {
             return pledgedSourceSizeCodec.newEncoder(sourceSize);
         }
         return codec.newEncoder();

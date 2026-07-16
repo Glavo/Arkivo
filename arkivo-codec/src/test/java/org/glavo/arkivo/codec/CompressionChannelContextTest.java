@@ -146,10 +146,10 @@ final class CompressionChannelContextTest {
     /// Verifies unsupported configuration is absent from the codec type instead of rejected at runtime.
     @Test
     void exposesConfigurationOnlyThroughTypedSubinterfaces() {
-        assertFalse(CODEC instanceof CompressionLevelCodec);
-        assertFalse(CODEC instanceof CompressionStrategyCodec);
-        assertFalse(CODEC instanceof DictionaryCompressionCodec);
-        assertFalse(CODEC instanceof PledgedSourceSizeCodec);
+        assertFalse(CODEC instanceof CompressionCodec.LevelConfigurable);
+        assertFalse(CODEC instanceof CompressionCodec.StrategyConfigurable);
+        assertFalse(CODEC instanceof CompressionCodec.DictionaryConfigurable);
+        assertFalse(CODEC instanceof CompressionCodec.PledgedSourceSizeEncoderFactory);
     }
 
     /// Implements a writable byte-array channel that fails its first close attempt.

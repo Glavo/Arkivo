@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionFormat;
-import org.glavo.arkivo.codec.CompressionLevelCodec;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.Deflate64Decoder;
@@ -19,7 +19,7 @@ import java.util.Objects;
 
 /// Provides an immutable raw Deflate64 configuration and pure Java buffer engines.
 @NotNullByDefault
-public final class Deflate64Codec implements CompressionLevelCodec {
+public final class Deflate64Codec implements CompressionCodec.LevelConfigurable {
     /// The stable Deflate64 compression format name.
     public static final String NAME = "deflate64";
 
