@@ -35,6 +35,7 @@ import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.DirectoryStream;
@@ -2773,6 +2774,56 @@ public final class RarArkivoStreamingReaderTest {
         }
     }
 
+    /// Verifies that non-Unicode RAR4 names receive the complete legacy file-header context.
+    @Test
+    public void detectsLegacyRar4NameCharset() throws IOException {
+        Charset gb18030 = Charset.forName("GB18030");
+        String path = "旧目录.txt";
+        byte[] archive = rar4ArchiveWithRawName(path.getBytes(gb18030));
+        RarLegacyCharsetDetector detector = context -> {
+            assertEquals(RarLegacyCharsetDetector.MetadataKind.ENTRY_NAME, context.metadataKind());
+            assertEquals(3, context.hostOperatingSystem());
+            assertEquals(29, context.extractionVersion());
+            assertEquals(0x8000, context.headerFlags());
+            assertEquals(0100644L, context.fileAttributes());
+            assertEquals(true, context.bytes().isReadOnly());
+            return gb18030;
+        };
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                ArchiveOptions.fromEnvironment(Map.of(
+                        RarArkivoFileSystem.LEGACY_CHARSET_DETECTOR.key(),
+                        detector
+                ))
+        )) {
+            assertEquals(true, reader.next());
+            assertEquals(path, reader.readAttributes(RarArkivoEntryAttributes.class).path());
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that authoritative RAR5 UTF-8 names bypass the RAR4 legacy detector.
+    @Test
+    public void rar5Utf8NameBypassesLegacyDetector() throws IOException {
+        String path = "现代目录.txt";
+        byte[] archive = archive(storedFile(path, 0, 0100644, new byte[0], null));
+        RarLegacyCharsetDetector detector = context -> {
+            throw new AssertionError("RAR5 entry names must not use the RAR4 legacy detector");
+        };
+
+        try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                ArchiveOptions.fromEnvironment(Map.of(
+                        RarArkivoFileSystem.LEGACY_CHARSET_DETECTOR.key(),
+                        detector
+                ))
+        )) {
+            assertEquals(true, reader.next());
+            assertEquals(path, reader.readAttributes(RarArkivoEntryAttributes.class).path());
+        }
+    }
+
     /// Verifies that stored RAR4 entries can be streamed and exposed through the file system API.
     @Test
     public void readsStoredRar4Entries() throws IOException {
@@ -3194,6 +3245,28 @@ public final class RarArkivoStreamingReaderTest {
             return;
         }
         writeBlock(output, 2, blockFlags(member), fileFields(member, true), member.extraArea(), member.body());
+    }
+
+    /// Creates a stored RAR4 archive whose file header contains caller-supplied raw name bytes.
+    private static byte[] rar4ArchiveWithRawName(byte[] nameBytes) throws IOException {
+        ByteArrayOutputStream fields = new ByteArrayOutputStream();
+        writeUInt32(fields, 0);
+        writeUInt32(fields, 0);
+        fields.write(3);
+        writeUInt32(fields, 0);
+        writeUInt32(fields, rar4DosTime(1_700_000_000L));
+        fields.write(29);
+        fields.write(0x30);
+        writeUInt16(fields, nameBytes.length);
+        writeUInt32(fields, 0100644);
+        fields.write(nameBytes);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write(RAR4_SIGNATURE);
+        writeRar4Block(output, 0x73, 0, new byte[6], new byte[0]);
+        writeRar4Block(output, 0x74, 0x8000L, fields.toByteArray(), new byte[0]);
+        writeRar4Block(output, 0x7b, 0, new byte[0], new byte[0]);
+        return output.toByteArray();
     }
 
     /// Writes one RAR4 member block.

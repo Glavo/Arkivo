@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
+import org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -91,6 +92,38 @@ public final class ZipEntryNameDecoderTest {
         byte[] rawPath = "目录/文件.txt".getBytes(gb18030);
 
         String path = decoder.decodePath(rawPath, 0, new byte[0]);
+
+        assertEquals("目录/文件.txt", path);
+    }
+
+    /// Verifies that ZIP-specific detectors receive central-directory metadata only on the legacy decoding path.
+    @Test
+    public void zipDetectorReceivesCentralDirectoryContext() throws Exception {
+        Charset gb18030 = Charset.forName("GB18030");
+        ZipLegacyCharsetDetector detector = context -> {
+            assertEquals(ZipLegacyCharsetDetector.MetadataKind.ENTRY_NAME, context.metadataKind());
+            assertEquals(
+                    ZipLegacyCharsetDetector.HeaderSource.CENTRAL_DIRECTORY,
+                    context.headerSource()
+            );
+            assertEquals(0x0002, context.generalPurposeFlags());
+            assertEquals(20, context.versionNeededToExtract());
+            assertEquals(3, context.creatorSystem());
+            assertEquals(63, context.creatorVersion());
+            assertEquals(0, context.extraData().remaining());
+            return gb18030;
+        };
+        ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(detector);
+        byte[] rawPath = "目录/文件.txt".getBytes(gb18030);
+
+        String path = decoder.decodePath(
+                rawPath,
+                0x0002,
+                new byte[0],
+                ZipLegacyCharsetDetector.HeaderSource.CENTRAL_DIRECTORY,
+                20,
+                3 << Byte.SIZE | 63
+        );
 
         assertEquals("目录/文件.txt", path);
     }

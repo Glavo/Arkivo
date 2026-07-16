@@ -1,5 +1,6 @@
 org.glavo.arkivo.archive.ArchiveEntryAttributes
 org.glavo.arkivo.archive.ArchiveFormatRegistry
+org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector
 org.glavo.arkivo.archive.ArchiveOption
 org.glavo.arkivo.archive.ArchiveOptions
 org.glavo.arkivo.archive.ArchiveOptions$Builder
@@ -44,11 +45,18 @@ org.glavo.arkivo.archive.ar.ArArkivoFileSystem
 org.glavo.arkivo.archive.ar.ArArkivoFormat
 org.glavo.arkivo.archive.ar.ArArkivoStreamingReader
 org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter
+org.glavo.arkivo.archive.ar.ArMetadataCharsetDetector
+org.glavo.arkivo.archive.ar.ArMetadataCharsetDetector$Context
+org.glavo.arkivo.archive.ar.ArMetadataCharsetDetector$MetadataKind
+org.glavo.arkivo.archive.ar.ArMetadataCharsetDetector$Source
 org.glavo.arkivo.archive.rar.RarArkivoEntryAttributeView
 org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes
 org.glavo.arkivo.archive.rar.RarArkivoFileSystem
 org.glavo.arkivo.archive.rar.RarArkivoFormat
 org.glavo.arkivo.archive.rar.RarArkivoStreamingReader
+org.glavo.arkivo.archive.rar.RarLegacyCharsetDetector
+org.glavo.arkivo.archive.rar.RarLegacyCharsetDetector$Context
+org.glavo.arkivo.archive.rar.RarLegacyCharsetDetector$MetadataKind
 org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributeView
 org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes
 org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem
@@ -71,6 +79,11 @@ org.glavo.arkivo.archive.tar.TarArkivoFileSystem
 org.glavo.arkivo.archive.tar.TarArkivoFormat
 org.glavo.arkivo.archive.tar.TarArkivoStreamingReader
 org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter
+org.glavo.arkivo.archive.tar.TarMetadataCharsetDetector
+org.glavo.arkivo.archive.tar.TarMetadataCharsetDetector$Context
+org.glavo.arkivo.archive.tar.TarMetadataCharsetDetector$HeaderDialect
+org.glavo.arkivo.archive.tar.TarMetadataCharsetDetector$MetadataKind
+org.glavo.arkivo.archive.tar.TarMetadataCharsetDetector$Source
 org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView
 org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes
 org.glavo.arkivo.archive.zip.ZipArkivoFileSystem
@@ -79,6 +92,9 @@ org.glavo.arkivo.archive.zip.ZipArkivoStreamingReader
 org.glavo.arkivo.archive.zip.ZipArkivoStreamingWriter
 org.glavo.arkivo.archive.zip.ZipEncryption
 org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector
+org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector$Context
+org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector$HeaderSource
+org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector$MetadataKind
 org.glavo.arkivo.archive.zip.ZipMethod
 org.glavo.arkivo.codec.ChannelOwnership
 org.glavo.arkivo.codec.CodecOutcome

@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
+import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
@@ -11,12 +12,12 @@ import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoSourceMutationPolicy;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
-import org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
+import java.nio.charset.Charset;
 import java.nio.file.OpenOption;
 import java.nio.file.StandardOpenOption;
 import java.util.LinkedHashSet;
@@ -44,13 +45,17 @@ public final class ZipArkivoFileSystemConfig {
     private static final @Unmodifiable Set<OpenOption> DEFAULT_UPDATE_OPEN_OPTIONS =
             Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE);
 
+    /// The ZIP-standard detector used when no legacy charset detector is configured.
+    private static final ArchiveMetadataCharsetDetector DEFAULT_LEGACY_CHARSET_DETECTOR =
+            ArchiveMetadataCharsetDetector.fixed(Charset.forName("IBM437"));
+
     /// The default parsed ZIP file system configuration.
     public static final ZipArkivoFileSystemConfig DEFAULTS = new ZipArkivoFileSystemConfig(
             DEFAULT_READ_OPEN_OPTIONS,
             null,
             ZipEncryption.none(),
             NO_SPLIT_SIZE,
-            ZipLegacyCharsetDetector.standard(),
+            DEFAULT_LEGACY_CHARSET_DETECTOR,
             ArkivoFileSystemThreadSafety.CONCURRENT_READ,
             null,
             null,
@@ -74,7 +79,7 @@ public final class ZipArkivoFileSystemConfig {
     private final long splitSize;
 
     /// The detector used to select charsets for legacy ZIP entry names and comments.
-    private final ZipLegacyCharsetDetector legacyCharsetDetector;
+    private final ArchiveMetadataCharsetDetector legacyCharsetDetector;
 
     /// The requested ZIP file system thread-safety strategy.
     private final ArkivoFileSystemThreadSafety threadSafety;
@@ -106,7 +111,7 @@ public final class ZipArkivoFileSystemConfig {
             @Nullable ArkivoPasswordProvider passwordProvider,
             ZipEncryption defaultEncryption,
             long splitSize,
-            ZipLegacyCharsetDetector legacyCharsetDetector,
+            ArchiveMetadataCharsetDetector legacyCharsetDetector,
             ArkivoFileSystemThreadSafety threadSafety,
             @Nullable ArkivoEditStorage editStorage,
             @Nullable ArkivoCommitTarget commitTarget,
@@ -135,7 +140,7 @@ public final class ZipArkivoFileSystemConfig {
             @Nullable ArkivoPasswordProvider passwordProvider,
             ZipEncryption defaultEncryption,
             long splitSize,
-            ZipLegacyCharsetDetector legacyCharsetDetector,
+            ArchiveMetadataCharsetDetector legacyCharsetDetector,
             ArkivoFileSystemThreadSafety threadSafety,
             @Nullable ArkivoEditStorage editStorage,
             @Nullable ArkivoCommitTarget commitTarget,
@@ -205,10 +210,10 @@ public final class ZipArkivoFileSystemConfig {
         ZipEncryption defaultEncryption =
                 options.getOrDefault(ZipArkivoFileSystem.DEFAULT_ENCRYPTION, ZipEncryption.none());
         long splitSize = splitSize(options);
-        ZipLegacyCharsetDetector legacyCharsetDetector =
+        ArchiveMetadataCharsetDetector legacyCharsetDetector =
                 options.getOrDefault(
                         ZipArkivoFileSystem.LEGACY_CHARSET_DETECTOR,
-                        ZipLegacyCharsetDetector.standard()
+                        DEFAULT_LEGACY_CHARSET_DETECTOR
                 );
         ArkivoFileSystemThreadSafety threadSafety =
                 options.getOrDefault(
@@ -262,7 +267,7 @@ public final class ZipArkivoFileSystemConfig {
     }
 
     /// Returns the detector used to select charsets for legacy ZIP entry names and comments.
-    public ZipLegacyCharsetDetector legacyCharsetDetector() {
+    public ArchiveMetadataCharsetDetector legacyCharsetDetector() {
         return legacyCharsetDetector;
     }
 

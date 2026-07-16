@@ -6,11 +6,14 @@ package org.glavo.arkivo.archive.rar.internal;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.internal.ByteArrayAccess;
+import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes;
+import org.glavo.arkivo.archive.rar.RarArkivoFileSystem;
 import org.glavo.arkivo.archive.rar.RarArkivoStreamingReader;
+import org.glavo.arkivo.archive.rar.RarLegacyCharsetDetector;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -21,7 +24,11 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
+import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.Charset;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
@@ -296,6 +303,10 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     /// The fallback timestamp used when a RAR entry omits all time metadata.
     private static final FileTime MISSING_TIME = FileTime.fromMillis(0L);
 
+    /// The UTF-8 detector used when no legacy RAR4 charset detector is configured.
+    private static final ArchiveMetadataCharsetDetector DEFAULT_LEGACY_CHARSET_DETECTOR =
+            ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_8);
+
     /// The backing archive input stream.
     private final InputStream source;
 
@@ -304,6 +315,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// The common archive read-limit tracker.
     private final ArkivoReadLimitTracker readLimits;
+
+    /// The detector used for RAR4 metadata without an encoded Unicode value.
+    private final ArchiveMetadataCharsetDetector legacyCharsetDetector;
 
     /// Whether bodies skipped during entry iteration must be integrity-checked.
     private final boolean validateSkippedBodies;
@@ -452,9 +466,14 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             ArchiveOptions options,
             boolean validateSkippedBodies
     ) {
+        ArchiveOptions checkedOptions = Objects.requireNonNull(options, "options");
         this.source = Objects.requireNonNull(source, "source");
         this.passwordProvider = passwordProvider;
-        this.readLimits = ArkivoReadLimitTracker.fromOptions(options);
+        this.readLimits = ArkivoReadLimitTracker.fromOptions(checkedOptions);
+        this.legacyCharsetDetector = checkedOptions.getOrDefault(
+                RarArkivoFileSystem.LEGACY_CHARSET_DETECTOR,
+                DEFAULT_LEGACY_CHARSET_DETECTOR
+        );
         this.validateSkippedBodies = validateSkippedBodies;
     }
 
@@ -1583,7 +1602,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         rar5ArchiveSolid = (archiveFlags & RAR5_MAIN_FLAG_SOLID) != 0L;
     }
     /// Parses a RAR file header block.
-    private static ParsedFileHeader parseFileHeader(BlockHeader block) throws IOException {
+    private ParsedFileHeader parseFileHeader(BlockHeader block) throws IOException {
         if (block.version() == RAR_VERSION_4) {
             return parseRar4FileHeader(block);
         }
@@ -1709,7 +1728,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     }
 
     /// Parses a RAR4 file header block.
-    private static ParsedFileHeader parseRar4FileHeader(BlockHeader block) throws IOException {
+    private ParsedFileHeader parseRar4FileHeader(BlockHeader block) throws IOException {
         HeaderReader reader = new HeaderReader(block.headerData(), block.fieldsOffset(), block.extraOffset());
         long lowPackedSize = reader.readUInt32("RAR4 packed size");
         long lowUnpackedSize = reader.readUInt32("RAR4 unpacked size");
@@ -1736,7 +1755,14 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         }
 
         byte[] nameBytes = reader.readBytes(nameLength, "RAR4 entry name");
-        String path = validatePath(decodeRar4Name(nameBytes, (block.flags() & RAR4_FILE_FLAG_UNICODE) != 0));
+        String path = validatePath(decodeRar4Name(
+                nameBytes,
+                (block.flags() & RAR4_FILE_FLAG_UNICODE) != 0,
+                rawHostOs,
+                extractionVersion,
+                (int) block.flags(),
+                fileAttributes
+        ));
         byte @Nullable [] salt = (block.flags() & RAR4_FILE_FLAG_SALT) != 0
                 ? reader.readBytes(Rar3Crypto.SALT_SIZE, "RAR4 file encryption salt")
                 : null;
@@ -1826,9 +1852,22 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     }
 
     /// Decodes a RAR4 name field.
-    private static String decodeRar4Name(byte[] nameBytes, boolean unicodeName) throws IOException {
+    private String decodeRar4Name(
+            byte[] nameBytes,
+            boolean unicodeName,
+            int rawHostOs,
+            int extractionVersion,
+            int headerFlags,
+            long fileAttributes
+    ) throws IOException {
         if (!unicodeName) {
-            return new String(nameBytes, StandardCharsets.UTF_8);
+            return decodeLegacyRar4Name(
+                    nameBytes,
+                    rawHostOs,
+                    extractionVersion,
+                    headerFlags,
+                    fileAttributes
+            );
         }
 
         int separatorIndex = -1;
@@ -1842,7 +1881,13 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             throw new IOException("Invalid RAR4 Unicode name");
         }
         if (separatorIndex + 1 == nameBytes.length) {
-            return new String(nameBytes, 0, separatorIndex, StandardCharsets.UTF_8);
+            return decodeLegacyRar4Name(
+                    Arrays.copyOf(nameBytes, separatorIndex),
+                    rawHostOs,
+                    extractionVersion,
+                    headerFlags,
+                    fileAttributes
+            );
         }
 
         int highByte = Byte.toUnsignedInt(nameBytes[separatorIndex + 1]);
@@ -1911,6 +1956,46 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             }
         }
         return builder.toString();
+    }
+
+    /// Decodes raw RAR4 entry-name bytes through the configured legacy charset detector.
+    private String decodeLegacyRar4Name(
+            byte[] nameBytes,
+            int rawHostOs,
+            int extractionVersion,
+            int headerFlags,
+            long fileAttributes
+    ) throws IOException {
+        @Nullable Charset detectedCharset;
+        if (legacyCharsetDetector instanceof RarLegacyCharsetDetector rarDetector) {
+            detectedCharset = rarDetector.detect(new RarLegacyCharsetDetector.Context(
+                    ByteBuffer.wrap(nameBytes),
+                    RarLegacyCharsetDetector.MetadataKind.ENTRY_NAME,
+                    rawHostOs,
+                    extractionVersion,
+                    headerFlags,
+                    fileAttributes
+            ));
+        } else {
+            detectedCharset = legacyCharsetDetector.detect(nameBytes);
+        }
+        return strictDecodeRar4Name(
+                nameBytes,
+                detectedCharset != null ? detectedCharset : StandardCharsets.UTF_8
+        );
+    }
+
+    /// Strictly decodes a complete RAR4 legacy name with the selected charset.
+    private static String strictDecodeRar4Name(byte[] nameBytes, Charset charset) throws IOException {
+        try {
+            return charset.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(nameBytes))
+                    .toString();
+        } catch (CharacterCodingException exception) {
+            throw new IOException("Failed to decode RAR4 legacy entry name", exception);
+        }
     }
 
     /// Normalizes a raw RAR4 host OS value to the public host OS value set.

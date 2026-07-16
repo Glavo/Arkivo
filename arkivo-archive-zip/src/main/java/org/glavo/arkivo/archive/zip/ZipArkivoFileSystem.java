@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.zip;
 
+import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.SeekableChannelSources;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
@@ -63,11 +64,11 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
             ArchiveOption.of("arkivo.zip", "splitSize", Long.class, ZipArkivoFileSystem::splitSizeOptionValue);
 
     /// The option for the detector used to select legacy entry-name and comment charsets while reading ZIP metadata.
-    public static final ArchiveOption<ZipLegacyCharsetDetector> LEGACY_CHARSET_DETECTOR =
+    public static final ArchiveOption<ArchiveMetadataCharsetDetector> LEGACY_CHARSET_DETECTOR =
             ArchiveOption.of(
                     "arkivo.zip",
                     "legacyCharsetDetector",
-                    ZipLegacyCharsetDetector.class,
+                    ArchiveMetadataCharsetDetector.class,
                     ZipArkivoFileSystem::legacyCharsetDetectorOptionValue
             );
 
@@ -287,18 +288,18 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
     }
 
     /// Converts a raw legacy charset detector option value.
-    private static ZipLegacyCharsetDetector legacyCharsetDetectorOptionValue(Object value) {
-        if (value instanceof ZipLegacyCharsetDetector detector) {
+    private static ArchiveMetadataCharsetDetector legacyCharsetDetectorOptionValue(Object value) {
+        if (value instanceof ArchiveMetadataCharsetDetector detector) {
             return detector;
         }
         if (value instanceof Charset charset) {
-            return ZipLegacyCharsetDetector.fixed(charset);
+            return ArchiveMetadataCharsetDetector.fixed(charset);
         }
         if (value instanceof String stringValue) {
-            return ZipLegacyCharsetDetector.fixed(Charset.forName(stringValue));
+            return ArchiveMetadataCharsetDetector.fixed(Charset.forName(stringValue));
         }
         throw new IllegalArgumentException(
-                "Expected ZipLegacyCharsetDetector, Charset, or String for key: "
+                "Expected ArchiveMetadataCharsetDetector, Charset, or String for key: "
                         + LEGACY_CHARSET_DETECTOR.key()
         );
     }

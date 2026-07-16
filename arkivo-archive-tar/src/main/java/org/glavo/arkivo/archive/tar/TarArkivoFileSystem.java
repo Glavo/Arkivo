@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.tar;
 
+import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.SeekableChannelSources;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
@@ -16,6 +17,7 @@ import org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
+import java.nio.charset.Charset;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
 import java.util.Objects;
@@ -47,6 +49,15 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
                     "compression",
                     compressionCodecType(),
                     TarArkivoFileSystem::compressionOptionValue
+            );
+
+    /// The option for the detector used to select charsets for TAR metadata without an authoritative encoding.
+    public static final ArchiveOption<ArchiveMetadataCharsetDetector> METADATA_CHARSET_DETECTOR =
+            ArchiveOption.of(
+                    "arkivo.tar",
+                    "metadataCharsetDetector",
+                    ArchiveMetadataCharsetDetector.class,
+                    TarArkivoFileSystem::metadataCharsetDetectorOptionValue
             );
 
     /// Creates a TAR archive file system base instance.
@@ -108,6 +119,23 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
         return TarArkivoFileSystemImpl.open(TarArkivoFileSystemProvider.instance(), source, options);
+    }
+
+    /// Converts a raw metadata charset detector option value.
+    private static ArchiveMetadataCharsetDetector metadataCharsetDetectorOptionValue(Object value) {
+        if (value instanceof ArchiveMetadataCharsetDetector detector) {
+            return detector;
+        }
+        if (value instanceof Charset charset) {
+            return ArchiveMetadataCharsetDetector.fixed(charset);
+        }
+        if (value instanceof String stringValue) {
+            return ArchiveMetadataCharsetDetector.fixed(Charset.forName(stringValue));
+        }
+        throw new IllegalArgumentException(
+                "Expected ArchiveMetadataCharsetDetector, Charset, or String for key: "
+                        + METADATA_CHARSET_DETECTOR.key()
+        );
     }
 
     /// Converts a raw compression option value.

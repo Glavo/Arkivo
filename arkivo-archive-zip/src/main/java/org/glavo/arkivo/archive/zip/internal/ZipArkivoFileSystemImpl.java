@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.zip.internal;
 
 
 
+import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
@@ -901,12 +902,25 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
 
                 String decodedPath;
                 try {
-                    decodedPath = decoder.decodePath(rawPath, flags, extraData);
+                    decodedPath = decoder.decodePath(
+                            rawPath,
+                            flags,
+                            extraData,
+                            ZipLegacyCharsetDetector.HeaderSource.CENTRAL_DIRECTORY,
+                            versionNeeded,
+                            versionMadeBy
+                    );
                 } catch (java.nio.charset.CharacterCodingException exception) {
                     throw new IOException("Failed to decode ZIP entry name", exception);
                 }
-                String decodedComment =
-                        decoder.decodeComment(rawComment.length > 0 ? rawComment : null, flags, extraData);
+                String decodedComment = decoder.decodeComment(
+                        rawComment.length > 0 ? rawComment : null,
+                        flags,
+                        extraData,
+                        ZipLegacyCharsetDetector.HeaderSource.CENTRAL_DIRECTORY,
+                        versionNeeded,
+                        versionMadeBy
+                );
                 readLimits.acceptEntry(decodedPath, uncompressedSize);
 
                 String key = entryKey(decodedPath);
@@ -1115,7 +1129,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Reads raw central directory entries together with their normalized keys.
     private static @Unmodifiable List<CentralDirectoryEntrySnapshot> centralDirectoryEntrySnapshots(
             ByteBuffer centralDirectory,
-            ZipLegacyCharsetDetector legacyCharsetDetector,
+            ArchiveMetadataCharsetDetector legacyCharsetDetector,
             ZipIndex index,
             SeekableByteChannel channel
     ) throws IOException {
@@ -1129,6 +1143,8 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 throw new IOException("Invalid ZIP central directory header");
             }
 
+            int versionMadeBy = Short.toUnsignedInt(buffer.getShort(offset + 4));
+            int versionNeeded = Short.toUnsignedInt(buffer.getShort(offset + 6));
             int flags = Short.toUnsignedInt(buffer.getShort(offset + 8));
             int nameLength = Short.toUnsignedInt(buffer.getShort(offset + 28));
             int extraLength = Short.toUnsignedInt(buffer.getShort(offset + 30));
@@ -1144,7 +1160,14 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             ZipExtraFields.validate(extraData);
             String decodedPath;
             try {
-                decodedPath = decoder.decodePath(rawPath, flags, extraData);
+                decodedPath = decoder.decodePath(
+                        rawPath,
+                        flags,
+                        extraData,
+                        ZipLegacyCharsetDetector.HeaderSource.CENTRAL_DIRECTORY,
+                        versionNeeded,
+                        versionMadeBy
+                );
             } catch (java.nio.charset.CharacterCodingException exception) {
                 throw new IOException("Failed to decode ZIP entry name", exception);
             }

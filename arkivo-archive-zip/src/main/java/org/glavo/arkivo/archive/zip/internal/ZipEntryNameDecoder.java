@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
+import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -33,30 +34,76 @@ public final class ZipEntryNameDecoder {
     private static final Charset CP437 = Charset.forName("IBM437");
 
     /// The detector used when no authoritative Unicode charset is available.
-    private final ZipLegacyCharsetDetector legacyCharsetDetector;
+    private final ArchiveMetadataCharsetDetector legacyCharsetDetector;
 
     /// Creates an entry name decoder.
-    public ZipEntryNameDecoder(ZipLegacyCharsetDetector legacyCharsetDetector) {
+    public ZipEntryNameDecoder(ArchiveMetadataCharsetDetector legacyCharsetDetector) {
         this.legacyCharsetDetector = Objects.requireNonNull(
                 legacyCharsetDetector,
                 "legacyCharsetDetector"
         );
     }
 
-    /// Decodes a raw ZIP entry path.
+    /// Decodes a raw ZIP entry path without additional header context.
     public String decodePath(byte[] rawPath, int generalPurposeFlags, byte[] extraData) throws IOException {
+        return decodePath(
+                rawPath,
+                generalPurposeFlags,
+                extraData,
+                ZipLegacyCharsetDetector.HeaderSource.UNKNOWN,
+                ZipLegacyCharsetDetector.UNKNOWN_HEADER_VALUE,
+                ZipLegacyCharsetDetector.UNKNOWN_HEADER_VALUE
+        );
+    }
+
+    /// Decodes a raw ZIP entry path with available header context.
+    public String decodePath(
+            byte[] rawPath,
+            int generalPurposeFlags,
+            byte[] extraData,
+            ZipLegacyCharsetDetector.HeaderSource headerSource,
+            int versionNeededToExtract,
+            int versionMadeBy
+    ) throws IOException {
         String unicodePath = decodeUnicodeExtraField(rawPath, extraData, UNICODE_PATH_EXTRA_FIELD_ID);
         if (unicodePath != null) {
             return unicodePath;
         }
-        return decodeFallback(rawPath, generalPurposeFlags);
+        return decodeFallback(
+                rawPath,
+                generalPurposeFlags,
+                extraData,
+                ZipLegacyCharsetDetector.MetadataKind.ENTRY_NAME,
+                headerSource,
+                versionNeededToExtract,
+                versionMadeBy
+        );
     }
 
-    /// Decodes a raw ZIP entry comment, or returns `null` when no comment is present.
+    /// Decodes a raw ZIP entry comment without additional header context, or returns `null` when none is present.
     public @Nullable String decodeComment(
             byte @Nullable [] rawComment,
             int generalPurposeFlags,
             byte[] extraData
+    ) throws IOException {
+        return decodeComment(
+                rawComment,
+                generalPurposeFlags,
+                extraData,
+                ZipLegacyCharsetDetector.HeaderSource.UNKNOWN,
+                ZipLegacyCharsetDetector.UNKNOWN_HEADER_VALUE,
+                ZipLegacyCharsetDetector.UNKNOWN_HEADER_VALUE
+        );
+    }
+
+    /// Decodes a raw ZIP entry comment with available header context, or returns `null` when none is present.
+    public @Nullable String decodeComment(
+            byte @Nullable [] rawComment,
+            int generalPurposeFlags,
+            byte[] extraData,
+            ZipLegacyCharsetDetector.HeaderSource headerSource,
+            int versionNeededToExtract,
+            int versionMadeBy
     ) throws IOException {
         if (rawComment == null || rawComment.length == 0) {
             return null;
@@ -68,7 +115,15 @@ public final class ZipEntryNameDecoder {
             if (unicodeComment != null) {
                 return unicodeComment;
             }
-            return decodeFallback(rawComment, generalPurposeFlags);
+            return decodeFallback(
+                    rawComment,
+                    generalPurposeFlags,
+                    extraData,
+                    ZipLegacyCharsetDetector.MetadataKind.ENTRY_COMMENT,
+                    headerSource,
+                    versionNeededToExtract,
+                    versionMadeBy
+            );
         } catch (CharacterCodingException exception) {
             throw new IOException("Failed to decode ZIP entry comment", exception);
         }
@@ -116,14 +171,33 @@ public final class ZipEntryNameDecoder {
     }
 
     /// Decodes raw bytes after authoritative Unicode metadata has been considered.
-    private String decodeFallback(byte[] rawValue, int generalPurposeFlags) throws IOException {
+    private String decodeFallback(
+            byte[] rawValue,
+            int generalPurposeFlags,
+            byte[] extraData,
+            ZipLegacyCharsetDetector.MetadataKind metadataKind,
+            ZipLegacyCharsetDetector.HeaderSource headerSource,
+            int versionNeededToExtract,
+            int versionMadeBy
+    ) throws IOException {
         if ((generalPurposeFlags & UTF_8_FLAG) != 0) {
             return strictDecode(rawValue, java.nio.charset.StandardCharsets.UTF_8);
         }
 
-        @Nullable Charset detectedCharset = legacyCharsetDetector.detect(
-                ByteBuffer.wrap(rawValue).asReadOnlyBuffer()
-        );
+        @Nullable Charset detectedCharset;
+        if (legacyCharsetDetector instanceof ZipLegacyCharsetDetector zipDetector) {
+            detectedCharset = zipDetector.detect(new ZipLegacyCharsetDetector.Context(
+                    ByteBuffer.wrap(rawValue),
+                    metadataKind,
+                    headerSource,
+                    generalPurposeFlags,
+                    versionNeededToExtract,
+                    versionMadeBy,
+                    ByteBuffer.wrap(extraData)
+            ));
+        } else {
+            detectedCharset = legacyCharsetDetector.detect(rawValue);
+        }
         return strictDecode(rawValue, detectedCharset != null ? detectedCharset : CP437);
     }
 
@@ -145,5 +219,4 @@ public final class ZipEntryNameDecoder {
                 .decode(ByteBuffer.wrap(value, offset, length))
                 .toString();
     }
-
 }

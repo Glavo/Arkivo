@@ -7,43 +7,44 @@ import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Tests legacy ZIP metadata charset detector factories and the functional contract.
+/// Tests the ZIP-specific legacy metadata charset detector contract.
 @NotNullByDefault
 public final class ZipLegacyCharsetDetectorTest {
-    /// Verifies that the standard detector selects the ZIP-standard CP437 charset.
+    /// Verifies that basic invocations supply an unknown ZIP context with a read-only byte view.
     @Test
-    public void standardDetector() throws Exception {
-        assertEquals(
-                Charset.forName("IBM437"),
-                ZipLegacyCharsetDetector.standard().detect(ByteBuffer.wrap(new byte[]{(byte) 0x81}))
-        );
-    }
-
-    /// Verifies that a fixed detector always returns its configured charset.
-    @Test
-    public void fixedDetector() throws Exception {
-        assertEquals(
-                StandardCharsets.UTF_8,
-                ZipLegacyCharsetDetector.fixed(StandardCharsets.UTF_8).detect(ByteBuffer.allocate(0))
-        );
-    }
-
-    /// Verifies that custom detectors can inspect a read-only byte view and report an unknown charset.
-    @Test
-    public void customDetector() throws Exception {
-        ZipLegacyCharsetDetector detector = bytes -> {
-            assertTrue(bytes.isReadOnly());
-            assertEquals(2, bytes.remaining());
+    public void basicInvocation() throws Exception {
+        ZipLegacyCharsetDetector detector = context -> {
+            assertTrue(context.bytes().isReadOnly());
+            assertEquals(2, context.bytes().remaining());
+            assertEquals(ZipLegacyCharsetDetector.MetadataKind.UNKNOWN, context.metadataKind());
+            assertEquals(ZipLegacyCharsetDetector.HeaderSource.UNKNOWN, context.headerSource());
             return null;
         };
 
         assertNull(detector.detect(ByteBuffer.wrap(new byte[]{1, 2}).asReadOnlyBuffer()));
+    }
+
+    /// Verifies that a central-directory context exposes creator and version fields without changing its buffers.
+    @Test
+    public void centralDirectoryContext() {
+        ZipLegacyCharsetDetector.Context context = new ZipLegacyCharsetDetector.Context(
+                ByteBuffer.wrap(new byte[]{1, 2}),
+                ZipLegacyCharsetDetector.MetadataKind.ENTRY_NAME,
+                ZipLegacyCharsetDetector.HeaderSource.CENTRAL_DIRECTORY,
+                0x0002,
+                20,
+                3 << Byte.SIZE | 63,
+                ByteBuffer.wrap(new byte[]{4, 5})
+        );
+
+        assertTrue(context.bytes().isReadOnly());
+        assertTrue(context.extraData().isReadOnly());
+        assertEquals(3, context.creatorSystem());
+        assertEquals(63, context.creatorVersion());
     }
 }

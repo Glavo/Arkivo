@@ -3,11 +3,14 @@
 
 package org.glavo.arkivo.archive.ar.internal;
 
+import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
+import org.glavo.arkivo.archive.ar.ArArkivoFileSystem;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingReader;
+import org.glavo.arkivo.archive.ar.ArMetadataCharsetDetector;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -15,7 +18,11 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.Charset;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
@@ -34,11 +41,18 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     /// The AR member header trailer.
     private static final byte @Unmodifiable [] MEMBER_TRAILER = new byte[]{'`', '\n'};
 
+    /// The UTF-8 detector used when no AR metadata charset detector is configured.
+    private static final ArchiveMetadataCharsetDetector DEFAULT_METADATA_CHARSET_DETECTOR =
+            ArchiveMetadataCharsetDetector.fixed(StandardCharsets.UTF_8);
+
     /// The backing archive input stream.
     private final InputStream source;
 
     /// The common archive read-limit tracker.
     private final ArkivoReadLimitTracker readLimits;
+
+    /// The detector used to select charsets for AR member names.
+    private final ArchiveMetadataCharsetDetector metadataCharsetDetector;
 
     /// Whether the global archive signature has been consumed.
     private boolean globalHeaderRead;
@@ -67,7 +81,12 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     /// Creates a streaming AR reader.
     public ArArkivoStreamingReaderImpl(InputStream source, ArchiveOptions options) {
         this.source = Objects.requireNonNull(source, "source");
-        this.readLimits = ArkivoReadLimitTracker.fromOptions(options);
+        ArchiveOptions checkedOptions = Objects.requireNonNull(options, "options");
+        this.readLimits = ArkivoReadLimitTracker.fromOptions(checkedOptions);
+        this.metadataCharsetDetector = checkedOptions.getOrDefault(
+                ArArkivoFileSystem.METADATA_CHARSET_DETECTOR,
+                DEFAULT_METADATA_CHARSET_DETECTOR
+        );
     }
 
     /// Advances to the next real archive member.
@@ -86,21 +105,24 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             }
 
             HeaderFields fields = parseHeader(header);
-            String identifier = fields.identifier();
-            if ("//".equals(identifier)) {
+            byte[] identifierBytes = fields.identifierBytes();
+            @Nullable String structuralIdentifier = asciiIdentifier(identifierBytes);
+            if ("//".equals(structuralIdentifier)) {
                 readLimits.acceptMetadata(fields.size(), null);
                 gnuNameTable = readBytes(fields.size(), "Unexpected end of AR GNU filename table");
                 skipPadding(fields.size());
                 continue;
             }
-            if ("/".equals(identifier) || "/SYM64/".equals(identifier) || isBsdSymbolTable(identifier)) {
+            if ("/".equals(structuralIdentifier)
+                    || "/SYM64/".equals(structuralIdentifier)
+                    || (structuralIdentifier != null && isBsdSymbolTable(structuralIdentifier))) {
                 readLimits.acceptMetadata(fields.size(), null);
                 skipBytes(fields.size());
                 skipPadding(fields.size());
                 continue;
             }
 
-            ResolvedName resolvedName = resolveName(identifier, fields.size());
+            ResolvedName resolvedName = resolveName(identifierBytes, structuralIdentifier, fields.size());
             if (isBsdSymbolTable(resolvedName.path())) {
                 readLimits.acceptMetadata(resolvedName.dataSize(), resolvedName.path());
                 skipBytes(resolvedName.dataSize());
@@ -112,7 +134,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             currentBodyOpened = false;
             ArEntryAttributes attributes = new ArEntryAttributes(
                     resolvedName.path(),
-                    identifier,
+                    resolvedName.identifier(),
                     fields.userId(),
                     fields.groupId(),
                     fields.mode(),
@@ -216,38 +238,86 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
 
     /// Parses fixed-width header fields.
     private static HeaderFields parseHeader(byte[] header) throws IOException {
-        String identifier = asciiField(header, 0, 16).trim();
+        byte[] identifierBytes = identifierField(header);
         long timestamp = parseDecimalField(header, 16, 12, "timestamp");
         long userId = parseDecimalField(header, 28, 6, "user id");
         long groupId = parseDecimalField(header, 34, 6, "group id");
         int mode = parseOctalIntField(header, 40, 8, "mode");
         long size = parseDecimalField(header, 48, 10, "size");
-        return new HeaderFields(identifier, timestamp, userId, groupId, mode, size);
+        return new HeaderFields(identifierBytes, timestamp, userId, groupId, mode, size);
+    }
+
+    /// Copies a fixed-width identifier without its right-padding spaces.
+    private static byte[] identifierField(byte[] header) {
+        int end = 16;
+        while (end > 0 && header[end - 1] == ' ') {
+            end--;
+        }
+        return Arrays.copyOf(header, end);
+    }
+
+    /// Returns an ASCII identifier, or `null` when the identifier contains non-ASCII bytes.
+    private static @Nullable String asciiIdentifier(byte[] identifierBytes) {
+        for (byte value : identifierBytes) {
+            if (value < 0) {
+                return null;
+            }
+        }
+        return new String(identifierBytes, StandardCharsets.US_ASCII);
     }
 
     /// Resolves the member path and data size from the raw AR identifier.
-    private ResolvedName resolveName(String identifier, long memberSize) throws IOException {
-        if (identifier.startsWith("#1/")) {
-            int nameLength = parsePositiveDecimal(identifier.substring(3), "BSD long name length");
+    private ResolvedName resolveName(
+            byte[] identifierBytes,
+            @Nullable String structuralIdentifier,
+            long memberSize
+    ) throws IOException {
+        if (structuralIdentifier != null && structuralIdentifier.startsWith("#1/")) {
+            int nameLength = parsePositiveDecimal(
+                    structuralIdentifier.substring(3),
+                    "BSD long name length"
+            );
             if (nameLength > memberSize) {
                 throw new IOException("AR BSD long name exceeds member size");
             }
             readLimits.acceptMetadata(nameLength, null);
-            String path = new String(
+            String path = decodeName(
                     readBytes(nameLength, "Unexpected end of AR BSD long name"),
-                    StandardCharsets.UTF_8
+                    ArMetadataCharsetDetector.Source.BSD_LONG_NAME,
+                    structuralIdentifier,
+                    memberSize
             );
-            return new ResolvedName(validatePath(path), memberSize - nameLength);
+            return new ResolvedName(
+                    validatePath(path),
+                    memberSize - nameLength,
+                    structuralIdentifier
+            );
         }
-        if (identifier.startsWith("/") && identifier.length() > 1) {
-            return new ResolvedName(resolveGnuLongName(identifier.substring(1)), memberSize);
+        if (structuralIdentifier != null
+                && structuralIdentifier.startsWith("/")
+                && structuralIdentifier.length() > 1) {
+            return new ResolvedName(
+                    resolveGnuLongName(structuralIdentifier.substring(1), structuralIdentifier, memberSize),
+                    memberSize,
+                    structuralIdentifier
+            );
         }
+        String identifier = decodeName(
+                identifierBytes,
+                ArMetadataCharsetDetector.Source.HEADER_IDENTIFIER,
+                null,
+                memberSize
+        );
         String path = identifier.endsWith("/") ? identifier.substring(0, identifier.length() - 1) : identifier;
-        return new ResolvedName(validatePath(path), memberSize);
+        return new ResolvedName(validatePath(path), memberSize, identifier);
     }
 
     /// Resolves a GNU long filename table reference.
-    private String resolveGnuLongName(String offsetText) throws IOException {
+    private String resolveGnuLongName(
+            String offsetText,
+            String headerIdentifier,
+            long memberSize
+    ) throws IOException {
         int offset = parseNonNegativeDecimal(offsetText, "GNU long name offset");
         byte @Nullable @Unmodifiable [] table = gnuNameTable;
         if (table == null) {
@@ -264,7 +334,12 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
         if (nameEnd > offset && table[nameEnd - 1] == '/') {
             nameEnd--;
         }
-        return validatePath(new String(table, offset, nameEnd - offset, StandardCharsets.UTF_8));
+        return validatePath(decodeName(
+                Arrays.copyOfRange(table, offset, nameEnd),
+                ArMetadataCharsetDetector.Source.GNU_NAME_TABLE,
+                headerIdentifier,
+                memberSize
+        ));
     }
 
     /// Converts an AR timestamp from epoch seconds to a file time.
@@ -273,6 +348,44 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
             return FileTime.fromMillis(Math.multiplyExact(timestamp, 1000L));
         } catch (ArithmeticException exception) {
             throw new IOException("AR timestamp is out of range", exception);
+        }
+    }
+
+    /// Decodes raw AR member-name bytes through the configured basic or AR-specific detector.
+    private String decodeName(
+            byte[] nameBytes,
+            ArMetadataCharsetDetector.Source nameSource,
+            @Nullable String headerIdentifier,
+            long memberSize
+    ) throws IOException {
+        @Nullable Charset detectedCharset;
+        if (metadataCharsetDetector instanceof ArMetadataCharsetDetector arDetector) {
+            detectedCharset = arDetector.detect(new ArMetadataCharsetDetector.Context(
+                    ByteBuffer.wrap(nameBytes),
+                    ArMetadataCharsetDetector.MetadataKind.ENTRY_NAME,
+                    nameSource,
+                    headerIdentifier,
+                    memberSize
+            ));
+        } else {
+            detectedCharset = metadataCharsetDetector.detect(nameBytes);
+        }
+        return strictDecodeName(
+                nameBytes,
+                detectedCharset != null ? detectedCharset : StandardCharsets.UTF_8
+        );
+    }
+
+    /// Strictly decodes a complete AR member name with the selected charset.
+    private static String strictDecodeName(byte[] nameBytes, Charset charset) throws IOException {
+        try {
+            return charset.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(nameBytes))
+                    .toString();
+        } catch (CharacterCodingException exception) {
+            throw new IOException("Failed to decode AR member name", exception);
         }
     }
 
@@ -406,7 +519,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
 
     /// Stores parsed fixed-width member header fields.
     ///
-    /// @param identifier the raw trimmed member identifier
+    /// @param identifierBytes the raw member identifier without right-padding spaces
     /// @param timestamp the modification time in epoch seconds
     /// @param userId the numeric user identifier
     /// @param groupId the numeric group identifier
@@ -414,7 +527,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     /// @param size the complete stored member size
     @NotNullByDefault
     private record HeaderFields(
-            String identifier,
+            byte @Unmodifiable [] identifierBytes,
             long timestamp,
             long userId,
             long groupId,
@@ -423,7 +536,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     ) {
         /// Creates parsed AR member header fields.
         private HeaderFields {
-            Objects.requireNonNull(identifier, "identifier");
+            identifierBytes = Objects.requireNonNull(identifierBytes, "identifierBytes").clone();
             if (timestamp < 0 || userId < 0 || groupId < 0 || mode < 0 || size < 0) {
                 throw new IllegalArgumentException("AR header numeric fields must not be negative");
             }
@@ -434,11 +547,13 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     ///
     /// @param path the decoded safe member path
     /// @param dataSize the visible member data size after long-name metadata
+    /// @param identifier the decoded or structural header identifier exposed by entry attributes
     @NotNullByDefault
-    private record ResolvedName(String path, long dataSize) {
+    private record ResolvedName(String path, long dataSize, String identifier) {
         /// Creates a resolved member name.
         private ResolvedName {
             Objects.requireNonNull(path, "path");
+            Objects.requireNonNull(identifier, "identifier");
             if (dataSize < 0) {
                 throw new IllegalArgumentException("dataSize must not be negative");
             }

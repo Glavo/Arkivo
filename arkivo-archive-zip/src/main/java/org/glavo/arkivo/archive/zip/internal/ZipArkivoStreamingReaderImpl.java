@@ -13,6 +13,7 @@ import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 
 
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
+import org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingReader;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -277,7 +278,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 || headerUncompressedSize == UINT32_MAX
                 || hasZip64ExtraField(extraData);
 
-        String path = decodePath(rawName, flags, extraData);
+        String path = decodePath(rawName, flags, extraData, versionNeededToExtract);
         LocalEntry entry = new LocalEntry(
                 path,
                 rawName,
@@ -689,10 +690,22 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     }
 
     /// Decodes an entry path.
-    private String decodePath(byte[] rawName, int flags, byte[] extraData) throws IOException {
+    private String decodePath(
+            byte[] rawName,
+            int flags,
+            byte[] extraData,
+            int versionNeededToExtract
+    ) throws IOException {
         try {
             String path = new ZipEntryNameDecoder(config.legacyCharsetDetector())
-                    .decodePath(rawName, flags, extraData);
+                    .decodePath(
+                            rawName,
+                            flags,
+                            extraData,
+                            ZipLegacyCharsetDetector.HeaderSource.LOCAL_FILE_HEADER,
+                            versionNeededToExtract,
+                            ZipLegacyCharsetDetector.UNKNOWN_HEADER_VALUE
+                    );
             requireValidEntryPath(path);
             return path;
         } catch (java.nio.charset.CharacterCodingException exception) {

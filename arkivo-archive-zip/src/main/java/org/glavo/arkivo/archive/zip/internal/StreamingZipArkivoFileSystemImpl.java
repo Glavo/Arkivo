@@ -27,6 +27,7 @@ import org.glavo.arkivo.archive.internal.StagedSeekableByteChannel;
 
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
+import org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
@@ -4594,7 +4595,14 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     entryNameKey(entry.entryName),
                     entry.rawName,
                     entry.entryName,
-                    decoder.decodeComment(rawComment, entry.flags, centralDirectoryExtraData),
+                    decoder.decodeComment(
+                            rawComment,
+                            entry.flags,
+                            centralDirectoryExtraData,
+                            ZipLegacyCharsetDetector.HeaderSource.CENTRAL_DIRECTORY,
+                            entry.versionNeeded,
+                            entry.versionMadeBy
+                    ),
                     entry.compressedSize,
                     entry.uncompressedSize,
                     entry.crc32,
@@ -4658,13 +4666,27 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             );
             Zip64Values zip64 = Zip64Values.read(extraData, uncompressedSize, compressedSize, localHeaderOffset);
             ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(config.legacyCharsetDetector());
-            String decodedPath = decoder.decodePath(rawPath, flags, extraData);
+            String decodedPath = decoder.decodePath(
+                    rawPath,
+                    flags,
+                    extraData,
+                    ZipLegacyCharsetDetector.HeaderSource.CENTRAL_DIRECTORY,
+                    versionNeeded,
+                    versionMadeBy
+            );
             byte @Nullable [] rawComment = rawCommentBytes.length > 0 ? rawCommentBytes : null;
             return new EntryAttributes(
                     snapshot.entryName(),
                     rawPath,
                     decodedPath,
-                    decoder.decodeComment(rawComment, flags, extraData),
+                    decoder.decodeComment(
+                            rawComment,
+                            flags,
+                            extraData,
+                            ZipLegacyCharsetDetector.HeaderSource.CENTRAL_DIRECTORY,
+                            versionNeeded,
+                            versionMadeBy
+                    ),
                     zip64.compressedSize,
                     zip64.uncompressedSize,
                     crc32,

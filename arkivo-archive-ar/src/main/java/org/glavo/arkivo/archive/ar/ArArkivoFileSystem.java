@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.ar;
 
+import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
+import org.glavo.arkivo.archive.ArchiveOption;
 import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.SeekableChannelSources;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
@@ -13,6 +15,7 @@ import org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
+import java.nio.charset.Charset;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
 import java.util.Objects;
@@ -31,6 +34,15 @@ import java.util.Objects;
 /// path to replace. A fixed `ArkivoCommitTarget.writeTo(Path)` publishes a derived archive without mutating the source.
 @NotNullByDefault
 public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits ArArkivoFileSystemImpl {
+    /// The option for the detector used to select charsets for AR member names.
+    public static final ArchiveOption<ArchiveMetadataCharsetDetector> METADATA_CHARSET_DETECTOR =
+            ArchiveOption.of(
+                    "arkivo.ar",
+                    "metadataCharsetDetector",
+                    ArchiveMetadataCharsetDetector.class,
+                    ArArkivoFileSystem::metadataCharsetDetectorOptionValue
+            );
+
     /// Creates an AR archive file system base instance.
     protected ArArkivoFileSystem(ArkivoFileSystemThreadSafety threadSafety) {
         super(threadSafety);
@@ -90,5 +102,22 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
         return ArArkivoFileSystemImpl.open(ArArkivoFileSystemProvider.instance(), source, options);
+    }
+
+    /// Converts a raw metadata charset detector option value.
+    private static ArchiveMetadataCharsetDetector metadataCharsetDetectorOptionValue(Object value) {
+        if (value instanceof ArchiveMetadataCharsetDetector detector) {
+            return detector;
+        }
+        if (value instanceof Charset charset) {
+            return ArchiveMetadataCharsetDetector.fixed(charset);
+        }
+        if (value instanceof String stringValue) {
+            return ArchiveMetadataCharsetDetector.fixed(Charset.forName(stringValue));
+        }
+        throw new IllegalArgumentException(
+                "Expected ArchiveMetadataCharsetDetector, Charset, or String for key: "
+                        + METADATA_CHARSET_DETECTOR.key()
+        );
     }
 }

@@ -21,6 +21,7 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.DirectoryStream;
@@ -1056,6 +1057,36 @@ public final class ArArkivoStreamingReaderTest {
         }
     }
 
+    /// Verifies that a raw short identifier receives fixed-header name context.
+    @Test
+    public void detectsShortIdentifierCharset() throws IOException {
+        Charset gb18030 = Charset.forName("GB18030");
+        String path = "短名称.txt";
+        byte[] identifier = (path + "/").getBytes(gb18030);
+        byte[] archive = archiveWithRawIdentifier(identifier, new byte[0]);
+        ArMetadataCharsetDetector detector = context -> {
+            assertEquals(ArMetadataCharsetDetector.MetadataKind.ENTRY_NAME, context.metadataKind());
+            assertEquals(ArMetadataCharsetDetector.Source.HEADER_IDENTIFIER, context.source());
+            assertNull(context.headerIdentifier());
+            assertEquals(0L, context.memberSize());
+            assertEquals(true, context.bytes().isReadOnly());
+            return gb18030;
+        };
+
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                ArchiveOptions.fromEnvironment(Map.of(
+                        ArArkivoFileSystem.METADATA_CHARSET_DETECTOR.key(),
+                        detector
+                ))
+        )) {
+            assertEquals(true, reader.next());
+            ArArkivoEntryAttributes attributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            assertEquals(path, attributes.path());
+            assertEquals(path + "/", attributes.identifier());
+        }
+    }
+
     /// Verifies that GNU filename tables and symbol tables are handled.
     @Test
     public void readsGnuLongNamesAndSkipsSpecialMembers() throws IOException {
@@ -1109,6 +1140,60 @@ public final class ArArkivoStreamingReaderTest {
                 assertArrayEquals(content, input.readAllBytes());
             }
             assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that BSD and GNU long names expose their structural header identifiers to a rich detector.
+    @Test
+    public void detectsExtendedNameCharsets() throws IOException {
+        Charset gb18030 = Charset.forName("GB18030");
+        String bsdPath = "BSD长名称.txt";
+        byte[] bsdPathBytes = bsdPath.getBytes(gb18030);
+        byte[] bsdContent = "body".getBytes(StandardCharsets.UTF_8);
+        byte[] bsdBody = new byte[bsdPathBytes.length + bsdContent.length];
+        System.arraycopy(bsdPathBytes, 0, bsdBody, 0, bsdPathBytes.length);
+        System.arraycopy(bsdContent, 0, bsdBody, bsdPathBytes.length, bsdContent.length);
+        String gnuPath = "GNU长名称.bin";
+        byte[] gnuTable = new byte[gnuPath.getBytes(gb18030).length + 2];
+        byte[] gnuPathBytes = gnuPath.getBytes(gb18030);
+        System.arraycopy(gnuPathBytes, 0, gnuTable, 0, gnuPathBytes.length);
+        gnuTable[gnuPathBytes.length] = '/';
+        gnuTable[gnuPathBytes.length + 1] = '\n';
+        byte[] archive = archive(
+                member("#1/" + bsdPathBytes.length, 20, 10, 11, 0100644, bsdBody),
+                member("//", 0, 0, 0, 0, gnuTable),
+                member("/0", 21, 12, 13, 0100644, new byte[0])
+        );
+        int[] calls = new int[2];
+        ArMetadataCharsetDetector detector = context -> {
+            assertEquals(ArMetadataCharsetDetector.MetadataKind.ENTRY_NAME, context.metadataKind());
+            if (context.source() == ArMetadataCharsetDetector.Source.BSD_LONG_NAME) {
+                calls[0]++;
+                assertEquals("#1/" + bsdPathBytes.length, context.headerIdentifier());
+                assertEquals((long) bsdBody.length, context.memberSize());
+            } else if (context.source() == ArMetadataCharsetDetector.Source.GNU_NAME_TABLE) {
+                calls[1]++;
+                assertEquals("/0", context.headerIdentifier());
+                assertEquals(0L, context.memberSize());
+            } else {
+                throw new AssertionError("Unexpected AR name source: " + context.source());
+            }
+            return gb18030;
+        };
+
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
+                new ByteArrayInputStream(archive),
+                ArchiveOptions.fromEnvironment(Map.of(
+                        ArArkivoFileSystem.METADATA_CHARSET_DETECTOR.key(),
+                        detector
+                ))
+        )) {
+            assertEquals(true, reader.next());
+            assertEquals(bsdPath, reader.readAttributes(ArArkivoEntryAttributes.class).path());
+            assertEquals(true, reader.next());
+            assertEquals(gnuPath, reader.readAttributes(ArArkivoEntryAttributes.class).path());
+            assertEquals(1, calls[0]);
+            assertEquals(1, calls[1]);
         }
     }
 
@@ -1232,6 +1317,31 @@ public final class ArArkivoStreamingReaderTest {
             if ((member.body().length & 1) != 0) {
                 output.write('\n');
             }
+        }
+        return output.toByteArray();
+    }
+
+    /// Creates one AR archive containing a member with caller-supplied raw identifier bytes.
+    private static byte[] archiveWithRawIdentifier(byte[] identifier, byte[] body) throws IOException {
+        if (identifier.length > 16) {
+            throw new IllegalArgumentException("identifier is too long");
+        }
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        output.write("!<arch>\n".getBytes(StandardCharsets.US_ASCII));
+        output.write(identifier);
+        for (int index = identifier.length; index < 16; index++) {
+            output.write(' ');
+        }
+        writeField(output, "0", 12);
+        writeField(output, "0", 6);
+        writeField(output, "0", 6);
+        writeField(output, Integer.toOctalString(0100644), 8);
+        writeField(output, Integer.toString(body.length), 10);
+        output.write('`');
+        output.write('\n');
+        output.write(body);
+        if ((body.length & 1) != 0) {
+            output.write('\n');
         }
         return output.toByteArray();
     }

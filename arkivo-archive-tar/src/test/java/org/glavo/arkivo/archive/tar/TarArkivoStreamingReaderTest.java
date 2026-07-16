@@ -22,6 +22,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.DirectoryStream;
@@ -1117,6 +1118,103 @@ public final class TarArkivoStreamingReaderTest {
         }
     }
 
+    /// Verifies that a TAR-specific detector receives fixed-header context for an ambiguous entry path.
+    @Test
+    public void detectsFixedHeaderMetadataCharset() throws IOException {
+        Charset gb18030 = Charset.forName("GB18030");
+        String path = "目录.txt";
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeRawPathHeader(output, path.getBytes(gb18030));
+        output.write(new byte[1024]);
+        TarMetadataCharsetDetector detector = context -> {
+            assertEquals(TarMetadataCharsetDetector.MetadataKind.ENTRY_NAME, context.metadataKind());
+            assertEquals(TarMetadataCharsetDetector.Source.HEADER, context.source());
+            assertEquals(TarMetadataCharsetDetector.HeaderDialect.USTAR, context.headerDialect());
+            assertEquals((int) '0', context.typeFlag());
+            assertNull(context.paxKey());
+            assertEquals(true, context.bytes().isReadOnly());
+            return gb18030;
+        };
+
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
+                new ByteArrayInputStream(output.toByteArray()),
+                ArchiveOptions.fromEnvironment(Map.of(
+                        TarArkivoFileSystem.METADATA_CHARSET_DETECTOR.key(),
+                        detector
+                ))
+        )) {
+            assertEquals(true, reader.next());
+            assertEquals(path, reader.readAttributes(TarArkivoEntryAttributes.class).path());
+            assertEquals(false, reader.next());
+        }
+    }
+
+    /// Verifies that binary PAX path values receive PAX-specific context and can select a legacy charset.
+    @Test
+    public void detectsBinaryPaxMetadataCharset() throws IOException {
+        Charset gb18030 = Charset.forName("GB18030");
+        String path = "二进制目录.txt";
+        ByteArrayOutputStream paxBody = new ByteArrayOutputStream();
+        paxBody.write(paxRecord("hdrcharset", "BINARY"));
+        paxBody.write(paxRecord("path", path.getBytes(gb18030)));
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writeMetadataEntry(output, "PaxHeaders/entry", 'x', paxBody.toByteArray());
+        writeRawPathHeader(output, "short-name".getBytes(StandardCharsets.UTF_8));
+        output.write(new byte[1024]);
+        int[] paxDetectorCalls = new int[1];
+        TarMetadataCharsetDetector detector = context -> {
+            if (context.source() == TarMetadataCharsetDetector.Source.PAX_EXTENDED_HEADER) {
+                paxDetectorCalls[0]++;
+                assertEquals(TarMetadataCharsetDetector.MetadataKind.ENTRY_NAME, context.metadataKind());
+                assertEquals("path", context.paxKey());
+                assertEquals((int) 'x', context.typeFlag());
+                return gb18030;
+            }
+            return StandardCharsets.UTF_8;
+        };
+
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
+                new ByteArrayInputStream(output.toByteArray()),
+                ArchiveOptions.fromEnvironment(Map.of(
+                        TarArkivoFileSystem.METADATA_CHARSET_DETECTOR.key(),
+                        detector
+                ))
+        )) {
+            assertEquals(true, reader.next());
+            assertEquals(path, reader.readAttributes(TarArkivoEntryAttributes.class).path());
+            assertEquals(1, paxDetectorCalls[0]);
+        }
+    }
+
+    /// Verifies that ordinary PAX UTF-8 values bypass the metadata charset detector.
+    @Test
+    public void ordinaryPaxUtf8BypassesDetector() throws IOException {
+        String path = "标准目录.txt";
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        writePaxHeader(output, Map.of("path", path));
+        writeRawPathHeader(output, "short-name".getBytes(StandardCharsets.UTF_8));
+        output.write(new byte[1024]);
+        int[] paxDetectorCalls = new int[1];
+        TarMetadataCharsetDetector detector = context -> {
+            if (context.source() == TarMetadataCharsetDetector.Source.PAX_EXTENDED_HEADER) {
+                paxDetectorCalls[0]++;
+            }
+            return StandardCharsets.UTF_8;
+        };
+
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
+                new ByteArrayInputStream(output.toByteArray()),
+                ArchiveOptions.fromEnvironment(Map.of(
+                        TarArkivoFileSystem.METADATA_CHARSET_DETECTOR.key(),
+                        detector
+                ))
+        )) {
+            assertEquals(true, reader.next());
+            assertEquals(path, reader.readAttributes(TarArkivoEntryAttributes.class).path());
+            assertEquals(0, paxDetectorCalls[0]);
+        }
+    }
+
     /// Verifies PAX bodies are rejected before their variable metadata bytes are buffered.
     @Test
     public void enforcesMetadataLimitBeforePaxBodyAllocation() throws IOException {
@@ -1684,17 +1782,58 @@ public final class TarArkivoStreamingReaderTest {
 
     /// Returns one encoded PAX key-value record.
     private static byte[] paxRecord(String key, String value) {
-        String payload = key + "=" + value + "\n";
-        byte[] payloadBytes = payload.getBytes(StandardCharsets.UTF_8);
+        return paxRecord(key, value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /// Returns one encoded PAX key-value record with raw value bytes.
+    private static byte[] paxRecord(String key, byte[] value) {
+        byte[] prefix = (key + "=").getBytes(StandardCharsets.UTF_8);
+        int payloadLength = prefix.length + value.length + 1;
         int digits = 1;
         while (true) {
-            int length = digits + 1 + payloadBytes.length;
+            int length = digits + 1 + payloadLength;
             int actualDigits = Integer.toString(length).length();
             if (actualDigits == digits) {
-                return (length + " " + payload).getBytes(StandardCharsets.UTF_8);
+                byte[] recordPrefix = (length + " ").getBytes(StandardCharsets.US_ASCII);
+                byte[] result = new byte[length];
+                int offset = 0;
+                System.arraycopy(recordPrefix, 0, result, offset, recordPrefix.length);
+                offset += recordPrefix.length;
+                System.arraycopy(prefix, 0, result, offset, prefix.length);
+                offset += prefix.length;
+                System.arraycopy(value, 0, result, offset, value.length);
+                result[result.length - 1] = '\n';
+                return result;
             }
             digits = actualDigits;
         }
+    }
+
+    /// Writes one empty regular-file header whose path field contains caller-supplied bytes.
+    private static void writeRawPathHeader(ByteArrayOutputStream output, byte[] pathBytes) throws IOException {
+        if (pathBytes.length > 100) {
+            throw new IllegalArgumentException("pathBytes is too long");
+        }
+        byte[] header = new byte[512];
+        System.arraycopy(pathBytes, 0, header, 0, pathBytes.length);
+        writeOctal(header, 100, 8, 0644);
+        writeOctal(header, 108, 8, 1000);
+        writeOctal(header, 116, 8, 1000);
+        writeOctal(header, 124, 12, 0);
+        writeOctal(header, 136, 12, 1_893_456_000);
+        for (int index = 148; index < 156; index++) {
+            header[index] = ' ';
+        }
+        header[156] = '0';
+        writeString(header, 257, 6, "ustar");
+        writeRawString(header, 263, 2, "00");
+
+        int checksum = 0;
+        for (byte value : header) {
+            checksum += Byte.toUnsignedInt(value);
+        }
+        writeChecksum(header, checksum);
+        output.write(header);
     }
 
     /// Writes one TAR header.
