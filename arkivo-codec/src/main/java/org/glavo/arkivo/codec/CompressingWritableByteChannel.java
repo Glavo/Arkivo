@@ -14,7 +14,7 @@ import java.util.Objects;
 @NotNullByDefault
 public interface CompressingWritableByteChannel extends WritableByteChannel {
     /// Processes all remaining source bytes and applies the requested frame directive.
-    default CodecResult encode(ByteBuffer source, EncodeDirective directive) throws IOException {
+    default CodecResult encode(ByteBuffer source, Directive directive) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(directive, "directive");
         long inputBefore = inputBytes();
@@ -25,15 +25,15 @@ public interface CompressingWritableByteChannel extends WritableByteChannel {
             }
         }
 
-        CodecStatus status;
-        if (directive == EncodeDirective.FLUSH) {
+        CodecResult.Status status;
+        if (directive == Directive.FLUSH) {
             flush();
-            status = CodecStatus.FLUSHED;
-        } else if (directive == EncodeDirective.END_FRAME) {
+            status = CodecResult.Status.FLUSHED;
+        } else if (directive == Directive.END_FRAME) {
             finishFrame();
-            status = CodecStatus.FRAME_FINISHED;
+            status = CodecResult.Status.FRAME_FINISHED;
         } else {
-            status = CodecStatus.ACTIVE;
+            status = CodecResult.Status.ACTIVE;
         }
         return new CodecResult(inputBytes() - inputBefore, outputBytes() - outputBefore, status);
     }
@@ -66,4 +66,19 @@ public interface CompressingWritableByteChannel extends WritableByteChannel {
     /// Finishes this encoder and retries incomplete owned-target closure when necessary.
     @Override
     void close() throws IOException;
+
+    /// Selects how an incremental encoder handles input supplied by one operation.
+    @NotNullByDefault
+    enum Directive {
+        /// Consumes input while keeping codec state available for later input.
+        CONTINUE,
+
+        /// Consumes input and flushes pending output without ending the frame.
+        FLUSH,
+
+        /// Consumes input and finishes the current frame.
+        ///
+        /// Multi-frame encoders remain open; other encoders release their resources.
+        END_FRAME
+    }
 }

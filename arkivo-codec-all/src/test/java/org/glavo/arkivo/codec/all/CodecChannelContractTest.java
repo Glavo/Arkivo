@@ -6,7 +6,6 @@ package org.glavo.arkivo.codec.all;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecTransferResult;
 import org.glavo.arkivo.codec.CodecResult;
-import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
@@ -15,12 +14,10 @@ import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.EncodeDirective;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -145,11 +142,11 @@ final class CodecChannelContractTest {
                 ByteBuffer firstSource = ByteBuffer.allocateDirect(first.length).put(first).flip();
                 int beforeFlush = compressedBytes.size();
                 long outputBeforeFlush = encoder.outputBytes();
-                CodecResult flushed = encoder.encode(firstSource, EncodeDirective.FLUSH);
+                CodecResult flushed = encoder.encode(firstSource, CompressingWritableByteChannel.Directive.FLUSH);
                 int flushedSize = compressedBytes.size();
 
                 assertFalse(firstSource.hasRemaining(), codec.format().name());
-                assertEquals(CodecStatus.FLUSHED, flushed.status(), codec.format().name());
+                assertEquals(CodecResult.Status.FLUSHED, flushed.status(), codec.format().name());
                 assertEquals(first.length, flushed.inputBytes(), codec.format().name());
                 assertEquals(flushedSize - beforeFlush, flushed.outputBytes(), codec.format().name());
                 assertEquals(outputBeforeFlush + flushed.outputBytes(), encoder.outputBytes(), codec.format().name());
@@ -165,8 +162,11 @@ final class CodecChannelContractTest {
                 );
 
                 int beforeRepeatedFlush = compressedBytes.size();
-                CodecResult repeatedFlush = encoder.encode(ByteBuffer.allocateDirect(0), EncodeDirective.FLUSH);
-                assertEquals(CodecStatus.FLUSHED, repeatedFlush.status(), codec.format().name());
+                CodecResult repeatedFlush = encoder.encode(
+                        ByteBuffer.allocateDirect(0),
+                        CompressingWritableByteChannel.Directive.FLUSH
+                );
+                assertEquals(CodecResult.Status.FLUSHED, repeatedFlush.status(), codec.format().name());
                 assertEquals(0L, repeatedFlush.inputBytes(), codec.format().name());
                 assertEquals(
                         compressedBytes.size() - beforeRepeatedFlush,
@@ -176,14 +176,20 @@ final class CodecChannelContractTest {
                 assertTrue(encoder.isOpen(), codec.format().name());
 
                 int beforeContinue = compressedBytes.size();
-                CodecResult continued = encoder.encode(ByteBuffer.wrap(second), EncodeDirective.CONTINUE);
-                assertEquals(CodecStatus.ACTIVE, continued.status(), codec.format().name());
+                CodecResult continued = encoder.encode(
+                        ByteBuffer.wrap(second),
+                        CompressingWritableByteChannel.Directive.CONTINUE
+                );
+                assertEquals(CodecResult.Status.ACTIVE, continued.status(), codec.format().name());
                 assertEquals(second.length, continued.inputBytes(), codec.format().name());
                 assertEquals(compressedBytes.size() - beforeContinue, continued.outputBytes(), codec.format().name());
 
                 int beforeFinish = compressedBytes.size();
-                CodecResult finished = encoder.encode(ByteBuffer.allocate(0), EncodeDirective.END_FRAME);
-                assertEquals(CodecStatus.FRAME_FINISHED, finished.status(), codec.format().name());
+                CodecResult finished = encoder.encode(
+                        ByteBuffer.allocate(0),
+                        CompressingWritableByteChannel.Directive.END_FRAME
+                );
+                assertEquals(CodecResult.Status.FRAME_FINISHED, finished.status(), codec.format().name());
                 assertEquals(0L, finished.inputBytes(), codec.format().name());
                 assertEquals(compressedBytes.size() - beforeFinish, finished.outputBytes(), codec.format().name());
                 assertEquals(first.length + second.length, encoder.inputBytes(), codec.format().name());
@@ -236,18 +242,24 @@ final class CodecChannelContractTest {
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
             WritableByteChannel target = Channels.newChannel(compressedBytes);
             CompressingWritableByteChannel encoder = codec.openEncoder(target);
-            CodecResult firstResult = encoder.encode(ByteBuffer.wrap(first), EncodeDirective.END_FRAME);
+            CodecResult firstResult = encoder.encode(
+                    ByteBuffer.wrap(first),
+                    CompressingWritableByteChannel.Directive.END_FRAME
+            );
             int firstFrameSize = compressedBytes.size();
 
-            assertEquals(CodecStatus.FRAME_FINISHED, firstResult.status(), codec.format().name());
+            assertEquals(CodecResult.Status.FRAME_FINISHED, firstResult.status(), codec.format().name());
             assertTrue(encoder.isOpen(), codec.format().name());
             assertEquals(first.length, encoder.inputBytes(), codec.format().name());
             encoder.flush();
             assertEquals(firstFrameSize, compressedBytes.size(), codec.format().name());
 
-            CodecResult secondResult = encoder.encode(ByteBuffer.wrap(second), EncodeDirective.END_FRAME);
+            CodecResult secondResult = encoder.encode(
+                    ByteBuffer.wrap(second),
+                    CompressingWritableByteChannel.Directive.END_FRAME
+            );
             int completeSize = compressedBytes.size();
-            assertEquals(CodecStatus.FRAME_FINISHED, secondResult.status(), codec.format().name());
+            assertEquals(CodecResult.Status.FRAME_FINISHED, secondResult.status(), codec.format().name());
             assertTrue(encoder.isOpen(), codec.format().name());
             assertEquals(first.length + second.length, encoder.inputBytes(), codec.format().name());
             assertEquals(completeSize, encoder.outputBytes(), codec.format().name());
@@ -296,9 +308,9 @@ final class CodecChannelContractTest {
 
                 CodecResult finished = encoder.encode(
                         ByteBuffer.wrap(content),
-                        EncodeDirective.END_FRAME
+                        CompressingWritableByteChannel.Directive.END_FRAME
                 );
-                assertEquals(CodecStatus.FRAME_FINISHED, finished.status(), codec.format().name());
+                assertEquals(CodecResult.Status.FRAME_FINISHED, finished.status(), codec.format().name());
                 int completeSize = compressed.size();
                 encoder.finish();
                 assertEquals(completeSize, compressed.size(), codec.format().name());
@@ -309,31 +321,34 @@ final class CodecChannelContractTest {
             )) {
                 CodecResult empty = decoder.decode(
                         ByteBuffer.allocate(3),
-                        DecodeDirective.STOP_AT_FRAME
+                        DecompressingReadableByteChannel.Directive.STOP_AT_FRAME
                 );
-                assertEquals(CodecStatus.FRAME_FINISHED, empty.status(), codec.format().name());
+                assertEquals(CodecResult.Status.FRAME_FINISHED, empty.status(), codec.format().name());
                 assertEquals(0L, empty.outputBytes(), codec.format().name());
 
                 ByteArrayOutputStream decoded = new ByteArrayOutputStream();
                 while (true) {
                     ByteBuffer target = ByteBuffer.allocate(3);
-                    CodecResult result = decoder.decode(target, DecodeDirective.STOP_AT_FRAME);
+                    CodecResult result = decoder.decode(
+                            target,
+                            DecompressingReadableByteChannel.Directive.STOP_AT_FRAME
+                    );
                     target.flip();
                     byte[] chunk = new byte[target.remaining()];
                     target.get(chunk);
                     decoded.writeBytes(chunk);
-                    if (result.status() == CodecStatus.FRAME_FINISHED) {
+                    if (result.status() == CodecResult.Status.FRAME_FINISHED) {
                         break;
                     }
-                    assertEquals(CodecStatus.ACTIVE, result.status(), codec.format().name());
+                    assertEquals(CodecResult.Status.ACTIVE, result.status(), codec.format().name());
                 }
                 assertArrayEquals(content, decoded.toByteArray(), codec.format().name());
 
                 CodecResult ended = decoder.decode(
                         ByteBuffer.allocate(1),
-                        DecodeDirective.STOP_AT_FRAME
+                        DecompressingReadableByteChannel.Directive.STOP_AT_FRAME
                 );
-                assertEquals(CodecStatus.END_OF_INPUT, ended.status(), codec.format().name());
+                assertEquals(CodecResult.Status.END_OF_INPUT, ended.status(), codec.format().name());
                 assertEquals(compressed.size(), decoder.inputBytes(), codec.format().name());
             }
         }
@@ -377,7 +392,10 @@ final class CodecChannelContractTest {
                     int operations = 0;
                     while (true) {
                         ByteBuffer target = ByteBuffer.allocate(5);
-                        CodecResult result = decoder.decode(target, DecodeDirective.STOP_AT_FRAME);
+                        CodecResult result = decoder.decode(
+                                target,
+                                DecompressingReadableByteChannel.Directive.STOP_AT_FRAME
+                        );
                         target.flip();
                         byte[] chunk = new byte[target.remaining()];
                         target.get(chunk);
@@ -386,10 +404,10 @@ final class CodecChannelContractTest {
                         assertUnconsumedInput(decoder, compressedStream, codec.format().name());
                         assertTrue(++operations < 100, codec.format().name());
 
-                        if (result.status() == CodecStatus.FRAME_FINISHED) {
+                        if (result.status() == CodecResult.Status.FRAME_FINISHED) {
                             break;
                         }
-                        assertEquals(CodecStatus.ACTIVE, result.status(), codec.format().name());
+                        assertEquals(CodecResult.Status.ACTIVE, result.status(), codec.format().name());
                         assertTrue(result.inputBytes() > 0L || result.outputBytes() > 0L, codec.format().name());
                     }
                     assertArrayEquals(expectedFrame, decodedFrame.toByteArray(), codec.format().name());
@@ -402,9 +420,9 @@ final class CodecChannelContractTest {
 
                 CodecResult ended = decoder.decode(
                         ByteBuffer.allocate(5),
-                        DecodeDirective.STOP_AT_FRAME
+                        DecompressingReadableByteChannel.Directive.STOP_AT_FRAME
                 );
-                assertEquals(CodecStatus.END_OF_INPUT, ended.status(), codec.format().name());
+                assertEquals(CodecResult.Status.END_OF_INPUT, ended.status(), codec.format().name());
                 assertEquals(totalOutputSize, decoder.outputBytes(), codec.format().name());
                 assertEquals(compressed.size(), decoder.inputBytes(), codec.format().name());
                 assertEquals(compressed.size(), decoder.sourceBytes(), codec.format().name());
@@ -669,7 +687,7 @@ final class CodecChannelContractTest {
                     Channels.newChannel(compressedBytes),
                     ChannelOwnership.RETAIN
             )) {
-                encoder.encode(ByteBuffer.wrap(input), EncodeDirective.END_FRAME);
+                encoder.encode(ByteBuffer.wrap(input), CompressingWritableByteChannel.Directive.END_FRAME);
             }
 
             ByteBuffer decoded = ByteBuffer.allocate(input.length);

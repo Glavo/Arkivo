@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.codec;
 
+import org.glavo.arkivo.codec.CompressingWritableByteChannel.Directive;
+
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -34,11 +36,11 @@ final class CompressionChannelContextTest {
         WritableByteChannel target = Channels.newChannel(bytes);
         CompressingWritableByteChannel encoder = CODEC.openEncoder(target);
 
-        CodecResult flushed = encoder.encode(ByteBuffer.wrap(new byte[]{1, 2, 3}), EncodeDirective.FLUSH);
-        CodecResult finished = encoder.encode(ByteBuffer.wrap(new byte[]{4}), EncodeDirective.END_FRAME);
+        CodecResult flushed = encoder.encode(ByteBuffer.wrap(new byte[]{1, 2, 3}), Directive.FLUSH);
+        CodecResult finished = encoder.encode(ByteBuffer.wrap(new byte[]{4}), Directive.END_FRAME);
 
-        assertEquals(new CodecResult(3, 3, CodecStatus.FLUSHED), flushed);
-        assertEquals(new CodecResult(1, 1, CodecStatus.FRAME_FINISHED), finished);
+        assertEquals(new CodecResult(3, 3, CodecResult.Status.FLUSHED), flushed);
+        assertEquals(new CodecResult(1, 1, CodecResult.Status.FRAME_FINISHED), finished);
         assertEquals(4, encoder.inputBytes());
         assertEquals(4, encoder.outputBytes());
         assertTrue(encoder.isOpen());
@@ -59,8 +61,8 @@ final class CompressionChannelContextTest {
         CodecResult ended = decoder.decode(ByteBuffer.allocate(1));
         decoder.close();
 
-        assertEquals(new CodecResult(3, 3, CodecStatus.ACTIVE), decoded);
-        assertEquals(new CodecResult(0, 0, CodecStatus.END_OF_INPUT), ended);
+        assertEquals(new CodecResult(3, 3, CodecResult.Status.ACTIVE), decoded);
+        assertEquals(new CodecResult(0, 0, CodecResult.Status.END_OF_INPUT), ended);
         assertTrue(source.isOpen());
         assertArrayEquals(new byte[]{5, 6, 7}, output.array());
     }
@@ -73,7 +75,7 @@ final class CompressionChannelContextTest {
                 target,
                 ChannelOwnership.CLOSE
         )) {
-            encoder.encode(ByteBuffer.wrap(new byte[]{1}), EncodeDirective.END_FRAME);
+            encoder.encode(ByteBuffer.wrap(new byte[]{1}), Directive.END_FRAME);
         }
         assertFalse(target.isOpen());
 

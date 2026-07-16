@@ -6,9 +6,8 @@ package org.glavo.arkivo.archive.zip.internal;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.glavo.arkivo.codec.CodecResult;
-import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DecodeDirective;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
 
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
@@ -1265,8 +1264,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         return new CodecDataDescriptorInputStream(
                 "deflate",
                 "Deflate",
-                DecodeDirective.CONTINUE,
-                CodecStatus.END_OF_INPUT,
+                Directive.CONTINUE,
+                CodecResult.Status.END_OF_INPUT,
                 input,
                 compressedInput,
                 compressedSizeOffset,
@@ -1293,8 +1292,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         return new CodecDataDescriptorInputStream(
                 "deflate64",
                 "Deflate64",
-                DecodeDirective.CONTINUE,
-                CodecStatus.END_OF_INPUT,
+                Directive.CONTINUE,
+                CodecResult.Status.END_OF_INPUT,
                 input,
                 compressedInput,
                 compressedSizeOffset,
@@ -1321,8 +1320,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         return new CodecDataDescriptorInputStream(
                 "bzip2",
                 "BZip2",
-                DecodeDirective.STOP_AT_FRAME,
-                CodecStatus.FRAME_FINISHED,
+                Directive.STOP_AT_FRAME,
+                CodecResult.Status.FRAME_FINISHED,
                 input,
                 compressedInput,
                 compressedSizeOffset,
@@ -1362,8 +1361,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             );
             return new CodecDataDescriptorInputStream(
                     "LZMA",
-                    DecodeDirective.CONTINUE,
-                    CodecStatus.END_OF_INPUT,
+                    Directive.CONTINUE,
+                    CodecResult.Status.END_OF_INPUT,
                     input,
                     decoder,
                     compressedSizeOffset + LZMA_STREAM_HEADER_SIZE,
@@ -1398,8 +1397,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         return new CodecDataDescriptorInputStream(
                 "xz",
                 "XZ",
-                DecodeDirective.STOP_AT_FRAME,
-                CodecStatus.FRAME_FINISHED,
+                Directive.STOP_AT_FRAME,
+                CodecResult.Status.FRAME_FINISHED,
                 input,
                 compressedInput,
                 compressedSizeOffset,
@@ -1916,10 +1915,10 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         private final String formatDisplayName;
 
         /// The directive used while decoding the current compressed stream.
-        private final DecodeDirective decodeDirective;
+        private final Directive decodeDirective;
 
         /// The decoder status that marks the compressed stream boundary.
-        private final CodecStatus terminalStatus;
+        private final CodecResult.Status terminalStatus;
 
         /// The CRC-32 of decoded bytes returned so far.
         private final CRC32 crc32 = new CRC32();
@@ -1968,8 +1967,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             this(
                     "zstd",
                     "Zstandard",
-                    DecodeDirective.STOP_AT_FRAME,
-                    CodecStatus.FRAME_FINISHED,
+                    Directive.STOP_AT_FRAME,
+                    CodecResult.Status.FRAME_FINISHED,
                     input,
                     compressedInput,
                     compressedSizeOffset,
@@ -1985,8 +1984,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         private CodecDataDescriptorInputStream(
                 String formatName,
                 String formatDisplayName,
-                DecodeDirective decodeDirective,
-                CodecStatus terminalStatus,
+                Directive decodeDirective,
+                CodecResult.Status terminalStatus,
                 PushbackInputStream input,
                 InputStream compressedInput,
                 long compressedSizeOffset,
@@ -2017,8 +2016,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         /// Creates a data descriptor input stream over a configured channel-first decoder.
         private CodecDataDescriptorInputStream(
                 String formatDisplayName,
-                DecodeDirective decodeDirective,
-                CodecStatus terminalStatus,
+                Directive decodeDirective,
+                CodecResult.Status terminalStatus,
                 PushbackInputStream input,
                 DecompressingReadableByteChannel decoder,
                 long compressedSizeOffset,
@@ -2078,7 +2077,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 if (result.status() == terminalStatus) {
                     streamFinished = true;
                     unreadSourceRemainder();
-                } else if (result.status() == CodecStatus.END_OF_INPUT) {
+                } else if (result.status() == CodecResult.Status.END_OF_INPUT) {
                     throw new EOFException("Unexpected end of " + formatDisplayName + " ZIP entry before data descriptor");
                 }
 
@@ -2087,7 +2086,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                     uncompressedSize += decoded;
                     return decoded;
                 }
-                if (result.status() == CodecStatus.ACTIVE && result.inputBytes() == 0L) {
+                if (result.status() == CodecResult.Status.ACTIVE && result.inputBytes() == 0L) {
                     throw new IOException(formatDisplayName + " ZIP decoder made no progress");
                 }
             }

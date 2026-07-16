@@ -80,9 +80,10 @@ org.glavo.arkivo.archive.zip.ZipMethod
 org.glavo.arkivo.codec.ChannelOwnership
 org.glavo.arkivo.codec.CodecOutcome
 org.glavo.arkivo.codec.CodecResult
-org.glavo.arkivo.codec.CodecStatus
+org.glavo.arkivo.codec.CodecResult$Status
 org.glavo.arkivo.codec.CodecTransferResult
 org.glavo.arkivo.codec.CompressingWritableByteChannel
+org.glavo.arkivo.codec.CompressingWritableByteChannel$Directive
 org.glavo.arkivo.codec.CompressionCodec
 org.glavo.arkivo.codec.CompressionCodec$DictionaryConfigurable
 org.glavo.arkivo.codec.CompressionCodec$LevelConfigurable
@@ -101,12 +102,11 @@ org.glavo.arkivo.codec.CompressionFormatRegistry
 org.glavo.arkivo.codec.CompressionFormats
 org.glavo.arkivo.codec.CompressionProbeResult
 org.glavo.arkivo.codec.CompressionStrategy
-org.glavo.arkivo.codec.DecodeDirective
 org.glavo.arkivo.codec.DecompressingReadableByteChannel
+org.glavo.arkivo.codec.DecompressingReadableByteChannel$Directive
 org.glavo.arkivo.codec.DecompressionLimitException
 org.glavo.arkivo.codec.DecompressionLimits
 org.glavo.arkivo.codec.DecompressionWindowLimitException
-org.glavo.arkivo.codec.EncodeDirective
 org.glavo.arkivo.codec.bcj.BCJTransforms
 org.glavo.arkivo.codec.bzip2.BZip2Codec
 org.glavo.arkivo.codec.deflate.Deflate64Codec

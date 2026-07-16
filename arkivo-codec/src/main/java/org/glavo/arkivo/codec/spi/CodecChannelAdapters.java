@@ -6,13 +6,12 @@ package org.glavo.arkivo.codec.spi;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CodecResult;
-import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
@@ -401,36 +400,36 @@ public final class CodecChannelAdapters {
                 return 0;
             }
             int start = target.position();
-            CodecResult result = decode(target, DecodeDirective.CONTINUE);
+            CodecResult result = decode(target, Directive.CONTINUE);
             int produced = target.position() - start;
             if (produced != 0) {
                 return produced;
             }
-            return result.status() == CodecStatus.END_OF_INPUT ? -1 : 0;
+            return result.status() == CodecResult.Status.END_OF_INPUT ? -1 : 0;
         }
 
         /// Decodes bytes with explicit frame-boundary reporting.
         @Override
-        public CodecResult decode(ByteBuffer target, DecodeDirective directive) throws IOException {
+        public CodecResult decode(ByteBuffer target, Directive directive) throws IOException {
             Objects.requireNonNull(target, "target");
             Objects.requireNonNull(directive, "directive");
             ensureOpen();
             long inputStart = inputBytes;
             long outputStart = outputBytes;
             if (streamFinished) {
-                return new CodecResult(0L, 0L, CodecStatus.END_OF_INPUT);
+                return new CodecResult(0L, 0L, CodecResult.Status.END_OF_INPUT);
             }
             if (frameFinished) {
-                CodecStatus status = directive == DecodeDirective.STOP_AT_FRAME
-                        ? CodecStatus.FRAME_FINISHED
-                        : CodecStatus.END_OF_INPUT;
+                CodecResult.Status status = directive == Directive.STOP_AT_FRAME
+                        ? CodecResult.Status.FRAME_FINISHED
+                        : CodecResult.Status.END_OF_INPUT;
                 return new CodecResult(0L, 0L, status);
             }
             if (!target.hasRemaining()) {
-                return new CodecResult(0L, 0L, CodecStatus.ACTIVE);
+                return new CodecResult(0L, 0L, CodecResult.Status.ACTIVE);
             }
             if (betweenFrames && !beginNextFrame()) {
-                return new CodecResult(0L, 0L, CodecStatus.END_OF_INPUT);
+                return new CodecResult(0L, 0L, CodecResult.Status.END_OF_INPUT);
             }
 
             while (true) {
@@ -439,7 +438,7 @@ public final class CodecChannelAdapters {
                 }
                 if (concatenatedFrames && endOfInput && !input.hasRemaining() && inputBytes == 0L) {
                     streamFinished = true;
-                    return new CodecResult(0L, 0L, CodecStatus.END_OF_INPUT);
+                    return new CodecResult(0L, 0L, CodecResult.Status.END_OF_INPUT);
                 }
                 int inputPosition = input.position();
                 int outputPosition = target.position();
@@ -450,31 +449,31 @@ public final class CodecChannelAdapters {
                 if (outcome == CodecOutcome.FINISHED) {
                     if (!concatenatedFrames) {
                         frameFinished = true;
-                        CodecStatus status = directive == DecodeDirective.STOP_AT_FRAME
-                                ? CodecStatus.FRAME_FINISHED
-                                : CodecStatus.END_OF_INPUT;
+                        CodecResult.Status status = directive == Directive.STOP_AT_FRAME
+                                ? CodecResult.Status.FRAME_FINISHED
+                                : CodecResult.Status.END_OF_INPUT;
                         return new CodecResult(inputBytes - inputStart, outputBytes - outputStart, status);
                     }
                     betweenFrames = true;
-                    if (directive == DecodeDirective.STOP_AT_FRAME) {
+                    if (directive == Directive.STOP_AT_FRAME) {
                         return new CodecResult(
                                 inputBytes - inputStart,
                                 outputBytes - outputStart,
-                                CodecStatus.FRAME_FINISHED
+                                CodecResult.Status.FRAME_FINISHED
                         );
                     }
                     if (!target.hasRemaining()) {
                         return new CodecResult(
                                 inputBytes - inputStart,
                                 outputBytes - outputStart,
-                                CodecStatus.ACTIVE
+                                CodecResult.Status.ACTIVE
                         );
                     }
                     if (!beginNextFrame()) {
                         return new CodecResult(
                                 inputBytes - inputStart,
                                 outputBytes - outputStart,
-                                CodecStatus.END_OF_INPUT
+                                CodecResult.Status.END_OF_INPUT
                         );
                     }
                     continue;
@@ -489,7 +488,11 @@ public final class CodecChannelAdapters {
                     if (target.position() == outputPosition && target.hasRemaining()) {
                         throw new IOException("Compression decoder requested output without filling its target buffer");
                     }
-                    return new CodecResult(inputBytes - inputStart, outputBytes - outputStart, CodecStatus.ACTIVE);
+                    return new CodecResult(
+                            inputBytes - inputStart,
+                            outputBytes - outputStart,
+                            CodecResult.Status.ACTIVE
+                    );
                 }
                 if (outcome != CodecOutcome.NEEDS_INPUT) {
                     throw new IOException("Unexpected compression decode outcome: " + outcome);
@@ -498,7 +501,11 @@ public final class CodecChannelAdapters {
                     throw new IOException("Compression decoder requested input before consuming its source buffer");
                 }
                 if (target.position() != outputPosition) {
-                    return new CodecResult(inputBytes - inputStart, outputBytes - outputStart, CodecStatus.ACTIVE);
+                    return new CodecResult(
+                            inputBytes - inputStart,
+                            outputBytes - outputStart,
+                            CodecResult.Status.ACTIVE
+                    );
                 }
             }
         }

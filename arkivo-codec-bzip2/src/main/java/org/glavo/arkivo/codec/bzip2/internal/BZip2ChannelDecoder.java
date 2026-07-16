@@ -6,9 +6,8 @@ package org.glavo.arkivo.codec.bzip2.internal;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CodecResult;
-import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DecodeDirective;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -351,7 +350,7 @@ public class BZip2ChannelDecoder implements DecompressingReadableByteChannel {
 
     /// Decodes one increment while optionally stopping after the current BZip2 stream.
     @Override
-    public CodecResult decode(ByteBuffer target, DecodeDirective directive) throws IOException {
+    public CodecResult decode(ByteBuffer target, Directive directive) throws IOException {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(directive, "directive");
         ensureOpen();
@@ -359,10 +358,10 @@ public class BZip2ChannelDecoder implements DecompressingReadableByteChannel {
         long inputBefore = bits.byteCount();
         long outputBefore = outputBytes;
         if (!target.hasRemaining()) {
-            return new CodecResult(0L, 0L, CodecStatus.ACTIVE);
+            return new CodecResult(0L, 0L, CodecResult.Status.ACTIVE);
         }
 
-        boolean stopAtFrame = directive == DecodeDirective.STOP_AT_FRAME;
+        boolean stopAtFrame = directive == Directive.STOP_AT_FRAME;
         while (target.hasRemaining()) {
             int value = readDecodedByte(stopAtFrame);
             if (value < 0) {
@@ -371,9 +370,9 @@ public class BZip2ChannelDecoder implements DecompressingReadableByteChannel {
             target.put((byte) value);
             outputBytes++;
         }
-        CodecStatus status = stopAtFrame && lastFrameFinished
-                ? CodecStatus.FRAME_FINISHED
-                : endReached ? CodecStatus.END_OF_INPUT : CodecStatus.ACTIVE;
+        CodecResult.Status status = stopAtFrame && lastFrameFinished
+                ? CodecResult.Status.FRAME_FINISHED
+                : endReached ? CodecResult.Status.END_OF_INPUT : CodecResult.Status.ACTIVE;
         return new CodecResult(
                 bits.byteCount() - inputBefore,
                 outputBytes - outputBefore,

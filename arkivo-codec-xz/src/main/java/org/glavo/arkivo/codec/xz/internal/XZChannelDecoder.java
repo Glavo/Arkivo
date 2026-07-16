@@ -5,11 +5,10 @@ package org.glavo.arkivo.codec.xz.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecResult;
-import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
-import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
@@ -132,15 +131,15 @@ public final class XZChannelDecoder implements DecompressingReadableByteChannel 
 
     /// Decodes one increment while optionally stopping after the current XZ stream.
     @Override
-    public CodecResult decode(ByteBuffer target, DecodeDirective directive) throws IOException {
+    public CodecResult decode(ByteBuffer target, Directive directive) throws IOException {
         Objects.requireNonNull(directive, "directive");
         long inputBefore = input.byteCount();
         long outputBefore = outputBytes;
-        boolean stopAtFrame = directive == DecodeDirective.STOP_AT_FRAME;
+        boolean stopAtFrame = directive == Directive.STOP_AT_FRAME;
         int read = readDecoded(target, stopAtFrame);
-        CodecStatus status = stopAtFrame && lastStreamFinished
-                ? CodecStatus.FRAME_FINISHED
-                : read < 0 ? CodecStatus.END_OF_INPUT : CodecStatus.ACTIVE;
+        CodecResult.Status status = stopAtFrame && lastStreamFinished
+                ? CodecResult.Status.FRAME_FINISHED
+                : read < 0 ? CodecResult.Status.END_OF_INPUT : CodecResult.Status.ACTIVE;
         return new CodecResult(input.byteCount() - inputBefore, outputBytes - outputBefore, status);
     }
 

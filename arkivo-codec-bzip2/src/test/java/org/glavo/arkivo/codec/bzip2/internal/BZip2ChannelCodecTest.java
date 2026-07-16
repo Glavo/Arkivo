@@ -5,8 +5,8 @@ package org.glavo.arkivo.codec.bzip2.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecResult;
-import org.glavo.arkivo.codec.CodecStatus;
-import org.glavo.arkivo.codec.DecodeDirective;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -124,8 +124,8 @@ public final class BZip2ChannelCodecTest {
             assertArrayEquals(first, readFrame(decoder));
             assertArrayEquals(second, readFrame(decoder));
             ByteBuffer end = ByteBuffer.allocate(1);
-            CodecResult result = decoder.decode(end, DecodeDirective.CONTINUE);
-            assertEquals(CodecStatus.END_OF_INPUT, result.status());
+            CodecResult result = decoder.decode(end, Directive.CONTINUE);
+            assertEquals(CodecResult.Status.END_OF_INPUT, result.status());
         }
     }
 
@@ -283,15 +283,15 @@ public final class BZip2ChannelCodecTest {
         ByteBuffer target = ByteBuffer.allocateDirect(31);
         while (true) {
             target.clear();
-            CodecResult result = decoder.decode(target, DecodeDirective.STOP_AT_FRAME);
+            CodecResult result = decoder.decode(target, Directive.STOP_AT_FRAME);
             target.flip();
             byte[] chunk = new byte[target.remaining()];
             target.get(chunk);
             output.writeBytes(chunk);
-            if (result.status() == CodecStatus.FRAME_FINISHED) {
+            if (result.status() == CodecResult.Status.FRAME_FINISHED) {
                 return output.toByteArray();
             }
-            if (result.status() == CodecStatus.END_OF_INPUT) {
+            if (result.status() == CodecResult.Status.END_OF_INPUT) {
                 throw new IOException("BZip2 stream ended before a frame boundary");
             }
             if (result.inputBytes() == 0L && result.outputBytes() == 0L) {

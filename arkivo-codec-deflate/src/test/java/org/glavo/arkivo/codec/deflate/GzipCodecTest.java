@@ -7,8 +7,8 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel.Directive;
 import org.glavo.arkivo.codec.CompressionStrategy;
-import org.glavo.arkivo.codec.EncodeDirective;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -117,13 +117,13 @@ public final class GzipCodecTest {
                 Channels.newChannel(compressed),
                 ChannelOwnership.RETAIN
         );
-        encoder.encode(ByteBuffer.wrap(first), EncodeDirective.END_FRAME);
+        encoder.encode(ByteBuffer.wrap(first), Directive.END_FRAME);
         int firstMemberSize = compressed.size();
         assertTrue(encoder.isOpen());
         encoder.flush();
         assertEquals(firstMemberSize, compressed.size());
 
-        encoder.encode(ByteBuffer.wrap(second), EncodeDirective.END_FRAME);
+        encoder.encode(ByteBuffer.wrap(second), Directive.END_FRAME);
         int completeSize = compressed.size();
         assertTrue(completeSize > firstMemberSize);
         encoder.finish();

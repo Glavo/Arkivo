@@ -5,10 +5,9 @@ package org.glavo.arkivo.codec.zstd;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecResult;
-import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.DecodeDirective;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -124,16 +123,16 @@ public final class ZstdPureJavaDecoderTest {
                 Channels.newChannel(new ByteArrayInputStream(frames)),
                 ChannelOwnership.RETAIN
         )) {
-            CodecResult first = decoder.decode(output, DecodeDirective.STOP_AT_FRAME);
-            assertEquals(CodecStatus.FRAME_FINISHED, first.status());
+            CodecResult first = decoder.decode(output, Directive.STOP_AT_FRAME);
+            assertEquals(CodecResult.Status.FRAME_FINISHED, first.status());
             output.flip();
             byte[] firstContent = new byte[output.remaining()];
             output.get(firstContent);
             assertArrayEquals("abc".getBytes(StandardCharsets.US_ASCII), firstContent);
 
             output.clear();
-            CodecResult second = decoder.decode(output, DecodeDirective.STOP_AT_FRAME);
-            assertEquals(CodecStatus.FRAME_FINISHED, second.status());
+            CodecResult second = decoder.decode(output, Directive.STOP_AT_FRAME);
+            assertEquals(CodecResult.Status.FRAME_FINISHED, second.status());
             output.flip();
             byte[] secondContent = new byte[output.remaining()];
             output.get(secondContent);
@@ -180,9 +179,9 @@ public final class ZstdPureJavaDecoderTest {
                 Channels.newChannel(new ByteArrayInputStream(encoded)),
                 ChannelOwnership.RETAIN
         )) {
-            CodecResult skipped = decoder.decode(output, DecodeDirective.STOP_AT_FRAME);
+            CodecResult skipped = decoder.decode(output, Directive.STOP_AT_FRAME);
 
-            assertEquals(CodecStatus.FRAME_FINISHED, skipped.status());
+            assertEquals(CodecResult.Status.FRAME_FINISHED, skipped.status());
             assertEquals(SKIPPABLE_FRAME.length, skipped.inputBytes());
             assertEquals(0L, skipped.outputBytes());
             assertEquals(SKIPPABLE_FRAME.length, decoder.inputBytes());
@@ -190,8 +189,8 @@ public final class ZstdPureJavaDecoderTest {
             assertEquals(RAW_FRAME.length, decoder.unconsumedInput().remaining());
             assertEquals(0, output.position());
 
-            CodecResult decoded = decoder.decode(output, DecodeDirective.STOP_AT_FRAME);
-            assertEquals(CodecStatus.FRAME_FINISHED, decoded.status());
+            CodecResult decoded = decoder.decode(output, Directive.STOP_AT_FRAME);
+            assertEquals(CodecResult.Status.FRAME_FINISHED, decoded.status());
             assertEquals(RAW_FRAME.length, decoded.inputBytes());
             assertEquals(3L, decoded.outputBytes());
             output.flip();
@@ -210,9 +209,9 @@ public final class ZstdPureJavaDecoderTest {
                 Channels.newChannel(new ByteArrayInputStream(encoded)),
                 ChannelOwnership.RETAIN
         )) {
-            CodecResult result = decoder.decode(output, DecodeDirective.STOP_AT_FRAME);
+            CodecResult result = decoder.decode(output, Directive.STOP_AT_FRAME);
 
-            assertEquals(CodecStatus.FRAME_FINISHED, result.status());
+            assertEquals(CodecResult.Status.FRAME_FINISHED, result.status());
             assertEquals(RAW_FRAME.length, decoder.inputBytes());
             assertEquals(encoded.length, decoder.sourceBytes());
             assertEquals(RLE_FRAME.length, decoder.unconsumedInput().remaining());

@@ -16,20 +16,20 @@ import java.util.Objects;
 public interface DecompressingReadableByteChannel extends ReadableByteChannel {
     /// Decodes bytes into the target and reports progress and end-of-input state.
     default CodecResult decode(ByteBuffer target) throws IOException {
-        return decode(target, DecodeDirective.CONTINUE);
+        return decode(target, Directive.CONTINUE);
     }
 
     /// Decodes bytes with the requested frame-boundary behavior.
     ///
     /// Channels backed by a CompressionDecoder.Framed implement the STOP_AT_FRAME directive.
     /// Other decoders retain their ordinary end-of-input behavior.
-    default CodecResult decode(ByteBuffer target, DecodeDirective directive) throws IOException {
+    default CodecResult decode(ByteBuffer target, Directive directive) throws IOException {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(directive, "directive");
         long inputBefore = inputBytes();
         long outputBefore = outputBytes();
         int read = read(target);
-        CodecStatus status = read < 0 ? CodecStatus.END_OF_INPUT : CodecStatus.ACTIVE;
+        CodecResult.Status status = read < 0 ? CodecResult.Status.END_OF_INPUT : CodecResult.Status.ACTIVE;
         return new CodecResult(inputBytes() - inputBefore, outputBytes() - outputBefore, status);
     }
 
@@ -60,4 +60,14 @@ public interface DecompressingReadableByteChannel extends ReadableByteChannel {
     /// only source closure and does not release decoder state again.
     @Override
     void close() throws IOException;
+
+    /// Selects how one incremental decode operation handles a completed frame.
+    @NotNullByDefault
+    enum Directive {
+        /// Allows the decoder to continue through frame boundaries when no output is pending.
+        CONTINUE,
+
+        /// Returns `CodecResult.Status.FRAME_FINISHED` before beginning a following frame.
+        STOP_AT_FRAME
+    }
 }

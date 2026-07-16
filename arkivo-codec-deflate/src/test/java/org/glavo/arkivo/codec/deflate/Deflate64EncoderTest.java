@@ -6,10 +6,9 @@ package org.glavo.arkivo.codec.deflate;
 import org.apache.commons.compress.compressors.deflate64.Deflate64CompressorInputStream;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecResult;
-import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.EncodeDirective;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel.Directive;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -91,13 +90,13 @@ final class Deflate64EncoderTest {
         WritableByteChannel target = Channels.newChannel(bytes);
         CompressingWritableByteChannel encoder = CODEC.openEncoder(target);
 
-        CodecResult flushed = encoder.encode(ByteBuffer.wrap(first), EncodeDirective.FLUSH);
+        CodecResult flushed = encoder.encode(ByteBuffer.wrap(first), Directive.FLUSH);
         int flushedSize = bytes.size();
-        CodecResult finished = encoder.encode(ByteBuffer.wrap(second), EncodeDirective.END_FRAME);
+        CodecResult finished = encoder.encode(ByteBuffer.wrap(second), Directive.END_FRAME);
 
-        assertEquals(new CodecResult(first.length, flushedSize, CodecStatus.FLUSHED), flushed);
+        assertEquals(new CodecResult(first.length, flushedSize, CodecResult.Status.FLUSHED), flushed);
         assertEquals(second.length, finished.inputBytes());
-        assertEquals(CodecStatus.FRAME_FINISHED, finished.status());
+        assertEquals(CodecResult.Status.FRAME_FINISHED, finished.status());
         assertEquals(expected.length, encoder.inputBytes());
         assertEquals(bytes.size(), encoder.outputBytes());
         assertTrue(flushedSize > 0);

@@ -5,8 +5,8 @@ package org.glavo.arkivo.codec.spi;
 
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.UnmodifiableView;
@@ -132,7 +132,7 @@ public final class CompressionDecoderSupport {
         @Override
         public CodecResult decode(
                 ByteBuffer target,
-                DecodeDirective directive
+                Directive directive
         ) throws IOException {
             Objects.requireNonNull(target, "target");
             Objects.requireNonNull(directive, "directive");
@@ -212,7 +212,7 @@ public final class CompressionDecoderSupport {
         }
 
         /// Probes one frame-aware operation after the output limit is reached.
-        private CodecResult probeForExcess(DecodeDirective directive) throws IOException {
+        private CodecResult probeForExcess(Directive directive) throws IOException {
             probe.clear();
             CodecResult result = decoder.decode(probe, directive);
             if (result.outputBytes() == 0L) {

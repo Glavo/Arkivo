@@ -5,12 +5,11 @@ package org.glavo.arkivo.codec.xz;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecResult;
-import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -334,13 +333,13 @@ public final class XZCodecTest {
                 ChannelOwnership.RETAIN
         )) {
             ByteBuffer target = ByteBuffer.allocate(4096);
-            CodecStatus status;
+            CodecResult.Status status;
             do {
                 target.clear();
-                CodecResult result = decoder.decode(target, DecodeDirective.STOP_AT_FRAME);
+                CodecResult result = decoder.decode(target, Directive.STOP_AT_FRAME);
                 decoded.write(target.array(), 0, target.position());
                 status = result.status();
-            } while (status != CodecStatus.FRAME_FINISHED);
+            } while (status != CodecResult.Status.FRAME_FINISHED);
             assertEquals(stream.length, decoder.inputBytes());
 
             ByteArrayOutputStream remainder = new ByteArrayOutputStream();

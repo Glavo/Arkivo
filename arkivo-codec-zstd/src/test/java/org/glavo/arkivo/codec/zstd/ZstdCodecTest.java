@@ -9,7 +9,7 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.EncodeDirective;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel.Directive;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -263,10 +263,10 @@ public final class ZstdCodecTest {
                 frame.length,
                 ChannelOwnership.RETAIN
         );
-        encoder.encode(ByteBuffer.wrap(frame), EncodeDirective.END_FRAME);
+        encoder.encode(ByteBuffer.wrap(frame), Directive.END_FRAME);
         int firstFrameSize = compressed.size();
         assertTrue(encoder.isOpen());
-        encoder.encode(ByteBuffer.wrap(frame), EncodeDirective.END_FRAME);
+        encoder.encode(ByteBuffer.wrap(frame), Directive.END_FRAME);
         int completeSize = compressed.size();
         assertTrue(completeSize > firstFrameSize);
         encoder.finish();
