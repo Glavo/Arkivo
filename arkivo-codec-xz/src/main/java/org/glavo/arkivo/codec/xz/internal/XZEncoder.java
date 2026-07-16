@@ -22,7 +22,7 @@ import java.util.Objects;
 /// The pure Java XZ writer receives bounded source slices and writes complete encoded bytes into a private memory sink.
 /// No additional source is accepted while encoded bytes await caller-owned target space.
 @NotNullByDefault
-public final class XzEncoder implements FlushableFramedCompressionEncoder {
+public final class XZEncoder implements FlushableFramedCompressionEncoder {
     /// The largest source slice passed to the XZ writer in one operation.
     private static final int SOURCE_SLICE_SIZE = 16 * 1024;
 
@@ -42,7 +42,7 @@ public final class XzEncoder implements FlushableFramedCompressionEncoder {
     private final long maximumBlockSize;
 
     /// Active pure Java XZ writer, or null after closure.
-    private @Nullable XzChannelEncoder encoder;
+    private @Nullable XZChannelEncoder encoder;
 
     /// Current encoder lifecycle state.
     private State state = State.ACTIVE;
@@ -53,7 +53,7 @@ public final class XzEncoder implements FlushableFramedCompressionEncoder {
     /// @param checkType XZ integrity-check identifier
     /// @param filterChain ordered preprocessing filters
     /// @param maximumBlockSize maximum uncompressed Block size, or zero for an unbounded Block
-    public XzEncoder(
+    public XZEncoder(
             LZMAProperties properties,
             int checkType,
             XZFilterChain filterChain,
@@ -181,8 +181,8 @@ public final class XzEncoder implements FlushableFramedCompressionEncoder {
     }
 
     /// Creates the pure Java XZ writer over the private memory sink.
-    private XzChannelEncoder createWriter() throws IOException {
-        return new XzChannelEncoder(
+    private XZChannelEncoder createWriter() throws IOException {
+        return new XZChannelEncoder(
                 output,
                 ChannelOwnership.RETAIN,
                 properties,
@@ -193,8 +193,8 @@ public final class XzEncoder implements FlushableFramedCompressionEncoder {
     }
 
     /// Returns the active XZ writer.
-    private XzChannelEncoder requireWriter() {
-        @Nullable XzChannelEncoder current = encoder;
+    private XZChannelEncoder requireWriter() {
+        @Nullable XZChannelEncoder current = encoder;
         if (current == null) {
             throw new IllegalStateException("XZ encoder is closed");
         }

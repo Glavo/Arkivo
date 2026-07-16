@@ -35,7 +35,7 @@ import java.util.zip.CRC32;
 
 /// Decodes XZ streams and their filter chains directly from a channel.
 @NotNullByDefault
-public final class XzChannelDecoder implements DecompressingReadableByteChannel {
+public final class XZChannelDecoder implements DecompressingReadableByteChannel {
     /// The compressed-data source.
     private final ReadableByteChannel source;
 
@@ -43,7 +43,7 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
     private final OwnedChannelCloser sourceCloser;
 
     /// The buffered XZ source.
-    private final XzChannelInput input;
+    private final XZChannelInput input;
 
     /// Whether stream padding may be followed by another XZ stream.
     private final boolean concatenated;
@@ -79,12 +79,12 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
     private boolean open = true;
 
     /// Creates a decoder accepting concatenated XZ streams and stream padding.
-    public XzChannelDecoder(ReadableByteChannel source, ChannelOwnership ownership) throws IOException {
+    public XZChannelDecoder(ReadableByteChannel source, ChannelOwnership ownership) throws IOException {
         this(source, ownership, true, CompressionCodec.UNKNOWN_SIZE, true);
     }
 
     /// Creates a decoder with explicit concatenated-stream behavior.
-    public XzChannelDecoder(
+    public XZChannelDecoder(
             ReadableByteChannel source,
             ChannelOwnership ownership,
             boolean concatenated
@@ -93,7 +93,7 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
     }
 
     /// Creates a decoder with explicit concatenation and maximum-window behavior.
-    public XzChannelDecoder(
+    public XZChannelDecoder(
             ReadableByteChannel source,
             ChannelOwnership ownership,
             boolean concatenated,
@@ -103,7 +103,7 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
     }
 
     /// Creates a decoder with explicit concatenation, window, and block-check behavior.
-    public XzChannelDecoder(
+    public XZChannelDecoder(
             ReadableByteChannel source,
             ChannelOwnership ownership,
             boolean concatenated,
@@ -115,7 +115,7 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
         this.concatenated = concatenated;
         this.maximumWindowSize = maximumWindowSize;
         this.verifyChecksums = verifyChecksums;
-        input = new XzChannelInput(source);
+        input = new XZChannelInput(source);
         try {
             startStream();
         } catch (IOException | RuntimeException | Error exception) {
@@ -230,21 +230,21 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
     /// Reads and validates one Stream Header.
     private void startStream() throws IOException {
         byte[] header = readFully(12);
-        for (int index = 0; index < XzSupport.HEADER_MAGIC.length; index++) {
-            if (header[index] != XzSupport.HEADER_MAGIC[index]) {
+        for (int index = 0; index < XZSupport.HEADER_MAGIC.length; index++) {
+            if (header[index] != XZSupport.HEADER_MAGIC[index]) {
                 throw new IOException("Invalid XZ stream header signature");
             }
         }
-        if (XzSupport.crc32Mismatch(header, 6, 2, 8)) {
+        if (XZSupport.crc32Mismatch(header, 6, 2, 8)) {
             throw new IOException("XZ Stream Header CRC-32 mismatch");
         }
         if (header[6] != 0 || Byte.toUnsignedInt(header[7]) >= 16) {
             throw new IOException("Unsupported XZ Stream Header flags");
         }
         checkType = Byte.toUnsignedInt(header[7]);
-        XzCheck.sizeOf(checkType);
+        XZCheck.sizeOf(checkType);
         if (verifyChecksums) {
-            XzCheck.create(checkType);
+            XZCheck.create(checkType);
         }
         records.clear();
         currentBlock = null;
@@ -254,15 +254,15 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
     private void readIndexAndFooter() throws IOException {
         long indexSize = readIndex();
         byte[] footer = readFully(12);
-        if (footer[10] != XzSupport.FOOTER_MAGIC[0]
-                || footer[11] != XzSupport.FOOTER_MAGIC[1]
-                || XzSupport.crc32Mismatch(footer, 4, 6, 0)) {
+        if (footer[10] != XZSupport.FOOTER_MAGIC[0]
+                || footer[11] != XZSupport.FOOTER_MAGIC[1]
+                || XZSupport.crc32Mismatch(footer, 4, 6, 0)) {
             throw new IOException("Invalid XZ Stream Footer");
         }
         if (footer[8] != 0 || Byte.toUnsignedInt(footer[9]) != checkType) {
             throw new IOException("XZ Stream Header and Footer flags differ");
         }
-        long backwardSize = (XzSupport.getLittleEndian(footer, 4, Integer.BYTES) + 1L) * 4L;
+        long backwardSize = (XZSupport.getLittleEndian(footer, 4, Integer.BYTES) + 1L) * 4L;
         if (backwardSize != indexSize) {
             throw new IOException("XZ Stream Footer backward size does not match the Index");
         }
@@ -380,7 +380,7 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
         private final ReadableByteChannel filterChain;
 
         /// The block integrity-check calculator, or `null` when verification is disabled.
-        private final @Nullable XzCheck check;
+        private final @Nullable XZCheck check;
 
         /// The encoded integrity-check field size.
         private final int checkSize;
@@ -401,7 +401,7 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
             header[0] = (byte) headerIndicator;
             byte[] remaining = readFully(header.length - 1);
             System.arraycopy(remaining, 0, header, 1, remaining.length);
-            if (XzSupport.crc32Mismatch(header, 0, header.length - 4, header.length - 4)) {
+            if (XZSupport.crc32Mismatch(header, 0, header.length - 4, header.length - 4)) {
                 throw new IOException("XZ Block Header CRC-32 mismatch");
             }
 
@@ -415,18 +415,18 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
             long outputSize = -1L;
             try {
                 if ((flags & 0x40) != 0) {
-                    compressedSize = XzSupport.readVli(fields);
+                    compressedSize = XZSupport.readVli(fields);
                     if (compressedSize == 0L) {
                         throw new IOException("XZ block declares an empty compressed-data field");
                     }
                 }
                 if ((flags & 0x80) != 0) {
-                    outputSize = XzSupport.readVli(fields);
+                    outputSize = XZSupport.readVli(fields);
                 }
                 Filter[] filters = new Filter[filterCount];
                 for (int index = 0; index < filters.length; index++) {
-                    long identifier = XzSupport.readVli(fields);
-                    long propertySize = XzSupport.readVli(fields);
+                    long identifier = XZSupport.readVli(fields);
+                    long propertySize = XZSupport.readVli(fields);
                     if (propertySize > fields.available()) {
                         throw new IOException("XZ filter properties exceed the Block Header");
                     }
@@ -446,8 +446,8 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
                 validateFilterChain(filters);
                 declaredCompressedSize = compressedSize;
                 declaredUncompressedSize = outputSize;
-                checkSize = XzCheck.sizeOf(checkType);
-                check = verifyChecksums ? XzCheck.create(checkType) : null;
+                checkSize = XZCheck.sizeOf(checkType);
+                check = verifyChecksums ? XZCheck.create(checkType) : null;
                 compressedInput = new CountingChannel(
                         compressedSize >= 0L ? compressedSize : Long.MAX_VALUE
                 );
@@ -478,7 +478,7 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
             if (count == 0) {
                 throw new IOException("XZ filter chain made no progress");
             }
-            @Nullable XzCheck activeCheck = check;
+            @Nullable XZCheck activeCheck = check;
             if (activeCheck != null) {
                 activeCheck.update(decodedBuffer, 0, count);
             }
@@ -527,7 +527,7 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
                 }
             }
             byte[] storedCheck = readFully(checkSize);
-            @Nullable XzCheck activeCheck = check;
+            @Nullable XZCheck activeCheck = check;
             if (activeCheck != null && !Arrays.equals(storedCheck, activeCheck.finish())) {
                 throw new IOException("XZ block integrity check mismatch");
             }
@@ -540,14 +540,14 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
 
         /// Validates the supported XZ filter ordering.
         private void validateFilterChain(Filter[] filters) throws IOException {
-            if (filters[filters.length - 1].identifier() != XzSupport.FILTER_LZMA2) {
+            if (filters[filters.length - 1].identifier() != XZSupport.FILTER_LZMA2) {
                 throw new IOException("XZ filter chain must end with LZMA2");
             }
             for (int index = 0; index < filters.length - 1; index++) {
                 long identifier = filters[index].identifier();
-                if (identifier != XzSupport.FILTER_DELTA
-                        && (identifier < XzSupport.FILTER_BCJ_X86
-                        || identifier > XzSupport.FILTER_BCJ_RISCV)) {
+                if (identifier != XZSupport.FILTER_DELTA
+                        && (identifier < XZSupport.FILTER_BCJ_X86
+                        || identifier > XZSupport.FILTER_BCJ_RISCV)) {
                     throw new IOException("Unsupported nonterminal XZ filter: " + identifier);
                 }
             }
@@ -557,11 +557,11 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
         private ReadableByteChannel openFilter(ReadableByteChannel downstream, Filter filter) throws IOException {
             long identifier = filter.identifier();
             byte[] properties = filter.properties();
-            if (identifier == XzSupport.FILTER_LZMA2) {
+            if (identifier == XZSupport.FILTER_LZMA2) {
                 if (properties.length != 1) {
                     throw new IOException("XZ LZMA2 filter requires one property byte");
                 }
-                int dictionarySize = XzSupport.lzma2DictionarySize(Byte.toUnsignedInt(properties[0]));
+                int dictionarySize = XZSupport.lzma2DictionarySize(Byte.toUnsignedInt(properties[0]));
                 CompressionDecoderSupport.requireWindowSize(maximumWindowSize, dictionarySize);
                 return new LZMA2ChannelDecoder(
                         downstream,
@@ -570,7 +570,7 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
                         1
                 );
             }
-            if (identifier == XzSupport.FILTER_DELTA) {
+            if (identifier == XZSupport.FILTER_DELTA) {
                 if (properties.length != 1) {
                     throw new IOException("XZ Delta filter requires one property byte");
                 }
@@ -579,12 +579,12 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
                         new DeltaTransform(false, Byte.toUnsignedInt(properties[0]) + 1)
                 );
             }
-            if (identifier >= XzSupport.FILTER_BCJ_X86 && identifier <= XzSupport.FILTER_BCJ_RISCV) {
+            if (identifier >= XZSupport.FILTER_BCJ_X86 && identifier <= XZSupport.FILTER_BCJ_RISCV) {
                 int startOffset;
                 if (properties.length == 0) {
                     startOffset = 0;
                 } else if (properties.length == Integer.BYTES) {
-                    startOffset = (int) XzSupport.getLittleEndian(properties, 0, Integer.BYTES);
+                    startOffset = (int) XZSupport.getLittleEndian(properties, 0, Integer.BYTES);
                 } else {
                     throw new IOException("XZ BCJ filter properties must contain zero or four bytes");
                 }
@@ -714,7 +714,7 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
         /// Verifies the stored Index CRC-32.
         private void verifyCrc() throws IOException {
             byte[] stored = readFully(Integer.BYTES);
-            if (XzSupport.getLittleEndian(stored, 0, stored.length) != crc32.getValue()) {
+            if (XZSupport.getLittleEndian(stored, 0, stored.length) != crc32.getValue()) {
                 throw new IOException("XZ Index CRC-32 mismatch");
             }
         }

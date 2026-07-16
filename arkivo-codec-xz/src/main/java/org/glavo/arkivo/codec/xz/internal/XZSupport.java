@@ -15,7 +15,7 @@ import java.util.zip.CRC32;
 
 /// Provides XZ constants and canonical integer utilities shared by stream readers and writers.
 @NotNullByDefault
-final class XzSupport {
+final class XZSupport {
     /// The XZ stream header signature.
     static final byte @Unmodifiable [] HEADER_MAGIC = {
             (byte) 0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00
@@ -49,7 +49,7 @@ final class XzSupport {
     static final long FILTER_LZMA2 = 0x21L;
 
     /// Prevents utility-class construction.
-    private XzSupport() {
+    private XZSupport() {
     }
 
     /// Returns the CRC-32 of one byte range.

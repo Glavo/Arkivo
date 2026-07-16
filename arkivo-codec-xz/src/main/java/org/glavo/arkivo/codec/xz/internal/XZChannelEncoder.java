@@ -30,7 +30,7 @@ import java.util.Objects;
 
 /// Encodes standards-compliant multi-Block and concatenated XZ streams directly to a channel.
 @NotNullByDefault
-public final class XzChannelEncoder implements CompressingWritableByteChannel {
+public final class XZChannelEncoder implements CompressingWritableByteChannel {
     /// The default LZMA2 dictionary size.
     public static final int DEFAULT_DICTIONARY_SIZE = 8 * 1024 * 1024;
 
@@ -44,7 +44,7 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
     private final OwnedChannelCloser targetCloser;
 
     /// The buffered XZ byte target.
-    private final XzChannelOutput output;
+    private final XZChannelOutput output;
 
     /// The LZMA2 model properties.
     private final LZMAProperties properties;
@@ -62,7 +62,7 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
     private final byte[] transferBuffer = new byte[8192];
 
     /// The active block check after the first write.
-    private @Nullable XzCheck blockCheck;
+    private @Nullable XZCheck blockCheck;
 
     /// The compressed-data counter after the first write.
     private @Nullable CountingChannel compressedCounter;
@@ -98,7 +98,7 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
     private boolean open = true;
 
     /// Creates an XZ encoder with explicit dictionary and integrity-check settings.
-    public XzChannelEncoder(
+    public XZChannelEncoder(
             WritableByteChannel target,
             ChannelOwnership ownership,
             int dictionarySize,
@@ -114,7 +114,7 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
     }
 
     /// Creates an XZ encoder with complete LZMA2 model and integrity-check settings.
-    public XzChannelEncoder(
+    public XZChannelEncoder(
             WritableByteChannel target,
             ChannelOwnership ownership,
             LZMAProperties properties,
@@ -124,7 +124,7 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
     }
 
     /// Creates an XZ encoder with complete LZMA2, integrity-check, and preprocessing settings.
-    public XzChannelEncoder(
+    public XZChannelEncoder(
             WritableByteChannel target,
             ChannelOwnership ownership,
             LZMAProperties properties,
@@ -135,7 +135,7 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
     }
 
     /// Creates an XZ encoder with complete filter and Block-layout settings.
-    public XzChannelEncoder(
+    public XZChannelEncoder(
             WritableByteChannel target,
             ChannelOwnership ownership,
             LZMAProperties properties,
@@ -149,12 +149,12 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
         this.target = Objects.requireNonNull(target, "target");
         this.targetCloser = new OwnedChannelCloser(target, ownership);
         this.properties = Objects.requireNonNull(properties, "properties");
-        XzSupport.lzma2DictionaryProperty(properties.dictionarySize());
-        XzCheck.create(checkType);
+        XZSupport.lzma2DictionaryProperty(properties.dictionarySize());
+        XZCheck.create(checkType);
         this.checkType = checkType;
         this.filterChain = Objects.requireNonNull(filterChain, "filterChain");
         this.maximumBlockSize = maximumBlockSize;
-        output = new XzChannelOutput(target);
+        output = new XZChannelOutput(target);
         try {
             writeStreamHeader();
         } catch (IOException | RuntimeException | Error exception) {
@@ -283,10 +283,10 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
     /// Writes the fixed Stream Header and its CRC-32.
     private void writeStreamHeader() throws IOException {
         byte[] header = new byte[12];
-        System.arraycopy(XzSupport.HEADER_MAGIC, 0, header, 0, XzSupport.HEADER_MAGIC.length);
+        System.arraycopy(XZSupport.HEADER_MAGIC, 0, header, 0, XZSupport.HEADER_MAGIC.length);
         header[6] = 0;
         header[7] = (byte) checkType;
-        XzSupport.putLittleEndian(header, 8, XzSupport.crc32(header, 6, 2), Integer.BYTES);
+        XZSupport.putLittleEndian(header, 8, XZSupport.crc32(header, 6, 2), Integer.BYTES);
         output.write(header);
     }
 
@@ -300,7 +300,7 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
         blockHeaderSize = header.length;
 
         CountingChannel counter = new CountingChannel(output);
-        blockCheck = XzCheck.create(checkType);
+        blockCheck = XZCheck.create(checkType);
         compressedCounter = counter;
         LZMA2ChannelEncoder encoder = new LZMA2ChannelEncoder(
                 counter,
@@ -364,8 +364,8 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
         }
         writeFilterDescriptor(
                 body,
-                XzSupport.FILTER_LZMA2,
-                new byte[]{(byte) XzSupport.lzma2DictionaryProperty(properties.dictionarySize())}
+                XZSupport.FILTER_LZMA2,
+                new byte[]{(byte) XZSupport.lzma2DictionaryProperty(properties.dictionarySize())}
         );
         while ((body.size() + Integer.BYTES & 3) != 0) {
             body.write(0);
@@ -374,10 +374,10 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
         byte[] bodyBytes = body.toByteArray();
         byte[] header = Arrays.copyOf(bodyBytes, bodyBytes.length + Integer.BYTES);
         header[0] = (byte) (header.length / 4 - 1);
-        XzSupport.putLittleEndian(
+        XZSupport.putLittleEndian(
                 header,
                 bodyBytes.length,
-                XzSupport.crc32(header, 0, bodyBytes.length),
+                XZSupport.crc32(header, 0, bodyBytes.length),
                 Integer.BYTES
         );
         return header;
@@ -389,7 +389,7 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
         if (filter instanceof XZDeltaFilter delta) {
             writeFilterDescriptor(
                     output,
-                    XzSupport.FILTER_DELTA,
+                    XZSupport.FILTER_DELTA,
                     new byte[]{(byte) (delta.distance() - 1L)}
             );
             return;
@@ -400,7 +400,7 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
                 properties = new byte[0];
             } else {
                 properties = new byte[Integer.BYTES];
-                XzSupport.putLittleEndian(properties, 0, bcj.startOffset(), Integer.BYTES);
+                XZSupport.putLittleEndian(properties, 0, bcj.startOffset(), Integer.BYTES);
             }
             writeFilterDescriptor(output, bcj.architecture().identifier(), properties);
             return;
@@ -414,8 +414,8 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
             long identifier,
             byte[] properties
     ) throws IOException {
-        XzSupport.writeVli(output, identifier);
-        XzSupport.writeVli(output, properties.length);
+        XZSupport.writeVli(output, identifier);
+        XZSupport.writeVli(output, properties.length);
         output.write(properties);
     }
 
@@ -462,28 +462,28 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
     private byte[] createIndex() throws IOException {
         ByteArrayOutputStream index = new ByteArrayOutputStream();
         index.write(0);
-        XzSupport.writeVli(index, blockCount);
+        XZSupport.writeVli(index, blockCount);
         for (int block = 0; block < blockCount; block++) {
-            XzSupport.writeVli(index, blockUnpaddedSizes[block]);
-            XzSupport.writeVli(index, blockUncompressedSizes[block]);
+            XZSupport.writeVli(index, blockUnpaddedSizes[block]);
+            XZSupport.writeVli(index, blockUncompressedSizes[block]);
         }
         while ((index.size() & 3) != 0) {
             index.write(0);
         }
         byte[] body = index.toByteArray();
-        XzSupport.writeCrc32(index, XzSupport.crc32(body, 0, body.length));
+        XZSupport.writeCrc32(index, XZSupport.crc32(body, 0, body.length));
         return index.toByteArray();
     }
 
     /// Writes the Stream Footer matching the Index and header flags.
     private void writeStreamFooter(int indexSize) throws IOException {
         byte[] footer = new byte[12];
-        XzSupport.putLittleEndian(footer, 4, indexSize / 4L - 1L, Integer.BYTES);
+        XZSupport.putLittleEndian(footer, 4, indexSize / 4L - 1L, Integer.BYTES);
         footer[8] = 0;
         footer[9] = (byte) checkType;
-        footer[10] = XzSupport.FOOTER_MAGIC[0];
-        footer[11] = XzSupport.FOOTER_MAGIC[1];
-        XzSupport.putLittleEndian(footer, 0, XzSupport.crc32(footer, 4, 6), Integer.BYTES);
+        footer[10] = XZSupport.FOOTER_MAGIC[0];
+        footer[11] = XZSupport.FOOTER_MAGIC[1];
+        XZSupport.putLittleEndian(footer, 0, XZSupport.crc32(footer, 4, 6), Integer.BYTES);
         output.write(footer);
     }
 
@@ -498,7 +498,7 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
     @NotNullByDefault
     private static final class CountingChannel implements WritableByteChannel {
         /// The XZ output target.
-        private final XzChannelOutput output;
+        private final XZChannelOutput output;
 
         /// The number of forwarded bytes.
         private long count;
@@ -507,7 +507,7 @@ public final class XzChannelEncoder implements CompressingWritableByteChannel {
         private boolean open = true;
 
         /// Creates a counting wrapper.
-        private CountingChannel(XzChannelOutput output) {
+        private CountingChannel(XZChannelOutput output) {
             this.output = output;
         }
 

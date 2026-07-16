@@ -13,7 +13,7 @@ import java.util.Objects;
 
 /// Supplies buffered bytes from an XZ source channel with one-byte pushback.
 @NotNullByDefault
-final class XzChannelInput {
+final class XZChannelInput {
     /// The compressed-data source.
     private final ReadableByteChannel source;
 
@@ -30,7 +30,7 @@ final class XzChannelInput {
     private long sourceByteCount;
 
     /// Creates a buffered XZ source.
-    XzChannelInput(ReadableByteChannel source) {
+    XZChannelInput(ReadableByteChannel source) {
         this.source = Objects.requireNonNull(source, "source");
         buffer.limit(0);
     }

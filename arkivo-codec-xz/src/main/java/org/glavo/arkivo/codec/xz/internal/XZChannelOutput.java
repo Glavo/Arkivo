@@ -12,7 +12,7 @@ import java.util.Objects;
 
 /// Buffers XZ bytes before writing them to a target channel.
 @NotNullByDefault
-final class XzChannelOutput {
+final class XZChannelOutput {
     /// The compressed-data target.
     private final WritableByteChannel target;
 
@@ -23,7 +23,7 @@ final class XzChannelOutput {
     private long byteCount;
 
     /// Creates a buffered XZ target.
-    XzChannelOutput(WritableByteChannel target) {
+    XZChannelOutput(WritableByteChannel target) {
         this.target = Objects.requireNonNull(target, "target");
     }
 

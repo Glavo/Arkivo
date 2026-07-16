@@ -13,7 +13,7 @@ import java.util.zip.CRC32;
 
 /// Calculates one XZ block integrity-check type.
 @NotNullByDefault
-final class XzCheck {
+final class XZCheck {
     /// The selected XZ check type.
     private final int type;
 
@@ -30,7 +30,7 @@ final class XzCheck {
     private final @Nullable MessageDigest sha256;
 
     /// Creates the selected check implementation.
-    private XzCheck(
+    private XZCheck(
             int type,
             int size,
             @Nullable CRC32 crc32,
@@ -45,12 +45,12 @@ final class XzCheck {
     }
 
     /// Creates a supported XZ integrity check.
-    static XzCheck create(int type) throws IOException {
+    static XZCheck create(int type) throws IOException {
         return switch (type) {
-            case XzSupport.CHECK_NONE -> new XzCheck(type, 0, null, null, null);
-            case XzSupport.CHECK_CRC32 -> new XzCheck(type, Integer.BYTES, new CRC32(), null, null);
-            case XzSupport.CHECK_CRC64 -> new XzCheck(type, Long.BYTES, null, new CRC64(), null);
-            case XzSupport.CHECK_SHA256 -> new XzCheck(type, 32, null, null, sha256());
+            case XZSupport.CHECK_NONE -> new XZCheck(type, 0, null, null, null);
+            case XZSupport.CHECK_CRC32 -> new XZCheck(type, Integer.BYTES, new CRC32(), null, null);
+            case XZSupport.CHECK_CRC64 -> new XZCheck(type, Long.BYTES, null, new CRC64(), null);
+            case XZSupport.CHECK_SHA256 -> new XZCheck(type, 32, null, null, sha256());
             default -> throw new IOException("Unsupported XZ integrity check type: " + type);
         };
     }
@@ -76,11 +76,11 @@ final class XzCheck {
     /// Updates this check with uncompressed bytes.
     void update(byte[] bytes, int offset, int length) {
         switch (type) {
-            case XzSupport.CHECK_NONE -> {
+            case XZSupport.CHECK_NONE -> {
             }
-            case XzSupport.CHECK_CRC32 -> java.util.Objects.requireNonNull(crc32).update(bytes, offset, length);
-            case XzSupport.CHECK_CRC64 -> java.util.Objects.requireNonNull(crc64).update(bytes, offset, length);
-            case XzSupport.CHECK_SHA256 -> java.util.Objects.requireNonNull(sha256).update(bytes, offset, length);
+            case XZSupport.CHECK_CRC32 -> java.util.Objects.requireNonNull(crc32).update(bytes, offset, length);
+            case XZSupport.CHECK_CRC64 -> java.util.Objects.requireNonNull(crc64).update(bytes, offset, length);
+            case XZSupport.CHECK_SHA256 -> java.util.Objects.requireNonNull(sha256).update(bytes, offset, length);
             default -> throw new AssertionError(type);
         }
     }
@@ -89,19 +89,19 @@ final class XzCheck {
     byte[] finish() {
         byte[] result = new byte[size];
         switch (type) {
-            case XzSupport.CHECK_NONE -> {
+            case XZSupport.CHECK_NONE -> {
             }
-            case XzSupport.CHECK_CRC32 -> {
+            case XZSupport.CHECK_CRC32 -> {
                 CRC32 state = java.util.Objects.requireNonNull(crc32);
-                XzSupport.putLittleEndian(result, 0, state.getValue(), Integer.BYTES);
+                XZSupport.putLittleEndian(result, 0, state.getValue(), Integer.BYTES);
                 state.reset();
             }
-            case XzSupport.CHECK_CRC64 -> {
+            case XZSupport.CHECK_CRC64 -> {
                 CRC64 state = java.util.Objects.requireNonNull(crc64);
-                XzSupport.putLittleEndian(result, 0, state.value(), Long.BYTES);
+                XZSupport.putLittleEndian(result, 0, state.value(), Long.BYTES);
                 state.reset();
             }
-            case XzSupport.CHECK_SHA256 -> {
+            case XZSupport.CHECK_SHA256 -> {
                 byte[] digest = java.util.Objects.requireNonNull(sha256).digest();
                 System.arraycopy(digest, 0, result, 0, result.length);
             }

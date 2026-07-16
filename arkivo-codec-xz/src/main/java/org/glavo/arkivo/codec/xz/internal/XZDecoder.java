@@ -31,7 +31,7 @@ import java.util.zip.CRC32;
 /// preprocessing filters retain only bounded lookahead. A Stream completes at its Footer; after reset, legal inter-Stream
 /// padding is consumed before the next Stream Header without retaining caller input.
 @NotNullByDefault
-public final class XzDecoder implements FramedCompressionDecoder {
+public final class XZDecoder implements FramedCompressionDecoder {
     /// The largest XZ Block Header size.
     private static final int MAXIMUM_METADATA_SIZE = 1024;
 
@@ -102,7 +102,7 @@ public final class XzDecoder implements FramedCompressionDecoder {
     ///
     /// @param maximumWindowSize maximum permitted LZMA2 dictionary size, or the shared unknown sentinel
     /// @param verifyChecksums whether supported Block integrity checks are verified
-    public XzDecoder(long maximumWindowSize, boolean verifyChecksums) {
+    public XZDecoder(long maximumWindowSize, boolean verifyChecksums) {
         this.maximumWindowSize = maximumWindowSize;
         this.verifyChecksums = verifyChecksums;
     }
@@ -251,7 +251,7 @@ public final class XzDecoder implements FramedCompressionDecoder {
                     if (!collectMetadata(source)) {
                         return inputOutcome(endOfInput);
                     }
-                    if (XzSupport.getLittleEndian(metadata, 0, Integer.BYTES) != indexCrc.getValue()) {
+                    if (XZSupport.getLittleEndian(metadata, 0, Integer.BYTES) != indexCrc.getValue()) {
                         throw new IOException("XZ Index CRC-32 mismatch");
                     }
                     indexEncodedSize = Math.addExact(indexByteCount, Integer.BYTES);
@@ -329,21 +329,21 @@ public final class XzDecoder implements FramedCompressionDecoder {
 
     /// Validates a complete XZ Stream Header and starts Block parsing.
     private void parseStreamHeader() throws IOException {
-        for (int index = 0; index < XzSupport.HEADER_MAGIC.length; index++) {
-            if (metadata[index] != XzSupport.HEADER_MAGIC[index]) {
+        for (int index = 0; index < XZSupport.HEADER_MAGIC.length; index++) {
+            if (metadata[index] != XZSupport.HEADER_MAGIC[index]) {
                 throw new IOException("Invalid XZ Stream Header signature");
             }
         }
-        if (XzSupport.crc32Mismatch(metadata, 6, 2, 8)) {
+        if (XZSupport.crc32Mismatch(metadata, 6, 2, 8)) {
             throw new IOException("XZ Stream Header CRC-32 mismatch");
         }
         if (metadata[6] != 0 || Byte.toUnsignedInt(metadata[7]) >= 16) {
             throw new IOException("Unsupported XZ Stream Header flags");
         }
         checkType = Byte.toUnsignedInt(metadata[7]);
-        XzCheck.sizeOf(checkType);
+        XZCheck.sizeOf(checkType);
         if (verifyChecksums) {
-            XzCheck.create(checkType);
+            XZCheck.create(checkType);
         }
         records.clear();
         block = null;
@@ -353,7 +353,7 @@ public final class XzDecoder implements FramedCompressionDecoder {
     /// Parses and validates a complete XZ Block Header.
     private BlockContext parseBlockHeader() throws IOException {
         int headerSize = metadataRequired;
-        if (XzSupport.crc32Mismatch(metadata, 0, headerSize - Integer.BYTES, headerSize - Integer.BYTES)) {
+        if (XZSupport.crc32Mismatch(metadata, 0, headerSize - Integer.BYTES, headerSize - Integer.BYTES)) {
             throw new IOException("XZ Block Header CRC-32 mismatch");
         }
 
@@ -367,24 +367,24 @@ public final class XzDecoder implements FramedCompressionDecoder {
             long compressedSize = -1L;
             long uncompressedSize = -1L;
             if ((flags & 0x40) != 0) {
-                compressedSize = XzSupport.readVli(fields);
+                compressedSize = XZSupport.readVli(fields);
                 if (compressedSize == 0L) {
                     throw new IOException("XZ Block declares an empty compressed-data field");
                 }
             }
             if ((flags & 0x80) != 0) {
-                uncompressedSize = XzSupport.readVli(fields);
+                uncompressedSize = XZSupport.readVli(fields);
             }
 
             Filter[] filters = new Filter[filterCount];
             for (int index = 0; index < filters.length; index++) {
-                long identifier = XzSupport.readVli(fields);
-                long propertySize = XzSupport.readVli(fields);
+                long identifier = XZSupport.readVli(fields);
+                long propertySize = XZSupport.readVli(fields);
                 if (propertySize > fields.available()) {
                     throw new IOException("XZ filter properties exceed the Block Header");
                 }
                 byte[] properties = new byte[(int) propertySize];
-                XzSupport.readFully(fields, properties, 0, properties.length);
+                XZSupport.readFully(fields, properties, 0, properties.length);
                 filters[index] = new Filter(identifier, properties);
             }
             while (fields.available() > 0) {
@@ -398,7 +398,7 @@ public final class XzDecoder implements FramedCompressionDecoder {
             if (terminal.properties().length != 1) {
                 throw new IOException("XZ LZMA2 filter requires one property byte");
             }
-            int dictionarySize = XzSupport.lzma2DictionarySize(
+            int dictionarySize = XZSupport.lzma2DictionarySize(
                     Byte.toUnsignedInt(terminal.properties()[0])
             );
             CompressionDecoderSupport.requireWindowSize(maximumWindowSize, dictionarySize);
@@ -413,8 +413,8 @@ public final class XzDecoder implements FramedCompressionDecoder {
                     uncompressedSize,
                     dictionarySize,
                     transforms,
-                    XzCheck.sizeOf(checkType),
-                    verifyChecksums ? XzCheck.create(checkType) : null
+                    XZCheck.sizeOf(checkType),
+                    verifyChecksums ? XZCheck.create(checkType) : null
             );
         } catch (DecompressionWindowLimitException exception) {
             throw exception;
@@ -425,14 +425,14 @@ public final class XzDecoder implements FramedCompressionDecoder {
 
     /// Validates the supported XZ filter ordering.
     private static void validateFilterChain(Filter[] filters) throws IOException {
-        if (filters[filters.length - 1].identifier() != XzSupport.FILTER_LZMA2) {
+        if (filters[filters.length - 1].identifier() != XZSupport.FILTER_LZMA2) {
             throw new IOException("XZ filter chain must end with LZMA2");
         }
         for (int index = 0; index < filters.length - 1; index++) {
             long identifier = filters[index].identifier();
-            if (identifier != XzSupport.FILTER_DELTA
-                    && (identifier < XzSupport.FILTER_BCJ_X86
-                    || identifier > XzSupport.FILTER_BCJ_RISCV)) {
+            if (identifier != XZSupport.FILTER_DELTA
+                    && (identifier < XZSupport.FILTER_BCJ_X86
+                    || identifier > XZSupport.FILTER_BCJ_RISCV)) {
                 throw new IOException("Unsupported nonterminal XZ filter: " + identifier);
             }
         }
@@ -442,18 +442,18 @@ public final class XzDecoder implements FramedCompressionDecoder {
     private static ByteTransform createDecodingTransform(Filter filter) throws IOException {
         long identifier = filter.identifier();
         byte[] properties = filter.properties();
-        if (identifier == XzSupport.FILTER_DELTA) {
+        if (identifier == XZSupport.FILTER_DELTA) {
             if (properties.length != 1) {
                 throw new IOException("XZ Delta filter requires one property byte");
             }
             return new DeltaTransform(false, Byte.toUnsignedInt(properties[0]) + 1);
         }
-        if (identifier >= XzSupport.FILTER_BCJ_X86 && identifier <= XzSupport.FILTER_BCJ_RISCV) {
+        if (identifier >= XZSupport.FILTER_BCJ_X86 && identifier <= XZSupport.FILTER_BCJ_RISCV) {
             int startOffset;
             if (properties.length == 0) {
                 startOffset = 0;
             } else if (properties.length == Integer.BYTES) {
-                startOffset = (int) XzSupport.getLittleEndian(properties, 0, Integer.BYTES);
+                startOffset = (int) XZSupport.getLittleEndian(properties, 0, Integer.BYTES);
             } else {
                 throw new IOException("XZ BCJ filter properties must contain zero or four bytes");
             }
@@ -536,15 +536,15 @@ public final class XzDecoder implements FramedCompressionDecoder {
 
     /// Validates the matching Stream Footer and its backward Index size.
     private void parseStreamFooter() throws IOException {
-        if (metadata[10] != XzSupport.FOOTER_MAGIC[0]
-                || metadata[11] != XzSupport.FOOTER_MAGIC[1]
-                || XzSupport.crc32Mismatch(metadata, 4, 6, 0)) {
+        if (metadata[10] != XZSupport.FOOTER_MAGIC[0]
+                || metadata[11] != XZSupport.FOOTER_MAGIC[1]
+                || XZSupport.crc32Mismatch(metadata, 4, 6, 0)) {
             throw new IOException("Invalid XZ Stream Footer");
         }
         if (metadata[8] != 0 || Byte.toUnsignedInt(metadata[9]) != checkType) {
             throw new IOException("XZ Stream Header and Footer flags differ");
         }
-        long storedBackwardSize = XzSupport.getLittleEndian(metadata, 4, Integer.BYTES);
+        long storedBackwardSize = XZSupport.getLittleEndian(metadata, 4, Integer.BYTES);
         long backwardSize;
         try {
             backwardSize = Math.multiplyExact(Math.addExact(storedBackwardSize, 1L), 4L);
@@ -614,7 +614,7 @@ public final class XzDecoder implements FramedCompressionDecoder {
         private final int checkSize;
 
         /// Active Block check calculator, or null when verification is disabled.
-        private final @Nullable XzCheck check;
+        private final @Nullable XZCheck check;
 
         /// Number of compressed-data bytes consumed by LZMA2.
         private long compressedSize;
@@ -633,7 +633,7 @@ public final class XzDecoder implements FramedCompressionDecoder {
                 int dictionarySize,
                 List<ByteTransform> transforms,
                 int checkSize,
-                @Nullable XzCheck check
+                @Nullable XZCheck check
         ) {
             this.headerSize = headerSize;
             this.declaredCompressedSize = declaredCompressedSize;
@@ -815,7 +815,7 @@ public final class XzDecoder implements FramedCompressionDecoder {
 
         /// Verifies the consumed Block check field when checksum verification is enabled.
         private void verifyCheck(byte[] stored, int length) throws IOException {
-            @Nullable XzCheck active = check;
+            @Nullable XZCheck active = check;
             if (active != null && !Arrays.equals(
                     Arrays.copyOf(stored, length),
                     active.finish()
@@ -892,7 +892,7 @@ public final class XzDecoder implements FramedCompressionDecoder {
         }
 
         /// Copies an exact number of original bytes to the caller and updates the optional check.
-        private void drainOutput(ByteBuffer target, int length, @Nullable XzCheck check) {
+        private void drainOutput(ByteBuffer target, int length, @Nullable XZCheck check) {
             Stage output = stages[stages.length - 1];
             if (check != null) {
                 check.update(output.bytes(), output.position(), length);

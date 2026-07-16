@@ -11,9 +11,9 @@ import org.glavo.arkivo.codec.FlushableFramedCompressionEncoder;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.xz.internal.XZCompressionFormat;
-import org.glavo.arkivo.codec.xz.internal.XzChannelEncoder;
-import org.glavo.arkivo.codec.xz.internal.XzDecoder;
-import org.glavo.arkivo.codec.xz.internal.XzEncoder;
+import org.glavo.arkivo.codec.xz.internal.XZChannelEncoder;
+import org.glavo.arkivo.codec.xz.internal.XZDecoder;
+import org.glavo.arkivo.codec.xz.internal.XZEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -26,7 +26,7 @@ public final class XZCodec implements CompressionCodec {
     public static final String NAME = "xz";
 
     /// The default XZ LZMA2 dictionary size.
-    public static final int DEFAULT_DICTIONARY_SIZE = XzChannelEncoder.DEFAULT_DICTIONARY_SIZE;
+    public static final int DEFAULT_DICTIONARY_SIZE = XZChannelEncoder.DEFAULT_DICTIONARY_SIZE;
 
     /// The default immutable XZ codec configuration.
     public static final XZCodec DEFAULT = builder().build();
@@ -149,7 +149,7 @@ public final class XZCodec implements CompressionCodec {
     /// Creates a flushable transport-independent XZ stream encoder.
     @Override
     public FlushableFramedCompressionEncoder newEncoder() throws IOException {
-        return new XzEncoder(properties, checkType.flag(), filterChain, blockSize);
+        return new XZEncoder(properties, checkType.flag(), filterChain, blockSize);
     }
 
     /// Creates a transport-independent XZ stream decoder with operation-scoped limits.
@@ -157,7 +157,7 @@ public final class XZCodec implements CompressionCodec {
     public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
         Objects.requireNonNull(limits, "limits");
         return CompressionDecoderSupport.limitEngineOutput(
-                new XzDecoder(limits.maximumWindowSize(), verifyChecksums),
+                new XZDecoder(limits.maximumWindowSize(), verifyChecksums),
                 limits.maximumOutputSize()
         );
     }

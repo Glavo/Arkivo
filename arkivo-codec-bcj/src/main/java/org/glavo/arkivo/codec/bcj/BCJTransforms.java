@@ -22,7 +22,7 @@ public final class BCJTransforms {
 
     /// Creates a big-endian PowerPC BCJ transform.
     public static ByteTransform powerPc(boolean encoder, int startOffset) {
-        return new PowerPcTransform(encoder, startOffset);
+        return new PowerPCTransform(encoder, startOffset);
     }
 
     /// Creates an IA-64 BCJ transform.
@@ -145,7 +145,7 @@ public final class BCJTransforms {
 
     /// Converts big-endian PowerPC branch instructions.
     @NotNullByDefault
-    private static final class PowerPcTransform implements ByteTransform {
+    private static final class PowerPCTransform implements ByteTransform {
         /// Whether each relative address is converted to its absolute form.
         private final boolean encoder;
 
@@ -153,7 +153,7 @@ public final class BCJTransforms {
         private int streamPosition;
 
         /// Creates a PowerPC encoder or decoder.
-        private PowerPcTransform(boolean encoder, int startOffset) {
+        private PowerPCTransform(boolean encoder, int startOffset) {
             this.encoder = encoder;
             this.streamPosition = startOffset;
         }
