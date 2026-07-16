@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
-import org.glavo.arkivo.codec.FlushableFramedCompressionEncoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -98,7 +98,7 @@ public final class GzipBufferEngineTest {
         byte[] second = "second finished gzip payload".repeat(32).getBytes(StandardCharsets.UTF_8);
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
 
-        try (FlushableFramedCompressionEncoder encoder = CODEC.newEncoder()) {
+        try (CompressionEncoder.FlushableFramed encoder = CODEC.newEncoder()) {
             encodeSource(encoder, ByteBuffer.wrap(first), encoded, 3);
             CodecOutcome outcome;
             do {
@@ -145,7 +145,7 @@ public final class GzipBufferEngineTest {
                 () -> decode(Arrays.copyOf(encoded, encoded.length - 1), 2, DecompressionLimits.UNLIMITED)
         );
 
-        FlushableFramedCompressionEncoder encoder = CODEC.newEncoder();
+        CompressionEncoder.FlushableFramed encoder = CODEC.newEncoder();
         ByteArrayOutputStream first = new ByteArrayOutputStream();
         encodeSource(encoder, ByteBuffer.wrap(input), first, 4);
         finish(encoder, first, 1);
@@ -171,7 +171,7 @@ public final class GzipBufferEngineTest {
 
         assertArrayEquals(input, decode(encoded, 1, exactLimits));
         assertThrows(DecompressionLimitException.class, () -> decode(encoded, 1, shortLimits));
-        try (FlushableFramedCompressionEncoder encoder = CODEC.newEncoder()) {
+        try (CompressionEncoder.FlushableFramed encoder = CODEC.newEncoder()) {
             assertEquals(CodecOutcome.BOUNDARY_REACHED, encoder.finishFrame(ByteBuffer.allocate(32)));
         }
     }
@@ -184,7 +184,7 @@ public final class GzipBufferEngineTest {
             boolean flushEachFragment
     ) throws IOException {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        try (FlushableFramedCompressionEncoder encoder = CODEC.newEncoder()) {
+        try (CompressionEncoder.FlushableFramed encoder = CODEC.newEncoder()) {
             for (int offset = 0; offset < input.length; offset += sourceFragmentSize) {
                 int end = Math.min(input.length, offset + sourceFragmentSize);
                 encodeSource(encoder, ByteBuffer.wrap(input, offset, end - offset).slice(), encoded, targetSize);
@@ -205,7 +205,7 @@ public final class GzipBufferEngineTest {
 
     /// Drives one source buffer until the encoder requests more input.
     private static void encodeSource(
-            FlushableFramedCompressionEncoder encoder,
+            CompressionEncoder.FlushableFramed encoder,
             ByteBuffer source,
             ByteArrayOutputStream encoded,
             int targetSize
@@ -223,7 +223,7 @@ public final class GzipBufferEngineTest {
 
     /// Drains member finalization with bounded target buffers.
     private static void finish(
-            FlushableFramedCompressionEncoder encoder,
+            CompressionEncoder.FlushableFramed encoder,
             ByteArrayOutputStream encoded,
             int targetSize
     ) throws IOException {

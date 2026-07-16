@@ -11,7 +11,7 @@ import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.CompressionStrategyCodec;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DictionaryCompressionCodec;
-import org.glavo.arkivo.codec.FlushableCompressionEncoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.ZlibCompressionFormat;
 import org.glavo.arkivo.codec.deflate.internal.ZlibDecoder;
 import org.glavo.arkivo.codec.deflate.internal.ZlibEncoder;
@@ -152,7 +152,7 @@ public final class ZlibCodec
 
     /// Creates a transport-independent zlib stream encoder.
     @Override
-    public FlushableCompressionEncoder newEncoder() {
+    public CompressionEncoder.Flushable newEncoder() {
         return new ZlibEncoder(compressionLevel, dictionary, compressionStrategy);
     }
 

@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
-import org.glavo.arkivo.codec.FlushableCompressionEncoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -93,7 +93,7 @@ public final class DeflateBufferEngineTest {
         byte[] second = "second finished payload".repeat(32).getBytes(StandardCharsets.UTF_8);
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
 
-        try (FlushableCompressionEncoder encoder = CODEC.newEncoder()) {
+        try (CompressionEncoder.Flushable encoder = CODEC.newEncoder()) {
             encodeSource(encoder, ByteBuffer.wrap(first), encoded, 3);
             CodecOutcome outcome;
             do {
@@ -133,7 +133,7 @@ public final class DeflateBufferEngineTest {
         }
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
 
-        try (FlushableCompressionEncoder encoder = CODEC.newEncoder()) {
+        try (CompressionEncoder.Flushable encoder = CODEC.newEncoder()) {
             ByteBuffer source = ByteBuffer.wrap(input);
             ByteBuffer firstTarget = ByteBuffer.allocate(1);
             CodecOutcome outcome = encoder.encode(source, firstTarget);
@@ -156,7 +156,7 @@ public final class DeflateBufferEngineTest {
     @Test
     public void lifecycleStateIsExplicit() throws IOException {
         byte[] input = testData();
-        FlushableCompressionEncoder encoder = CODEC.newEncoder();
+        CompressionEncoder.Flushable encoder = CODEC.newEncoder();
         ByteArrayOutputStream first = new ByteArrayOutputStream();
         encodeSource(encoder, ByteBuffer.wrap(input), first, 4);
         finish(encoder, first, 1);
@@ -197,7 +197,7 @@ public final class DeflateBufferEngineTest {
             boolean flushEachFragment
     ) throws IOException {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        try (FlushableCompressionEncoder encoder = CODEC.newEncoder()) {
+        try (CompressionEncoder.Flushable encoder = CODEC.newEncoder()) {
             for (int offset = 0; offset < input.length; offset += sourceFragmentSize) {
                 int end = Math.min(input.length, offset + sourceFragmentSize);
                 encodeSource(encoder, ByteBuffer.wrap(Arrays.copyOfRange(input, offset, end)), encoded, targetSize);
@@ -217,7 +217,7 @@ public final class DeflateBufferEngineTest {
 
     /// Drives one source buffer until the encoder requests more input.
     private static void encodeSource(
-            FlushableCompressionEncoder encoder,
+            CompressionEncoder.Flushable encoder,
             ByteBuffer source,
             ByteArrayOutputStream encoded,
             int targetSize
@@ -235,7 +235,7 @@ public final class DeflateBufferEngineTest {
 
     /// Drains encoder finalization with bounded target buffers.
     private static void finish(
-            FlushableCompressionEncoder encoder,
+            CompressionEncoder.Flushable encoder,
             ByteArrayOutputStream encoded,
             int targetSize
     ) throws IOException {

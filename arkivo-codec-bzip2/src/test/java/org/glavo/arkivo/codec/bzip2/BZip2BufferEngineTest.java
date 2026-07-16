@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
-import org.glavo.arkivo.codec.FramedCompressionEncoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -94,7 +94,7 @@ public final class BZip2BufferEngineTest {
         byte[] second = patternedData(9_001);
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
 
-        try (FramedCompressionEncoder encoder = CODEC.newEncoder()) {
+        try (CompressionEncoder.Framed encoder = CODEC.newEncoder()) {
             encodeSource(encoder, ByteBuffer.wrap(first), encoded, 5);
             CodecOutcome outcome;
             do {
@@ -132,7 +132,7 @@ public final class BZip2BufferEngineTest {
     @Test
     public void lifecycleAndLimits() throws IOException {
         byte[] content = patternedData(12_345);
-        FramedCompressionEncoder encoder = CODEC.newEncoder();
+        CompressionEncoder.Framed encoder = CODEC.newEncoder();
         ByteArrayOutputStream first = new ByteArrayOutputStream();
         encodeSource(encoder, ByteBuffer.wrap(content), first, 7);
         finish(encoder, first, 2);
@@ -162,7 +162,7 @@ public final class BZip2BufferEngineTest {
             int targetSize
     ) throws IOException {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        try (FramedCompressionEncoder encoder = codec.newEncoder()) {
+        try (CompressionEncoder.Framed encoder = codec.newEncoder()) {
             for (int offset = 0; offset < content.length; offset += sourceFragmentSize) {
                 int length = Math.min(sourceFragmentSize, content.length - offset);
                 encodeSource(
@@ -179,7 +179,7 @@ public final class BZip2BufferEngineTest {
 
     /// Drives one source buffer until the encoder requests more input.
     private static void encodeSource(
-            FramedCompressionEncoder encoder,
+            CompressionEncoder.Framed encoder,
             ByteBuffer source,
             ByteArrayOutputStream encoded,
             int targetSize
@@ -196,7 +196,7 @@ public final class BZip2BufferEngineTest {
 
     /// Drains encoder finalization with bounded target buffers.
     private static void finish(
-            FramedCompressionEncoder encoder,
+            CompressionEncoder.Framed encoder,
             ByteArrayOutputStream encoded,
             int targetSize
     ) throws IOException {

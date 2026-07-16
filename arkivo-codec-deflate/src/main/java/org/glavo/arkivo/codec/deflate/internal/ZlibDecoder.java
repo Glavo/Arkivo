@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DictionaryCompressionDecoder;
+import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -19,7 +19,7 @@ import java.util.zip.Adler32;
 
 /// Incrementally decodes and validates one zlib stream with explicit preset-dictionary negotiation.
 @NotNullByDefault
-public final class ZlibDecoder implements DictionaryCompressionDecoder {
+public final class ZlibDecoder implements CompressionDecoder.DictionaryAware {
     /// Zlib flag indicating a four-byte preset-dictionary identifier.
     private static final int FLAG_PRESET_DICTIONARY = 0x20;
 

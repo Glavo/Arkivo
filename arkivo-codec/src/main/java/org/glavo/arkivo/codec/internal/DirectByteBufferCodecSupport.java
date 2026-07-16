@@ -9,8 +9,6 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
-import org.glavo.arkivo.codec.DictionaryCompressionDecoder;
-import org.glavo.arkivo.codec.FramedCompressionDecoder;
 import org.glavo.arkivo.codec.PledgedSourceSizeCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 
@@ -223,7 +221,7 @@ final class DirectByteBufferCodecSupport {
                 limits.withMaximumOutputSize(DecompressionLimits.UNLIMITED_SIZE);
 
         try (CompressionDecoder decoder = codec.newDecoder(engineLimits)) {
-            boolean supportsConcatenation = decoder instanceof FramedCompressionDecoder;
+            boolean supportsConcatenation = decoder instanceof CompressionDecoder.Framed;
             boolean continueFrames = supportsConcatenation && !singleFrame;
             if (supportsConcatenation && !source.hasRemaining()) {
                 return output.toReadableBuffer();
@@ -274,7 +272,7 @@ final class DirectByteBufferCodecSupport {
                 limits.withMaximumOutputSize(DecompressionLimits.UNLIMITED_SIZE);
 
         try (CompressionDecoder decoder = codec.newDecoder(engineLimits)) {
-            boolean supportsConcatenation = decoder instanceof FramedCompressionDecoder;
+            boolean supportsConcatenation = decoder instanceof CompressionDecoder.Framed;
             boolean continueFrames = supportsConcatenation && !singleFrame;
             if (supportsConcatenation && !source.hasRemaining()) {
                 return;
@@ -345,7 +343,7 @@ final class DirectByteBufferCodecSupport {
             int targetPosition
     ) throws IOException {
         if (outcome == CodecOutcome.NEEDS_DICTIONARY) {
-            long dictionaryId = decoder instanceof DictionaryCompressionDecoder dictionaryDecoder
+            long dictionaryId = decoder instanceof CompressionDecoder.DictionaryAware dictionaryDecoder
                     ? dictionaryDecoder.requiredDictionaryId()
                     : CompressionCodec.UNKNOWN_SIZE;
             throw new IOException("Compression decoder requires dictionary " + dictionaryId);

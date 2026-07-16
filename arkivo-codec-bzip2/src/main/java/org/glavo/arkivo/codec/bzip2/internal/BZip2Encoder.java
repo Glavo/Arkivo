@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.bzip2.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
-import org.glavo.arkivo.codec.FramedCompressionEncoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -21,7 +21,7 @@ import java.util.Objects;
 /// additional source is accepted while complete compressed bytes await caller-owned target space. Flushing completes
 /// the current BZip2 frame, which is the format's independently decodable continuing-stream boundary.
 @NotNullByDefault
-public final class BZip2Encoder implements FramedCompressionEncoder {
+public final class BZip2Encoder implements CompressionEncoder.Framed {
     /// The largest source slice supplied to the block encoder at once.
     private static final int SOURCE_SLICE_SIZE = 16 * 1024;
 

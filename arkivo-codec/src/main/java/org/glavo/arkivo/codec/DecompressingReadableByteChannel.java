@@ -21,7 +21,7 @@ public interface DecompressingReadableByteChannel extends ReadableByteChannel {
 
     /// Decodes bytes with the requested frame-boundary behavior.
     ///
-    /// Channels backed by a FramedCompressionDecoder implement the STOP_AT_FRAME directive.
+    /// Channels backed by a CompressionDecoder.Framed implement the STOP_AT_FRAME directive.
     /// Other decoders retain their ordinary end-of-input behavior.
     default CodecResult decode(ByteBuffer target, DecodeDirective directive) throws IOException {
         Objects.requireNonNull(target, "target");

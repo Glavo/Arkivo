@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionLevelCodec;
 import org.glavo.arkivo.codec.DecompressionLimits;
-import org.glavo.arkivo.codec.FlushableCompressionEncoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.Deflate64Decoder;
 import org.glavo.arkivo.codec.deflate.internal.Deflate64CompressionFormat;
 import org.glavo.arkivo.codec.deflate.internal.Deflate64Encoder;
@@ -98,7 +98,7 @@ public final class Deflate64Codec implements CompressionLevelCodec {
 
     /// Creates a transport-independent raw Deflate64 encoder.
     @Override
-    public FlushableCompressionEncoder newEncoder() {
+    public CompressionEncoder.Flushable newEncoder() {
         return new Deflate64Encoder(compressionLevel);
     }
 

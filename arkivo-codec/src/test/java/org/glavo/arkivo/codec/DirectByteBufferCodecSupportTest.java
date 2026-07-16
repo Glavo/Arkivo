@@ -188,7 +188,7 @@ final class DirectByteBufferCodecSupportTest {
 
     /// Encodes one length-prefixed identity frame.
     @NotNullByDefault
-    private static final class LengthPrefixedEncoder implements FlushableCompressionEncoder {
+    private static final class LengthPrefixedEncoder implements CompressionEncoder.Flushable {
         /// The source byte count captured from the first encode operation.
         private int sourceSize = -1;
 
@@ -270,7 +270,7 @@ final class DirectByteBufferCodecSupportTest {
 
     /// Decodes one length-prefixed identity frame.
     @NotNullByDefault
-    private static final class LengthPrefixedDecoder implements FramedCompressionDecoder {
+    private static final class LengthPrefixedDecoder implements CompressionDecoder.Framed {
         /// The declared frame payload size, or a negative value before the header.
         private int expectedSize = -1;
 

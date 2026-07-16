@@ -11,7 +11,7 @@ import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.CompressionStrategyCodec;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DictionaryCompressionCodec;
-import org.glavo.arkivo.codec.FlushableCompressionEncoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.DeflateDecoder;
 import org.glavo.arkivo.codec.deflate.internal.DeflateCompressionFormat;
 import org.glavo.arkivo.codec.deflate.internal.DeflateEncoder;
@@ -158,7 +158,7 @@ public final class DeflateCodec
 
     /// Creates a transport-independent raw Deflate encoder.
     @Override
-    public FlushableCompressionEncoder newEncoder() {
+    public CompressionEncoder.Flushable newEncoder() {
         return new DeflateEncoder(compressionLevel, dictionary, compressionStrategy);
     }
 

@@ -8,8 +8,6 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
-import org.glavo.arkivo.codec.FlushableFramedCompressionEncoder;
-import org.glavo.arkivo.codec.FramedCompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -69,7 +67,7 @@ public final class XZBufferEngineTest {
         ByteArrayOutputStream secondEncoded = new ByteArrayOutputStream();
 
         try (CompressionEncoder generic = FILTERED_CODEC.newEncoder()) {
-            FramedCompressionEncoder encoder = assertInstanceOf(FramedCompressionEncoder.class, generic);
+            CompressionEncoder.Framed encoder = assertInstanceOf(CompressionEncoder.Framed.class, generic);
             encodeSource(encoder, ByteBuffer.wrap(first), firstEncoded, 3);
             finishFrame(encoder, firstEncoded, 1);
             encodeSource(encoder, ByteBuffer.wrap(second), secondEncoded, 3);
@@ -113,7 +111,7 @@ public final class XZBufferEngineTest {
         byte[] second = patternedData(8_123);
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
 
-        try (FlushableFramedCompressionEncoder encoder = FILTERED_CODEC.newEncoder()) {
+        try (CompressionEncoder.FlushableFramed encoder = FILTERED_CODEC.newEncoder()) {
             encodeSource(encoder, ByteBuffer.wrap(first), encoded, 3);
             CodecOutcome flushOutcome;
             do {
@@ -172,7 +170,7 @@ public final class XZBufferEngineTest {
                 DecompressionLimitException.class,
                 () -> CODEC.decompress(ByteBuffer.wrap(first.toByteArray()), limited)
         );
-        assertInstanceOf(FlushableFramedCompressionEncoder.class, CODEC.newEncoder()).close();
+        assertInstanceOf(CompressionEncoder.FlushableFramed.class, CODEC.newEncoder()).close();
     }
 
     /// Encodes source fragments into one XZ Stream.
@@ -247,7 +245,7 @@ public final class XZBufferEngineTest {
 
     /// Drains one nonterminal XZ Stream finalization.
     private static void finishFrame(
-            FramedCompressionEncoder encoder,
+            CompressionEncoder.Framed encoder,
             ByteArrayOutputStream encoded,
             int targetSize
     ) throws IOException {

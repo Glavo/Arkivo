@@ -282,7 +282,7 @@ final class CompressionChannelContextTest {
 
     /// Copies source bytes directly while exposing flush and frame boundaries.
     @NotNullByDefault
-    private static final class IdentityEncoder implements FlushableFramedCompressionEncoder {
+    private static final class IdentityEncoder implements CompressionEncoder.FlushableFramed {
         /// Copies as many source bytes as the target can accept.
         @Override
         public CodecOutcome encode(ByteBuffer source, ByteBuffer target) {

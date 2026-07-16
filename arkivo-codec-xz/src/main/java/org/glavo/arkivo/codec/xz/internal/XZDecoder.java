@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.xz.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
-import org.glavo.arkivo.codec.FramedCompressionDecoder;
+import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.delta.DeltaTransform;
@@ -31,7 +31,7 @@ import java.util.zip.CRC32;
 /// preprocessing filters retain only bounded lookahead. A Stream completes at its Footer; after reset, legal inter-Stream
 /// padding is consumed before the next Stream Header without retaining caller input.
 @NotNullByDefault
-public final class XZDecoder implements FramedCompressionDecoder {
+public final class XZDecoder implements CompressionDecoder.Framed {
     /// The largest XZ Block Header size.
     private static final int MAXIMUM_METADATA_SIZE = 1024;
 

@@ -9,9 +9,7 @@ import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
-import org.glavo.arkivo.codec.DictionaryCompressionDecoder;
-import org.glavo.arkivo.codec.FlushableCompressionEncoder;
-import org.glavo.arkivo.codec.FramedCompressionEncoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -106,8 +104,8 @@ public final class ZlibBufferEngineTest {
         ByteBuffer source = ByteBuffer.wrap(encoded);
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
 
-        try (DictionaryCompressionDecoder decoder =
-                     (DictionaryCompressionDecoder) CODEC.newDecoder()) {
+        try (CompressionDecoder.DictionaryAware decoder =
+                     (CompressionDecoder.DictionaryAware) CODEC.newDecoder()) {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocate(5);
@@ -147,7 +145,7 @@ public final class ZlibBufferEngineTest {
         byte[] second = "second finished zlib payload".repeat(32).getBytes(StandardCharsets.UTF_8);
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
 
-        try (FlushableCompressionEncoder encoder = CODEC.newEncoder()) {
+        try (CompressionEncoder.Flushable encoder = CODEC.newEncoder()) {
             encodeSource(encoder, ByteBuffer.wrap(first), encoded, 3);
             CodecOutcome outcome;
             do {
@@ -230,7 +228,7 @@ public final class ZlibBufferEngineTest {
                 () -> decode(encoded, 1, CODEC, shortLimits)
         );
 
-        FlushableCompressionEncoder encoder = CODEC.newEncoder();
+        CompressionEncoder.Flushable encoder = CODEC.newEncoder();
         ByteArrayOutputStream first = new ByteArrayOutputStream();
         encodeSource(encoder, ByteBuffer.wrap(input), first, 4);
         finish(encoder, first, 1);
@@ -240,7 +238,7 @@ public final class ZlibBufferEngineTest {
         encodeSource(encoder, ByteBuffer.wrap(input), second, 4);
         finish(encoder, second, 1);
         assertArrayEquals(first.toByteArray(), second.toByteArray());
-        assertFalse(encoder instanceof FramedCompressionEncoder);
+        assertFalse(encoder instanceof CompressionEncoder.Framed);
         encoder.close();
         assertThrows(IllegalStateException.class, encoder::reset);
 
@@ -254,7 +252,7 @@ public final class ZlibBufferEngineTest {
             int targetSize
     ) throws IOException {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        try (FlushableCompressionEncoder encoder = codec.newEncoder()) {
+        try (CompressionEncoder.Flushable encoder = codec.newEncoder()) {
             for (int offset = 0; offset < input.length; offset += sourceFragmentSize) {
                 int length = Math.min(sourceFragmentSize, input.length - offset);
                 encodeSource(encoder, ByteBuffer.wrap(input, offset, length).slice(), encoded, targetSize);
@@ -266,7 +264,7 @@ public final class ZlibBufferEngineTest {
 
     /// Drives one source buffer until the encoder requests more input.
     private static void encodeSource(
-            FlushableCompressionEncoder encoder,
+            CompressionEncoder.Flushable encoder,
             ByteBuffer source,
             ByteArrayOutputStream encoded,
             int targetSize
@@ -284,7 +282,7 @@ public final class ZlibBufferEngineTest {
 
     /// Drains stream finalization with bounded target buffers.
     private static void finish(
-            FlushableCompressionEncoder encoder,
+            CompressionEncoder.Flushable encoder,
             ByteArrayOutputStream encoded,
             int targetSize
     ) throws IOException {

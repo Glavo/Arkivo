@@ -34,4 +34,42 @@ public interface CompressionEncoder extends AutoCloseable {
     /// Releases encoder resources without implicitly finishing the current encoding.
     @Override
     void close();
+
+    /// Encodes a format that can expose a decodable boundary without ending the active encoding.
+    @NotNullByDefault
+    interface Flushable extends CompressionEncoder {
+        /// Emits all currently pending output to a decodable boundary without ending the encoding.
+        ///
+        /// Callers repeat this operation with fresh target space after `CodecOutcome.NEEDS_OUTPUT`.
+        ///
+        /// @return `CodecOutcome.FLUSHED` when flushing completed, or `CodecOutcome.NEEDS_OUTPUT` otherwise
+        CodecOutcome flush(ByteBuffer target) throws IOException;
+    }
+
+    /// Incrementally encodes a sequence of independently terminated compression frames.
+    ///
+    /// Completing a frame preserves immutable encoder configuration and leaves the encoder ready to accept source bytes
+    /// for a following frame. The following frame may be initialized lazily.
+    @NotNullByDefault
+    interface Framed extends CompressionEncoder {
+        /// Finishes the current frame without finishing the complete encoding session.
+        ///
+        /// Callers repeat this operation with fresh target space after `CodecOutcome.NEEDS_OUTPUT`.
+        ///
+        /// @return `CodecOutcome.BOUNDARY_REACHED` when the frame boundary completed, or
+        /// `CodecOutcome.NEEDS_OUTPUT` otherwise
+        default CodecOutcome finishFrame(ByteBuffer target) throws IOException {
+            CodecOutcome outcome = finish(target);
+            if (outcome == CodecOutcome.FINISHED) {
+                reset();
+                return CodecOutcome.BOUNDARY_REACHED;
+            }
+            return outcome;
+        }
+    }
+
+    /// Encodes independently terminated frames and supports nonterminal flushing within each active frame.
+    @NotNullByDefault
+    interface FlushableFramed extends Framed, Flushable {
+    }
 }

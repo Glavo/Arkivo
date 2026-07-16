@@ -40,12 +40,12 @@ public interface CompressingWritableByteChannel extends WritableByteChannel {
 
     /// Flushes currently pending output without ending the current frame.
     ///
-    /// This operation throws UnsupportedOperationException when the engine is not a FlushableCompressionEncoder.
+    /// This operation throws UnsupportedOperationException when the engine is not a CompressionEncoder.Flushable.
     void flush() throws IOException;
 
     /// Finishes the current frame.
     ///
-    /// A FramedCompressionEncoder remains open and starts another frame lazily.
+    /// A CompressionEncoder.Framed remains open and starts another frame lazily.
     /// Other encoders finish and release their resources.
     default void finishFrame() throws IOException {
         finish();

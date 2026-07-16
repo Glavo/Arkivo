@@ -7,8 +7,6 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.DecompressionLimitException;
-import org.glavo.arkivo.codec.DictionaryCompressionDecoder;
-import org.glavo.arkivo.codec.FramedCompressionDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -36,8 +34,8 @@ class OutputLimitingCompressionDecoder implements CompressionDecoder {
     /// Creates a capability-preserving limiting wrapper around one decoder engine.
     static CompressionDecoder create(CompressionDecoder decoder, long maximumOutputSize) {
         Objects.requireNonNull(decoder, "decoder");
-        boolean framed = decoder instanceof FramedCompressionDecoder;
-        boolean dictionary = decoder instanceof DictionaryCompressionDecoder;
+        boolean framed = decoder instanceof CompressionDecoder.Framed;
+        boolean dictionary = decoder instanceof CompressionDecoder.DictionaryAware;
         if (framed && dictionary) {
             return new FramedDictionaryDecoder(decoder, maximumOutputSize);
         }
@@ -107,8 +105,8 @@ class OutputLimitingCompressionDecoder implements CompressionDecoder {
     }
 
     /// Returns the wrapped decoder as a dictionary-aware engine.
-    final DictionaryCompressionDecoder dictionaryDecoder() {
-        return (DictionaryCompressionDecoder) decoder;
+    final CompressionDecoder.DictionaryAware dictionaryDecoder() {
+        return (CompressionDecoder.DictionaryAware) decoder;
     }
 
     /// Decodes one hidden byte to determine whether the configured limit is exceeded.
@@ -134,7 +132,7 @@ class OutputLimitingCompressionDecoder implements CompressionDecoder {
     @NotNullByDefault
     private static final class FramedDecoder
             extends OutputLimitingCompressionDecoder
-            implements FramedCompressionDecoder {
+            implements CompressionDecoder.Framed {
         /// Creates a framed limiting wrapper.
         private FramedDecoder(CompressionDecoder decoder, long maximumOutputSize) {
             super(decoder, maximumOutputSize);
@@ -145,7 +143,7 @@ class OutputLimitingCompressionDecoder implements CompressionDecoder {
     @NotNullByDefault
     private static class DictionaryDecoder
             extends OutputLimitingCompressionDecoder
-            implements DictionaryCompressionDecoder {
+            implements CompressionDecoder.DictionaryAware {
         /// Creates a dictionary-aware limiting wrapper.
         private DictionaryDecoder(CompressionDecoder decoder, long maximumOutputSize) {
             super(decoder, maximumOutputSize);
@@ -168,7 +166,7 @@ class OutputLimitingCompressionDecoder implements CompressionDecoder {
     @NotNullByDefault
     private static final class FramedDictionaryDecoder
             extends DictionaryDecoder
-            implements FramedCompressionDecoder {
+            implements CompressionDecoder.Framed {
         /// Creates a framed dictionary-aware limiting wrapper.
         private FramedDictionaryDecoder(CompressionDecoder decoder, long maximumOutputSize) {
             super(decoder, maximumOutputSize);

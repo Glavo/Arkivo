@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionLevelCodec;
 import org.glavo.arkivo.codec.DecompressionLimits;
-import org.glavo.arkivo.codec.FramedCompressionEncoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2ChannelEncoder;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2CompressionFormat;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2Decoder;
@@ -94,7 +94,7 @@ public final class BZip2Codec implements CompressionLevelCodec {
 
     /// Creates a transport-independent BZip2 framed encoder.
     @Override
-    public FramedCompressionEncoder newEncoder() {
+    public CompressionEncoder.Framed newEncoder() {
         return new BZip2Encoder(compressionLevel);
     }
 

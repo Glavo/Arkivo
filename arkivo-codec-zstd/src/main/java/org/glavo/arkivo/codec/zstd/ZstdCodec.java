@@ -8,8 +8,8 @@ import org.glavo.arkivo.codec.CompressionLevelCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DictionaryCompressionCodec;
-import org.glavo.arkivo.codec.DictionaryCompressionDecoder;
-import org.glavo.arkivo.codec.FlushableFramedCompressionEncoder;
+import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.PledgedSourceSizeCodec;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.zstd.internal.ZstdCompressionFormat;
@@ -459,13 +459,13 @@ public final class ZstdCodec
 
     /// Creates a framed encoder without a known source size.
     @Override
-    public FlushableFramedCompressionEncoder newEncoder() throws IOException {
+    public CompressionEncoder.FlushableFramed newEncoder() throws IOException {
         return newEncoder(UNKNOWN_SIZE);
     }
 
     /// Creates a framed encoder with optional exact source-size metadata.
     @Override
-    public FlushableFramedCompressionEncoder newEncoder(long pledgedSourceSize) throws IOException {
+    public CompressionEncoder.FlushableFramed newEncoder(long pledgedSourceSize) throws IOException {
         requirePledgedSourceSize(pledgedSourceSize);
         return new ZstdEncoder(
                 createEncoderParameters(pledgedSourceSize),
@@ -475,15 +475,15 @@ public final class ZstdCodec
 
     /// Creates an unrestricted dictionary-aware framed decoder.
     @Override
-    public DictionaryCompressionDecoder newDecoder() throws IOException {
+    public CompressionDecoder.DictionaryAware newDecoder() throws IOException {
         return newDecoder(DecompressionLimits.UNLIMITED);
     }
 
     /// Creates a framed decoder with operation-scoped safety limits.
     @Override
-    public DictionaryCompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
+    public CompressionDecoder.DictionaryAware newDecoder(DecompressionLimits limits) throws IOException {
         Objects.requireNonNull(limits, "limits");
-        return (DictionaryCompressionDecoder) CompressionDecoderSupport.limitEngineOutput(
+        return (CompressionDecoder.DictionaryAware) CompressionDecoderSupport.limitEngineOutput(
                 new ZstdDecoder(
                         dictionary,
                         limits.maximumWindowSize(),

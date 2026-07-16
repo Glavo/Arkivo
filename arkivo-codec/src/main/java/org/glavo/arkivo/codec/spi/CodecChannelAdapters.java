@@ -13,10 +13,6 @@ import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DictionaryCompressionDecoder;
-import org.glavo.arkivo.codec.FlushableCompressionEncoder;
-import org.glavo.arkivo.codec.FramedCompressionDecoder;
-import org.glavo.arkivo.codec.FramedCompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
@@ -59,7 +55,7 @@ public final class CodecChannelAdapters {
                 target,
                 targetCloser,
                 encoder,
-                encoder instanceof FramedCompressionEncoder
+                encoder instanceof CompressionEncoder.Framed
         );
     }
     /// Creates a decoding channel and derives frame behavior from the created engine.
@@ -83,7 +79,7 @@ public final class CodecChannelAdapters {
                 source,
                 sourceCloser,
                 decoder,
-                decoder instanceof FramedCompressionDecoder
+                decoder instanceof CompressionDecoder.Framed
         );
     }
     /// Creates one transport-independent encoder.
@@ -188,7 +184,7 @@ public final class CodecChannelAdapters {
             if (multipleFrames && !frameActive) {
                 return;
             }
-            if (!(encoder instanceof FlushableCompressionEncoder flushableEncoder)) {
+            if (!(encoder instanceof CompressionEncoder.Flushable flushableEncoder)) {
                 throw new UnsupportedOperationException("This compression format does not support flushing");
             }
             while (true) {
@@ -218,7 +214,7 @@ public final class CodecChannelAdapters {
             if (!frameActive) {
                 return;
             }
-            if (encoder instanceof FramedCompressionEncoder framedEncoder) {
+            if (encoder instanceof CompressionEncoder.Framed framedEncoder) {
                 finishEngineFrame(framedEncoder);
             } else {
                 finishEngine();
@@ -296,7 +292,7 @@ public final class CodecChannelAdapters {
         }
 
         /// Drains one non-terminal frame boundary from a framed encoder engine.
-        private void finishEngineFrame(FramedCompressionEncoder framedEncoder) throws IOException {
+        private void finishEngineFrame(CompressionEncoder.Framed framedEncoder) throws IOException {
             while (true) {
                 output.clear();
                 CodecOutcome outcome = framedEncoder.finishFrame(output);
@@ -484,7 +480,7 @@ public final class CodecChannelAdapters {
                     continue;
                 }
                 if (outcome == CodecOutcome.NEEDS_DICTIONARY) {
-                    long dictionaryId = decoder instanceof DictionaryCompressionDecoder dictionaryDecoder
+                    long dictionaryId = decoder instanceof CompressionDecoder.DictionaryAware dictionaryDecoder
                             ? dictionaryDecoder.requiredDictionaryId()
                             : CompressionDictionary.UNKNOWN_ID;
                     throw new IOException("Compression decoder requires dictionary " + dictionaryId);

@@ -5,8 +5,7 @@ package org.glavo.arkivo.codec.zstd.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DictionaryCompressionDecoder;
-import org.glavo.arkivo.codec.FramedCompressionDecoder;
+import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.zstd.ZstdFrameInfo;
@@ -22,7 +21,7 @@ import java.util.Objects;
 
 /// Incrementally decodes one Zstandard frame without retaining caller-owned buffers.
 @NotNullByDefault
-public final class ZstdDecoder implements FramedCompressionDecoder, DictionaryCompressionDecoder {
+public final class ZstdDecoder implements CompressionDecoder.Framed, CompressionDecoder.DictionaryAware {
     /// Empty decoded output.
     private static final ByteBuffer EMPTY_OUTPUT = ByteBuffer.allocate(0).asReadOnlyBuffer();
 

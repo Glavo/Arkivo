@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.zstd.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
-import org.glavo.arkivo.codec.FlushableFramedCompressionEncoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -16,7 +16,7 @@ import java.util.Objects;
 
 /// Incrementally encodes a sequence of Zstandard frames without binding caller-visible state to a channel.
 @NotNullByDefault
-public final class ZstdEncoder implements FlushableFramedCompressionEncoder {
+public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
     /// Validated immutable encoder parameters.
     private final ZstdEncoderParameters parameters;
 

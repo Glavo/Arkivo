@@ -24,9 +24,6 @@ import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DictionaryCompressionCodec;
 import org.glavo.arkivo.codec.EncodeDirective;
-import org.glavo.arkivo.codec.FlushableCompressionEncoder;
-import org.glavo.arkivo.codec.FramedCompressionDecoder;
-import org.glavo.arkivo.codec.FramedCompressionEncoder;
 import org.glavo.arkivo.codec.PledgedSourceSizeCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -979,14 +976,14 @@ final class CodecChannelContractTest {
     /// Returns whether a new encoder exposes incremental flush support.
     private static boolean hasFlushableEncoder(CompressionCodec codec) throws IOException {
         try (CompressionEncoder encoder = codec.newEncoder()) {
-            return encoder instanceof FlushableCompressionEncoder;
+            return encoder instanceof CompressionEncoder.Flushable;
         }
     }
 
     /// Returns whether a new encoder can finish multiple independent frames.
     private static boolean hasFramedEncoder(CompressionCodec codec) throws IOException {
         try (CompressionEncoder encoder = codec.newEncoder()) {
-            return encoder instanceof FramedCompressionEncoder;
+            return encoder instanceof CompressionEncoder.Framed;
         }
     }
 
@@ -994,7 +991,7 @@ final class CodecChannelContractTest {
     private static boolean hasFramedDecoder(CompressionCodec codec) throws IOException {
         CompressionCodec decoderCodec = CodecContractConfigurations.decoderCodec(codec, 0L);
         try (CompressionDecoder decoder = decoderCodec.newDecoder()) {
-            return decoder instanceof FramedCompressionDecoder;
+            return decoder instanceof CompressionDecoder.Framed;
         }
     }
 

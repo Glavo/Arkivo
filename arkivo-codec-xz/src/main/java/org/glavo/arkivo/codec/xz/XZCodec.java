@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.DecompressionLimits;
-import org.glavo.arkivo.codec.FlushableFramedCompressionEncoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.xz.internal.XZCompressionFormat;
@@ -148,7 +148,7 @@ public final class XZCodec implements CompressionCodec {
 
     /// Creates a flushable transport-independent XZ stream encoder.
     @Override
-    public FlushableFramedCompressionEncoder newEncoder() throws IOException {
+    public CompressionEncoder.FlushableFramed newEncoder() throws IOException {
         return new XZEncoder(properties, checkType.flag(), filterChain, blockSize);
     }
 

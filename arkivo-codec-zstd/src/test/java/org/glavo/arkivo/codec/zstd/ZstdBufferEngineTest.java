@@ -13,9 +13,6 @@ import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
-import org.glavo.arkivo.codec.DictionaryCompressionDecoder;
-import org.glavo.arkivo.codec.FlushableFramedCompressionEncoder;
-import org.glavo.arkivo.codec.FramedCompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -105,7 +102,7 @@ public final class ZstdBufferEngineTest {
         ByteBuffer source = ByteBuffer.wrap(encoded);
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
 
-        try (DictionaryCompressionDecoder decoder = CODEC.newDecoder()) {
+        try (CompressionDecoder.DictionaryAware decoder = CODEC.newDecoder()) {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocate(7);
@@ -223,7 +220,7 @@ public final class ZstdBufferEngineTest {
         byte[] second = testData(17_009);
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
 
-        try (FramedCompressionEncoder encoder = CODEC.newEncoder()) {
+        try (CompressionEncoder.Framed encoder = CODEC.newEncoder()) {
             encodeSource(encoder, ByteBuffer.wrap(first), encoded, 11);
             finishFrame(encoder, encoded, 3);
             int firstEnd = encoded.size();
@@ -253,7 +250,7 @@ public final class ZstdBufferEngineTest {
     /// Encodes input fragments into one frame.
     private static byte[] encode(
             byte[] input,
-            FlushableFramedCompressionEncoder encoder,
+            CompressionEncoder.FlushableFramed encoder,
             int sourceFragmentSize,
             int targetSize,
             boolean flushEachFragment
@@ -290,7 +287,7 @@ public final class ZstdBufferEngineTest {
     }
 
     /// Drains one encoder flush operation.
-    private static void flush(FlushableFramedCompressionEncoder encoder, ByteArrayOutputStream encoded, int targetSize)
+    private static void flush(CompressionEncoder.FlushableFramed encoder, ByteArrayOutputStream encoded, int targetSize)
             throws IOException {
         CodecOutcome outcome;
         do {
@@ -303,7 +300,7 @@ public final class ZstdBufferEngineTest {
 
     /// Drains one non-terminal Zstandard frame-finalization operation.
     private static void finishFrame(
-            FramedCompressionEncoder encoder,
+            CompressionEncoder.Framed encoder,
             ByteArrayOutputStream encoded,
             int targetSize
     ) throws IOException {

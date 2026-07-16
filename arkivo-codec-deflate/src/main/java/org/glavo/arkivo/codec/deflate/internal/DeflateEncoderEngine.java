@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.FlushableCompressionEncoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -24,7 +24,7 @@ import java.util.PriorityQueue;
 /// stored, fixed-Huffman, or dynamic-Huffman blocks from their exact encoded bit costs and retains only bounded format
 /// history plus the current block.
 @NotNullByDefault
-public final class DeflateEncoderEngine implements FlushableCompressionEncoder {
+public final class DeflateEncoderEngine implements CompressionEncoder.Flushable {
     /// The maximum uncompressed bytes buffered before a block decision.
     private static final int BLOCK_SIZE = 1 << 16;
 

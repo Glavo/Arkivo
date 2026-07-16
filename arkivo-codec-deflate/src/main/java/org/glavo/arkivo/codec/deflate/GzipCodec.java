@@ -9,7 +9,7 @@ import org.glavo.arkivo.codec.CompressionLevelCodec;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.CompressionStrategyCodec;
 import org.glavo.arkivo.codec.DecompressionLimits;
-import org.glavo.arkivo.codec.FlushableFramedCompressionEncoder;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.GzipCompressionFormat;
 import org.glavo.arkivo.codec.deflate.internal.GzipDecoder;
 import org.glavo.arkivo.codec.deflate.internal.GzipEncoder;
@@ -121,7 +121,7 @@ public final class GzipCodec implements CompressionLevelCodec, CompressionStrate
 
     /// Creates a flushable transport-independent gzip member encoder.
     @Override
-    public FlushableFramedCompressionEncoder newEncoder() {
+    public CompressionEncoder.FlushableFramed newEncoder() {
         return new GzipEncoder(compressionLevel, compressionStrategy);
     }
 
