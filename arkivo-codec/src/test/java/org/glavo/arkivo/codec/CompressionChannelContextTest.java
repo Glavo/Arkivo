@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec;
 
-import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -14,7 +14,6 @@ import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -22,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies channel context progress, ownership, transfer, and option contracts.
+/// Verifies channel context progress, ownership, transfer, and typed configuration contracts.
 @NotNullByDefault
 final class CompressionChannelContextTest {
     /// The identity codec used to isolate generic channel behavior.
@@ -42,6 +41,8 @@ final class CompressionChannelContextTest {
         assertEquals(new CodecResult(1, 1, CodecStatus.FRAME_FINISHED), finished);
         assertEquals(4, encoder.inputBytes());
         assertEquals(4, encoder.outputBytes());
+        assertTrue(encoder.isOpen());
+        encoder.finish();
         assertFalse(encoder.isOpen());
         assertTrue(target.isOpen());
         assertArrayEquals(new byte[]{1, 2, 3, 4}, bytes.toByteArray());
@@ -70,7 +71,6 @@ final class CompressionChannelContextTest {
         WritableByteChannel target = Channels.newChannel(new ByteArrayOutputStream());
         try (CompressingWritableByteChannel encoder = CODEC.openEncoder(
                 target,
-                CodecOptions.EMPTY,
                 ChannelOwnership.CLOSE
         )) {
             encoder.encode(ByteBuffer.wrap(new byte[]{1}), EncodeDirective.END_FRAME);
@@ -80,7 +80,6 @@ final class CompressionChannelContextTest {
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(new byte[]{1}));
         try (DecompressingReadableByteChannel decoder = CODEC.openDecoder(
                 source,
-                CodecOptions.EMPTY,
                 ChannelOwnership.CLOSE
         )) {
             decoder.decode(ByteBuffer.allocate(1));
@@ -94,7 +93,6 @@ final class CompressionChannelContextTest {
         FailingCloseWritableChannel target = new FailingCloseWritableChannel();
         CompressingWritableByteChannel encoder = CODEC.openEncoder(
                 target,
-                CodecOptions.EMPTY,
                 ChannelOwnership.CLOSE
         );
         encoder.write(ByteBuffer.wrap(new byte[]{1, 2, 3}));
@@ -109,7 +107,6 @@ final class CompressionChannelContextTest {
         FailingCloseReadableChannel source = new FailingCloseReadableChannel(new byte[]{4, 5, 6});
         DecompressingReadableByteChannel decoder = CODEC.openDecoder(
                 source,
-                CodecOptions.EMPTY,
                 ChannelOwnership.CLOSE
         );
         assertThrows(IOException.class, decoder::close);
@@ -146,22 +143,13 @@ final class CompressionChannelContextTest {
         assertArrayEquals(new byte[]{8, 9, 10}, decodedBytes.toByteArray());
     }
 
-    /// Verifies unsupported typed options fail before a context is opened.
+    /// Verifies unsupported configuration is absent from the codec type instead of rejected at runtime.
     @Test
-    void rejectsUnsupportedOptions() {
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.COMPRESSION_LEVEL, 3L)
-                .build();
-        WritableByteChannel target = Channels.newChannel(new ByteArrayOutputStream());
-
-        assertThrows(
-                UnsupportedOperationException.class,
-                () -> CODEC.openEncoder(target, options, ChannelOwnership.RETAIN)
-        );
-        assertThrows(UnsupportedOperationException.class, CODEC::minimumCompressionLevel);
-        assertThrows(UnsupportedOperationException.class, CODEC::maximumCompressionLevel);
-        assertThrows(UnsupportedOperationException.class, CODEC::defaultCompressionLevel);
-        assertTrue(target.isOpen());
+    void exposesConfigurationOnlyThroughTypedSubinterfaces() {
+        assertFalse(CODEC instanceof CompressionLevelCodec);
+        assertFalse(CODEC instanceof CompressionStrategyCodec);
+        assertFalse(CODEC instanceof DictionaryCompressionCodec);
+        assertFalse(CODEC instanceof PledgedSourceSizeCodec);
     }
 
     /// Implements a writable byte-array channel that fails its first close attempt.
@@ -251,18 +239,9 @@ final class CompressionChannelContextTest {
         }
     }
 
-    /// Implements identity coding through the stream-provider compatibility SPI.
+    /// Implements transport-independent identity coding for generic channel tests.
     @NotNullByDefault
     private static final class IdentityCodec implements CompressionCodec {
-        /// The identity codec capabilities.
-        private static final CompressionCapabilities CAPABILITIES = CompressionCapabilities.of(Set.of(
-                CompressionFeature.COMPRESSION,
-                CompressionFeature.DECOMPRESSION,
-                CompressionFeature.ONE_SHOT_COMPRESSION,
-                CompressionFeature.ONE_SHOT_DECOMPRESSION,
-                CompressionFeature.FLUSH
-        ));
-
         /// Creates an identity codec.
         private IdentityCodec() {
         }
@@ -273,32 +252,84 @@ final class CompressionChannelContextTest {
             return "identity";
         }
 
-        /// Returns identity codec capabilities.
+        /// Creates a fresh identity encoder.
         @Override
-        public CompressionCapabilities capabilities() {
-            return CAPABILITIES;
+        public CompressionEncoder newEncoder() {
+            return new IdentityEncoder();
         }
 
-        /// Opens an identity encoder.
+        /// Creates a fresh identity decoder with the requested output limit.
         @Override
-        public CompressingWritableByteChannel openEncoder(
-                WritableByteChannel target,
-                CodecOptions options,
-                ChannelOwnership ownership
-        ) throws IOException {
-            options.requireSupported(CAPABILITIES.compressionOptions(), "identity compression");
-            return StreamCodecAdapters.openEncoder(target, ownership, output -> output);
+        public CompressionDecoder newDecoder(DecompressionLimits limits) {
+            return CompressionDecoderSupport.limitEngineOutput(
+                    new IdentityDecoder(),
+                    limits.maximumOutputSize()
+            );
+        }
+    }
+
+    /// Copies source bytes directly while exposing flush and frame boundaries.
+    @NotNullByDefault
+    private static final class IdentityEncoder implements FlushableFramedCompressionEncoder {
+        /// Copies as many source bytes as the target can accept.
+        @Override
+        public CodecOutcome encode(ByteBuffer source, ByteBuffer target) {
+            int count = Math.min(source.remaining(), target.remaining());
+            ByteBuffer chunk = source.slice();
+            chunk.limit(count);
+            target.put(chunk);
+            source.position(source.position() + count);
+            return source.hasRemaining() ? CodecOutcome.NEEDS_OUTPUT : CodecOutcome.NEEDS_INPUT;
         }
 
-        /// Opens an identity decoder.
+        /// Reports a decodable boundary because identity coding has no pending output.
         @Override
-        public DecompressingReadableByteChannel openDecoder(
-                ReadableByteChannel source,
-                CodecOptions options,
-                ChannelOwnership ownership
-        ) throws IOException {
-            options.requireSupported(CAPABILITIES.decompressionOptions(), "identity decompression");
-            return StreamCodecAdapters.openDecoder(source, ownership, input -> input);
+        public CodecOutcome flush(ByteBuffer target) {
+            return CodecOutcome.FLUSHED;
+        }
+
+        /// Reports terminal completion because identity coding has no trailer.
+        @Override
+        public CodecOutcome finish(ByteBuffer target) {
+            return CodecOutcome.FINISHED;
+        }
+
+        /// Restores no mutable coding state.
+        @Override
+        public void reset() {
+        }
+
+        /// Releases no external resources.
+        @Override
+        public void close() {
+        }
+    }
+
+    /// Copies compressed identity bytes directly to the decoded target.
+    @NotNullByDefault
+    private static final class IdentityDecoder implements CompressionDecoder {
+        /// Copies available source bytes and finishes at physical input end.
+        @Override
+        public CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) {
+            int count = Math.min(source.remaining(), target.remaining());
+            ByteBuffer chunk = source.slice();
+            chunk.limit(count);
+            target.put(chunk);
+            source.position(source.position() + count);
+            if (source.hasRemaining()) {
+                return CodecOutcome.NEEDS_OUTPUT;
+            }
+            return endOfInput ? CodecOutcome.FINISHED : CodecOutcome.NEEDS_INPUT;
+        }
+
+        /// Restores no mutable coding state.
+        @Override
+        public void reset() {
+        }
+
+        /// Releases no external resources.
+        @Override
+        public void close() {
         }
     }
 }

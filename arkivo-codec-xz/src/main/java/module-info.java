@@ -6,7 +6,7 @@ module org.glavo.arkivo.codec.xz {
     requires transitive org.glavo.arkivo.codec;
     requires org.glavo.arkivo.codec.bcj;
     requires org.glavo.arkivo.codec.delta;
-    requires org.glavo.arkivo.codec.lzma;
+    requires transitive org.glavo.arkivo.codec.lzma;
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.codec.xz;

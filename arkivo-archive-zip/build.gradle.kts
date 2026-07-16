@@ -3,6 +3,8 @@ dependencies {
     implementation(project(":arkivo-base"))
     implementation(project(":arkivo-codec"))
     implementation(project(":arkivo-codec-deflate"))
+    compileOnly(project(":arkivo-codec-lzma"))
+    runtimeOnly(project(":arkivo-codec-lzma"))
     testImplementation(project(":arkivo-codec-bzip2"))
     testImplementation(project(":arkivo-codec-lzma"))
     testImplementation(project(":arkivo-codec-xz"))

@@ -4,12 +4,12 @@
 package org.glavo.arkivo.codec.xz.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.FramedCompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.delta.DeltaTransform;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2Decoder;
-import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.transform.ByteTransform;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -31,7 +31,7 @@ import java.util.zip.CRC32;
 /// preprocessing filters retain only bounded lookahead. A Stream completes at its Footer; after reset, legal inter-Stream
 /// padding is consumed before the next Stream Header without retaining caller input.
 @NotNullByDefault
-public final class XzDecoder implements CompressionDecoder {
+public final class XzDecoder implements FramedCompressionDecoder {
     /// The largest XZ Block Header size.
     private static final int MAXIMUM_METADATA_SIZE = 1024;
 
@@ -401,7 +401,7 @@ public final class XzDecoder implements CompressionDecoder {
             int dictionarySize = XzSupport.lzma2DictionarySize(
                     Byte.toUnsignedInt(terminal.properties()[0])
             );
-            StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, dictionarySize);
+            CompressionDecoderSupport.requireWindowSize(maximumWindowSize, dictionarySize);
 
             List<ByteTransform> transforms = new ArrayList<>(filters.length - 1);
             for (int index = filters.length - 2; index >= 0; index--) {

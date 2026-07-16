@@ -7,7 +7,6 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.Objects;
 
 /// Incrementally decodes one compression stream between caller-owned byte buffers.
 ///
@@ -28,22 +27,6 @@ public interface CompressionDecoder extends AutoCloseable {
     ///
     /// @return the actionable reason this operation returned
     CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException;
-
-    /// Returns the format-specific identifier of the requested dictionary.
-    ///
-    /// This method is valid after `CodecOutcome.NEEDS_DICTIONARY`. Formats without an available identifier return
-    /// `CompressionDictionary.UNKNOWN_ID`.
-    default long requiredDictionaryId() {
-        return CompressionDictionary.UNKNOWN_ID;
-    }
-
-    /// Supplies the dictionary requested by the most recent decode operation.
-    ///
-    /// The default implementation rejects decoders that do not support late dictionary binding.
-    default void provideDictionary(CompressionDictionary dictionary) throws IOException {
-        Objects.requireNonNull(dictionary, "dictionary");
-        throw new UnsupportedOperationException("Late dictionary binding is not supported");
-    }
 
     /// Abandons the current encoding and restores the decoder's original immutable configuration.
     void reset();

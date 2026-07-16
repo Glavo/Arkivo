@@ -4,10 +4,11 @@
 package org.glavo.arkivo.codec.lzma;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOptions;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.tukaani.xz.ArrayCache;
@@ -32,7 +33,19 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 @NotNullByDefault
 public final class RawLZMACodecTest {
     /// The dictionary size used by raw-stream interoperability tests.
-    private static final long DICTIONARY_SIZE = 1L << 20;
+    private static final int DICTIONARY_SIZE = 1 << 20;
+
+    /// Shared raw LZMA model properties.
+    private static final LZMAProperties PROPERTIES =
+            new LZMAProperties(1, 2, 3, DICTIONARY_SIZE);
+
+    /// Shared EOS-terminated raw LZMA configuration.
+    private static final RawLZMACodec RAW_CODEC =
+            new RawLZMACodec().withProperties(PROPERTIES);
+
+    /// Shared raw LZMA2 configuration.
+    private static final LZMA2Codec LZMA2_CODEC =
+            new LZMA2Codec().withDictionarySize(DICTIONARY_SIZE);
 
     /// Verifies both raw codecs are discoverable only by their explicit names.
     @Test
@@ -55,14 +68,13 @@ public final class RawLZMACodecTest {
     @Test
     public void independentDecoderReadsRawLZMA() throws IOException {
         byte[] content = content();
-        CodecOptions options = modelOptions().build();
-        byte[] compressed = compress(new RawLZMACodec(), content, options);
+        byte[] compressed = compress(RAW_CODEC, content);
 
         try (org.tukaani.xz.LZMAInputStream input = new org.tukaani.xz.LZMAInputStream(
                 new ByteArrayInputStream(compressed),
                 -1L,
                 (byte) propertyByte(1, 2, 3),
-                (int) DICTIONARY_SIZE
+                DICTIONARY_SIZE
         )) {
             assertArrayEquals(content, input.readAllBytes());
         }
@@ -84,11 +96,7 @@ public final class RawLZMACodecTest {
 
         assertArrayEquals(
                 content,
-                decompress(
-                        new RawLZMACodec(),
-                        compressed.toByteArray(),
-                        modelOptions().build()
-                )
+                decompress(RAW_CODEC, compressed.toByteArray())
         );
     }
 
@@ -96,22 +104,16 @@ public final class RawLZMACodecTest {
     @Test
     public void exactSizePreservesFollowingBytes() throws IOException {
         byte[] content = content();
-        CodecOptions encodingOptions = modelOptions()
-                .set(LZMAOptions.END_MARKER, false)
-                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) content.length)
-                .build();
-        byte[] compressed = compress(new RawLZMACodec(), content, encodingOptions);
+        RawLZMACodec encodingCodec = RAW_CODEC.withEndMarker(false);
+        byte[] compressed = compress(encodingCodec, content);
         byte[] framed = java.util.Arrays.copyOf(compressed, compressed.length + 1);
         framed[framed.length - 1] = 0x6a;
         ByteArrayInputStream source = new ByteArrayInputStream(framed);
-        CodecOptions decodingOptions = modelOptions()
-                .set(LZMAOptions.DECODED_SIZE, (long) content.length)
-                .build();
+        RawLZMACodec decodingCodec = RAW_CODEC.withDecodedSize(content.length);
 
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
-        try (DecompressingReadableByteChannel decoder = new RawLZMACodec().openDecoder(
+        try (DecompressingReadableByteChannel decoder = decodingCodec.openDecoder(
                 Channels.newChannel(source),
-                decodingOptions,
                 ChannelOwnership.RETAIN
         )) {
             ByteBuffer buffer = ByteBuffer.allocate(4096);
@@ -134,12 +136,11 @@ public final class RawLZMACodecTest {
     @Test
     public void independentDecoderReadsLZMA2() throws IOException {
         byte[] content = content();
-        CodecOptions options = dictionaryOptions();
-        byte[] compressed = compress(new LZMA2Codec(), content, options);
+        byte[] compressed = compress(LZMA2_CODEC, content);
 
         try (org.tukaani.xz.LZMA2InputStream input = new org.tukaani.xz.LZMA2InputStream(
                 new ByteArrayInputStream(compressed),
-                (int) DICTIONARY_SIZE
+                DICTIONARY_SIZE
         )) {
             assertArrayEquals(content, input.readAllBytes());
         }
@@ -161,85 +162,50 @@ public final class RawLZMACodecTest {
 
         assertArrayEquals(
                 content,
-                decompress(new LZMA2Codec(), compressed.toByteArray(), dictionaryOptions())
+                decompress(LZMA2_CODEC, compressed.toByteArray())
         );
     }
 
-    /// Verifies raw decoders reject absent model metadata and configured window limits.
+    /// Verifies model-property validation and operation-scoped window limits.
     @Test
     public void validatesExternalModelMetadata() {
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new RawLZMACodec().openDecoder(
-                        Channels.newChannel(new ByteArrayInputStream(new byte[0])),
-                        CodecOptions.EMPTY,
-                        ChannelOwnership.RETAIN
-                )
+                () -> new LZMAProperties(4, 1, 2, DICTIONARY_SIZE)
         );
         assertThrows(
-                IllegalArgumentException.class,
-                () -> new LZMA2Codec().openDecoder(
+                DecompressionWindowLimitException.class,
+                () -> LZMA2_CODEC.openDecoder(
                         Channels.newChannel(new ByteArrayInputStream(new byte[0])),
-                        CodecOptions.EMPTY,
-                        ChannelOwnership.RETAIN
-                )
-        );
-        CodecOptions limited = CodecOptions.builder()
-                .set(LZMAOptions.DICTIONARY_SIZE, DICTIONARY_SIZE)
-                .set(StandardCodecOptions.MAX_WINDOW_SIZE, DICTIONARY_SIZE - 1L)
-                .build();
-        assertThrows(
-                IOException.class,
-                () -> new LZMA2Codec().openDecoder(
-                        Channels.newChannel(new ByteArrayInputStream(new byte[0])),
-                        limited,
+                        DecompressionLimits.ofMaximumWindowSize(DICTIONARY_SIZE - 1L),
                         ChannelOwnership.RETAIN
                 )
         );
     }
 
-    /// Returns shared raw LZMA model options.
-    private static CodecOptions.Builder modelOptions() {
-        return CodecOptions.builder()
-                .set(LZMAOptions.DICTIONARY_SIZE, DICTIONARY_SIZE)
-                .set(LZMAOptions.LITERAL_CONTEXT_BITS, 1L)
-                .set(LZMAOptions.LITERAL_POSITION_BITS, 2L)
-                .set(LZMAOptions.POSITION_BITS, 3L);
-    }
-
-    /// Returns shared raw LZMA2 dictionary options.
-    private static CodecOptions dictionaryOptions() {
-        return CodecOptions.builder()
-                .set(LZMAOptions.DICTIONARY_SIZE, DICTIONARY_SIZE)
-                .build();
-    }
 
     /// Compresses one byte array with a public codec.
     private static byte[] compress(
-            org.glavo.arkivo.codec.CompressionCodec codec,
-            byte[] content,
-            CodecOptions options
+            CompressionCodec codec,
+            byte[] content
     ) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
         codec.compress(
                 Channels.newChannel(new ByteArrayInputStream(content)),
-                Channels.newChannel(compressed),
-                options
+                Channels.newChannel(compressed)
         );
         return compressed.toByteArray();
     }
 
     /// Decompresses one byte array with a public codec.
     private static byte[] decompress(
-            org.glavo.arkivo.codec.CompressionCodec codec,
-            byte[] compressed,
-            CodecOptions options
+            CompressionCodec codec,
+            byte[] compressed
     ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         codec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(compressed)),
-                Channels.newChannel(decoded),
-                options
+                Channels.newChannel(decoded)
         );
         return decoded.toByteArray();
     }

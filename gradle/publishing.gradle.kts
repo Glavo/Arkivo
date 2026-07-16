@@ -56,7 +56,7 @@ val publicationMetadata = mapOf(
     ),
     "arkivo-codec" to ArkivoPublicationMetadata(
         "Arkivo Codec API",
-        "Provides buffer-first compression codec contracts, channel adapters, options, discovery, and byte transforms."
+        "Provides buffer-first compression codec contracts, channel adapters, immutable configurations, discovery, and byte transforms."
     ),
     "arkivo-codec-all" to ArkivoPublicationMetadata(
         "Arkivo Compression Codecs",
@@ -340,14 +340,17 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-archive:compile:$publicationVersion",
         "org.glavo:arkivo-base:runtime:$publicationVersion",
         "org.glavo:arkivo-codec:runtime:$publicationVersion",
-        "org.glavo:arkivo-codec-deflate:runtime:$publicationVersion"
+        "org.glavo:arkivo-codec-deflate:runtime:$publicationVersion",
+        "org.glavo:arkivo-codec-lzma:runtime:$publicationVersion"
     ),
     "arkivo-archive-7z" to setOf(
         "org.glavo:arkivo-archive:compile:$publicationVersion",
         "org.glavo:arkivo-base:runtime:$publicationVersion",
         "org.glavo:arkivo-codec:runtime:$publicationVersion",
         "org.glavo:arkivo-codec-bcj:runtime:$publicationVersion",
-        "org.glavo:arkivo-codec-delta:runtime:$publicationVersion"
+        "org.glavo:arkivo-codec-delta:runtime:$publicationVersion",
+        "org.glavo:arkivo-codec-lzma:runtime:$publicationVersion",
+        "org.glavo:arkivo-codec-ppmd:runtime:$publicationVersion"
     ),
     "arkivo-codec" to emptySet(),
     "arkivo-codec-all" to setOf(
@@ -374,7 +377,7 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-codec:compile:$publicationVersion",
         "org.glavo:arkivo-codec-bcj:runtime:$publicationVersion",
         "org.glavo:arkivo-codec-delta:runtime:$publicationVersion",
-        "org.glavo:arkivo-codec-lzma:runtime:$publicationVersion"
+        "org.glavo:arkivo-codec-lzma:compile:$publicationVersion"
     ),
     "arkivo-codec-zstd" to setOf(
         "org.glavo:arkivo-base:runtime:$publicationVersion",

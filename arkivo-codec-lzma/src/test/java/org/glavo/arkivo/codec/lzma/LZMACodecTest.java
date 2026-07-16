@@ -4,17 +4,14 @@
 package org.glavo.arkivo.codec.lzma;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOption;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
+import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
-import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2ChannelDecoder;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2ChannelEncoder;
-import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.tukaani.xz.LZMA2Options;
@@ -34,7 +31,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.Random;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -53,8 +49,6 @@ public final class LZMACodecTest {
 
         assertEquals(true, codec instanceof CompressionCodec);
         assertEquals(LZMACodec.NAME, codec.name());
-        assertEquals(true, codec.canCompress());
-        assertEquals(true, codec.canDecompress());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
@@ -183,16 +177,10 @@ public final class LZMACodecTest {
             output.write(content);
         }
 
-        CodecOptions decodingOptions = CodecOptions.builder()
-                .set(LZMAOptions.DICTIONARY_SIZE, 1L << 19)
-                .set(LZMAOptions.LITERAL_CONTEXT_BITS, 1L)
-                .set(LZMAOptions.LITERAL_POSITION_BITS, 2L)
-                .set(LZMAOptions.POSITION_BITS, 3L)
-                .build();
-        assertArrayEquals(
-                content,
-                decompress(new RawLZMACodec(), compressed.toByteArray(), decodingOptions)
+        RawLZMACodec codec = new RawLZMACodec().withProperties(
+                new LZMAProperties(1, 2, 3, 1 << 19)
         );
+        assertArrayEquals(content, decompress(codec, compressed.toByteArray()));
     }
     /// Verifies Arkivo's EOS-terminated output through XZ for Java's independent decoder.
     @Test
@@ -217,16 +205,12 @@ public final class LZMACodecTest {
     public void pureJavaEncoderWritesIndependentKnownSizeStream() throws IOException {
         byte[] content = patternedContent(131_321);
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-        CodecOptions options = CodecOptions.builder()
-                .set(LZMAOptions.DICTIONARY_SIZE, 1L << 18)
-                .set(LZMAOptions.LITERAL_CONTEXT_BITS, 2L)
-                .set(LZMAOptions.LITERAL_POSITION_BITS, 1L)
-                .set(LZMAOptions.POSITION_BITS, 1L)
-                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) content.length)
-                .build();
-        try (CompressingWritableByteChannel encoder = new LZMACodec().openEncoder(
+        LZMACodec codec = new LZMACodec(
+                new LZMAProperties(2, 1, 1, 1 << 18)
+        );
+        try (CompressingWritableByteChannel encoder = codec.openEncoder(
                 Channels.newChannel(compressed),
-                options,
+                content.length,
                 ChannelOwnership.RETAIN
         )) {
             encoder.write(ByteBuffer.wrap(content, 0, 17));
@@ -255,13 +239,8 @@ public final class LZMACodecTest {
             output.write(content);
         }
 
-        CodecOptions decodingOptions = CodecOptions.builder()
-                .set(LZMAOptions.DICTIONARY_SIZE, (long) dictionarySize)
-                .build();
-        assertArrayEquals(
-                content,
-                decompress(new LZMA2Codec(), compressed.toByteArray(), decodingOptions)
-        );
+        LZMA2Codec codec = new LZMA2Codec().withDictionarySize(dictionarySize);
+        assertArrayEquals(content, decompress(codec, compressed.toByteArray()));
     }
     /// Verifies Arkivo's LZMA2 compressed and stored chunks through XZ for Java's decoder.
     @Test
@@ -269,12 +248,9 @@ public final class LZMACodecTest {
         byte[] content = mixedLzma2Content();
         int dictionarySize = 1 << 20;
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-        CodecOptions options = CodecOptions.builder()
-                .set(LZMAOptions.DICTIONARY_SIZE, (long) dictionarySize)
-                .build();
-        try (CompressingWritableByteChannel encoder = new LZMA2Codec().openEncoder(
+        LZMA2Codec codec = new LZMA2Codec().withDictionarySize(dictionarySize);
+        try (CompressingWritableByteChannel encoder = codec.openEncoder(
                 Channels.newChannel(compressed),
-                options,
                 ChannelOwnership.RETAIN
         )) {
             encoder.write(ByteBuffer.wrap(content, 0, 31));
@@ -303,13 +279,13 @@ public final class LZMACodecTest {
                  literalContextBits + literalPositionBits <= 4;
                  literalContextBits++) {
                 for (int positionBits = 0; positionBits <= 4; positionBits++) {
-                    CodecOptions options = CodecOptions.builder()
-                            .set(LZMAOptions.DICTIONARY_SIZE, 1L << 14)
-                            .set(LZMAOptions.LITERAL_CONTEXT_BITS, (long) literalContextBits)
-                            .set(LZMAOptions.LITERAL_POSITION_BITS, (long) literalPositionBits)
-                            .set(LZMAOptions.POSITION_BITS, (long) positionBits)
-                            .build();
-                    byte[] compressed = compress(new LZMACodec(), content, options);
+                    LZMACodec codec = new LZMACodec(new LZMAProperties(
+                            literalContextBits,
+                            literalPositionBits,
+                            positionBits,
+                            1 << 14
+                    ));
+                    byte[] compressed = compress(codec, content);
                     try (org.tukaani.xz.LZMAInputStream input = new org.tukaani.xz.LZMAInputStream(
                             new ByteArrayInputStream(compressed)
                     )) {
@@ -323,76 +299,57 @@ public final class LZMACodecTest {
     @Test
     public void pureJavaCodecsRejectMalformedOrMismatchedInput() throws IOException {
         byte[] content = patternedContent(4_096);
-        CodecOptions lzmaOptions = CodecOptions.builder()
-                .set(LZMAOptions.DICTIONARY_SIZE, 1L << 14)
-                .build();
-        byte[] compressed = compress(new LZMACodec(), content, lzmaOptions);
+        LZMACodec lzmaCodec = new LZMACodec().withDictionarySize(1 << 14);
+        byte[] compressed = compress(lzmaCodec, content);
         byte[] truncated = Arrays.copyOf(compressed, compressed.length - 1);
         assertThrows(
                 IOException.class,
-                () -> decompress(new LZMACodec(), truncated, CodecOptions.EMPTY)
+                () -> decompress(new LZMACodec(), truncated)
         );
 
-        CodecOptions lzma2Options = CodecOptions.builder()
-                .set(LZMAOptions.DICTIONARY_SIZE, 1L << 14)
-                .build();
+        LZMA2Codec lzma2Codec = new LZMA2Codec().withDictionarySize(1 << 14);
         assertThrows(
                 IOException.class,
-                () -> decompress(
-                        new LZMA2Codec(),
-                        new byte[]{0x02, 0x00, 0x00, 0x00},
-                        lzma2Options
-                )
+                () -> decompress(lzma2Codec, new byte[]{0x02, 0x00, 0x00, 0x00})
         );
 
-        CompressingWritableByteChannel encoder = new LZMACodec().openEncoder(
+        CompressingWritableByteChannel encoder = lzmaCodec.openEncoder(
                 Channels.newChannel(new ByteArrayOutputStream()),
-                CodecOptions.builder()
-                        .set(LZMAOptions.DICTIONARY_SIZE, 1L << 14)
-                        .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) content.length + 1L)
-                        .build(),
+                content.length + 1L,
                 ChannelOwnership.RETAIN
         );
         encoder.write(ByteBuffer.wrap(content));
         assertThrows(IOException.class, encoder::finish);
         encoder.close();
     }
-    /// Verifies shared LZMA model options, known-size headers, and pledged-size enforcement.
+    /// Verifies immutable LZMA properties, known-size headers, and pledged-size enforcement.
     @Test
-    public void advancedOptionsControlHeaderAndPledgedSize() throws IOException {
-        LZMACodec codec = new LZMACodec();
-        assertTrue(codec.capabilities().compressionOptions().containsAll(Set.of(
-                LZMAOptions.DICTIONARY_SIZE,
-                LZMAOptions.LITERAL_CONTEXT_BITS,
-                LZMAOptions.LITERAL_POSITION_BITS,
-                LZMAOptions.POSITION_BITS,
-                StandardCodecOptions.PLEDGED_SOURCE_SIZE
-        )));
-
+    public void immutableConfigurationControlsHeaderAndPledgedSize() throws IOException {
         byte[] content = patternedContent(120_321);
         int dictionarySize = 1 << 17;
         int literalContextBits = 2;
         int literalPositionBits = 1;
         int positionBits = 3;
-        CodecOptions options = CodecOptions.builder()
-                .set(LZMAOptions.DICTIONARY_SIZE, (long) dictionarySize)
-                .set(LZMAOptions.LITERAL_CONTEXT_BITS, (long) literalContextBits)
-                .set(LZMAOptions.LITERAL_POSITION_BITS, (long) literalPositionBits)
-                .set(LZMAOptions.POSITION_BITS, (long) positionBits)
-                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) content.length)
-                .build();
+        LZMAProperties properties = new LZMAProperties(
+                literalContextBits,
+                literalPositionBits,
+                positionBits,
+                dictionarySize
+        );
+        LZMACodec codec = new LZMACodec(properties);
+        assertEquals(properties, codec.properties());
 
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-        codec.compress(
-                Channels.newChannel(new ByteArrayInputStream(content)),
+        try (CompressingWritableByteChannel encoder = codec.openEncoder(
                 Channels.newChannel(compressed),
-                options
-        );
+                content.length,
+                ChannelOwnership.RETAIN
+        )) {
+            encoder.write(ByteBuffer.wrap(content));
+            encoder.finish();
+        }
         byte[] encoded = compressed.toByteArray();
-        assertEquals(
-                (positionBits * 5 + literalPositionBits) * 9 + literalContextBits,
-                Byte.toUnsignedInt(encoded[0])
-        );
+        assertEquals(properties.propertyByte(), Byte.toUnsignedInt(encoded[0]));
         assertEquals(dictionarySize, littleEndianInt(encoded, 1));
         assertEquals(content.length, littleEndianLong(encoded, 5));
 
@@ -403,13 +360,13 @@ public final class LZMACodecTest {
         }
 
         ByteArrayOutputStream emptyCompressed = new ByteArrayOutputStream();
-        codec.compress(
-                Channels.newChannel(new ByteArrayInputStream(new byte[0])),
+        try (CompressingWritableByteChannel encoder = codec.openEncoder(
                 Channels.newChannel(emptyCompressed),
-                CodecOptions.builder()
-                        .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, 0L)
-                        .build()
-        );
+                0L,
+                ChannelOwnership.RETAIN
+        )) {
+            encoder.finish();
+        }
         byte[] emptyEncoded = emptyCompressed.toByteArray();
         assertEquals(0L, littleEndianLong(emptyEncoded, 5));
         try (org.tukaani.xz.LZMAInputStream input = new org.tukaani.xz.LZMAInputStream(
@@ -417,68 +374,43 @@ public final class LZMACodecTest {
         )) {
             assertArrayEquals(new byte[0], input.readAllBytes());
         }
-        assertInvalidCompressionOption(codec, LZMAOptions.DICTIONARY_SIZE, -1L);
-        assertInvalidCompressionOption(codec, LZMAOptions.LITERAL_CONTEXT_BITS, 5L);
-        assertInvalidCompressionOption(codec, LZMAOptions.LITERAL_POSITION_BITS, 5L);
-        assertInvalidCompressionOption(codec, LZMAOptions.POSITION_BITS, 5L);
-        assertInvalidCompressionOption(
-                codec,
-                StandardCodecOptions.PLEDGED_SOURCE_SIZE,
-                -1L
-        );
 
-        CodecOptions invalidCombination = CodecOptions.builder()
-                .set(LZMAOptions.LITERAL_CONTEXT_BITS, 4L)
-                .set(LZMAOptions.LITERAL_POSITION_BITS, 1L)
-                .build();
         assertThrows(
                 IllegalArgumentException.class,
-                () -> codec.openEncoder(
-                        Channels.newChannel(new ByteArrayOutputStream()),
-                        invalidCombination,
-                        ChannelOwnership.RETAIN
-                )
+                () -> new LZMAProperties(3, 0, 2, -1)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new LZMAProperties(5, 0, 2, dictionarySize)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new LZMAProperties(0, 5, 2, dictionarySize)
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new LZMAProperties(3, 0, 5, dictionarySize)
+        );
+        assertThrows(IllegalArgumentException.class, () -> codec.newEncoder(-2L));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new LZMAProperties(4, 1, 2, dictionarySize)
         );
 
-        CodecOptions tooSmall = CodecOptions.builder()
-                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) content.length - 1L)
-                .build();
         assertThrows(
                 IOException.class,
-                () -> codec.compress(
-                        Channels.newChannel(new ByteArrayInputStream(content)),
-                        Channels.newChannel(new ByteArrayOutputStream()),
-                        tooSmall
-                )
+                () -> encodeWithPledgedSize(codec, content, content.length - 1L)
         );
 
         ByteArrayOutputStream incomplete = new ByteArrayOutputStream();
         CompressingWritableByteChannel encoder = codec.openEncoder(
                 Channels.newChannel(incomplete),
-                CodecOptions.builder()
-                        .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) content.length + 1L)
-                        .build(),
+                content.length + 1L,
                 ChannelOwnership.RETAIN
         );
         encoder.write(ByteBuffer.wrap(content));
         assertThrows(IOException.class, encoder::finish);
-    }
-
-    /// Verifies an invalid numeric LZMA compression option is rejected before encoding starts.
-    private static void assertInvalidCompressionOption(
-            LZMACodec codec,
-            CodecOption<Long> option,
-            long value
-    ) {
-        CodecOptions options = CodecOptions.builder().set(option, value).build();
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> codec.openEncoder(
-                        Channels.newChannel(new ByteArrayOutputStream()),
-                        options,
-                        ChannelOwnership.RETAIN
-                )
-        );
+        encoder.close();
     }
 
     /// Verifies direct LZMA-alone channels, dictionary configuration, counters, and ownership.
@@ -488,13 +420,10 @@ public final class LZMACodecTest {
         ByteBuffer source = ByteBuffer.allocateDirect(content.length).put(content).flip();
         ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
         WritableByteChannel compressedTarget = Channels.newChannel(compressedBytes);
-        CodecOptions options = CodecOptions.builder()
-                .set(LZMACodec.DICTIONARY_SIZE, 1L << 16)
-                .build();
+        LZMACodec codec = new LZMACodec().withDictionarySize(1 << 16);
 
-        CompressingWritableByteChannel encoder = new LZMACodec().openEncoder(
+        CompressingWritableByteChannel encoder = codec.openEncoder(
                 compressedTarget,
-                options,
                 ChannelOwnership.RETAIN
         );
         assertEquals(content.length, encoder.write(source));
@@ -509,7 +438,6 @@ public final class LZMACodecTest {
         ReadableByteChannel compressedSource = Channels.newChannel(new ByteArrayInputStream(encoded));
         DecompressingReadableByteChannel decoder = new LZMACodec().openDecoder(
                 compressedSource,
-                CodecOptions.EMPTY,
                 ChannelOwnership.CLOSE
         );
         ByteBuffer decoded = ByteBuffer.allocateDirect(content.length);
@@ -525,34 +453,31 @@ public final class LZMACodecTest {
         decoded.get(actual);
         assertArrayEquals(content, actual);
 
-        CodecOptions invalid = CodecOptions.builder()
-                .set(LZMACodec.DICTIONARY_SIZE, (long) LZMAProperties.MAXIMUM_DICTIONARY_SIZE + 1L)
-                .build();
-        assertThrows(IllegalArgumentException.class, () -> new LZMACodec().openEncoder(
-                Channels.newChannel(new ByteArrayOutputStream()),
-                invalid,
-                ChannelOwnership.RETAIN
-        ));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new LZMACodec().withDictionarySize(
+                        LZMAProperties.MAXIMUM_DICTIONARY_SIZE + 1
+                )
+        );
     }
 
     /// Verifies that the decoder enforces the dictionary size declared by an LZMA-alone header.
     @Test
     public void decoderEnforcesDeclaredDictionarySize() throws IOException {
-        long dictionarySize = 1L << 16;
+        int dictionarySize = 1 << 16;
         byte[] content = patternedContent(180_123);
         ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
-        LZMACodec codec = new LZMACodec();
+        LZMACodec codec = new LZMACodec().withDictionarySize(dictionarySize);
         codec.compress(
                 Channels.newChannel(new ByteArrayInputStream(content)),
-                Channels.newChannel(compressedBytes),
-                CodecOptions.builder().set(LZMACodec.DICTIONARY_SIZE, dictionarySize).build()
+                Channels.newChannel(compressedBytes)
         );
 
         ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
         codec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
                 Channels.newChannel(decodedBytes),
-                CodecOptions.builder().set(StandardCodecOptions.MAX_WINDOW_SIZE, dictionarySize).build()
+                DecompressionLimits.ofMaximumWindowSize(dictionarySize)
         );
         assertArrayEquals(content, decodedBytes.toByteArray());
 
@@ -561,9 +486,7 @@ public final class LZMACodecTest {
                 () -> codec.decompress(
                         Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
                         Channels.newChannel(new ByteArrayOutputStream()),
-                        CodecOptions.builder()
-                                .set(StandardCodecOptions.MAX_WINDOW_SIZE, dictionarySize - 1L)
-                                .build()
+                        DecompressionLimits.ofMaximumWindowSize(dictionarySize - 1L)
                 )
         );
         assertEquals(dictionarySize - 1L, exception.maximumWindowSize());
@@ -635,17 +558,33 @@ public final class LZMACodecTest {
         }
     }
 
+    /// Compresses one array through an encoder carrying explicit source-size metadata.
+    private static byte[] encodeWithPledgedSize(
+            LZMACodec codec,
+            byte[] content,
+            long pledgedSourceSize
+    ) throws IOException {
+        ByteArrayOutputStream compressed = new ByteArrayOutputStream();
+        try (CompressingWritableByteChannel encoder = codec.openEncoder(
+                Channels.newChannel(compressed),
+                pledgedSourceSize,
+                ChannelOwnership.RETAIN
+        )) {
+            encoder.write(ByteBuffer.wrap(content));
+            encoder.finish();
+        }
+        return compressed.toByteArray();
+    }
+
     /// Compresses bytes through one configured public codec.
     private static byte[] compress(
             CompressionCodec codec,
-            byte[] content,
-            CodecOptions options
+            byte[] content
     ) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
         codec.compress(
                 Channels.newChannel(new ByteArrayInputStream(content)),
-                Channels.newChannel(compressed),
-                options
+                Channels.newChannel(compressed)
         );
         return compressed.toByteArray();
     }
@@ -653,14 +592,12 @@ public final class LZMACodecTest {
     /// Decompresses bytes through one configured public codec.
     private static byte[] decompress(
             CompressionCodec codec,
-            byte[] compressed,
-            CodecOptions options
+            byte[] compressed
     ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         codec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(compressed)),
-                Channels.newChannel(decoded),
-                options
+                Channels.newChannel(decoded)
         );
         return decoded.toByteArray();
     }

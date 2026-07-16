@@ -5,77 +5,56 @@ package org.glavo.arkivo.archive.sevenzip.internal;
 
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOption;
-import org.glavo.arkivo.codec.CodecOptions;
-import org.glavo.arkivo.codec.CompressionCodecs;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionLevelCodec;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.lzma.LZMA2Codec;
+import org.glavo.arkivo.codec.lzma.LZMAProperties;
+import org.glavo.arkivo.codec.lzma.RawLZMACodec;
+import org.glavo.arkivo.codec.ppmd.PPMdCodec;
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.channels.WritableByteChannel;
+import java.util.Objects;
 
-/// Connects optional compression codecs to 7z coder streams without depending on codec implementations.
+/// Connects optional immutable compression codecs to 7z coder streams.
 @NotNullByDefault
 final class SevenZipCompressionCodecs {
-    /// The optional LZMA codecs' stable dictionary-size option.
-    private static final CodecOption<Long> LZMA_DICTIONARY_SIZE =
-            CodecOption.of("lzma.dictionarySize", Long.class);
+    /// The stable optional raw LZMA codec name.
+    private static final String RAW_LZMA_NAME = "lzma-raw";
 
-    /// The optional raw LZMA codec's stable literal-context option.
-    private static final CodecOption<Long> LZMA_LITERAL_CONTEXT_BITS =
-            CodecOption.of("lzma.literalContextBits", Long.class);
+    /// The stable optional raw LZMA2 codec name.
+    private static final String LZMA2_NAME = "lzma2";
 
-    /// The optional raw LZMA codec's stable literal-position option.
-    private static final CodecOption<Long> LZMA_LITERAL_POSITION_BITS =
-            CodecOption.of("lzma.literalPositionBits", Long.class);
-
-    /// The optional raw LZMA codec's stable position-state option.
-    private static final CodecOption<Long> LZMA_POSITION_BITS =
-            CodecOption.of("lzma.positionBits", Long.class);
-
-    /// The optional raw LZMA codec's stable end-marker option.
-    private static final CodecOption<Boolean> LZMA_END_MARKER =
-            CodecOption.of("lzma.endMarker", Boolean.class);
-
-    /// The optional raw LZMA codec's stable exact-output-size option.
-    private static final CodecOption<Long> LZMA_DECODED_SIZE =
-            CodecOption.of("lzma.decodedSize", Long.class);
-
-    /// The optional PPMd codec's stable maximum-order option.
-    private static final CodecOption<Long> PPMD_MAXIMUM_ORDER =
-            CodecOption.of("ppmd.maximumOrder", Long.class);
-
-    /// The optional PPMd codec's stable model-memory option.
-    private static final CodecOption<Long> PPMD_MEMORY_SIZE =
-            CodecOption.of("ppmd.memorySize", Long.class);
-
-    /// The optional PPMd codec's stable exact-output-size option.
-    private static final CodecOption<Long> PPMD_DECODED_SIZE =
-            CodecOption.of("ppmd.decodedSize", Long.class);
-
+    /// The stable optional PPMd codec name.
+    private static final String PPMD_NAME = "ppmd";
     /// Creates no instances.
     private SevenZipCompressionCodecs() {
     }
 
-    /// Opens a configured encoder that owns the downstream coder stream.
+    /// Opens a compression-level-configured encoder that owns the downstream coder stream.
     static OutputStream openEncoder(
             String codecName,
             int compressionLevel,
             OutputStream target
     ) throws IOException {
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.COMPRESSION_LEVEL, (long) compressionLevel)
-                .build();
-        CompressingWritableByteChannel encoder = CompressionCodecs.openEncoder(
-                codecName,
-                StreamChannelAdapters.writableChannel(target),
-                options,
-                ChannelOwnership.CLOSE
+        CompressionCodec codec = requireCodec(codecName);
+        if (!(codec instanceof CompressionLevelCodec configurableCodec)) {
+            throw new UnsupportedOperationException(
+                    "Compression codec does not support compression levels: " + codec.name()
+            );
+        }
+        return openOwningEncoder(
+                configurableCodec.withCompressionLevel(compressionLevel),
+                target
         );
-        return StreamChannelAdapters.outputStream(encoder);
     }
 
     /// Opens a configured PPMd7 encoder that owns the downstream coder stream.
@@ -84,17 +63,14 @@ final class SevenZipCompressionCodecs {
             long memorySize,
             OutputStream target
     ) throws IOException {
-        CodecOptions options = CodecOptions.builder()
-                .set(PPMD_MAXIMUM_ORDER, (long) maximumOrder)
-                .set(PPMD_MEMORY_SIZE, memorySize)
-                .build();
-        CompressingWritableByteChannel encoder = CompressionCodecs.openEncoder(
-                "ppmd",
-                StreamChannelAdapters.writableChannel(target),
-                options,
-                ChannelOwnership.CLOSE
+        CompressionCodec codec = requireCodec(PPMD_NAME);
+        if (!(codec instanceof PPMdCodec ppmdCodec)) {
+            throw incompatibleCodec(PPMD_NAME);
+        }
+        return openOwningEncoder(
+                ppmdCodec.withMaximumOrder(maximumOrder).withMemorySize(memorySize),
+                target
         );
-        return StreamChannelAdapters.outputStream(encoder);
     }
 
     /// Opens a raw LZMA encoder that owns the downstream coder stream.
@@ -103,31 +79,28 @@ final class SevenZipCompressionCodecs {
             boolean endMarker,
             OutputStream target
     ) throws IOException {
-        CodecOptions options = CodecOptions.builder()
-                .set(LZMA_DICTIONARY_SIZE, dictionarySize)
-                .set(LZMA_END_MARKER, endMarker)
-                .build();
-        CompressingWritableByteChannel encoder = CompressionCodecs.openEncoder(
-                "lzma-raw",
-                StreamChannelAdapters.writableChannel(target),
-                options,
-                ChannelOwnership.CLOSE
+        CompressionCodec codec = requireCodec(RAW_LZMA_NAME);
+        if (!(codec instanceof RawLZMACodec rawCodec)) {
+            throw incompatibleCodec(RAW_LZMA_NAME);
+        }
+        return openOwningEncoder(
+                rawCodec
+                        .withDictionarySize(Math.toIntExact(dictionarySize))
+                        .withEndMarker(endMarker),
+                target
         );
-        return StreamChannelAdapters.outputStream(encoder);
     }
 
     /// Opens a raw LZMA2 encoder that owns the downstream coder stream.
     static OutputStream openLZMA2Encoder(long dictionarySize, OutputStream target) throws IOException {
-        CodecOptions options = CodecOptions.builder()
-                .set(LZMA_DICTIONARY_SIZE, dictionarySize)
-                .build();
-        CompressingWritableByteChannel encoder = CompressionCodecs.openEncoder(
-                "lzma2",
-                StreamChannelAdapters.writableChannel(target),
-                options,
-                ChannelOwnership.CLOSE
+        CompressionCodec codec = requireCodec(LZMA2_NAME);
+        if (!(codec instanceof LZMA2Codec lzma2Codec)) {
+            throw incompatibleCodec(LZMA2_NAME);
+        }
+        return openOwningEncoder(
+                lzma2Codec.withDictionarySize(Math.toIntExact(dictionarySize)),
+                target
         );
-        return StreamChannelAdapters.outputStream(encoder);
     }
 
     /// Opens a size-limited decoder that owns the packed coder stream.
@@ -136,13 +109,10 @@ final class SevenZipCompressionCodecs {
             InputStream source,
             long maximumOutputSize
     ) throws IOException {
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, maximumOutputSize)
-                .build();
         DecompressingReadableByteChannel decoder = CompressionCodecs.openDecoder(
                 codecName,
                 StreamChannelAdapters.readableChannel(source),
-                options,
+                DecompressionLimits.ofMaximumOutputSize(maximumOutputSize),
                 ChannelOwnership.CLOSE
         );
         return StreamChannelAdapters.inputStream(decoder);
@@ -155,19 +125,19 @@ final class SevenZipCompressionCodecs {
             long memorySize,
             long decodedSize
     ) throws IOException {
-        CodecOptions options = CodecOptions.builder()
-                .set(PPMD_MAXIMUM_ORDER, (long) maximumOrder)
-                .set(PPMD_MEMORY_SIZE, memorySize)
-                .set(PPMD_DECODED_SIZE, decodedSize)
-                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, decodedSize)
-                .build();
-        DecompressingReadableByteChannel decoder = CompressionCodecs.openDecoder(
-                "ppmd",
-                StreamChannelAdapters.readableChannel(source),
-                options,
-                ChannelOwnership.CLOSE
+        CompressionCodec codec = requireCodec(PPMD_NAME);
+        if (!(codec instanceof PPMdCodec ppmdCodec)) {
+            throw incompatibleCodec(PPMD_NAME);
+        }
+        PPMdCodec configured = ppmdCodec
+                .withMaximumOrder(maximumOrder)
+                .withMemorySize(memorySize)
+                .withDecodedSize(decodedSize);
+        return openOwningDecoder(
+                configured,
+                source,
+                DecompressionLimits.ofMaximumOutputSize(decodedSize)
         );
-        return StreamChannelAdapters.inputStream(decoder);
     }
 
     /// Opens an exactly sized raw LZMA decoder with packed coder properties.
@@ -177,26 +147,22 @@ final class SevenZipCompressionCodecs {
             long dictionarySize,
             long decodedSize
     ) throws IOException {
-        int remainder = property;
-        long literalContextBits = remainder % 9;
-        remainder /= 9;
-        long literalPositionBits = remainder % 5;
-        long positionBits = remainder / 5;
-        CodecOptions options = CodecOptions.builder()
-                .set(LZMA_DICTIONARY_SIZE, dictionarySize)
-                .set(LZMA_LITERAL_CONTEXT_BITS, literalContextBits)
-                .set(LZMA_LITERAL_POSITION_BITS, literalPositionBits)
-                .set(LZMA_POSITION_BITS, positionBits)
-                .set(LZMA_DECODED_SIZE, decodedSize)
-                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, decodedSize)
-                .build();
-        DecompressingReadableByteChannel decoder = CompressionCodecs.openDecoder(
-                "lzma-raw",
-                StreamChannelAdapters.readableChannel(source),
-                options,
-                ChannelOwnership.CLOSE
+        CompressionCodec codec = requireCodec(RAW_LZMA_NAME);
+        if (!(codec instanceof RawLZMACodec rawCodec)) {
+            throw incompatibleCodec(RAW_LZMA_NAME);
+        }
+        LZMAProperties properties = LZMAProperties.decode(
+                property,
+                Math.toIntExact(dictionarySize)
         );
-        return StreamChannelAdapters.inputStream(decoder);
+        RawLZMACodec configured = rawCodec
+                .withProperties(properties)
+                .withDecodedSize(decodedSize);
+        return openOwningDecoder(
+                configured,
+                source,
+                DecompressionLimits.ofMaximumOutputSize(decodedSize)
+        );
     }
 
     /// Opens a size-limited raw LZMA2 decoder.
@@ -205,16 +171,58 @@ final class SevenZipCompressionCodecs {
             long dictionarySize,
             long maximumOutputSize
     ) throws IOException {
-        CodecOptions options = CodecOptions.builder()
-                .set(LZMA_DICTIONARY_SIZE, dictionarySize)
-                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, maximumOutputSize)
-                .build();
-        DecompressingReadableByteChannel decoder = CompressionCodecs.openDecoder(
-                "lzma2",
+        CompressionCodec codec = requireCodec(LZMA2_NAME);
+        if (!(codec instanceof LZMA2Codec lzma2Codec)) {
+            throw incompatibleCodec(LZMA2_NAME);
+        }
+        return openOwningDecoder(
+                lzma2Codec.withDictionarySize(Math.toIntExact(dictionarySize)),
+                source,
+                DecompressionLimits.ofMaximumOutputSize(maximumOutputSize)
+        );
+    }
+
+    /// Opens an owning output-stream view over a configured codec.
+    private static OutputStream openOwningEncoder(
+            CompressionCodec codec,
+            OutputStream target
+    ) throws IOException {
+        Objects.requireNonNull(codec, "codec");
+        Objects.requireNonNull(target, "target");
+        WritableByteChannel targetChannel = StreamChannelAdapters.writableChannel(target);
+        CompressingWritableByteChannel encoder =
+                codec.openEncoder(targetChannel, ChannelOwnership.CLOSE);
+        return StreamChannelAdapters.outputStream(encoder);
+    }
+
+    /// Opens an owning input-stream view over a configured codec.
+    private static InputStream openOwningDecoder(
+            CompressionCodec codec,
+            InputStream source,
+            DecompressionLimits limits
+    ) throws IOException {
+        Objects.requireNonNull(codec, "codec");
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(limits, "limits");
+        DecompressingReadableByteChannel decoder = codec.openDecoder(
                 StreamChannelAdapters.readableChannel(source),
-                options,
+                limits,
                 ChannelOwnership.CLOSE
         );
         return StreamChannelAdapters.inputStream(decoder);
+    }
+
+    /// Returns an installed optional codec or reports the stable missing-codec diagnostic.
+    private static CompressionCodec requireCodec(String codecName) throws IOException {
+        @Nullable CompressionCodec codec = CompressionCodecs.find(codecName);
+        if (codec == null) {
+            throw new IOException("Unknown compression codec: " + codecName);
+        }
+        return codec;
+    }
+
+    /// Creates a failure for an installed provider with an unexpected implementation type.
+    private static IOException incompatibleCodec(String codecName) {
+        return new IOException("Incompatible compression codec provider: " + codecName);
     }
 }

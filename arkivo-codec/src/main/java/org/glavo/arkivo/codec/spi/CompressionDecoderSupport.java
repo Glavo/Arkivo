@@ -3,128 +3,82 @@
 
 package org.glavo.arkivo.codec.spi;
 
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecResult;
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionStrategy;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecodeDirective;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimitException;
-import org.glavo.arkivo.codec.DecompressionWindowLimitException;
-import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.UnmodifiableView;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Objects;
 
-/// Applies standard codec options that can be implemented independently of a compression algorithm.
+/// Applies operation-scoped safety behavior around decoder engines and channel contexts.
 @NotNullByDefault
-public final class StandardCodecOptionSupport {
+public final class CompressionDecoderSupport {
     /// Creates no instances.
-    private StandardCodecOptionSupport() {
+    private CompressionDecoderSupport() {
     }
 
-    /// Resolves the configured compression strategy or the default strategy when absent.
-    public static CompressionStrategy compressionStrategy(CodecOptions options) {
-        Objects.requireNonNull(options, "options");
-        @Nullable CompressionStrategy requested = options.get(StandardCodecOptions.COMPRESSION_STRATEGY);
-        return requested != null ? requested : CompressionStrategy.DEFAULT;
-    }
-
-    /// Resolves and validates the pledged uncompressed source size.
+    /// Rejects a required history window that exceeds a configured maximum.
     ///
-    /// Returns `CompressionCodec.UNKNOWN_SIZE` when no exact size is configured.
-    public static long pledgedSourceSize(CodecOptions options) {
-        Objects.requireNonNull(options, "options");
-        @Nullable Long requested = options.get(StandardCodecOptions.PLEDGED_SOURCE_SIZE);
-        if (requested == null) {
-            return CompressionCodec.UNKNOWN_SIZE;
-        }
-        if (requested < 0L) {
-            throw new IllegalArgumentException("Pledged source size must not be negative");
-        }
-        return requested;
-    }
-
-    /// Resolves and validates the configured maximum decompressed output size.
-    ///
-    /// Returns `CompressionCodec.UNKNOWN_SIZE` when no limit is configured.
-    public static long maximumOutputSize(CodecOptions options) {
-        Objects.requireNonNull(options, "options");
-        @Nullable Long requested = options.get(StandardCodecOptions.MAX_OUTPUT_SIZE);
-        if (requested == null) {
-            return CompressionCodec.UNKNOWN_SIZE;
-        }
-        if (requested < 0L) {
-            throw new IllegalArgumentException("Maximum decompressed output size must not be negative");
-        }
-        return requested;
-    }
-
-    /// Resolves and validates the configured maximum decoding window size.
-    ///
-    /// Returns `CompressionCodec.UNKNOWN_SIZE` when no limit is configured.
-    public static long maximumWindowSize(CodecOptions options) {
-        Objects.requireNonNull(options, "options");
-        @Nullable Long requested = options.get(StandardCodecOptions.MAX_WINDOW_SIZE);
-        if (requested == null) {
-            return CompressionCodec.UNKNOWN_SIZE;
-        }
-        if (requested < 0L) {
-            throw new IllegalArgumentException("Maximum decoding window size must not be negative");
-        }
-        return requested;
-    }
-
-    /// Rejects a required decoding window that exceeds a validated configured maximum.
-    public static void requireWindowSize(long maximumWindowSize, long requiredWindowSize)
-            throws DecompressionWindowLimitException {
+    /// A negative maximum leaves the window size unrestricted.
+    public static void requireWindowSize(
+            long maximumWindowSize,
+            long requiredWindowSize
+    ) throws org.glavo.arkivo.codec.DecompressionWindowLimitException {
         if (requiredWindowSize < 0L) {
             throw new IllegalArgumentException("requiredWindowSize must not be negative");
         }
         if (maximumWindowSize >= 0L && requiredWindowSize > maximumWindowSize) {
-            throw new DecompressionWindowLimitException(maximumWindowSize, requiredWindowSize);
+            throw new org.glavo.arkivo.codec.DecompressionWindowLimitException(
+                    maximumWindowSize,
+                    requiredWindowSize
+            );
         }
     }
 
-    /// Applies a validated maximum output size to a transport-independent decoder.
+    /// Applies a maximum decoded-output size to a transport-independent decoder.
     ///
-    /// A negative value leaves the decoder unchanged. Non-negative values are enforced without returning the hidden
-    /// probe byte used to distinguish an exact-size frame from excess output.
-    public static CompressionDecoder limitOutput(CompressionDecoder decoder, long maximumOutputSize) {
+    /// A negative value leaves the decoder unchanged.
+    public static CompressionDecoder limitEngineOutput(
+            CompressionDecoder decoder,
+            long maximumOutputSize
+    ) {
         Objects.requireNonNull(decoder, "decoder");
         if (maximumOutputSize < 0L) {
             return decoder;
         }
-        return new OutputLimitingCompressionDecoder(decoder, maximumOutputSize);
+        return OutputLimitingCompressionDecoder.create(decoder, maximumOutputSize);
     }
 
-    /// Applies a validated maximum output size to a decoder.
+    /// Applies a maximum decoded-output size across a complete channel decoding session.
     ///
-    /// A negative value leaves the decoder unchanged. Non-negative values are enforced against bytes returned to
-    /// callers, with one additional decoded byte used only to distinguish exact-limit EOF from excess output.
-    public static DecompressingReadableByteChannel limitOutput(DecompressingReadableByteChannel decoder, long maximumOutputSize) {
+    /// A negative value leaves the channel unchanged.
+    public static DecompressingReadableByteChannel limitChannelOutput(
+            DecompressingReadableByteChannel decoder,
+            long maximumOutputSize
+    ) {
         Objects.requireNonNull(decoder, "decoder");
         if (maximumOutputSize < 0L) {
             return decoder;
         }
-        return new OutputLimitingDecoder(decoder, maximumOutputSize);
+        return new OutputLimitingChannel(decoder, maximumOutputSize);
     }
 
-    /// Enforces one maximum decompressed output size over a decoder context.
+    /// Enforces a total maximum output size over a channel decoding session.
     @NotNullByDefault
-    private static final class OutputLimitingDecoder implements DecompressingReadableByteChannel {
-        /// The algorithm-specific decoder.
+    private static final class OutputLimitingChannel
+            implements DecompressingReadableByteChannel {
+        /// The algorithm-specific decoder channel.
         private final DecompressingReadableByteChannel decoder;
 
         /// The maximum number of bytes that may be returned.
         private final long maximumOutputSize;
 
-        /// The single-byte buffer used to verify EOF after the limit is reached.
+        /// The single-byte buffer used to verify completion after the limit is reached.
         private final ByteBuffer probe = ByteBuffer.allocate(1);
 
         /// The number of decoded bytes returned to callers.
@@ -133,8 +87,11 @@ public final class StandardCodecOptionSupport {
         /// Whether excess decoded output has already been observed.
         private boolean exceeded;
 
-        /// Creates an output-limiting decoder.
-        private OutputLimitingDecoder(DecompressingReadableByteChannel decoder, long maximumOutputSize) {
+        /// Creates an output-limiting channel.
+        private OutputLimitingChannel(
+                DecompressingReadableByteChannel decoder,
+                long maximumOutputSize
+        ) {
             this.decoder = decoder;
             this.maximumOutputSize = maximumOutputSize;
         }
@@ -171,9 +128,12 @@ public final class StandardCodecOptionSupport {
             return read;
         }
 
-        /// Decodes with frame control while enforcing the caller-visible output limit.
+        /// Decodes with frame control while enforcing the total output limit.
         @Override
-        public CodecResult decode(ByteBuffer target, DecodeDirective directive) throws IOException {
+        public CodecResult decode(
+                ByteBuffer target,
+                DecodeDirective directive
+        ) throws IOException {
             Objects.requireNonNull(target, "target");
             Objects.requireNonNull(directive, "directive");
             if (exceeded) {
@@ -234,13 +194,13 @@ public final class StandardCodecOptionSupport {
             return decoder.isOpen();
         }
 
-        /// Closes the underlying decoder and applies its source ownership policy.
+        /// Closes the underlying decoder and applies its ownership policy.
         @Override
         public void close() throws IOException {
             decoder.close();
         }
 
-        /// Probes for one excess byte after the caller-visible limit is reached.
+        /// Probes for one excess byte after the output limit is reached.
         private int probeForExcess() throws IOException {
             probe.clear();
             int read = decoder.read(probe);
@@ -251,7 +211,7 @@ public final class StandardCodecOptionSupport {
             throw limitException();
         }
 
-        /// Probes one frame-aware operation for excess output after reaching the limit.
+        /// Probes one frame-aware operation after the output limit is reached.
         private CodecResult probeForExcess(DecodeDirective directive) throws IOException {
             probe.clear();
             CodecResult result = decoder.decode(probe, directive);
@@ -262,7 +222,7 @@ public final class StandardCodecOptionSupport {
             throw limitException();
         }
 
-        /// Creates the stable exception reported after excess output is observed.
+        /// Creates the stable configured decompression-limit failure.
         private DecompressionLimitException limitException() {
             return new DecompressionLimitException(maximumOutputSize);
         }

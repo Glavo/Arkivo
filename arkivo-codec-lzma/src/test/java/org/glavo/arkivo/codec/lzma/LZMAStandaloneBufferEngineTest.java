@@ -3,12 +3,10 @@
 
 package org.glavo.arkivo.codec.lzma;
 
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecOutcome;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionFeature;
-import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -33,7 +31,7 @@ public final class LZMAStandaloneBufferEngineTest {
     @Test
     public void fragmentedBuffersAndTrailingInput() throws IOException {
         byte[] content = testData();
-        byte[] encoded = encode(content, CodecOptions.EMPTY, 3, 1);
+        byte[] encoded = encode(content, CompressionCodec.UNKNOWN_SIZE, 3, 1);
         byte[] tail = {41, 43, 47};
         byte[] withTail = Arrays.copyOf(encoded, encoded.length + tail.length);
         System.arraycopy(tail, 0, withTail, encoded.length, tail.length);
@@ -49,10 +47,7 @@ public final class LZMAStandaloneBufferEngineTest {
     @Test
     public void pledgedSizeCreatesExactBoundary() throws IOException {
         byte[] content = Arrays.copyOf(testData(), 91_003);
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) content.length)
-                .build();
-        byte[] encoded = encode(content, options, 17, 3);
+        byte[] encoded = encode(content, content.length, 17, 3);
         byte[] withTail = Arrays.copyOf(encoded, encoded.length + 2);
         withTail[encoded.length] = 0x55;
         withTail[encoded.length + 1] = 0x66;
@@ -64,9 +59,9 @@ public final class LZMAStandaloneBufferEngineTest {
         assertEquals(content.length, readLittleEndianLong(encoded, 5));
     }
 
-    /// Verifies incremental header validation and advertised native buffer capabilities.
+    /// Verifies incremental LZMA-alone header validation.
     @Test
-    public void rejectsInvalidHeaderAndAdvertisesCapabilities() throws IOException {
+    public void rejectsInvalidHeader() throws IOException {
         byte[] invalid = new byte[13];
         invalid[0] = (byte) 0xff;
         try (CompressionDecoder decoder = CODEC.newDecoder()) {
@@ -89,19 +84,17 @@ public final class LZMAStandaloneBufferEngineTest {
                     )
             );
         }
-        assertTrue(CODEC.capabilities().supports(CompressionFeature.BUFFER_COMPRESSION));
-        assertTrue(CODEC.capabilities().supports(CompressionFeature.BUFFER_DECOMPRESSION));
     }
 
     /// Encodes one LZMA-alone stream through fresh bounded buffers.
     private static byte[] encode(
             byte[] content,
-            CodecOptions options,
+            long pledgedSourceSize,
             int sourceFragmentSize,
             int targetSize
     ) throws IOException {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        try (CompressionEncoder encoder = CODEC.newEncoder(options)) {
+        try (CompressionEncoder encoder = CODEC.newEncoder(pledgedSourceSize)) {
             int offset = 0;
             while (offset < content.length) {
                 int length = Math.min(sourceFragmentSize, content.length - offset);

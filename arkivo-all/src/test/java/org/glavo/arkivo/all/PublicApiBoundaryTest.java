@@ -88,7 +88,10 @@ public final class PublicApiBoundaryTest {
             Map.entry("org.glavo.arkivo.codec.delta", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.lzma", Set.of("org.glavo.arkivo.codec")),
             Map.entry("org.glavo.arkivo.codec.ppmd", Set.of("org.glavo.arkivo.codec")),
-            Map.entry("org.glavo.arkivo.codec.xz", Set.of("org.glavo.arkivo.codec")),
+            Map.entry("org.glavo.arkivo.codec.xz", Set.of(
+                    "org.glavo.arkivo.codec",
+                    "org.glavo.arkivo.codec.lzma"
+            )),
             Map.entry("org.glavo.arkivo.codec.zstd", Set.of("org.glavo.arkivo.codec"))
     );
 

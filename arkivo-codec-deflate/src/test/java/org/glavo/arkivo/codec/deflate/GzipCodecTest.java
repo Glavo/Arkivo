@@ -4,13 +4,11 @@
 package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.EncodeDirective;
-import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -44,8 +42,6 @@ public final class GzipCodecTest {
 
         assertEquals(true, codec instanceof CompressionCodec);
         assertEquals(GzipCodec.NAME, codec.name());
-        assertEquals(true, codec.canCompress());
-        assertEquals(true, codec.canDecompress());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
@@ -114,15 +110,12 @@ public final class GzipCodecTest {
     public void multiMemberEncoder() throws IOException {
         byte[] first = "first Arkivo gzip member".getBytes(StandardCharsets.UTF_8);
         byte[] second = "second Arkivo gzip member".getBytes(StandardCharsets.UTF_8);
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.COMPRESSION_STRATEGY, CompressionStrategy.HUFFMAN_ONLY)
-                .build();
-        GzipCodec codec = new GzipCodec();
+        GzipCodec codec = new GzipCodec()
+                .withCompressionStrategy(CompressionStrategy.HUFFMAN_ONLY);
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
 
         CompressingWritableByteChannel encoder = codec.openEncoder(
                 Channels.newChannel(compressed),
-                options,
                 ChannelOwnership.RETAIN
         );
         encoder.encode(ByteBuffer.wrap(first), EncodeDirective.END_FRAME);

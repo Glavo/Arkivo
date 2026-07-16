@@ -3,64 +3,66 @@
 
 package org.glavo.arkivo.codec.deflate;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOptions;
-import org.glavo.arkivo.codec.CompressionCapabilities;
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.CompressionFeature;
-import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.CompressionLevelCodec;
+import org.glavo.arkivo.codec.CompressionStrategy;
+import org.glavo.arkivo.codec.CompressionStrategyCodec;
+import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.FlushableFramedCompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.GzipDecoder;
 import org.glavo.arkivo.codec.deflate.internal.GzipEncoder;
-import org.glavo.arkivo.codec.spi.CodecChannelAdapters;
-import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.ReadableByteChannel;
-import java.nio.channels.WritableByteChannel;
 import java.util.List;
 import java.util.Objects;
-import java.util.Set;
 
-/// Provides pure Java gzip member buffer engines and concatenated-member channel adapters.
+/// Provides an immutable gzip configuration and pure Java member engines.
 @NotNullByDefault
-public final class GzipCodec implements CompressionCodec {
+public final class GzipCodec implements CompressionLevelCodec, CompressionStrategyCodec {
     /// The stable gzip codec name.
     public static final String NAME = "gzip";
 
-    /// The default immutable gzip codec configuration.
-    public static final GzipCodec DEFAULT = new GzipCodec();
+    /// The minimum gzip Deflate match-search level.
+    public static final int MINIMUM_COMPRESSION_LEVEL = 0;
 
-    /// The supported gzip operations.
-    private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(
-            Set.of(
-                    CompressionFeature.COMPRESSION,
-                    CompressionFeature.DECOMPRESSION,
-                    CompressionFeature.ONE_SHOT_COMPRESSION,
-                    CompressionFeature.ONE_SHOT_DECOMPRESSION,
-                    CompressionFeature.FLUSH,
-                    CompressionFeature.DIRECT_BYTE_BUFFER,
-                    CompressionFeature.BUFFER_COMPRESSION,
-                    CompressionFeature.BUFFER_DECOMPRESSION,
-                    CompressionFeature.MULTI_FRAME,
-                    CompressionFeature.CONCATENATED_FRAMES
-            ),
-            Set.of(StandardCodecOptions.COMPRESSION_LEVEL, StandardCodecOptions.COMPRESSION_STRATEGY),
-            Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE, StandardCodecOptions.MAX_WINDOW_SIZE)
-    );
+    /// The maximum gzip Deflate match-search level.
+    public static final int MAXIMUM_COMPRESSION_LEVEL = 9;
+
+    /// The default gzip Deflate match-search level.
+    public static final int DEFAULT_COMPRESSION_LEVEL = 6;
+
+    /// The default immutable gzip codec configuration.
+    public static final GzipCodec DEFAULT =
+            new GzipCodec(DEFAULT_COMPRESSION_LEVEL, CompressionStrategy.DEFAULT);
 
     /// The fixed Deflate history-window size used by gzip members.
     private static final long DECODING_WINDOW_SIZE = 1L << 15;
 
-    /// Creates a gzip codec.
+    /// The configured Deflate match-search level.
+    private final int compressionLevel;
+
+    /// The configured generic compression strategy.
+    private final CompressionStrategy compressionStrategy;
+
+    /// Creates the default gzip codec configuration.
     public GzipCodec() {
+        this(DEFAULT_COMPRESSION_LEVEL, CompressionStrategy.DEFAULT);
+    }
+
+    /// Creates a validated gzip codec configuration.
+    private GzipCodec(long compressionLevel, CompressionStrategy compressionStrategy) {
+        if (compressionLevel < MINIMUM_COMPRESSION_LEVEL
+                || compressionLevel > MAXIMUM_COMPRESSION_LEVEL) {
+            throw new IllegalArgumentException(
+                    "Gzip compression level must be between 0 and 9: " + compressionLevel
+            );
+        }
+        this.compressionLevel = Math.toIntExact(compressionLevel);
+        this.compressionStrategy = Objects.requireNonNull(compressionStrategy, "compressionStrategy");
     }
 
     /// Returns the stable gzip codec name.
@@ -75,28 +77,51 @@ public final class GzipCodec implements CompressionCodec {
         return List.of("gz", "gzip");
     }
 
-    /// Returns the supported gzip operations and options.
+    /// Returns the configured gzip Deflate match-search level.
     @Override
-    public CompressionCapabilities capabilities() {
-        return CAPABILITIES;
+    public long compressionLevel() {
+        return compressionLevel;
     }
 
     /// Returns the minimum gzip Deflate match-search level.
     @Override
     public long minimumCompressionLevel() {
-        return 0L;
+        return MINIMUM_COMPRESSION_LEVEL;
     }
 
     /// Returns the maximum gzip Deflate match-search level.
     @Override
     public long maximumCompressionLevel() {
-        return 9L;
+        return MAXIMUM_COMPRESSION_LEVEL;
     }
 
     /// Returns the default gzip Deflate match-search level.
     @Override
     public long defaultCompressionLevel() {
-        return 6L;
+        return DEFAULT_COMPRESSION_LEVEL;
+    }
+
+    /// Returns an immutable gzip codec with the requested match-search level.
+    @Override
+    public GzipCodec withCompressionLevel(long compressionLevel) {
+        return compressionLevel == this.compressionLevel
+                ? this
+                : new GzipCodec(compressionLevel, compressionStrategy);
+    }
+
+    /// Returns the configured generic compression strategy.
+    @Override
+    public CompressionStrategy compressionStrategy() {
+        return compressionStrategy;
+    }
+
+    /// Returns an immutable gzip codec with the requested generic compression strategy.
+    @Override
+    public GzipCodec withCompressionStrategy(CompressionStrategy compressionStrategy) {
+        Objects.requireNonNull(compressionStrategy, "compressionStrategy");
+        return compressionStrategy == this.compressionStrategy
+                ? this
+                : new GzipCodec(compressionLevel, compressionStrategy);
     }
 
     /// Returns the number of leading bytes used to identify gzip streams.
@@ -114,62 +139,20 @@ public final class GzipCodec implements CompressionCodec {
                 && Byte.toUnsignedInt(prefix.get(position + 1)) == 0x8b;
     }
 
-    /// Creates a configured transport-independent gzip member encoder.
+    /// Creates a flushable transport-independent gzip member encoder.
     @Override
-    public CompressionEncoder newEncoder(CodecOptions options) {
-        options.requireSupported(CAPABILITIES.compressionOptions(), "gzip compression");
-        return new GzipEncoder(
-                compressionLevel(options),
-                StandardCodecOptionSupport.compressionStrategy(options)
+    public FlushableFramedCompressionEncoder newEncoder() {
+        return new GzipEncoder(compressionLevel, compressionStrategy);
+    }
+
+    /// Creates a transport-independent gzip member decoder with operation-scoped limits.
+    @Override
+    public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
+        Objects.requireNonNull(limits, "limits");
+        limits.requireWindowSize(DECODING_WINDOW_SIZE);
+        return CompressionDecoderSupport.limitEngineOutput(
+                new GzipDecoder(),
+                limits.maximumOutputSize()
         );
-    }
-
-    /// Opens the transport-independent gzip encoder through the shared blocking channel adapter.
-    @Override
-    public CompressingWritableByteChannel openEncoder(
-            WritableByteChannel target,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
-        return CompressionCodec.super.openEncoder(target, options, ownership);
-    }
-
-    /// Creates a configured transport-independent gzip member decoder.
-    @Override
-    public CompressionDecoder newDecoder(CodecOptions options) throws IOException {
-        options.requireSupported(CAPABILITIES.decompressionOptions(), "gzip decompression");
-        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
-        StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, DECODING_WINDOW_SIZE);
-        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
-        return StandardCodecOptionSupport.limitOutput(new GzipDecoder(), maximumOutputSize);
-    }
-
-    /// Opens a configured gzip decoder over the source channel.
-    @Override
-    public DecompressingReadableByteChannel openDecoder(
-            ReadableByteChannel source,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
-        options.requireSupported(CAPABILITIES.decompressionOptions(), "gzip decompression");
-        Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(ownership, "ownership");
-        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
-        StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, DECODING_WINDOW_SIZE);
-        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
-        return StandardCodecOptionSupport.limitOutput(
-                CodecChannelAdapters.openDecoder(source, ownership, true, GzipDecoder::new),
-                maximumOutputSize
-        );
-    }
-
-    /// Resolves and validates the compression level for one encoder context.
-    private int compressionLevel(CodecOptions options) {
-        @Nullable Long requested = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
-        long level = requested != null ? requested : defaultCompressionLevel();
-        if (level < minimumCompressionLevel() || level > maximumCompressionLevel()) {
-            throw new IllegalArgumentException("Gzip compression level is out of range");
-        }
-        return Math.toIntExact(level);
     }
 }

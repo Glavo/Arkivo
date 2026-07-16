@@ -5,9 +5,7 @@ package org.glavo.arkivo.codec.zstd;
 
 import com.github.luben.zstd.ZstdCompressCtx;
 import com.github.luben.zstd.ZstdDecompressCtx;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -60,31 +58,27 @@ final class ZstdDictionaryTrainerTest {
         assertFalse(java.util.Arrays.equals(dictionary.bytes(), legacyDictionary.bytes()));
 
         byte[] payload = sample(91);
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.DICTIONARY, dictionary)
-                .build();
+        ZstdCodec dictionaryCodec = codec.withDictionary(dictionary);
 
         ByteBuffer source = ByteBuffer.allocateDirect(payload.length);
         source.put(payload).flip();
-        ByteBuffer compressed = codec.compress(source, options);
+        ByteBuffer compressed = dictionaryCodec.compress(source);
         assertEquals(3, firstLiteralType(codec, compressed.duplicate()));
         assertEquals(0xfc, firstSequenceModes(codec, compressed.duplicate()));
-        ByteBuffer decoded = codec.decompress(compressed, payload.length, options);
+        ByteBuffer decoded = dictionaryCodec.decompress(compressed, payload.length);
         byte[] bufferOutput = new byte[decoded.remaining()];
         decoded.get(bufferOutput);
         assertArrayEquals(payload, bufferOutput);
 
         ByteArrayOutputStream channelCompressed = new ByteArrayOutputStream();
-        codec.compress(
+        dictionaryCodec.compress(
                 Channels.newChannel(new ByteArrayInputStream(payload)),
-                Channels.newChannel(channelCompressed),
-                options
+                Channels.newChannel(channelCompressed)
         );
         ByteArrayOutputStream channelDecoded = new ByteArrayOutputStream();
-        codec.decompress(
+        dictionaryCodec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(channelCompressed.toByteArray())),
-                Channels.newChannel(channelDecoded),
-                options
+                Channels.newChannel(channelDecoded)
         );
         assertArrayEquals(payload, channelDecoded.toByteArray());
 
@@ -102,10 +96,9 @@ final class ZstdDictionaryTrainerTest {
             nativeCompressed = context.compress(payload);
         }
         ByteArrayOutputStream nativeDecoded = new ByteArrayOutputStream();
-        codec.decompress(
+        dictionaryCodec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(nativeCompressed)),
-                Channels.newChannel(nativeDecoded),
-                options
+                Channels.newChannel(nativeDecoded)
         );
         assertArrayEquals(payload, nativeDecoded.toByteArray());
     }

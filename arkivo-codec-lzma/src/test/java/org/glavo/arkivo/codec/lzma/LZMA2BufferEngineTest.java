@@ -3,13 +3,11 @@
 
 package org.glavo.arkivo.codec.lzma;
 
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.DecompressionLimitException;
-import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.DecompressionLimits;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -34,16 +32,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests the transport-independent raw LZMA2 encoder and decoder contracts.
 @NotNullByDefault
 public final class LZMA2BufferEngineTest {
-    /// Shared raw LZMA2 codec under test.
-    private static final LZMA2Codec CODEC = new LZMA2Codec();
-
     /// Shared externally declared dictionary size.
     private static final int DICTIONARY_SIZE = 1 << 20;
 
-    /// Shared options required by raw LZMA2 decoding.
-    private static final CodecOptions OPTIONS = CodecOptions.builder()
-            .set(LZMAOptions.DICTIONARY_SIZE, (long) DICTIONARY_SIZE)
-            .build();
+    /// Shared raw LZMA2 codec under test.
+    private static final LZMA2Codec CODEC =
+            new LZMA2Codec().withDictionarySize(DICTIONARY_SIZE);
 
     /// Verifies fresh fragmented caller buffers and exact stream-boundary positioning.
     @Test
@@ -87,49 +81,11 @@ public final class LZMA2BufferEngineTest {
         }
     }
 
-    /// Verifies flush exposes all accepted bytes while preserving a continuing stream.
+    /// Verifies lifecycle reset and output limiting.
     @Test
-    public void flushProducesDecodableChunkBoundary() throws IOException {
-        byte[] first = Arrays.copyOfRange(testData(), 0, 31_337);
-        byte[] second = Arrays.copyOfRange(testData(), 31_337, 90_123);
-        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-
-        try (CompressionEncoder encoder = CODEC.newEncoder(OPTIONS)) {
-            encodeSource(encoder, ByteBuffer.wrap(first), encoded, 2);
-            CodecOutcome flushOutcome;
-            do {
-                ByteBuffer target = ByteBuffer.allocateDirect(1);
-                flushOutcome = encoder.flush(target);
-                drain(target, encoded);
-            } while (flushOutcome == CodecOutcome.NEEDS_OUTPUT);
-            assertEquals(CodecOutcome.FLUSHED, flushOutcome);
-
-            byte[] boundary = encoded.toByteArray();
-            ByteBuffer source = ByteBuffer.wrap(boundary);
-            ByteBuffer decoded = ByteBuffer.allocate(first.length + 1);
-            try (CompressionDecoder decoder = CODEC.newDecoder(OPTIONS)) {
-                assertEquals(CodecOutcome.NEEDS_INPUT, decoder.decode(source, decoded, false));
-            }
-            decoded.flip();
-            byte[] partial = new byte[decoded.remaining()];
-            decoded.get(partial);
-            assertArrayEquals(first, partial);
-
-            encodeSource(encoder, ByteBuffer.wrap(second), encoded, 2);
-            finish(encoder, encoded, 1);
-        }
-
-        byte[] expected = new byte[first.length + second.length];
-        System.arraycopy(first, 0, expected, 0, first.length);
-        System.arraycopy(second, 0, expected, first.length, second.length);
-        assertArrayEquals(expected, CODEC.decompress(ByteBuffer.wrap(encoded.toByteArray()), expected.length, OPTIONS).array());
-    }
-
-    /// Verifies lifecycle reset, output limiting, and advertised buffer capabilities.
-    @Test
-    public void lifecycleLimitsAndCapabilities() throws IOException {
+    public void lifecycleAndLimits() throws IOException {
         byte[] content = Arrays.copyOf(testData(), 12_345);
-        CompressionEncoder encoder = CODEC.newEncoder(OPTIONS);
+        CompressionEncoder encoder = CODEC.newEncoder();
         ByteArrayOutputStream first = new ByteArrayOutputStream();
         encodeSource(encoder, ByteBuffer.wrap(content), first, 7);
         finish(encoder, first, 2);
@@ -143,22 +99,18 @@ public final class LZMA2BufferEngineTest {
         encoder.close();
         assertThrows(IllegalStateException.class, encoder::reset);
 
-        CodecOptions limited = CodecOptions.builder()
-                .set(LZMAOptions.DICTIONARY_SIZE, (long) DICTIONARY_SIZE)
-                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, (long) content.length - 1L)
-                .build();
+        DecompressionLimits limits =
+                DecompressionLimits.ofMaximumOutputSize(content.length - 1L);
         assertThrows(
                 DecompressionLimitException.class,
-                () -> CODEC.decompress(ByteBuffer.wrap(first.toByteArray()), content.length, limited)
+                () -> CODEC.decompress(ByteBuffer.wrap(first.toByteArray()), limits)
         );
-        assertTrue(CODEC.capabilities().supports(CompressionFeature.BUFFER_COMPRESSION));
-        assertTrue(CODEC.capabilities().supports(CompressionFeature.BUFFER_DECOMPRESSION));
     }
 
     /// Encodes source fragments into one raw LZMA2 stream.
     private static byte[] encode(byte[] content, int sourceFragmentSize, int targetSize) throws IOException {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        try (CompressionEncoder encoder = CODEC.newEncoder(OPTIONS)) {
+        try (CompressionEncoder encoder = CODEC.newEncoder()) {
             int offset = 0;
             while (offset < content.length) {
                 int length = Math.min(sourceFragmentSize, content.length - offset);
@@ -197,7 +149,7 @@ public final class LZMA2BufferEngineTest {
     ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         int offset = 0;
-        try (CompressionDecoder decoder = CODEC.newDecoder(OPTIONS)) {
+        try (CompressionDecoder decoder = CODEC.newDecoder()) {
             CodecOutcome outcome = CodecOutcome.NEEDS_INPUT;
             while (outcome != CodecOutcome.FINISHED) {
                 int length = Math.min(sourceFragmentSize, encoded.length - offset);

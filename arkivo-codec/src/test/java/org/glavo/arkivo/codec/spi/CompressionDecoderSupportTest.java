@@ -3,13 +3,12 @@
 
 package org.glavo.arkivo.codec.spi;
 
-import org.glavo.arkivo.codec.CodecOptions;
-import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CodecOutcome;
+import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.DecompressionLimitException;
+import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
-import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -22,113 +21,95 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-/// Verifies algorithm-independent standard codec option handling.
+/// Verifies algorithm-independent decompression limit handling.
 @NotNullByDefault
-final class StandardCodecOptionSupportTest {
-    /// Verifies the standard compression strategy defaults and explicit values.
+final class CompressionDecoderSupportTest {
+    /// Verifies immutable limit factories, withers, and validation.
     @Test
-    void resolvesCompressionStrategy() {
-        assertEquals(
-                CompressionStrategy.DEFAULT,
-                StandardCodecOptionSupport.compressionStrategy(CodecOptions.EMPTY)
-        );
-        for (CompressionStrategy strategy : CompressionStrategy.values()) {
-            assertEquals(
-                    strategy,
-                    StandardCodecOptionSupport.compressionStrategy(CodecOptions.builder()
-                            .set(StandardCodecOptions.COMPRESSION_STRATEGY, strategy)
-                            .build())
-            );
-        }
-    }
+    void validatesDecompressionLimits() {
+        DecompressionLimits limits = new DecompressionLimits(3L, 4_096L);
 
-    /// Verifies absent, explicit, and invalid pledged source sizes.
-    @Test
-    void resolvesPledgedSourceSize() {
+        assertEquals(3L, limits.maximumOutputSize());
+        assertEquals(4_096L, limits.maximumWindowSize());
+        assertSame(limits, limits.withMaximumOutputSize(3L));
+        assertSame(limits, limits.withMaximumWindowSize(4_096L));
         assertEquals(
-                CompressionCodec.UNKNOWN_SIZE,
-                StandardCodecOptionSupport.pledgedSourceSize(CodecOptions.EMPTY)
+                new DecompressionLimits(8L, 4_096L),
+                limits.withMaximumOutputSize(8L)
         );
         assertEquals(
-                0L,
-                StandardCodecOptionSupport.pledgedSourceSize(CodecOptions.builder()
-                        .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, 0L)
-                        .build())
+                new DecompressionLimits(3L, 8_192L),
+                limits.withMaximumWindowSize(8_192L)
+        );
+        assertEquals(
+                new DecompressionLimits(7L, DecompressionLimits.UNLIMITED_SIZE),
+                DecompressionLimits.ofMaximumOutputSize(7L)
+        );
+        assertEquals(
+                new DecompressionLimits(DecompressionLimits.UNLIMITED_SIZE, 7L),
+                DecompressionLimits.ofMaximumWindowSize(7L)
         );
         assertThrows(
                 IllegalArgumentException.class,
-                () -> StandardCodecOptionSupport.pledgedSourceSize(CodecOptions.builder()
-                        .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, -1L)
-                        .build())
-        );
-    }
-    /// Verifies absent and invalid maximum output sizes are resolved before decoder creation.
-    @Test
-    void resolvesMaximumOutputSize() {
-        assertEquals(
-                CompressionCodec.UNKNOWN_SIZE,
-                StandardCodecOptionSupport.maximumOutputSize(CodecOptions.EMPTY)
-        );
-        assertEquals(
-                0L,
-                StandardCodecOptionSupport.maximumOutputSize(CodecOptions.builder()
-                        .set(StandardCodecOptions.MAX_OUTPUT_SIZE, 0L)
-                        .build())
+                () -> new DecompressionLimits(-2L, DecompressionLimits.UNLIMITED_SIZE)
         );
         assertThrows(
                 IllegalArgumentException.class,
-                () -> StandardCodecOptionSupport.maximumOutputSize(CodecOptions.builder()
-                        .set(StandardCodecOptions.MAX_OUTPUT_SIZE, -1L)
-                        .build())
+                () -> new DecompressionLimits(DecompressionLimits.UNLIMITED_SIZE, -2L)
         );
     }
 
-    /// Verifies maximum window resolution and required-window enforcement.
+    /// Verifies maximum-window enforcement through both public and SPI entry points.
     @Test
     void validatesMaximumWindowSize() throws IOException {
-        assertEquals(
-                CompressionCodec.UNKNOWN_SIZE,
-                StandardCodecOptionSupport.maximumWindowSize(CodecOptions.EMPTY)
-        );
-        assertEquals(
-                0L,
-                StandardCodecOptionSupport.maximumWindowSize(CodecOptions.builder()
-                        .set(StandardCodecOptions.MAX_WINDOW_SIZE, 0L)
-                        .build())
-        );
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> StandardCodecOptionSupport.maximumWindowSize(CodecOptions.builder()
-                        .set(StandardCodecOptions.MAX_WINDOW_SIZE, -1L)
-                        .build())
+        DecompressionLimits.ofMaximumWindowSize(4_096L).requireWindowSize(4_096L);
+        DecompressionLimits.UNLIMITED.requireWindowSize(Long.MAX_VALUE);
+        CompressionDecoderSupport.requireWindowSize(4_096L, 4_096L);
+        CompressionDecoderSupport.requireWindowSize(
+                DecompressionLimits.UNLIMITED_SIZE,
+                Long.MAX_VALUE
         );
 
-        StandardCodecOptionSupport.requireWindowSize(4_096L, 4_096L);
-        StandardCodecOptionSupport.requireWindowSize(CompressionCodec.UNKNOWN_SIZE, Long.MAX_VALUE);
         DecompressionWindowLimitException exception = assertThrows(
                 DecompressionWindowLimitException.class,
-                () -> StandardCodecOptionSupport.requireWindowSize(4_095L, 4_096L)
+                () -> CompressionDecoderSupport.requireWindowSize(4_095L, 4_096L)
         );
         assertEquals(4_095L, exception.maximumWindowSize());
         assertEquals(4_096L, exception.requiredWindowSize());
         assertThrows(
                 IllegalArgumentException.class,
-                () -> StandardCodecOptionSupport.requireWindowSize(0L, -1L)
+                () -> CompressionDecoderSupport.requireWindowSize(0L, -1L)
         );
     }
-    /// Verifies an absent limit preserves the original decoder identity.
-    @Test
-    void preservesDecoderWithoutLimit() {
-        TestDecoder decoder = new TestDecoder(new byte[]{1});
 
-        assertSame(decoder, StandardCodecOptionSupport.limitOutput(decoder, CompressionCodec.UNKNOWN_SIZE));
+    /// Verifies absent limits preserve engine and channel identity.
+    @Test
+    void preservesDelegatesWithoutLimit() {
+        CompressionDecoder engine = new NoOpDecoder();
+        TestChannel decoder = new TestChannel(new byte[]{1});
+
+        assertSame(
+                engine,
+                CompressionDecoderSupport.limitEngineOutput(
+                        engine,
+                        DecompressionLimits.UNLIMITED_SIZE
+                )
+        );
+        assertSame(
+                decoder,
+                CompressionDecoderSupport.limitChannelOutput(
+                        decoder,
+                        DecompressionLimits.UNLIMITED_SIZE
+                )
+        );
     }
 
     /// Verifies exact-limit output reaches EOF and restores a caller buffer's original limit.
     @Test
     void acceptsExactLimitAndPreservesBufferLimit() throws IOException {
-        TestDecoder delegate = new TestDecoder(new byte[]{1, 2, 3});
-        DecompressingReadableByteChannel decoder = StandardCodecOptionSupport.limitOutput(delegate, 3L);
+        TestChannel delegate = new TestChannel(new byte[]{1, 2, 3});
+        DecompressingReadableByteChannel decoder =
+                CompressionDecoderSupport.limitChannelOutput(delegate, 3L);
         ByteBuffer target = ByteBuffer.allocate(8);
         target.limit(7);
 
@@ -145,10 +126,12 @@ final class StandardCodecOptionSupportTest {
     /// Verifies zero permits empty output while rejecting the first decoded byte.
     @Test
     void handlesZeroLimit() throws IOException {
-        DecompressingReadableByteChannel empty = StandardCodecOptionSupport.limitOutput(new TestDecoder(new byte[0]), 0L);
+        DecompressingReadableByteChannel empty =
+                CompressionDecoderSupport.limitChannelOutput(new TestChannel(new byte[0]), 0L);
         assertEquals(-1, empty.read(ByteBuffer.allocate(1)));
 
-        DecompressingReadableByteChannel nonempty = StandardCodecOptionSupport.limitOutput(new TestDecoder(new byte[]{1}), 0L);
+        DecompressingReadableByteChannel nonempty =
+                CompressionDecoderSupport.limitChannelOutput(new TestChannel(new byte[]{1}), 0L);
         assertEquals(0, nonempty.read(ByteBuffer.allocate(0)));
         DecompressionLimitException exception = assertThrows(
                 DecompressionLimitException.class,
@@ -158,11 +141,13 @@ final class StandardCodecOptionSupportTest {
         assertEquals(0L, nonempty.outputBytes());
         assertEquals(1L, nonempty.inputBytes());
     }
+
     /// Verifies excess output is never returned and remains a stable terminal decoder failure.
     @Test
     void rejectsExcessOutput() throws IOException {
-        TestDecoder delegate = new TestDecoder(new byte[]{1, 2, 3, 4});
-        DecompressingReadableByteChannel decoder = StandardCodecOptionSupport.limitOutput(delegate, 3L);
+        TestChannel delegate = new TestChannel(new byte[]{1, 2, 3, 4});
+        DecompressingReadableByteChannel decoder =
+                CompressionDecoderSupport.limitChannelOutput(delegate, 3L);
         ByteBuffer target = ByteBuffer.allocate(8);
 
         assertEquals(3, decoder.read(target));
@@ -177,9 +162,29 @@ final class StandardCodecOptionSupportTest {
         assertThrows(DecompressionLimitException.class, () -> decoder.read(target));
     }
 
+    /// Provides an inert transport-independent decoder.
+    @NotNullByDefault
+    private static final class NoOpDecoder implements CompressionDecoder {
+        /// Immediately reports the end of an empty stream.
+        @Override
+        public CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) {
+            return endOfInput ? CodecOutcome.FINISHED : CodecOutcome.NEEDS_INPUT;
+        }
+
+        /// Restores no mutable state.
+        @Override
+        public void reset() {
+        }
+
+        /// Releases no external resources.
+        @Override
+        public void close() {
+        }
+    }
+
     /// Supplies identity-decoded bytes with explicit counters and lifecycle state.
     @NotNullByDefault
-    private static final class TestDecoder implements DecompressingReadableByteChannel {
+    private static final class TestChannel implements DecompressingReadableByteChannel {
         /// The decoded bytes returned by this decoder.
         private final ByteBuffer content;
 
@@ -190,7 +195,7 @@ final class StandardCodecOptionSupportTest {
         private boolean open = true;
 
         /// Creates a decoder over fixed content.
-        private TestDecoder(byte[] content) {
+        private TestChannel(byte[] content) {
             this.content = ByteBuffer.wrap(Objects.requireNonNull(content, "content"));
         }
 

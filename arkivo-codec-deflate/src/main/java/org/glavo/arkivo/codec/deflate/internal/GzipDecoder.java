@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.FramedCompressionDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.EOFException;
@@ -15,7 +15,7 @@ import java.util.zip.CRC32;
 
 /// Incrementally decodes and validates one gzip member without binding codec state to an input channel.
 @NotNullByDefault
-public final class GzipDecoder implements CompressionDecoder {
+public final class GzipDecoder implements FramedCompressionDecoder {
     /// Gzip flag indicating an extra field.
     private static final int FLAG_EXTRA = 0x04;
 

@@ -4,12 +4,10 @@
 package org.glavo.arkivo.codec.bzip2;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -42,8 +40,6 @@ public final class BZip2CodecTest {
 
         assertEquals(true, codec instanceof CompressionCodec);
         assertEquals(BZip2Codec.NAME, codec.name());
-        assertEquals(true, codec.canCompress());
-        assertEquals(true, codec.canDecompress());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
@@ -73,13 +69,10 @@ public final class BZip2CodecTest {
         ByteBuffer source = ByteBuffer.allocateDirect(input.length).put(input).flip();
         ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
         WritableByteChannel compressedTarget = Channels.newChannel(compressedBytes);
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.COMPRESSION_LEVEL, 1L)
-                .build();
+        BZip2Codec codec = new BZip2Codec().withCompressionLevel(1L);
 
-        CompressingWritableByteChannel encoder = new BZip2Codec().openEncoder(
+        CompressingWritableByteChannel encoder = codec.openEncoder(
                 compressedTarget,
-                options,
                 ChannelOwnership.RETAIN
         );
         assertEquals(input.length, encoder.write(source));
@@ -94,7 +87,6 @@ public final class BZip2CodecTest {
         WritableByteChannel ownedTarget = Channels.newChannel(new ByteArrayOutputStream());
         CompressingWritableByteChannel owningEncoder = new BZip2Codec().openEncoder(
                 ownedTarget,
-                CodecOptions.EMPTY,
                 ChannelOwnership.CLOSE
         );
         owningEncoder.finish();
@@ -106,7 +98,6 @@ public final class BZip2CodecTest {
         );
         DecompressingReadableByteChannel decoder = new BZip2Codec().openDecoder(
                 compressedSource,
-                CodecOptions.EMPTY,
                 ChannelOwnership.CLOSE
         );
         ByteBuffer decoded = ByteBuffer.allocateDirect(input.length);
@@ -132,14 +123,7 @@ public final class BZip2CodecTest {
         assertEquals(9L, codec.maximumCompressionLevel());
         assertEquals(9L, codec.defaultCompressionLevel());
 
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.COMPRESSION_LEVEL, 10L)
-                .build();
-        assertThrows(IllegalArgumentException.class, () -> codec.openEncoder(
-                Channels.newChannel(new ByteArrayOutputStream()),
-                options,
-                ChannelOwnership.RETAIN
-        ));
+        assertThrows(IllegalArgumentException.class, () -> codec.withCompressionLevel(10L));
     }
 
     /// Compresses and decompresses the given bytes.

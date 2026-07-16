@@ -3,12 +3,9 @@
 
 package org.glavo.arkivo.codec.deflate;
 
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionCodecs;
-import org.glavo.arkivo.codec.CompressionFeature;
-import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -41,8 +38,6 @@ public final class DeflateCodecTest {
 
         assertEquals(true, codec instanceof CompressionCodec);
         assertEquals(DeflateCodec.NAME, codec.name());
-        assertEquals(true, codec.canCompress());
-        assertEquals(true, codec.canDecompress());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
@@ -111,17 +106,13 @@ public final class DeflateCodecTest {
         ).repeat(128).getBytes(StandardCharsets.UTF_8);
         byte[] input = Arrays.copyOfRange(dictionaryBytes, dictionaryBytes.length - 512, dictionaryBytes.length);
         CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes);
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.DICTIONARY, dictionary)
-                .build();
-        DeflateCodec codec = new DeflateCodec();
+        DeflateCodec codec = new DeflateCodec().withDictionary(dictionary);
 
-        assertEquals(true, codec.capabilities().supports(CompressionFeature.DICTIONARY));
+        assertEquals(dictionary, codec.dictionary());
         ByteArrayOutputStream compressedByCodec = new ByteArrayOutputStream();
         codec.compress(
                 Channels.newChannel(new ByteArrayInputStream(input)),
-                Channels.newChannel(compressedByCodec),
-                options
+                Channels.newChannel(compressedByCodec)
         );
 
         Inflater inflater = new Inflater(true);
@@ -143,14 +134,13 @@ public final class DeflateCodecTest {
         ByteArrayOutputStream decodedByCodec = new ByteArrayOutputStream();
         codec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(compressedByJdk.toByteArray())),
-                Channels.newChannel(decodedByCodec),
-                options
+                Channels.newChannel(decodedByCodec)
         );
         assertArrayEquals(input, decodedByCodec.toByteArray());
 
         assertThrows(
                 IOException.class,
-                () -> codec.decompress(
+                () -> new DeflateCodec().decompress(
                         Channels.newChannel(new ByteArrayInputStream(compressedByJdk.toByteArray())),
                         Channels.newChannel(new ByteArrayOutputStream())
                 )

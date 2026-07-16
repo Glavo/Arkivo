@@ -7,6 +7,8 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.DecompressionLimitException;
+import org.glavo.arkivo.codec.DictionaryCompressionDecoder;
+import org.glavo.arkivo.codec.FramedCompressionDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -15,7 +17,7 @@ import java.util.Objects;
 
 /// Enforces a caller-visible output limit around a transport-independent decoder engine.
 @NotNullByDefault
-final class OutputLimitingCompressionDecoder implements CompressionDecoder {
+class OutputLimitingCompressionDecoder implements CompressionDecoder {
     /// Algorithm-specific decoder engine.
     private final CompressionDecoder decoder;
 
@@ -30,6 +32,23 @@ final class OutputLimitingCompressionDecoder implements CompressionDecoder {
 
     /// Whether excess output has already been observed.
     private boolean exceeded;
+
+    /// Creates a capability-preserving limiting wrapper around one decoder engine.
+    static CompressionDecoder create(CompressionDecoder decoder, long maximumOutputSize) {
+        Objects.requireNonNull(decoder, "decoder");
+        boolean framed = decoder instanceof FramedCompressionDecoder;
+        boolean dictionary = decoder instanceof DictionaryCompressionDecoder;
+        if (framed && dictionary) {
+            return new FramedDictionaryDecoder(decoder, maximumOutputSize);
+        }
+        if (framed) {
+            return new FramedDecoder(decoder, maximumOutputSize);
+        }
+        if (dictionary) {
+            return new DictionaryDecoder(decoder, maximumOutputSize);
+        }
+        return new OutputLimitingCompressionDecoder(decoder, maximumOutputSize);
+    }
 
     /// Creates a limiting wrapper around one decoder engine.
     OutputLimitingCompressionDecoder(CompressionDecoder decoder, long maximumOutputSize) {
@@ -72,18 +91,6 @@ final class OutputLimitingCompressionDecoder implements CompressionDecoder {
         return outcome;
     }
 
-    /// Returns the dictionary identifier requested by the underlying decoder.
-    @Override
-    public long requiredDictionaryId() {
-        return decoder.requiredDictionaryId();
-    }
-
-    /// Supplies a requested dictionary to the underlying decoder.
-    @Override
-    public void provideDictionary(CompressionDictionary dictionary) throws IOException {
-        decoder.provideDictionary(dictionary);
-    }
-
     /// Resets both the output limit and underlying decoder session.
     @Override
     public void reset() {
@@ -97,6 +104,11 @@ final class OutputLimitingCompressionDecoder implements CompressionDecoder {
     @Override
     public void close() {
         decoder.close();
+    }
+
+    /// Returns the wrapped decoder as a dictionary-aware engine.
+    final DictionaryCompressionDecoder dictionaryDecoder() {
+        return (DictionaryCompressionDecoder) decoder;
     }
 
     /// Decodes one hidden byte to determine whether the configured limit is exceeded.
@@ -116,5 +128,50 @@ final class OutputLimitingCompressionDecoder implements CompressionDecoder {
     /// Creates the configured decompression-limit failure.
     private DecompressionLimitException limitException() {
         return new DecompressionLimitException(maximumOutputSize);
+    }
+
+    /// Preserves concatenated-frame support through the output limiter.
+    @NotNullByDefault
+    private static final class FramedDecoder
+            extends OutputLimitingCompressionDecoder
+            implements FramedCompressionDecoder {
+        /// Creates a framed limiting wrapper.
+        private FramedDecoder(CompressionDecoder decoder, long maximumOutputSize) {
+            super(decoder, maximumOutputSize);
+        }
+    }
+
+    /// Preserves late dictionary binding through the output limiter.
+    @NotNullByDefault
+    private static class DictionaryDecoder
+            extends OutputLimitingCompressionDecoder
+            implements DictionaryCompressionDecoder {
+        /// Creates a dictionary-aware limiting wrapper.
+        private DictionaryDecoder(CompressionDecoder decoder, long maximumOutputSize) {
+            super(decoder, maximumOutputSize);
+        }
+
+        /// Returns the requested dictionary identifier.
+        @Override
+        public long requiredDictionaryId() {
+            return dictionaryDecoder().requiredDictionaryId();
+        }
+
+        /// Supplies the requested dictionary.
+        @Override
+        public void provideDictionary(CompressionDictionary dictionary) throws IOException {
+            dictionaryDecoder().provideDictionary(dictionary);
+        }
+    }
+
+    /// Preserves both concatenated-frame and late-dictionary capabilities through the output limiter.
+    @NotNullByDefault
+    private static final class FramedDictionaryDecoder
+            extends DictionaryDecoder
+            implements FramedCompressionDecoder {
+        /// Creates a framed dictionary-aware limiting wrapper.
+        private FramedDictionaryDecoder(CompressionDecoder decoder, long maximumOutputSize) {
+            super(decoder, maximumOutputSize);
+        }
     }
 }

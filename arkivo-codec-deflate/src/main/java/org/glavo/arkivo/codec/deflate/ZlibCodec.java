@@ -3,64 +3,72 @@
 
 package org.glavo.arkivo.codec.deflate;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOptions;
-import org.glavo.arkivo.codec.CompressionCapabilities;
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.CompressionFeature;
-import org.glavo.arkivo.codec.StandardCodecOptions;
-import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
+import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.CompressionLevelCodec;
+import org.glavo.arkivo.codec.CompressionStrategy;
+import org.glavo.arkivo.codec.CompressionStrategyCodec;
+import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DictionaryCompressionCodec;
+import org.glavo.arkivo.codec.FlushableCompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.ZlibDecoder;
 import org.glavo.arkivo.codec.deflate.internal.ZlibEncoder;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
-import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.ReadableByteChannel;
-import java.nio.channels.WritableByteChannel;
-import java.util.Set;
+import java.util.Objects;
 
-/// Provides pure Java zlib stream buffer engines and blocking channel adapters.
+/// Provides an immutable zlib configuration and pure Java stream engines.
 @NotNullByDefault
-public final class ZlibCodec implements CompressionCodec {
+public final class ZlibCodec
+        implements CompressionLevelCodec, CompressionStrategyCodec, DictionaryCompressionCodec {
     /// The stable zlib codec name.
     public static final String NAME = "zlib";
 
+    /// The minimum zlib Deflate match-search level.
+    public static final int MINIMUM_COMPRESSION_LEVEL = 0;
+
+    /// The maximum zlib Deflate match-search level.
+    public static final int MAXIMUM_COMPRESSION_LEVEL = 9;
+
+    /// The default zlib Deflate match-search level.
+    public static final int DEFAULT_COMPRESSION_LEVEL = 6;
+
     /// The default immutable zlib codec configuration.
-    public static final ZlibCodec DEFAULT = new ZlibCodec();
+    public static final ZlibCodec DEFAULT =
+            new ZlibCodec(DEFAULT_COMPRESSION_LEVEL, CompressionStrategy.DEFAULT, null);
 
-    /// The supported zlib operations.
-    private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(
-            Set.of(
-                    CompressionFeature.COMPRESSION,
-                    CompressionFeature.DECOMPRESSION,
-                    CompressionFeature.ONE_SHOT_COMPRESSION,
-                    CompressionFeature.ONE_SHOT_DECOMPRESSION,
-                    CompressionFeature.FLUSH,
-                    CompressionFeature.DICTIONARY,
-                    CompressionFeature.DIRECT_BYTE_BUFFER,
-                    CompressionFeature.BUFFER_COMPRESSION,
-                    CompressionFeature.BUFFER_DECOMPRESSION
-            ),
-            Set.of(
-                    StandardCodecOptions.COMPRESSION_LEVEL,
-                    StandardCodecOptions.COMPRESSION_STRATEGY,
-                    StandardCodecOptions.DICTIONARY
-            ),
-            Set.of(
-                    StandardCodecOptions.DICTIONARY,
-                    StandardCodecOptions.MAX_OUTPUT_SIZE,
-                    StandardCodecOptions.MAX_WINDOW_SIZE
-            )
-    );
+    /// The configured Deflate match-search level.
+    private final int compressionLevel;
 
-    /// Creates a zlib codec.
+    /// The configured generic compression strategy.
+    private final CompressionStrategy compressionStrategy;
+
+    /// The configured preset dictionary, or null.
+    private final @Nullable CompressionDictionary dictionary;
+
+    /// Creates the default zlib codec configuration.
     public ZlibCodec() {
+        this(DEFAULT_COMPRESSION_LEVEL, CompressionStrategy.DEFAULT, null);
+    }
+
+    /// Creates a validated zlib codec configuration.
+    private ZlibCodec(
+            long compressionLevel,
+            CompressionStrategy compressionStrategy,
+            @Nullable CompressionDictionary dictionary
+    ) {
+        if (compressionLevel < MINIMUM_COMPRESSION_LEVEL
+                || compressionLevel > MAXIMUM_COMPRESSION_LEVEL) {
+            throw new IllegalArgumentException(
+                    "Zlib compression level must be between 0 and 9: " + compressionLevel
+            );
+        }
+        this.compressionLevel = Math.toIntExact(compressionLevel);
+        this.compressionStrategy = Objects.requireNonNull(compressionStrategy, "compressionStrategy");
+        this.dictionary = dictionary;
     }
 
     /// Returns the stable zlib codec name.
@@ -69,28 +77,74 @@ public final class ZlibCodec implements CompressionCodec {
         return NAME;
     }
 
-    /// Returns the supported zlib operations and options.
+    /// Returns the configured zlib Deflate match-search level.
     @Override
-    public CompressionCapabilities capabilities() {
-        return CAPABILITIES;
+    public long compressionLevel() {
+        return compressionLevel;
     }
 
     /// Returns the minimum zlib Deflate match-search level.
     @Override
     public long minimumCompressionLevel() {
-        return 0L;
+        return MINIMUM_COMPRESSION_LEVEL;
     }
 
     /// Returns the maximum zlib Deflate match-search level.
     @Override
     public long maximumCompressionLevel() {
-        return 9L;
+        return MAXIMUM_COMPRESSION_LEVEL;
     }
 
     /// Returns the default zlib Deflate match-search level.
     @Override
     public long defaultCompressionLevel() {
-        return 6L;
+        return DEFAULT_COMPRESSION_LEVEL;
+    }
+
+    /// Returns an immutable zlib codec with the requested match-search level.
+    @Override
+    public ZlibCodec withCompressionLevel(long compressionLevel) {
+        return compressionLevel == this.compressionLevel
+                ? this
+                : new ZlibCodec(compressionLevel, compressionStrategy, dictionary);
+    }
+
+    /// Returns the configured generic compression strategy.
+    @Override
+    public CompressionStrategy compressionStrategy() {
+        return compressionStrategy;
+    }
+
+    /// Returns an immutable zlib codec with the requested generic compression strategy.
+    @Override
+    public ZlibCodec withCompressionStrategy(CompressionStrategy compressionStrategy) {
+        Objects.requireNonNull(compressionStrategy, "compressionStrategy");
+        return compressionStrategy == this.compressionStrategy
+                ? this
+                : new ZlibCodec(compressionLevel, compressionStrategy, dictionary);
+    }
+
+    /// Returns the configured preset dictionary, or null.
+    @Override
+    public @Nullable CompressionDictionary dictionary() {
+        return dictionary;
+    }
+
+    /// Returns an immutable zlib codec with the requested preset dictionary.
+    @Override
+    public ZlibCodec withDictionary(CompressionDictionary dictionary) {
+        Objects.requireNonNull(dictionary, "dictionary");
+        return dictionary == this.dictionary
+                ? this
+                : new ZlibCodec(compressionLevel, compressionStrategy, dictionary);
+    }
+
+    /// Returns an immutable zlib codec without a preset dictionary.
+    @Override
+    public ZlibCodec withoutDictionary() {
+        return dictionary == null
+                ? this
+                : new ZlibCodec(compressionLevel, compressionStrategy, null);
     }
 
     /// Returns the number of leading bytes used to identify zlib streams.
@@ -114,59 +168,19 @@ public final class ZlibCodec implements CompressionCodec {
                 && ((compressionMethodAndFlags << 8) + flags) % 31 == 0;
     }
 
-    /// Creates a configured transport-independent zlib stream encoder.
+    /// Creates a transport-independent zlib stream encoder.
     @Override
-    public CompressionEncoder newEncoder(CodecOptions options) {
-        options.requireSupported(CAPABILITIES.compressionOptions(), "zlib compression");
-        return new ZlibEncoder(
-                compressionLevel(options),
-                options.get(StandardCodecOptions.DICTIONARY),
-                StandardCodecOptionSupport.compressionStrategy(options)
+    public FlushableCompressionEncoder newEncoder() {
+        return new ZlibEncoder(compressionLevel, dictionary, compressionStrategy);
+    }
+
+    /// Creates a transport-independent zlib stream decoder with operation-scoped limits.
+    @Override
+    public CompressionDecoder newDecoder(DecompressionLimits limits) {
+        Objects.requireNonNull(limits, "limits");
+        return CompressionDecoderSupport.limitEngineOutput(
+                new ZlibDecoder(limits.maximumWindowSize(), dictionary),
+                limits.maximumOutputSize()
         );
-    }
-
-    /// Opens the transport-independent zlib encoder through the shared blocking channel adapter.
-    @Override
-    public CompressingWritableByteChannel openEncoder(
-            WritableByteChannel target,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
-        return CompressionCodec.super.openEncoder(target, options, ownership);
-    }
-
-    /// Creates a configured transport-independent zlib stream decoder.
-    @Override
-    public CompressionDecoder newDecoder(CodecOptions options) throws IOException {
-        options.requireSupported(CAPABILITIES.decompressionOptions(), "zlib decompression");
-        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
-        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
-        return StandardCodecOptionSupport.limitOutput(
-                new ZlibDecoder(
-                        maximumWindowSize,
-                        options.get(StandardCodecOptions.DICTIONARY)
-                ),
-                maximumOutputSize
-        );
-    }
-
-    /// Opens the transport-independent zlib decoder through the shared blocking channel adapter.
-    @Override
-    public DecompressingReadableByteChannel openDecoder(
-            ReadableByteChannel source,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
-        return CompressionCodec.super.openDecoder(source, options, ownership);
-    }
-
-    /// Resolves and validates the compression level for one encoder context.
-    private int compressionLevel(CodecOptions options) {
-        @Nullable Long requested = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
-        long level = requested != null ? requested : defaultCompressionLevel();
-        if (level < minimumCompressionLevel() || level > maximumCompressionLevel()) {
-            throw new IllegalArgumentException("Zlib compression level is out of range");
-        }
-        return Math.toIntExact(level);
     }
 }

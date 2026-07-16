@@ -6,9 +6,7 @@ package org.glavo.arkivo.codec.zstd;
 import com.github.luben.zstd.Zstd;
 import com.github.luben.zstd.ZstdCompressCtx;
 import com.github.luben.zstd.ZstdDecompressCtx;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -64,16 +62,16 @@ public final class ZstdOfficialCorpusTest {
         byte[] input = Files.readAllBytes(corpusPath("tests/golden-compression").resolve(name));
         ZstdCodec codec = new ZstdCodec();
 
-        byte[] defaultCompressed = compress(codec, input, CodecOptions.EMPTY);
-        assertArrayEquals(input, decompress(codec, defaultCompressed, CodecOptions.EMPTY), name + " default");
+        byte[] defaultCompressed = compress(codec, input);
+        assertArrayEquals(input, decompress(codec, defaultCompressed), name + " default");
         assertArrayEquals(input, Zstd.decompress(defaultCompressed, input.length), name + " native default");
 
-        CodecOptions sensitiveOptions = CodecOptions.builder()
-                .set(StandardCodecOptions.COMPRESSION_LEVEL, 19L)
-                .set(ZstdCodec.MIN_MATCH, 7L)
+        ZstdCodec sensitiveCodec = ZstdCodec.builder()
+                .compressionLevel(19L)
+                .minimumMatch(7L)
                 .build();
-        byte[] sensitiveCompressed = compress(codec, input, sensitiveOptions);
-        assertArrayEquals(input, decompress(codec, sensitiveCompressed, CodecOptions.EMPTY), name + " level 19");
+        byte[] sensitiveCompressed = compress(sensitiveCodec, input);
+        assertArrayEquals(input, decompress(codec, sensitiveCompressed), name + " level 19");
         assertArrayEquals(input, Zstd.decompress(sensitiveCompressed, input.length), name + " native level 19");
     }
 
@@ -85,13 +83,9 @@ public final class ZstdOfficialCorpusTest {
         );
         byte[] input = Files.readAllBytes(corpusPath("tests/golden-compression/http"));
         CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes);
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.DICTIONARY, dictionary)
-                .build();
-
-        ZstdCodec codec = new ZstdCodec();
-        byte[] compressed = compress(codec, input, options);
-        assertArrayEquals(input, decompress(codec, compressed, options));
+        ZstdCodec codec = new ZstdCodec().withDictionary(dictionary);
+        byte[] compressed = compress(codec, input);
+        assertArrayEquals(input, decompress(codec, compressed));
         try (ZstdDecompressCtx context = new ZstdDecompressCtx()) {
             context.loadDict(dictionaryBytes);
             assertArrayEquals(input, context.decompress(compressed, input.length));
@@ -129,12 +123,9 @@ public final class ZstdOfficialCorpusTest {
         }
         CompressionDictionary dictionary = trainer.train();
         byte[] input = Files.readAllBytes(corpusPath("tests/golden-compression/http"));
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.DICTIONARY, dictionary)
-                .build();
-        ZstdCodec codec = new ZstdCodec();
+        ZstdCodec codec = new ZstdCodec().withDictionary(dictionary);
 
-        byte[] compressed = compress(codec, input, options);
+        byte[] compressed = compress(codec, input);
         try (ZstdDecompressCtx context = new ZstdDecompressCtx()) {
             context.loadDict(dictionary.bytes());
             assertArrayEquals(input, context.decompress(compressed, input.length));
@@ -145,7 +136,7 @@ public final class ZstdOfficialCorpusTest {
             context.loadDict(dictionary.bytes());
             nativeCompressed = context.compress(input);
         }
-        assertArrayEquals(input, decompress(codec, nativeCompressed, options));
+        assertArrayEquals(input, decompress(codec, nativeCompressed));
     }
 
     /// Verifies extraction retains the upstream license and the exact download lock manifest.
@@ -224,16 +215,12 @@ public final class ZstdOfficialCorpusTest {
             byte[] dictionaryBytes,
             byte[] input
     ) throws IOException {
-        CodecOptions options = CodecOptions.builder()
-                .set(
-                        StandardCodecOptions.DICTIONARY,
-                        CompressionDictionary.of(dictionaryBytes)
-                )
-                .build();
-        ZstdCodec codec = new ZstdCodec();
+        ZstdCodec codec = new ZstdCodec().withDictionary(
+                CompressionDictionary.of(dictionaryBytes)
+        );
 
-        byte[] pureJavaCompressed = compress(codec, input, options);
-        assertArrayEquals(input, decompress(codec, pureJavaCompressed, options));
+        byte[] pureJavaCompressed = compress(codec, input);
+        assertArrayEquals(input, decompress(codec, pureJavaCompressed));
         try (ZstdDecompressCtx context = new ZstdDecompressCtx()) {
             context.loadDict(dictionaryBytes);
             assertArrayEquals(input, context.decompress(pureJavaCompressed, input.length));
@@ -244,35 +231,25 @@ public final class ZstdOfficialCorpusTest {
             context.loadDict(dictionaryBytes);
             nativeCompressed = context.compress(input);
         }
-        assertArrayEquals(input, decompress(codec, nativeCompressed, options));
+        assertArrayEquals(input, decompress(codec, nativeCompressed));
     }
 
     /// Compresses bytes through the Arkivo channel API.
-    private static byte[] compress(
-            ZstdCodec codec,
-            byte[] input,
-            CodecOptions compressionOptions
-    ) throws IOException {
+    private static byte[] compress(ZstdCodec codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
         codec.compress(
                 Channels.newChannel(new ByteArrayInputStream(input)),
-                Channels.newChannel(compressed),
-                compressionOptions
+                Channels.newChannel(compressed)
         );
         return compressed.toByteArray();
     }
 
     /// Decompresses bytes through the Arkivo channel API.
-    private static byte[] decompress(
-            ZstdCodec codec,
-            byte[] compressed,
-            CodecOptions decompressionOptions
-    ) throws IOException {
+    private static byte[] decompress(ZstdCodec codec, byte[] compressed) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         codec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(compressed)),
-                Channels.newChannel(decoded),
-                decompressionOptions
+                Channels.newChannel(decoded)
         );
         return decoded.toByteArray();
     }

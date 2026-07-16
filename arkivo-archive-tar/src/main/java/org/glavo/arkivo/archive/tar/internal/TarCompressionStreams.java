@@ -3,9 +3,8 @@
 
 package org.glavo.arkivo.archive.tar.internal;
 
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOptions;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -17,7 +16,7 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
-/// Opens compression wrappers around TAR streams and validates codec capabilities.
+/// Opens optional compression wrappers around TAR streams.
 @NotNullByDefault
 public final class TarCompressionStreams {
     /// Creates no instances.
@@ -34,7 +33,6 @@ public final class TarCompressionStreams {
             return source;
         }
         try {
-            requireDecompression(compressionCodec);
             return compressionCodec.decompressFrom(source);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterOpenFailure(source, exception);
@@ -52,12 +50,7 @@ public final class TarCompressionStreams {
             return source;
         }
         try {
-            requireDecompression(compressionCodec);
-            return compressionCodec.openDecoder(
-                    source,
-                    CodecOptions.EMPTY,
-                    ChannelOwnership.CLOSE
-            );
+            return compressionCodec.openDecoder(source, ChannelOwnership.CLOSE);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterOpenFailure(source, exception);
             throw exception;
@@ -74,7 +67,6 @@ public final class TarCompressionStreams {
             return target;
         }
         try {
-            requireCompression(compressionCodec);
             return compressionCodec.compressTo(target);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterOpenFailure(target, exception);
@@ -92,33 +84,10 @@ public final class TarCompressionStreams {
             return target;
         }
         try {
-            requireCompression(compressionCodec);
-            return compressionCodec.openEncoder(
-                    target,
-                    CodecOptions.EMPTY,
-                    ChannelOwnership.CLOSE
-            );
+            return compressionCodec.openEncoder(target, ChannelOwnership.CLOSE);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterOpenFailure(target, exception);
             throw exception;
-        }
-    }
-
-    /// Requires the selected codec to support compression.
-    public static void requireCompression(@Nullable CompressionCodec compressionCodec) {
-        if (compressionCodec != null && !compressionCodec.canCompress()) {
-            throw new UnsupportedOperationException(
-                    "Compression codec does not support compression: " + compressionCodec.name()
-            );
-        }
-    }
-
-    /// Requires the selected codec to support decompression.
-    public static void requireDecompression(@Nullable CompressionCodec compressionCodec) {
-        if (compressionCodec != null && !compressionCodec.canDecompress()) {
-            throw new UnsupportedOperationException(
-                    "Compression codec does not support decompression: " + compressionCodec.name()
-            );
         }
     }
 

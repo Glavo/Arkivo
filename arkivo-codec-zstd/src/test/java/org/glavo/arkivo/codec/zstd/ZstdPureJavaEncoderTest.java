@@ -6,12 +6,8 @@ package org.glavo.arkivo.codec.zstd;
 import com.github.luben.zstd.Zstd;
 import com.github.luben.zstd.ZstdDecompressCtx;
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.ChecksumMode;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.StandardCodecOptions;
-import org.glavo.arkivo.codec.WorkerCount;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -38,7 +34,7 @@ public final class ZstdPureJavaEncoderTest {
                 "pure Java Zstandard sequence encoding 0123456789abcdef;"
         ).repeat(4_096).getBytes(StandardCharsets.UTF_8);
         ZstdCodec codec = new ZstdCodec();
-        byte[] compressed = compress(codec, input, CodecOptions.EMPTY);
+        byte[] compressed = compress(codec, input);
 
         assertArrayEquals(input, Zstd.decompress(compressed, input.length));
         assertTrue(compressed.length < input.length / 8);
@@ -67,7 +63,7 @@ public final class ZstdPureJavaEncoderTest {
         }
         byte[] expected = input.toByteArray();
         ZstdCodec codec = new ZstdCodec();
-        byte[] compressed = compress(codec, expected, CodecOptions.EMPTY);
+        byte[] compressed = compress(codec, expected);
 
         assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
         assertArrayEquals(expected, codec.decompress(ByteBuffer.wrap(compressed), expected.length).array());
@@ -80,7 +76,7 @@ public final class ZstdPureJavaEncoderTest {
     public void nativeDecoderReadsSingleStreamHuffmanLiterals() throws IOException {
         byte[] expected = huffmanFixture(6, 128, 0x51a9_2026L);
         ZstdCodec codec = new ZstdCodec();
-        byte[] compressed = compress(codec, expected, CodecOptions.EMPTY);
+        byte[] compressed = compress(codec, expected);
         LiteralSectionInfo literals = firstLiteralSection(codec, compressed);
 
         assertEquals(2, literals.type());
@@ -95,7 +91,7 @@ public final class ZstdPureJavaEncoderTest {
     public void nativeDecoderReadsFourStreamHuffmanLiterals() throws IOException {
         byte[] expected = huffmanFixture(100, 160, 0x4f75_7220_2026L);
         ZstdCodec codec = new ZstdCodec();
-        byte[] compressed = compress(codec, expected, CodecOptions.EMPTY);
+        byte[] compressed = compress(codec, expected);
         LiteralSectionInfo literals = firstLiteralSection(codec, compressed);
 
         assertEquals(2, literals.type());
@@ -111,7 +107,7 @@ public final class ZstdPureJavaEncoderTest {
     public void nativeDecoderReadsFullAlphabetHuffmanWeights() throws IOException {
         byte[] expected = fullAlphabetHuffmanFixture();
         ZstdCodec codec = new ZstdCodec();
-        byte[] compressed = compress(codec, expected, CodecOptions.EMPTY);
+        byte[] compressed = compress(codec, expected);
         LiteralSectionInfo literals = firstLiteralSection(codec, compressed);
 
         assertEquals(2, literals.type());
@@ -128,7 +124,7 @@ public final class ZstdPureJavaEncoderTest {
     public void nativeDecoderReadsTreelessHuffmanLiterals() throws IOException {
         byte[] expected = treelessHuffmanFixture();
         ZstdCodec codec = new ZstdCodec();
-        byte[] compressed = compress(codec, expected, CodecOptions.EMPTY);
+        byte[] compressed = compress(codec, expected);
 
         assertArrayEquals(new int[]{2, 3}, compressedBlockLiteralTypes(codec, compressed));
         assertArrayEquals(expected, Zstd.decompress(compressed, expected.length));
@@ -141,7 +137,7 @@ public final class ZstdPureJavaEncoderTest {
     public void nativeDecoderReadsRepeatedSequenceTables() throws IOException {
         byte[] expected = repeatedSequenceTableFixture();
         ZstdCodec codec = new ZstdCodec();
-        byte[] compressed = compress(codec, expected, CodecOptions.EMPTY);
+        byte[] compressed = compress(codec, expected);
         int[] modes = compressedBlockSequenceModes(codec, compressed);
 
         assertEquals(2, modes.length);
@@ -172,7 +168,7 @@ public final class ZstdPureJavaEncoderTest {
                 position += copyLength + 3 + random.nextInt(97);
             }
 
-            byte[] compressed = compress(codec, expected, CodecOptions.EMPTY);
+            byte[] compressed = compress(codec, expected);
             assertArrayEquals(expected, Zstd.decompress(compressed, expected.length), "iteration=" + iteration);
             assertArrayEquals(
                     expected,
@@ -187,13 +183,11 @@ public final class ZstdPureJavaEncoderTest {
     public void nativeDecoderReadsChecksummedBoundarySizes() throws IOException {
         int[] sizes = {0, 1, 3, 4, 31, 32, 255, 256, 1_023, 1_024, 131_071, 131_072, 131_073};
         Random random = new Random(0x5a17_2026L);
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.CHECKSUM, ChecksumMode.ENABLED)
-                .build();
+        ZstdCodec codec = new ZstdCodec().withFrameChecksum(true);
         for (int size : sizes) {
             byte[] input = new byte[size];
             random.nextBytes(input);
-            byte[] compressed = compress(new ZstdCodec(), input, options);
+            byte[] compressed = compress(codec, input);
             assertArrayEquals(input, Zstd.decompress(compressed, size), "size=" + size);
         }
     }
@@ -207,10 +201,7 @@ public final class ZstdPureJavaEncoderTest {
         for (int size : sizes) {
             byte[] input = new byte[size];
             random.nextBytes(input);
-            CodecOptions options = CodecOptions.builder()
-                    .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) size)
-                    .build();
-            byte[] compressed = compress(codec, input, options);
+            byte[] compressed = compress(codec, input, size);
             ZstdStandardFrameInfo info = (ZstdStandardFrameInfo) codec.frameInfo(ByteBuffer.wrap(compressed));
 
             assertEquals(size, info.contentSize(), "size=" + size);
@@ -229,11 +220,11 @@ public final class ZstdPureJavaEncoderTest {
                 dictionary.length - 4_096,
                 dictionary.length
         );
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.DICTIONARY, CompressionDictionary.of(dictionary))
-                .set(ZstdCodec.STRATEGY, ZstdStrategy.BT_OPT)
+        ZstdCodec codec = ZstdCodec.builder()
+                .dictionary(CompressionDictionary.of(dictionary))
+                .strategy(ZstdStrategy.BT_OPT)
                 .build();
-        byte[] compressed = compress(new ZstdCodec(), input, options);
+        byte[] compressed = compress(codec, input);
 
         try (ZstdDecompressCtx context = new ZstdDecompressCtx()) {
             context.loadDict(dictionary);
@@ -251,14 +242,12 @@ public final class ZstdPureJavaEncoderTest {
         byte[] input = new byte[blockSize * 2];
         System.arraycopy(block, 0, input, 0, blockSize);
         System.arraycopy(block, 0, input, blockSize, blockSize);
-        CodecOptions options = CodecOptions.builder()
-                .set(ZstdCodec.WINDOW_LOG, 17L)
-                .set(ZstdCodec.CHAIN_LOG, 17L)
-                .set(ZstdCodec.SEARCH_LOG, 8L)
+        ZstdCodec codec = ZstdCodec.builder()
+                .windowLog(17L)
+                .chainLog(17L)
+                .searchLog(8L)
                 .build();
-
-        ZstdCodec codec = new ZstdCodec();
-        byte[] compressed = compress(codec, input, options);
+        byte[] compressed = compress(codec, input);
 
         assertArrayEquals(new int[]{0, 2}, standardBlockTypes(codec, compressed));
         assertArrayEquals(input, Zstd.decompress(compressed, input.length));
@@ -278,8 +267,8 @@ public final class ZstdPureJavaEncoderTest {
         }
 
         ZstdCodec codec = new ZstdCodec();
-        byte[] noOverlap = compress(codec, input, parallelJobOptions(1L));
-        byte[] fullOverlap = compress(codec, input, parallelJobOptions(9L));
+        byte[] noOverlap = compress(parallelJobCodec(1), input);
+        byte[] fullOverlap = compress(parallelJobCodec(9), input);
 
         assertArrayEquals(
                 new int[]{0, 2, 2, 2, 0, 2, 2, 2},
@@ -301,18 +290,16 @@ public final class ZstdPureJavaEncoderTest {
     public void parallelFramesResetJobHistory() throws IOException {
         byte[] input = new byte[1 << 17];
         new Random(0x64a6_e5e7_2026L).nextBytes(input);
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.WORKER_COUNT, new WorkerCount(2))
-                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) input.length)
-                .set(ZstdCodec.JOB_SIZE, 512L * 1024L)
-                .set(ZstdCodec.OVERLAP_LOG, 9L)
+        ZstdCodec codec = ZstdCodec.builder()
+                .workerCount(2)
+                .jobSize(512L * 1024L)
+                .overlapLog(9)
                 .build();
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        ZstdCodec codec = new ZstdCodec();
         int firstFrameSize;
         try (CompressingWritableByteChannel encoder = codec.openEncoder(
                 Channels.newChannel(encoded),
-                options,
+                input.length,
                 ChannelOwnership.RETAIN
         )) {
             encoder.write(ByteBuffer.wrap(input));
@@ -335,7 +322,7 @@ public final class ZstdPureJavaEncoderTest {
     @Test
     public void randomizedParallelJobBoundariesInteroperate() throws IOException {
         long @Unmodifiable [] jobSizes = {512L * 1024L, 600_000L, 700_000L};
-        long @Unmodifiable [] overlapLogs = {1L, 6L, 9L};
+        int @Unmodifiable [] overlapLogs = {1, 6, 9};
         ZstdCodec codec = new ZstdCodec();
         for (int iteration = 0; iteration < jobSizes.length; iteration++) {
             int size = Math.toIntExact(jobSizes[iteration] * 2L + 12_345L);
@@ -344,14 +331,14 @@ public final class ZstdPureJavaEncoderTest {
             for (int position = 131_072; position + 4_096 <= input.length; position += 12_289) {
                 System.arraycopy(input, position - 65_536, input, position, 4_096);
             }
-            CodecOptions options = CodecOptions.builder()
-                    .set(StandardCodecOptions.WORKER_COUNT, new WorkerCount(3))
-                    .set(StandardCodecOptions.CHECKSUM, ChecksumMode.ENABLED)
-                    .set(ZstdCodec.JOB_SIZE, jobSizes[iteration])
-                    .set(ZstdCodec.OVERLAP_LOG, overlapLogs[iteration])
+            ZstdCodec configured = ZstdCodec.builder()
+                    .workerCount(3)
+                    .frameChecksum(true)
+                    .jobSize(jobSizes[iteration])
+                    .overlapLog(overlapLogs[iteration])
                     .build();
 
-            byte[] compressed = compress(codec, input, options);
+            byte[] compressed = compress(configured, input);
             assertArrayEquals(
                     input,
                     Zstd.decompress(compressed, input.length),
@@ -375,14 +362,12 @@ public final class ZstdPureJavaEncoderTest {
         for (int offset = 0; offset + phrase.length <= input.length; offset += 97) {
             System.arraycopy(phrase, 0, input, offset, phrase.length);
         }
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.WORKER_COUNT, new WorkerCount(3))
-                .set(StandardCodecOptions.CHECKSUM, ChecksumMode.ENABLED)
-                .set(ZstdCodec.STRATEGY, ZstdStrategy.BT_OPT)
+        ZstdCodec codec = ZstdCodec.builder()
+                .workerCount(3)
+                .frameChecksum(true)
+                .strategy(ZstdStrategy.BT_OPT)
                 .build();
-
-        ZstdCodec codec = new ZstdCodec();
-        byte[] compressed = compress(codec, input, options);
+        byte[] compressed = compress(codec, input);
         assertArrayEquals(input, Zstd.decompress(compressed, input.length));
         assertTrue(compressedBlockLiteralTypes(codec, compressed).length > 1);
         assertTrue(compressedBlockSequenceModes(codec, compressed).length > 1);
@@ -399,7 +384,6 @@ public final class ZstdPureJavaEncoderTest {
         ZstdCodec codec = new ZstdCodec();
         try (CompressingWritableByteChannel encoder = codec.openEncoder(
                 Channels.newChannel(encoded),
-                CodecOptions.EMPTY,
                 ChannelOwnership.RETAIN
         )) {
             encoder.write(ByteBuffer.wrap(first));
@@ -430,15 +414,13 @@ public final class ZstdPureJavaEncoderTest {
                 .getBytes(StandardCharsets.UTF_8);
         byte[] second = "parallel final block".getBytes(StandardCharsets.UTF_8);
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        ZstdCodec codec = new ZstdCodec();
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.WORKER_COUNT, new WorkerCount(2))
-                .set(ZstdCodec.JOB_SIZE, 512L * 1024L)
-                .set(ZstdCodec.OVERLAP_LOG, 9L)
+        ZstdCodec codec = ZstdCodec.builder()
+                .workerCount(2)
+                .jobSize(512L * 1024L)
+                .overlapLog(9)
                 .build();
         try (CompressingWritableByteChannel encoder = codec.openEncoder(
                 Channels.newChannel(encoded),
-                options,
                 ChannelOwnership.RETAIN
         )) {
             encoder.write(ByteBuffer.wrap(first));
@@ -470,8 +452,8 @@ public final class ZstdPureJavaEncoderTest {
         int blockSize = 1 << 17;
         byte[] input = longDistanceFixture();
         ZstdCodec codec = new ZstdCodec();
-        byte[] disabled = compress(codec, input, longDistanceOptions(false, 20L));
-        byte[] enabled = compress(codec, input, longDistanceOptions(true, 20L));
+        byte[] disabled = compress(longDistanceCodec(false, 20L), input);
+        byte[] enabled = compress(longDistanceCodec(true, 20L), input);
 
         assertArrayEquals(new int[]{0, 0, 0, 0, 0, 0}, standardBlockTypes(codec, disabled));
         assertArrayEquals(new int[]{0, 0, 0, 0, 0, 2}, standardBlockTypes(codec, enabled));
@@ -480,23 +462,23 @@ public final class ZstdPureJavaEncoderTest {
         assertTrue(enabled.length < disabled.length - blockSize / 2);
     }
 
-    /// Verifies every public LDM tuning option reaches the matcher and remains native-compatible.
+    /// Verifies every public LDM tuning parameter reaches the matcher and remains native-compatible.
     @Test
     public void customLongDistanceParametersInteroperate() throws IOException {
         byte[] input = longDistanceFixture();
         ZstdCodec codec = new ZstdCodec();
-        CodecOptions options = CodecOptions.builder()
-                .set(ZstdCodec.LONG_DISTANCE_MATCHING, true)
-                .set(ZstdCodec.WINDOW_LOG, 20L)
-                .set(ZstdCodec.HASH_LOG, 18L)
-                .set(ZstdCodec.CHAIN_LOG, 17L)
-                .set(ZstdCodec.SEARCH_LOG, 6L)
-                .set(ZstdCodec.LDM_HASH_LOG, 18L)
-                .set(ZstdCodec.LDM_MIN_MATCH, 32L)
-                .set(ZstdCodec.LDM_BUCKET_SIZE_LOG, 4L)
-                .set(ZstdCodec.LDM_HASH_RATE_LOG, 2L)
+        ZstdCodec configured = ZstdCodec.builder()
+                .longDistanceMatching(true)
+                .windowLog(20L)
+                .hashLog(18L)
+                .chainLog(17L)
+                .searchLog(6L)
+                .longDistanceHashLog(18L)
+                .longDistanceMinimumMatch(32L)
+                .longDistanceBucketSizeLog(4L)
+                .longDistanceHashRateLog(2L)
                 .build();
-        byte[] compressed = compress(codec, input, options);
+        byte[] compressed = compress(configured, input);
 
         assertArrayEquals(new int[]{0, 0, 0, 0, 0, 2}, standardBlockTypes(codec, compressed));
         assertArrayEquals(input, Zstd.decompress(compressed, input.length));
@@ -508,7 +490,7 @@ public final class ZstdPureJavaEncoderTest {
     public void longDistanceMatchingHonorsWindow() throws IOException {
         byte[] input = longDistanceFixture();
         ZstdCodec codec = new ZstdCodec();
-        byte[] compressed = compress(codec, input, longDistanceOptions(true, 19L));
+        byte[] compressed = compress(longDistanceCodec(true, 19L), input);
 
         assertArrayEquals(new int[]{0, 0, 0, 0, 0, 0}, standardBlockTypes(codec, compressed));
         assertArrayEquals(input, Zstd.decompress(compressed, input.length));
@@ -519,7 +501,7 @@ public final class ZstdPureJavaEncoderTest {
     public void parallelJobsUseLongDistanceMatches() throws IOException {
         byte[] input = longDistanceFixture();
         ZstdCodec codec = new ZstdCodec();
-        byte[] compressed = compress(codec, input, parallelLongDistanceOptions());
+        byte[] compressed = compress(parallelLongDistanceCodec(), input);
 
         assertArrayEquals(new int[]{0, 0, 0, 0, 0, 2}, standardBlockTypes(codec, compressed));
         assertArrayEquals(input, Zstd.decompress(compressed, input.length));
@@ -532,7 +514,7 @@ public final class ZstdPureJavaEncoderTest {
         byte[] input = strategyFixture();
         ZstdCodec codec = new ZstdCodec();
         for (ZstdStrategy strategy : ZstdStrategy.values()) {
-            byte[] compressed = compress(codec, input, strategyOptions(strategy));
+            byte[] compressed = compress(strategyCodec(strategy), input);
             assertArrayEquals(input, Zstd.decompress(compressed, input.length), strategy.name());
             assertArrayEquals(
                     input,
@@ -541,9 +523,9 @@ public final class ZstdPureJavaEncoderTest {
             );
         }
 
-        byte[] greedy = compress(codec, input, strategyOptions(ZstdStrategy.GREEDY));
-        byte[] lazy = compress(codec, input, strategyOptions(ZstdStrategy.LAZY));
-        byte[] optimal = compress(codec, input, strategyOptions(ZstdStrategy.BT_OPT));
+        byte[] greedy = compress(strategyCodec(ZstdStrategy.GREEDY), input);
+        byte[] lazy = compress(strategyCodec(ZstdStrategy.LAZY), input);
+        byte[] optimal = compress(strategyCodec(ZstdStrategy.BT_OPT), input);
         assertTrue(lazy.length < greedy.length);
         assertTrue(optimal.length <= greedy.length);
     }
@@ -641,13 +623,13 @@ public final class ZstdPureJavaEncoderTest {
         return new LiteralSectionInfo(type, (int) (header >>> 4 & 0x3ffff), 4);
     }
 
-    /// Creates options for one explicit strategy with a deep ordinary hash chain.
-    private static CodecOptions strategyOptions(ZstdStrategy strategy) {
-        return CodecOptions.builder()
-                .set(ZstdCodec.STRATEGY, strategy)
-                .set(ZstdCodec.HASH_LOG, 15L)
-                .set(ZstdCodec.CHAIN_LOG, 17L)
-                .set(ZstdCodec.SEARCH_LOG, 6L)
+    /// Creates a codec for one explicit strategy with a deep ordinary hash chain.
+    private static ZstdCodec strategyCodec(ZstdStrategy strategy) {
+        return ZstdCodec.builder()
+                .strategy(strategy)
+                .hashLog(15L)
+                .chainLog(17L)
+                .searchLog(6L)
                 .build();
     }
 
@@ -680,28 +662,28 @@ public final class ZstdPureJavaEncoderTest {
         return input;
     }
 
-    /// Creates options for synchronous long-distance matching scenarios.
-    private static CodecOptions longDistanceOptions(boolean enabled, long windowLog) {
-        return CodecOptions.builder()
-                .set(ZstdCodec.LONG_DISTANCE_MATCHING, enabled)
-                .set(ZstdCodec.WINDOW_LOG, windowLog)
-                .set(ZstdCodec.HASH_LOG, 18L)
-                .set(ZstdCodec.CHAIN_LOG, 17L)
-                .set(ZstdCodec.SEARCH_LOG, 6L)
+    /// Creates a codec for synchronous long-distance matching scenarios.
+    private static ZstdCodec longDistanceCodec(boolean enabled, long windowLog) {
+        return ZstdCodec.builder()
+                .longDistanceMatching(enabled)
+                .windowLog(windowLog)
+                .hashLog(18L)
+                .chainLog(17L)
+                .searchLog(6L)
                 .build();
     }
 
-    /// Creates options for long-distance matching across 512 KiB parallel jobs.
-    private static CodecOptions parallelLongDistanceOptions() {
-        return CodecOptions.builder()
-                .set(StandardCodecOptions.WORKER_COUNT, new WorkerCount(2))
-                .set(ZstdCodec.LONG_DISTANCE_MATCHING, true)
-                .set(ZstdCodec.JOB_SIZE, 512L * 1024L)
-                .set(ZstdCodec.OVERLAP_LOG, 1L)
-                .set(ZstdCodec.WINDOW_LOG, 20L)
-                .set(ZstdCodec.HASH_LOG, 18L)
-                .set(ZstdCodec.CHAIN_LOG, 17L)
-                .set(ZstdCodec.SEARCH_LOG, 6L)
+    /// Creates a codec for long-distance matching across 512 KiB parallel jobs.
+    private static ZstdCodec parallelLongDistanceCodec() {
+        return ZstdCodec.builder()
+                .workerCount(2)
+                .longDistanceMatching(true)
+                .jobSize(512L * 1024L)
+                .overlapLog(1)
+                .windowLog(20L)
+                .hashLog(18L)
+                .chainLog(17L)
+                .searchLog(6L)
                 .build();
     }
 
@@ -714,15 +696,15 @@ public final class ZstdPureJavaEncoderTest {
         return input;
     }
 
-    /// Creates options for two 512 KiB jobs with a selected overlap mode.
-    private static CodecOptions parallelJobOptions(long overlapLog) {
-        return CodecOptions.builder()
-                .set(StandardCodecOptions.WORKER_COUNT, new WorkerCount(2))
-                .set(ZstdCodec.JOB_SIZE, 512L * 1024L)
-                .set(ZstdCodec.OVERLAP_LOG, overlapLog)
-                .set(ZstdCodec.WINDOW_LOG, 17L)
-                .set(ZstdCodec.CHAIN_LOG, 17L)
-                .set(ZstdCodec.SEARCH_LOG, 8L)
+    /// Creates a codec for two 512 KiB jobs with a selected overlap mode.
+    private static ZstdCodec parallelJobCodec(int overlapLog) {
+        return ZstdCodec.builder()
+                .workerCount(2)
+                .jobSize(512L * 1024L)
+                .overlapLog(overlapLog)
+                .windowLog(17L)
+                .chainLog(17L)
+                .searchLog(8L)
                 .build();
     }
 
@@ -989,13 +971,28 @@ public final class ZstdPureJavaEncoderTest {
     }
 
     /// Compresses bytes through the channel API without closing the caller-owned target.
-    private static byte[] compress(ZstdCodec codec, byte[] input, CodecOptions options) throws IOException {
+    private static byte[] compress(ZstdCodec codec, byte[] input) throws IOException {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         codec.compress(
                 Channels.newChannel(new ByteArrayInputStream(input)),
-                Channels.newChannel(encoded),
-                options
+                Channels.newChannel(encoded)
         );
+        return encoded.toByteArray();
+    }
+
+    /// Compresses bytes with exact operation-scoped source-size metadata.
+    private static byte[] compress(
+            ZstdCodec codec,
+            byte[] input,
+            long pledgedSourceSize
+    ) throws IOException {
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+        try (CompressingWritableByteChannel encoder = codec.openEncoder(
+                Channels.newChannel(encoded),
+                pledgedSourceSize
+        )) {
+            encoder.write(ByteBuffer.wrap(input));
+        }
         return encoded.toByteArray();
     }
 }

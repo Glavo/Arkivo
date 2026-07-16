@@ -76,7 +76,6 @@ public final class BZip2Encoder implements FramedCompressionEncoder {
     }
 
     /// Completes the current BZip2 frame as a decodable flush boundary.
-    @Override
     public CodecOutcome flush(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();

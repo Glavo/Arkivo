@@ -4,13 +4,11 @@
 package org.glavo.arkivo.codec.ppmd;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecTransferResult;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.DecompressionLimitException;
-import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.DecompressionLimits;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -35,18 +33,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies the public raw PPMd7 codec contract.
 @NotNullByDefault
 final class PPMdCodecTest {
-    /// Verifies service discovery and the bidirectional capability surface.
+    /// Verifies service discovery and immutable PPMd configuration.
     @Test
-    void exposesCompressionCapabilities() {
+    void exposesImmutableConfiguration() {
         PPMdCodec codec = new PPMdCodec();
 
-        assertTrue(codec.canCompress());
-        assertTrue(codec.canDecompress());
-        assertTrue(codec.canCompressBuffers());
-        assertTrue(codec.canDecompressBuffers());
-        assertTrue(codec.capabilities().supports(CompressionFeature.DIRECT_BYTE_BUFFER));
-        assertTrue(codec.capabilities().compressionOptions().contains(PPMdCodecOptions.MAXIMUM_ORDER));
-        assertTrue(codec.capabilities().compressionOptions().contains(PPMdCodecOptions.MEMORY_SIZE));
+        assertEquals(PPMdCodec.DEFAULT_MAXIMUM_ORDER, codec.maximumOrder());
+        assertEquals(PPMdCodec.DEFAULT_MEMORY_SIZE, codec.memorySize());
+        assertEquals(PPMdCodec.UNKNOWN_SIZE, codec.decodedSize());
+        PPMdCodec configured = codec.withMaximumOrder(4L).withMemorySize(1L << 20);
+        assertEquals(4, configured.maximumOrder());
+        assertEquals(1L << 20, configured.memorySize());
+        assertEquals(PPMdCodec.DEFAULT_MAXIMUM_ORDER, codec.maximumOrder());
         assertNotNull(CompressionCodecs.find(PPMdCodec.NAME));
         assertNotNull(CompressionCodecs.find("ppmd7"));
     }
@@ -69,24 +67,21 @@ final class PPMdCodecTest {
                 random
         };
 
-        PPMdCodec codec = new PPMdCodec();
-        CodecOptions compressionOptions = modelOptions();
+        PPMdCodec codec = modelCodec();
         for (byte[] sample : samples) {
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
             CodecTransferResult compression = codec.compress(
                     Channels.newChannel(new ByteArrayInputStream(sample)),
-                    Channels.newChannel(compressedBytes),
-                    compressionOptions
+                    Channels.newChannel(compressedBytes)
             );
             assertEquals(sample.length, compression.inputBytes());
             assertEquals(compressedBytes.size(), compression.outputBytes());
             assertTrue(compressedBytes.size() >= 5);
 
             ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
-            CodecTransferResult decompression = codec.decompress(
+            CodecTransferResult decompression = codec.withDecodedSize(sample.length).decompress(
                     Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
-                    Channels.newChannel(decodedBytes),
-                    options(sample.length)
+                    Channels.newChannel(decodedBytes)
             );
             assertEquals(sample.length, decompression.outputBytes());
             assertArrayEquals(sample, decodedBytes.toByteArray());
@@ -102,7 +97,7 @@ final class PPMdCodecTest {
         PPMdCodec codec = new PPMdCodec();
 
         ByteBuffer compressed = codec.compress(source);
-        ByteBuffer decoded = codec.decompress(compressed, expected.length, defaultModelOptions(expected.length));
+        ByteBuffer decoded = codec.withDecodedSize(expected.length).decompress(compressed, expected.length);
 
         assertFalse(source.hasRemaining());
         byte[] actual = new byte[decoded.remaining()];
@@ -125,24 +120,17 @@ final class PPMdCodecTest {
         assertArrayEquals(expected, actualBytes);
     }
 
-    /// Verifies compression option ranges and endpoint ownership.
+    /// Verifies compression-configuration ranges and endpoint ownership.
     @Test
     void validatesCompressionParametersAndHonorsOwnership() throws IOException {
         PPMdCodec codec = new PPMdCodec();
         WritableByteChannel lowOrderTarget = Channels.newChannel(new ByteArrayOutputStream());
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> codec.openEncoder(
-                        lowOrderTarget,
-                        CodecOptions.builder().set(PPMdCodecOptions.MAXIMUM_ORDER, 1L).build(),
-                        ChannelOwnership.RETAIN
-                )
-        );
+        assertThrows(IllegalArgumentException.class, () -> codec.withMaximumOrder(1L));
         assertTrue(lowOrderTarget.isOpen());
 
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         WritableByteChannel ownedTarget = Channels.newChannel(encoded);
-        try (var encoder = codec.openEncoder(ownedTarget, modelOptions(), ChannelOwnership.CLOSE)) {
+        try (var encoder = modelCodec().openEncoder(ownedTarget, ChannelOwnership.CLOSE)) {
             encoder.write(ByteBuffer.wrap(new byte[]{1, 2, 3, 4}));
             assertEquals(4L, encoder.inputBytes());
         }
@@ -150,35 +138,33 @@ final class PPMdCodecTest {
         assertTrue(encoded.size() >= 5);
     }
 
-    /// Verifies required model options, output limits, counters, and source ownership.
+    /// Verifies required model metadata, output limits, counters, and source ownership.
     @Test
     void validatesRawParametersAndHonorsOwnership() throws IOException {
         PPMdCodec codec = new PPMdCodec();
         ReadableByteChannel missingOptions = Channels.newChannel(new ByteArrayInputStream(new byte[0]));
         assertThrows(
-                IllegalArgumentException.class,
-                () -> codec.openDecoder(missingOptions, CodecOptions.EMPTY, ChannelOwnership.RETAIN)
+                IllegalStateException.class,
+                () -> codec.openDecoder(missingOptions, ChannelOwnership.RETAIN)
         );
 
-        CodecOptions limited = CodecOptions.builder()
-                .set(PPMdCodecOptions.MAXIMUM_ORDER, 4L)
-                .set(PPMdCodecOptions.MEMORY_SIZE, 1L << 20)
-                .set(PPMdCodecOptions.DECODED_SIZE, 1L)
-                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, 0L)
-                .build();
-        assertThrows(
-                DecompressionLimitException.class,
-                () -> codec.openDecoder(
-                        Channels.newChannel(new ByteArrayInputStream(new byte[0])),
-                        limited,
-                        ChannelOwnership.RETAIN
-                )
-        );
+        ByteBuffer singleByteFrame = modelCodec().compress(ByteBuffer.wrap(new byte[]{1}));
+        byte[] singleByteFrameBytes = new byte[singleByteFrame.remaining()];
+        singleByteFrame.get(singleByteFrameBytes);
+        try (DecompressingReadableByteChannel limitedDecoder = decoderCodec(1L).openDecoder(
+                Channels.newChannel(new ByteArrayInputStream(singleByteFrameBytes)),
+                DecompressionLimits.ofMaximumOutputSize(0L),
+                ChannelOwnership.RETAIN
+        )) {
+            assertThrows(
+                    DecompressionLimitException.class,
+                    () -> limitedDecoder.read(ByteBuffer.allocate(1))
+            );
+        }
 
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(new byte[5]));
-        try (DecompressingReadableByteChannel decoder = codec.openDecoder(
+        try (DecompressingReadableByteChannel decoder = decoderCodec(0L).openDecoder(
                 source,
-                options(0L),
                 ChannelOwnership.CLOSE
         )) {
             assertEquals(-1, decoder.read(ByteBuffer.allocateDirect(1)));
@@ -188,29 +174,13 @@ final class PPMdCodecTest {
         assertFalse(source.isOpen());
     }
 
-    /// Creates valid raw PPMd7 options for the given exact decoded size.
-    private static CodecOptions options(long decodedSize) {
-        return CodecOptions.builder()
-                .set(PPMdCodecOptions.MAXIMUM_ORDER, 4L)
-                .set(PPMdCodecOptions.MEMORY_SIZE, 1L << 20)
-                .set(PPMdCodecOptions.DECODED_SIZE, decodedSize)
-                .build();
+    /// Creates a valid raw PPMd7 configuration for the given exact decoded size.
+    private static PPMdCodec decoderCodec(long decodedSize) {
+        return modelCodec().withDecodedSize(decodedSize);
     }
 
-    /// Creates the explicit model options used by channel round-trip tests.
-    private static CodecOptions modelOptions() {
-        return CodecOptions.builder()
-                .set(PPMdCodecOptions.MAXIMUM_ORDER, 4L)
-                .set(PPMdCodecOptions.MEMORY_SIZE, 1L << 20)
-                .build();
-    }
-
-    /// Creates decoder options matching the codec's default encoder model.
-    private static CodecOptions defaultModelOptions(long decodedSize) {
-        return CodecOptions.builder()
-                .set(PPMdCodecOptions.MAXIMUM_ORDER, 6L)
-                .set(PPMdCodecOptions.MEMORY_SIZE, 16L << 20)
-                .set(PPMdCodecOptions.DECODED_SIZE, decodedSize)
-                .build();
+    /// Creates the explicit model configuration used by channel round-trip tests.
+    private static PPMdCodec modelCodec() {
+        return new PPMdCodec().withMaximumOrder(4L).withMemorySize(1L << 20);
     }
 }

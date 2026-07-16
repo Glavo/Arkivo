@@ -3,75 +3,64 @@
 
 package org.glavo.arkivo.codec.lzma;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOptions;
-import org.glavo.arkivo.codec.CompressionCapabilities;
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.CompressionFeature;
-import org.glavo.arkivo.codec.StandardCodecOptions;
-import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
-
+import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.PledgedSourceSizeCodec;
 import org.glavo.arkivo.codec.lzma.internal.LZMARawDecoder;
 import org.glavo.arkivo.codec.lzma.internal.LZMARawEncoder;
-import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
-import java.nio.channels.ReadableByteChannel;
-import java.nio.channels.WritableByteChannel;
 import java.util.List;
-import java.util.Set;
+import java.util.Objects;
 
-/// Provides headerless LZMA compression for containers that carry model properties separately.
+/// Provides an immutable headerless LZMA configuration for containers that carry model properties separately.
 @NotNullByDefault
-public final class RawLZMACodec implements CompressionCodec {
+public final class RawLZMACodec implements PledgedSourceSizeCodec {
     /// The stable raw LZMA codec name.
     public static final String NAME = "lzma-raw";
 
+    /// The default dictionary size used for raw LZMA.
+    public static final int DEFAULT_DICTIONARY_SIZE = 1 << 20;
+
     /// The default immutable raw LZMA codec configuration.
-    public static final RawLZMACodec DEFAULT = new RawLZMACodec();
-
-    /// The default dictionary size used for raw LZMA compression.
-    public static final long DEFAULT_DICTIONARY_SIZE = 1L << 20;
-
-    /// The supported raw LZMA operations and options.
-    private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(
-            Set.of(
-                    CompressionFeature.COMPRESSION,
-                    CompressionFeature.DECOMPRESSION,
-                    CompressionFeature.BUFFER_COMPRESSION,
-                    CompressionFeature.BUFFER_DECOMPRESSION,
-                    CompressionFeature.ONE_SHOT_COMPRESSION,
-                    CompressionFeature.ONE_SHOT_DECOMPRESSION,
-                    CompressionFeature.DIRECT_BYTE_BUFFER
-            ),
-            Set.of(
-                    LZMAOptions.DICTIONARY_SIZE,
-                    LZMAOptions.LITERAL_CONTEXT_BITS,
-                    LZMAOptions.LITERAL_POSITION_BITS,
-                    LZMAOptions.POSITION_BITS,
-                    LZMAOptions.END_MARKER,
-                    StandardCodecOptions.PLEDGED_SOURCE_SIZE
-            ),
-            Set.of(
-                    LZMAOptions.DICTIONARY_SIZE,
-                    LZMAOptions.LITERAL_CONTEXT_BITS,
-                    LZMAOptions.LITERAL_POSITION_BITS,
-                    LZMAOptions.POSITION_BITS,
-                    LZMAOptions.DECODED_SIZE,
-                    StandardCodecOptions.MAX_OUTPUT_SIZE,
-                    StandardCodecOptions.MAX_WINDOW_SIZE
-            )
+    public static final RawLZMACodec DEFAULT = new RawLZMACodec(
+            LZMAProperties.defaults(DEFAULT_DICTIONARY_SIZE),
+            true,
+            UNKNOWN_SIZE
     );
 
-    /// Creates a raw LZMA codec.
+    /// The configured externally declared LZMA properties.
+    private final LZMAProperties properties;
+
+    /// Whether encoders emit an end marker.
+    private final boolean endMarker;
+
+    /// The externally declared decoded size, or UNKNOWN_SIZE.
+    private final long decodedSize;
+
+    /// Creates the default raw LZMA codec configuration.
     public RawLZMACodec() {
+        this(LZMAProperties.defaults(DEFAULT_DICTIONARY_SIZE), true, UNKNOWN_SIZE);
+    }
+
+    /// Creates a validated raw LZMA codec configuration.
+    private RawLZMACodec(
+            LZMAProperties properties,
+            boolean endMarker,
+            long decodedSize
+    ) {
+        this.properties = Objects.requireNonNull(properties, "properties");
+        if (decodedSize < UNKNOWN_SIZE) {
+            throw new IllegalArgumentException(
+                    "decodedSize must be non-negative or UNKNOWN_SIZE"
+            );
+        }
+        this.endMarker = endMarker;
+        this.decodedSize = decodedSize;
     }
 
     /// Returns the stable raw LZMA codec name.
@@ -92,72 +81,72 @@ public final class RawLZMACodec implements CompressionCodec {
         return List.of();
     }
 
-    /// Returns the supported raw LZMA operations and options.
-    @Override
-    public CompressionCapabilities capabilities() {
-        return CAPABILITIES;
+    /// Returns the configured externally declared LZMA properties.
+    public LZMAProperties properties() {
+        return properties;
     }
 
-    /// Creates a configured transport-independent raw LZMA encoder.
+    /// Returns whether encoders emit an end marker.
+    public boolean endMarker() {
+        return endMarker;
+    }
+
+    /// Returns the externally declared decoded size, or UNKNOWN_SIZE.
+    public long decodedSize() {
+        return decodedSize;
+    }
+
+    /// Returns an immutable raw LZMA codec with the requested properties.
+    public RawLZMACodec withProperties(LZMAProperties properties) {
+        Objects.requireNonNull(properties, "properties");
+        return properties.equals(this.properties)
+                ? this
+                : new RawLZMACodec(properties, endMarker, decodedSize);
+    }
+
+    /// Returns an immutable raw LZMA codec with the requested dictionary size.
+    public RawLZMACodec withDictionarySize(int dictionarySize) {
+        return withProperties(properties.withDictionarySize(dictionarySize));
+    }
+
+    /// Returns an immutable raw LZMA codec with the requested end-marker behavior.
+    public RawLZMACodec withEndMarker(boolean endMarker) {
+        return endMarker == this.endMarker
+                ? this
+                : new RawLZMACodec(properties, endMarker, decodedSize);
+    }
+
+    /// Returns an immutable raw LZMA codec with the externally declared decoded size.
+    public RawLZMACodec withDecodedSize(long decodedSize) {
+        return decodedSize == this.decodedSize
+                ? this
+                : new RawLZMACodec(properties, endMarker, decodedSize);
+    }
+
+    /// Creates a raw LZMA encoder with optional exact source-size metadata.
     @Override
-    public CompressionEncoder newEncoder(CodecOptions options) {
-        options.requireSupported(CAPABILITIES.compressionOptions(), "raw LZMA compression");
-        LZMAProperties properties = LZMAProperties.fromOptions(
-                options,
-                LZMAOptions.DICTIONARY_SIZE,
-                (int) DEFAULT_DICTIONARY_SIZE
+    public CompressionEncoder newEncoder(long pledgedSourceSize) {
+        requirePledgedSourceSize(pledgedSourceSize);
+        return new LZMARawEncoder(properties, pledgedSourceSize, endMarker);
+    }
+
+    /// Creates a raw LZMA decoder with operation-scoped safety limits.
+    @Override
+    public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
+        Objects.requireNonNull(limits, "limits");
+        limits.requireWindowSize(properties.dictionarySize());
+        return CompressionDecoderSupport.limitEngineOutput(
+                new LZMARawDecoder(properties, decodedSize, limits.maximumWindowSize()),
+                limits.maximumOutputSize()
         );
-        long pledgedSourceSize = StandardCodecOptionSupport.pledgedSourceSize(options);
-        @Nullable Boolean requestedEndMarker = options.get(LZMAOptions.END_MARKER);
-        return new LZMARawEncoder(
-                properties,
-                pledgedSourceSize,
-                requestedEndMarker == null || requestedEndMarker
-        );
     }
 
-    /// Opens a configured raw LZMA encoder through the shared buffer-engine channel adapter.
-    @Override
-    public CompressingWritableByteChannel openEncoder(
-            WritableByteChannel target,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
-        return CompressionCodec.super.openEncoder(target, options, ownership);
-    }
-
-    /// Creates a configured transport-independent raw LZMA decoder.
-    @Override
-    public CompressionDecoder newDecoder(CodecOptions options) throws IOException {
-        options.requireSupported(CAPABILITIES.decompressionOptions(), "raw LZMA decompression");
-        if (options.get(LZMAOptions.DICTIONARY_SIZE) == null) {
+    /// Validates a known or unknown pledged source size.
+    private static void requirePledgedSourceSize(long pledgedSourceSize) {
+        if (pledgedSourceSize < UNKNOWN_SIZE) {
             throw new IllegalArgumentException(
-                    "Required raw LZMA option is missing: " + LZMAOptions.DICTIONARY_SIZE.name()
+                    "pledgedSourceSize must be non-negative or UNKNOWN_SIZE"
             );
         }
-        LZMAProperties properties = LZMAProperties.fromOptions(
-                options,
-                LZMAOptions.DICTIONARY_SIZE,
-                (int) DEFAULT_DICTIONARY_SIZE
-        );
-        @Nullable Long requestedDecodedSize = options.get(LZMAOptions.DECODED_SIZE);
-        long decodedSize = requestedDecodedSize != null ? requestedDecodedSize : UNKNOWN_SIZE;
-        if (decodedSize < UNKNOWN_SIZE) {
-            throw new IllegalArgumentException("Raw LZMA decoded size must not be negative");
-        }
-        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
-        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
-        CompressionDecoder decoder = new LZMARawDecoder(properties, decodedSize, maximumWindowSize);
-        return StandardCodecOptionSupport.limitOutput(decoder, maximumOutputSize);
-    }
-
-    /// Opens a configured raw LZMA decoder through the shared buffer-engine channel adapter.
-    @Override
-    public DecompressingReadableByteChannel openDecoder(
-            ReadableByteChannel source,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
-        return CompressionCodec.super.openDecoder(source, options, ownership);
     }
 }

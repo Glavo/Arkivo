@@ -3,12 +3,10 @@
 
 package org.glavo.arkivo.codec.lzma;
 
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecOutcome;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionFeature;
-import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -31,27 +29,23 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests the transport-independent headerless LZMA encoder and decoder contracts.
 @NotNullByDefault
 public final class RawLZMABufferEngineTest {
-    /// Shared raw LZMA codec under test.
-    private static final RawLZMACodec CODEC = new RawLZMACodec();
-
     /// Shared dictionary size carried externally by raw streams.
     private static final int DICTIONARY_SIZE = 1 << 16;
 
-    /// Shared EOS-terminated raw LZMA options.
-    private static final CodecOptions OPTIONS = CodecOptions.builder()
-            .set(LZMAOptions.DICTIONARY_SIZE, (long) DICTIONARY_SIZE)
-            .build();
+    /// Shared raw LZMA codec under test.
+    private static final RawLZMACodec CODEC =
+            new RawLZMACodec().withDictionarySize(DICTIONARY_SIZE);
 
     /// Verifies one-byte fresh input fragments, tiny direct targets, and exact EOS positioning.
     @Test
     public void fragmentedBuffersAndTrailingInput() throws IOException {
         byte[] content = testData();
-        byte[] encoded = encode(content, OPTIONS, 3, 1);
+        byte[] encoded = encode(content, CODEC, CompressionCodec.UNKNOWN_SIZE, 3, 1);
         byte[] tail = {19, 23, 29, 31};
         byte[] withTail = Arrays.copyOf(encoded, encoded.length + tail.length);
         System.arraycopy(tail, 0, withTail, encoded.length, tail.length);
 
-        DecodeResult result = decodeFreshBuffers(withTail, OPTIONS, 1, 2, false);
+        DecodeResult result = decodeFreshBuffers(withTail, CODEC, 1, 2, false);
 
         assertArrayEquals(content, result.content());
         assertEquals(encoded.length, result.consumedInput());
@@ -62,20 +56,13 @@ public final class RawLZMABufferEngineTest {
     @Test
     public void sizedStreamWithoutEndMarkerPreservesBoundary() throws IOException {
         byte[] content = Arrays.copyOf(testData(), 93_117);
-        CodecOptions encodingOptions = CodecOptions.builder()
-                .set(LZMAOptions.DICTIONARY_SIZE, (long) DICTIONARY_SIZE)
-                .set(LZMAOptions.END_MARKER, false)
-                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) content.length)
-                .build();
-        CodecOptions decodingOptions = CodecOptions.builder()
-                .set(LZMAOptions.DICTIONARY_SIZE, (long) DICTIONARY_SIZE)
-                .set(LZMAOptions.DECODED_SIZE, (long) content.length)
-                .build();
-        byte[] encoded = encode(content, encodingOptions, 11, 3);
+        RawLZMACodec encodingCodec = CODEC.withEndMarker(false);
+        RawLZMACodec decodingCodec = CODEC.withDecodedSize(content.length);
+        byte[] encoded = encode(content, encodingCodec, content.length, 11, 3);
         byte[] withTail = Arrays.copyOf(encoded, encoded.length + 5);
         Arrays.fill(withTail, encoded.length, withTail.length, (byte) 0x5a);
 
-        DecodeResult result = decodeFreshBuffers(withTail, decodingOptions, 7, 5, false);
+        DecodeResult result = decodeFreshBuffers(withTail, decodingCodec, 7, 5, false);
 
         assertArrayEquals(content, result.content());
         assertEquals(encoded.length, result.consumedInput());
@@ -92,7 +79,7 @@ public final class RawLZMABufferEngineTest {
             output.write(content);
         }
 
-        DecodeResult result = decodeFreshBuffers(encoded.toByteArray(), OPTIONS, 1, 7, true);
+        DecodeResult result = decodeFreshBuffers(encoded.toByteArray(), CODEC, 1, 7, true);
 
         assertArrayEquals(content, result.content());
         assertEquals(encoded.size(), result.consumedInput());
@@ -102,7 +89,7 @@ public final class RawLZMABufferEngineTest {
     @Test
     public void encoderWritesIndependentStream() throws IOException {
         byte[] content = testData();
-        byte[] encoded = encode(content, OPTIONS, 5, 1);
+        byte[] encoded = encode(content, CODEC, CompressionCodec.UNKNOWN_SIZE, 5, 1);
 
         try (LZMAInputStream input = new LZMAInputStream(
                 new ByteArrayInputStream(encoded),
@@ -114,11 +101,11 @@ public final class RawLZMABufferEngineTest {
         }
     }
 
-    /// Verifies reset, close, pledged-size enforcement, and advertised buffer capabilities.
+    /// Verifies reset, close, and pledged-size enforcement.
     @Test
-    public void lifecycleOptionsAndCapabilities() throws IOException {
+    public void lifecycleAndPledgedSize() throws IOException {
         byte[] content = Arrays.copyOf(testData(), 12_345);
-        CompressionEncoder encoder = CODEC.newEncoder(OPTIONS);
+        CompressionEncoder encoder = CODEC.newEncoder();
         byte[] first = encodeWithEncoder(encoder, content, 13, 2);
         encoder.reset();
         byte[] second = encodeWithEncoder(encoder, content, 13, 2);
@@ -126,28 +113,23 @@ public final class RawLZMABufferEngineTest {
         encoder.close();
         assertThrows(IllegalStateException.class, encoder::reset);
 
-        CodecOptions pledged = CodecOptions.builder()
-                .set(LZMAOptions.DICTIONARY_SIZE, (long) DICTIONARY_SIZE)
-                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) content.length + 1L)
-                .build();
-        CompressionEncoder incomplete = CODEC.newEncoder(pledged);
+        CompressionEncoder incomplete = CODEC.newEncoder(content.length + 1L);
         ByteArrayOutputStream ignored = new ByteArrayOutputStream();
         encodeSource(incomplete, ByteBuffer.wrap(content), ignored, 7);
         assertThrows(IOException.class, () -> incomplete.finish(ByteBuffer.allocate(32)));
         incomplete.close();
 
-        assertTrue(CODEC.capabilities().supports(CompressionFeature.BUFFER_COMPRESSION));
-        assertTrue(CODEC.capabilities().supports(CompressionFeature.BUFFER_DECOMPRESSION));
     }
 
     /// Encodes one raw stream with fresh bounded source and target buffers.
     private static byte[] encode(
             byte[] content,
-            CodecOptions options,
+            RawLZMACodec codec,
+            long pledgedSourceSize,
             int sourceFragmentSize,
             int targetSize
     ) throws IOException {
-        try (CompressionEncoder encoder = CODEC.newEncoder(options)) {
+        try (CompressionEncoder encoder = codec.newEncoder(pledgedSourceSize)) {
             return encodeWithEncoder(encoder, content, sourceFragmentSize, targetSize);
         }
     }
@@ -174,14 +156,14 @@ public final class RawLZMABufferEngineTest {
     /// Decodes with fresh source and target buffers for every operation.
     private static DecodeResult decodeFreshBuffers(
             byte[] encoded,
-            CodecOptions options,
+            RawLZMACodec codec,
             int sourceFragmentSize,
             int targetSize,
             boolean endAtArrayBoundary
     ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         int offset = 0;
-        try (CompressionDecoder decoder = CODEC.newDecoder(options)) {
+        try (CompressionDecoder decoder = codec.newDecoder()) {
             CodecOutcome outcome = CodecOutcome.NEEDS_INPUT;
             while (outcome != CodecOutcome.FINISHED) {
                 int length = Math.min(sourceFragmentSize, encoded.length - offset);

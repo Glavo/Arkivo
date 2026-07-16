@@ -5,21 +5,28 @@ package org.glavo.arkivo.codec.all;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecTransferResult;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.CompressionFeature;
+import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressionLevelCodec;
 import org.glavo.arkivo.codec.CompressionStrategy;
-import org.glavo.arkivo.codec.DecompressionLimitException;
-import org.glavo.arkivo.codec.DecompressionWindowLimitException;
+import org.glavo.arkivo.codec.CompressionStrategyCodec;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.DecodeDirective;
+import org.glavo.arkivo.codec.DecompressionLimitException;
+import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecompressionWindowLimitException;
+import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.DictionaryCompressionCodec;
 import org.glavo.arkivo.codec.EncodeDirective;
-import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.FlushableCompressionEncoder;
+import org.glavo.arkivo.codec.FramedCompressionDecoder;
+import org.glavo.arkivo.codec.FramedCompressionEncoder;
+import org.glavo.arkivo.codec.PledgedSourceSizeCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -44,26 +51,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies the first-class channel contract across all installed codec providers.
 @NotNullByDefault
 final class CodecChannelContractTest {
-    /// Verifies channel transfer, counters, endpoint ownership, and capability consistency.
+    /// Verifies channel transfer, counters, endpoint ownership, and interface consistency.
     @Test
     void roundTripsEveryBidirectionalCodecThroughChannels() throws IOException {
         byte[] input = ("Arkivo channel codec contract: " + "0123456789".repeat(64))
                 .getBytes(StandardCharsets.UTF_8);
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            assertEquals(
-                    codec.capabilities().supports(CompressionFeature.COMPRESSION),
-                    codec.canCompress(),
-                    codec.name()
-            );
-            assertEquals(
-                    codec.capabilities().supports(CompressionFeature.DECOMPRESSION),
-                    codec.canDecompress(),
-                    codec.name()
-            );
-            if (!codec.canCompress() || !codec.canDecompress()) {
-                continue;
-            }
 
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
             ReadableByteChannel uncompressedSource = Channels.newChannel(new ByteArrayInputStream(input));
@@ -80,10 +74,11 @@ final class CodecChannelContractTest {
                     new ByteArrayInputStream(compressedBytes.toByteArray())
             );
             WritableByteChannel decodedTarget = Channels.newChannel(decodedBytes);
-            CodecTransferResult decompression = codec.decompress(
+            CompressionCodec decoderCodec =
+                    CodecContractConfigurations.decoderCodec(codec, input.length);
+            CodecTransferResult decompression = decoderCodec.decompress(
                     compressedSource,
-                    decodedTarget,
-                    CodecContractOptions.decoderOptions(codec, input.length)
+                    decodedTarget
             );
 
             assertEquals(input.length, decompression.outputBytes(), codec.name());
@@ -101,14 +96,11 @@ final class CodecChannelContractTest {
         ).repeat(256).getBytes(StandardCharsets.UTF_8);
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.canCompress() || !codec.canDecompress()) {
-                continue;
-            }
-
             byte[] compressed = compressFrame(codec, content);
-            try (DecompressingReadableByteChannel decoder = codec.openDecoder(
+            CompressionCodec decoderCodec =
+                    CodecContractConfigurations.decoderCodec(codec, content.length);
+            try (DecompressingReadableByteChannel decoder = decoderCodec.openDecoder(
                     Channels.newChannel(new ByteArrayInputStream(compressed)),
-                    CodecContractOptions.decoderOptions(codec, content.length),
                     ChannelOwnership.RETAIN
             )) {
                 assertUnconsumedInput(decoder, compressed, codec.name());
@@ -123,7 +115,7 @@ final class CodecChannelContractTest {
                     assertTrue(read > 0, codec.name());
                 }
 
-                if (CodecContractOptions.requiresDecoderOptions(codec)) {
+                if (CodecContractConfigurations.requiresDecoderConfiguration(codec)) {
                     assertTrue(decoder.inputBytes() <= compressed.length, codec.name());
                 } else {
                     assertEquals(compressed.length, decoder.inputBytes(), codec.name());
@@ -134,18 +126,18 @@ final class CodecChannelContractTest {
         }
     }
 
-    /// Verifies advertised flush support through explicit incremental directives.
+    /// Verifies flushable encoders through explicit incremental directives.
     @Test
-    void flushesIncrementalFramesForEveryAdvertisingCodec() throws IOException {
+    void flushesIncrementalFramesForEveryFlushableCodec() throws IOException {
         Set<String> flushCodecs = Set.of("deflate", "deflate64", "gzip", "xz", "zlib", "zstd");
         byte[] first = ("first flushed segment " + "0123456789abcdef".repeat(512))
                 .getBytes(StandardCharsets.UTF_8);
         byte[] second = " and final segment".getBytes(StandardCharsets.UTF_8);
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            boolean advertised = codec.capabilities().supports(CompressionFeature.FLUSH);
-            assertEquals(flushCodecs.contains(codec.name()), advertised, codec.name());
-            if (!advertised || !codec.canCompress() || !codec.canDecompress()) {
+            boolean flushable = hasFlushableEncoder(codec);
+            assertEquals(flushCodecs.contains(codec.name()), flushable, codec.name());
+            if (!flushable) {
                 continue;
             }
 
@@ -200,7 +192,7 @@ final class CodecChannelContractTest {
                 assertEquals(first.length + second.length, encoder.inputBytes(), codec.name());
                 assertEquals(compressedBytes.size(), encoder.outputBytes(), codec.name());
 
-                boolean multiFrame = codec.capabilities().supports(CompressionFeature.MULTI_FRAME);
+                boolean multiFrame = hasFramedEncoder(codec);
                 assertEquals(multiFrame, encoder.isOpen(), codec.name());
                 int completeSize = compressedBytes.size();
                 encoder.finish();
@@ -225,7 +217,7 @@ final class CodecChannelContractTest {
 
     /// Verifies multi-frame encoders and concatenated-frame decoders share one cumulative context.
     @Test
-    void roundTripsMultipleFramesForEveryAdvertisingCodec() throws IOException {
+    void roundTripsMultipleFramesForEveryFramedCodec() throws IOException {
         Set<String> multiFrameCodecs = Set.of("bzip2", "gzip", "xz", "zstd");
         Set<String> concatenatedFrameCodecs = Set.of("bzip2", "gzip", "xz", "zstd");
         byte[] first = "first independent frame".getBytes(StandardCharsets.UTF_8);
@@ -233,14 +225,10 @@ final class CodecChannelContractTest {
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
             boolean expected = multiFrameCodecs.contains(codec.name());
-            assertEquals(
-                    expected,
-                    codec.capabilities().supports(CompressionFeature.MULTI_FRAME),
-                    codec.name()
-            );
+            assertEquals(expected, hasFramedEncoder(codec), codec.name());
             assertEquals(
                     concatenatedFrameCodecs.contains(codec.name()),
-                    codec.capabilities().supports(CompressionFeature.CONCATENATED_FRAMES),
+                    hasFramedDecoder(codec),
                     codec.name()
             );
             if (!expected) {
@@ -289,14 +277,13 @@ final class CodecChannelContractTest {
         byte[] content = "content after an explicit empty frame".getBytes(StandardCharsets.UTF_8);
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.capabilities().supports(CompressionFeature.MULTI_FRAME)) {
+            if (!hasFramedEncoder(codec)) {
                 continue;
             }
 
             ByteArrayOutputStream compressed = new ByteArrayOutputStream();
             try (CompressingWritableByteChannel encoder = codec.openEncoder(
                     Channels.newChannel(compressed),
-                    CodecOptions.EMPTY,
                     ChannelOwnership.RETAIN
             )) {
                 encoder.finishFrame();
@@ -364,7 +351,7 @@ final class CodecChannelContractTest {
         int totalOutputSize = frames[1].length + frames[2].length;
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.capabilities().supports(CompressionFeature.CONCATENATED_FRAMES)) {
+            if (!hasFramedDecoder(codec)) {
                 continue;
             }
 
@@ -374,14 +361,13 @@ final class CodecChannelContractTest {
                 encodedFrames[index] = compressFrame(codec, frames[index]);
                 compressed.writeBytes(encodedFrames[index]);
             }
-            CodecOptions options = CodecOptions.builder()
-                    .set(StandardCodecOptions.MAX_OUTPUT_SIZE, (long) totalOutputSize)
-                    .build();
+            DecompressionLimits limits =
+                    DecompressionLimits.ofMaximumOutputSize(totalOutputSize);
             byte[] compressedStream = compressed.toByteArray();
 
             try (DecompressingReadableByteChannel decoder = codec.openDecoder(
                     Channels.newChannel(new ByteArrayInputStream(compressedStream)),
-                    options,
+                    limits,
                     ChannelOwnership.RETAIN
             )) {
                 long completedInputBytes = 0L;
@@ -434,10 +420,6 @@ final class CodecChannelContractTest {
         ).repeat(1_024).getBytes(StandardCharsets.UTF_8);
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.canCompress() || !codec.canDecompress()) {
-                continue;
-            }
-
             ByteBuffer source = ByteBuffer.allocateDirect(input.length + 4);
             source.position(2);
             source.put(input);
@@ -448,12 +430,10 @@ final class CodecChannelContractTest {
             assertEquals(0, compressed.position(), codec.name());
             assertTrue(compressed.hasRemaining(), codec.name());
 
-            ByteBuffer decoded = codec.decompress(
-                    compressed,
-                    input.length,
-                    CodecContractOptions.decoderOptions(codec, input.length)
-            );
-            if (CodecContractOptions.requiresDecoderOptions(codec)) {
+            CompressionCodec decoderCodec =
+                    CodecContractConfigurations.decoderCodec(codec, input.length);
+            ByteBuffer decoded = decoderCodec.decompress(compressed, input.length);
+            if (CodecContractConfigurations.requiresDecoderConfiguration(codec)) {
                 assertTrue(compressed.position() <= compressed.limit(), codec.name());
             } else {
                 assertEquals(compressed.limit(), compressed.position(), codec.name());
@@ -466,20 +446,14 @@ final class CodecChannelContractTest {
             ByteBuffer overflowSource = codec.compress(ByteBuffer.wrap(input));
             assertThrows(
                     DecompressionLimitException.class,
-                    () -> codec.decompress(
-                            overflowSource,
-                            input.length - 1L,
-                            CodecContractOptions.decoderOptions(codec, input.length)
-                    ),
+                    () -> decoderCodec.decompress(overflowSource, input.length - 1L),
                     codec.name()
             );
 
             ByteBuffer emptyCompressed = codec.compress(ByteBuffer.allocate(0));
-            ByteBuffer emptyDecoded = codec.decompress(
-                    emptyCompressed,
-                    0L,
-                    CodecContractOptions.decoderOptions(codec, 0L)
-            );
+            CompressionCodec emptyDecoderCodec =
+                    CodecContractConfigurations.decoderCodec(codec, 0L);
+            ByteBuffer emptyDecoded = emptyDecoderCodec.decompress(emptyCompressed, 0L);
             assertEquals(0, emptyDecoded.remaining(), codec.name());
         }
     }
@@ -495,10 +469,7 @@ final class CodecChannelContractTest {
         ).repeat(32).getBytes(StandardCharsets.UTF_8);
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.canCompress() || !codec.canDecompress()) {
-                continue;
-            }
-            if (CodecContractOptions.requiresDecoderOptions(codec)) {
+            if (CodecContractConfigurations.requiresDecoderConfiguration(codec)) {
                 continue;
             }
 
@@ -524,11 +495,10 @@ final class CodecChannelContractTest {
             source.flip();
             source.position(2);
             source.limit(2 + firstEncoded.length + secondEncoded.length);
-            CodecOptions firstOptions = CodecOptions.builder()
-                    .set(StandardCodecOptions.MAX_OUTPUT_SIZE, (long) first.length)
-                    .build();
+            DecompressionLimits firstLimits =
+                    DecompressionLimits.ofMaximumOutputSize(first.length);
 
-            ByteBuffer firstDecoded = codec.decompressFrame(source, first.length, firstOptions);
+            ByteBuffer firstDecoded = codec.decompressFrame(source, firstLimits);
             assertArrayEquals(first, bufferBytes(firstDecoded), codec.name());
             assertEquals(2 + firstEncoded.length, source.position(), codec.name());
 
@@ -563,10 +533,6 @@ final class CodecChannelContractTest {
         byte[] input = ("fixed codec buffers " + "abcdef".repeat(256)).getBytes(StandardCharsets.UTF_8);
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.canCompressBuffers()
-                    || !codec.canDecompressBuffers()) {
-                continue;
-            }
 
             assertFixedBufferRoundTrip(codec, input, false, false, false, false);
             assertFixedBufferRoundTrip(codec, input, false, true, true, true);
@@ -659,18 +625,16 @@ final class CodecChannelContractTest {
         assertArrayEquals(input, outputBytes, codec.name());
     }
 
-    /// Decompresses through the unconfigured overload unless the raw codec requires external metadata.
+    /// Decompresses through a codec carrying any externally required stream metadata.
     private static void decompressFixed(
             CompressionCodec codec,
             ByteBuffer source,
             ByteBuffer target,
             long decodedSize
     ) throws IOException {
-        if (CodecContractOptions.requiresDecoderOptions(codec)) {
-            codec.decompress(source, target, CodecContractOptions.decoderOptions(codec, decodedSize));
-        } else {
-            codec.decompress(source, target);
-        }
+        CompressionCodec decoderCodec =
+                CodecContractConfigurations.decoderCodec(codec, decodedSize);
+        decoderCodec.decompress(source, target);
     }
 
     /// Allocates one heap or direct buffer with the requested capacity.
@@ -678,30 +642,30 @@ final class CodecChannelContractTest {
         return direct ? ByteBuffer.allocateDirect(capacity) : ByteBuffer.allocate(capacity);
     }
 
-    /// Verifies every advertised compression-level option can open and complete an encoder.
+    /// Verifies every compression-level codec can derive and use its documented default configuration.
     @Test
-    void acceptsAdvertisedCompressionLevels() throws IOException {
+    void acceptsCompressionLevels() throws IOException {
+        Set<String> levelCodecs = Set.of("bzip2", "deflate", "deflate64", "gzip", "zlib", "zstd");
         byte[] input = "configured compression level".getBytes(StandardCharsets.UTF_8);
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.capabilities().compressionOptions().contains(StandardCodecOptions.COMPRESSION_LEVEL)) {
+            assertEquals(levelCodecs.contains(codec.name()), codec instanceof CompressionLevelCodec, codec.name());
+            if (!(codec instanceof CompressionLevelCodec levelCodec)) {
                 continue;
             }
 
-            CodecOptions options = CodecOptions.builder()
-                    .set(StandardCodecOptions.COMPRESSION_LEVEL, codec.defaultCompressionLevel())
-                    .build();
+            CompressionLevelCodec configured =
+                    levelCodec.withCompressionLevel(levelCodec.defaultCompressionLevel());
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
-            try (CompressingWritableByteChannel encoder = codec.openEncoder(
+            try (CompressingWritableByteChannel encoder = configured.openEncoder(
                     Channels.newChannel(compressedBytes),
-                    options,
                     ChannelOwnership.RETAIN
             )) {
                 encoder.encode(ByteBuffer.wrap(input), EncodeDirective.END_FRAME);
             }
 
             ByteBuffer decoded = ByteBuffer.allocate(input.length);
-            try (DecompressingReadableByteChannel decoder = codec.openDecoder(
+            try (DecompressingReadableByteChannel decoder = configured.openDecoder(
                     Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray()))
             )) {
                 while (decoded.hasRemaining()) {
@@ -714,9 +678,9 @@ final class CodecChannelContractTest {
         }
     }
 
-    /// Verifies Deflate-family strategy capabilities and observable strategy behavior.
+    /// Verifies Deflate-family strategy subinterfaces and observable strategy behavior.
     @Test
-    void appliesAdvertisedCompressionStrategies() throws IOException {
+    void appliesCompressionStrategies() throws IOException {
         Set<String> strategyCodecs = Set.of("deflate", "gzip", "zlib");
         byte[] input = (
                 "Arkivo compression strategy repeated payload 0123456789abcdef;"
@@ -724,46 +688,24 @@ final class CodecChannelContractTest {
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
             boolean expected = strategyCodecs.contains(codec.name());
-            assertEquals(
-                    expected,
-                    codec.capabilities().compressionOptions()
-                            .contains(StandardCodecOptions.COMPRESSION_STRATEGY),
-                    codec.name()
-            );
-            if (!codec.canCompress()) {
-                continue;
-            }
-            if (!expected) {
-                CodecOptions unsupported = CodecOptions.builder()
-                        .set(StandardCodecOptions.COMPRESSION_STRATEGY, CompressionStrategy.DEFAULT)
-                        .build();
-                assertThrows(
-                        UnsupportedOperationException.class,
-                        () -> codec.openEncoder(
-                                Channels.newChannel(new ByteArrayOutputStream()),
-                                unsupported,
-                                ChannelOwnership.RETAIN
-                        ),
-                        codec.name()
-                );
+            assertEquals(expected, codec instanceof CompressionStrategyCodec, codec.name());
+            if (!(codec instanceof CompressionStrategyCodec strategyCodec)) {
                 continue;
             }
 
             long defaultSize = CompressionCodec.UNKNOWN_SIZE;
             long huffmanOnlySize = CompressionCodec.UNKNOWN_SIZE;
             for (CompressionStrategy strategy : CompressionStrategy.values()) {
-                CodecOptions options = CodecOptions.builder()
-                        .set(StandardCodecOptions.COMPRESSION_STRATEGY, strategy)
-                        .build();
+                CompressionStrategyCodec configured =
+                        strategyCodec.withCompressionStrategy(strategy);
                 ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
-                codec.compress(
+                configured.compress(
                         Channels.newChannel(new ByteArrayInputStream(input)),
-                        Channels.newChannel(compressedBytes),
-                        options
+                        Channels.newChannel(compressedBytes)
                 );
 
                 ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
-                codec.decompress(
+                configured.decompress(
                         Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
                         Channels.newChannel(decodedBytes)
                 );
@@ -781,13 +723,11 @@ final class CodecChannelContractTest {
                     CompressionStrategy.FILTERED,
                     CompressionStrategy.HUFFMAN_ONLY
             )) {
-                CodecOptions options = CodecOptions.builder()
-                        .set(StandardCodecOptions.COMPRESSION_STRATEGY, strategy)
-                        .build();
+                CompressionStrategyCodec configured =
+                        strategyCodec.withCompressionStrategy(strategy);
                 ByteArrayOutputStream emptyCompressed = new ByteArrayOutputStream();
-                try (CompressingWritableByteChannel encoder = codec.openEncoder(
+                try (CompressingWritableByteChannel encoder = configured.openEncoder(
                         Channels.newChannel(emptyCompressed),
-                        options,
                         ChannelOwnership.RETAIN
                 )) {
                     if (strategy == CompressionStrategy.HUFFMAN_ONLY) {
@@ -796,7 +736,7 @@ final class CodecChannelContractTest {
                     encoder.finish();
                 }
                 ByteArrayOutputStream emptyDecoded = new ByteArrayOutputStream();
-                codec.decompress(
+                configured.decompress(
                         Channels.newChannel(new ByteArrayInputStream(emptyCompressed.toByteArray())),
                         Channels.newChannel(emptyDecoded)
                 );
@@ -805,9 +745,10 @@ final class CodecChannelContractTest {
         }
     }
 
-    /// Verifies dictionary capabilities and configured dictionary round trips across installed codecs.
+    /// Verifies dictionary configuration subinterfaces and preset-dictionary round trips.
     @Test
-    void roundTripsPresetDictionariesForEveryAdvertisingCodec() throws IOException {
+    void roundTripsPresetDictionariesForEveryDictionaryCodec() throws IOException {
+        Set<String> dictionaryCodecs = Set.of("deflate", "zlib", "zstd");
         byte[] dictionaryBytes = (
                 "Arkivo shared preset dictionary: "
                         + "common-prefix/alpha/beta/gamma/0123456789;"
@@ -816,130 +757,81 @@ final class CodecChannelContractTest {
                 "common-prefix/alpha/beta/gamma/0123456789;"
                         + "common-prefix/alpha/beta/gamma/0123456789;"
         ).getBytes(StandardCharsets.UTF_8);
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.DICTIONARY, CompressionDictionary.of(dictionaryBytes))
-                .build();
+        CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes);
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            boolean advertised = codec.capabilities().supports(CompressionFeature.DICTIONARY);
             assertEquals(
-                    advertised,
-                    codec.capabilities().compressionOptions().contains(StandardCodecOptions.DICTIONARY),
+                    dictionaryCodecs.contains(codec.name()),
+                    codec instanceof DictionaryCompressionCodec,
                     codec.name()
             );
-            assertEquals(
-                    advertised,
-                    codec.capabilities().decompressionOptions().contains(StandardCodecOptions.DICTIONARY),
-                    codec.name()
-            );
-            if (!advertised) {
-                if (codec.canCompress()) {
-                    assertThrows(
-                            UnsupportedOperationException.class,
-                            () -> codec.openEncoder(
-                                    Channels.newChannel(new ByteArrayOutputStream()),
-                                    options,
-                                    ChannelOwnership.RETAIN
-                            ),
-                            codec.name()
-                    );
-                }
-                if (codec.canDecompress()) {
-                    assertThrows(
-                            UnsupportedOperationException.class,
-                            () -> codec.openDecoder(
-                                    Channels.newChannel(new ByteArrayInputStream(new byte[0])),
-                                    options,
-                                    ChannelOwnership.RETAIN
-                            ),
-                            codec.name()
-                    );
-                }
+            if (!(codec instanceof DictionaryCompressionCodec dictionaryCodec)) {
                 continue;
             }
 
-            CodecOptions operationOptions = codec.capabilities().compressionOptions()
-                    .contains(StandardCodecOptions.COMPRESSION_STRATEGY)
-                    ? CodecOptions.builder()
-                            .set(StandardCodecOptions.DICTIONARY, CompressionDictionary.of(dictionaryBytes))
-                            .set(StandardCodecOptions.COMPRESSION_STRATEGY, CompressionStrategy.FILTERED)
-                            .build()
-                    : options;
+            CompressionCodec configured = dictionaryCodec.withDictionary(dictionary);
+            if (configured instanceof CompressionStrategyCodec strategyCodec) {
+                configured = strategyCodec.withCompressionStrategy(CompressionStrategy.FILTERED);
+            }
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
-            codec.compress(
+            configured.compress(
                     Channels.newChannel(new ByteArrayInputStream(input)),
-                    Channels.newChannel(compressedBytes),
-                    operationOptions
+                    Channels.newChannel(compressedBytes)
             );
             ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
-            codec.decompress(
+            configured.decompress(
                     Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
-                    Channels.newChannel(decodedBytes),
-                    options
+                    Channels.newChannel(decodedBytes)
             );
             assertArrayEquals(input, decodedBytes.toByteArray(), codec.name());
         }
     }
 
-    /// Verifies pledged source sizes are advertised, encoded, and enforced consistently.
+    /// Verifies pledged source-size subinterfaces encode and enforce exact byte counts consistently.
     @Test
-    void enforcesAdvertisedPledgedSourceSizes() throws IOException {
+    void enforcesPledgedSourceSizes() throws IOException {
         Set<String> pledgedSizeCodecs = Set.of("lzma", "lzma-raw", "zstd");
         byte[] input = (
                 "pledged source size contract 0123456789abcdef;"
         ).repeat(512).getBytes(StandardCharsets.UTF_8);
-        CodecOptions exact = CodecOptions.builder()
-                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) input.length)
-                .build();
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
             boolean expected = pledgedSizeCodecs.contains(codec.name());
-            assertEquals(
-                    expected,
-                    codec.capabilities().compressionOptions()
-                            .contains(StandardCodecOptions.PLEDGED_SOURCE_SIZE),
-                    codec.name()
-            );
-            if (!codec.canCompress()) {
-                continue;
-            }
-            if (!expected) {
-                assertThrows(
-                        UnsupportedOperationException.class,
-                        () -> codec.openEncoder(
-                                Channels.newChannel(new ByteArrayOutputStream()),
-                                exact,
-                                ChannelOwnership.RETAIN
-                        ),
-                        codec.name()
-                );
+            assertEquals(expected, codec instanceof PledgedSourceSizeCodec, codec.name());
+            if (!(codec instanceof PledgedSourceSizeCodec pledgedCodec)) {
                 continue;
             }
 
             ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-            codec.compress(
-                    Channels.newChannel(new ByteArrayInputStream(input)),
+            try (CompressingWritableByteChannel encoder = pledgedCodec.openEncoder(
                     Channels.newChannel(compressed),
-                    exact
-            );
+                    input.length,
+                    ChannelOwnership.RETAIN
+            )) {
+                writeAll(encoder, input);
+                encoder.finish();
+            }
             ByteArrayOutputStream decoded = new ByteArrayOutputStream();
-            codec.decompress(
+            CompressionCodec decoderCodec =
+                    CodecContractConfigurations.decoderCodec(codec, input.length);
+            decoderCodec.decompress(
                     Channels.newChannel(new ByteArrayInputStream(compressed.toByteArray())),
-                    Channels.newChannel(decoded),
-                    CodecContractOptions.decoderOptions(codec, input.length)
+                    Channels.newChannel(decoded)
             );
             assertArrayEquals(input, decoded.toByteArray(), codec.name());
 
-            CodecOptions mismatch = CodecOptions.builder()
-                    .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) input.length - 1L)
-                    .build();
             assertThrows(
                     Exception.class,
-                    () -> codec.compress(
-                            Channels.newChannel(new ByteArrayInputStream(input)),
-                            Channels.newChannel(new ByteArrayOutputStream()),
-                            mismatch
-                    ),
+                    () -> {
+                        try (CompressingWritableByteChannel encoder = pledgedCodec.openEncoder(
+                                Channels.newChannel(new ByteArrayOutputStream()),
+                                input.length - 1L,
+                                ChannelOwnership.RETAIN
+                        )) {
+                            writeAll(encoder, input);
+                            encoder.finish();
+                        }
+                    },
                     codec.name()
             );
         }
@@ -953,26 +845,12 @@ final class CodecChannelContractTest {
         long smallerLimit = input.length - 1L;
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.canCompress() || !codec.canDecompress()) {
-                continue;
-            }
-            assertTrue(
-                    codec.capabilities().decompressionOptions().contains(StandardCodecOptions.MAX_OUTPUT_SIZE),
-                    codec.name()
-            );
-
-            CodecOptions.Builder exactBuilder = CodecOptions.builder()
-                    .set(StandardCodecOptions.MAX_OUTPUT_SIZE, (long) input.length);
-            CodecContractOptions.addRequiredDecoderOptions(exactBuilder, codec, input.length);
-            CodecOptions exactOptions = exactBuilder.build();
-            CodecOptions.Builder smallerBuilder = CodecOptions.builder()
-                    .set(StandardCodecOptions.MAX_OUTPUT_SIZE, smallerLimit);
-            CodecContractOptions.addRequiredDecoderOptions(smallerBuilder, codec, input.length);
-            CodecOptions smallerOptions = smallerBuilder.build();
-            CodecOptions.Builder invalidBuilder = CodecOptions.builder()
-                    .set(StandardCodecOptions.MAX_OUTPUT_SIZE, -1L);
-            CodecContractOptions.addRequiredDecoderOptions(invalidBuilder, codec, input.length);
-            CodecOptions invalidOptions = invalidBuilder.build();
+            DecompressionLimits exactLimits =
+                    DecompressionLimits.ofMaximumOutputSize(input.length);
+            DecompressionLimits smallerLimits =
+                    DecompressionLimits.ofMaximumOutputSize(smallerLimit);
+            CompressionCodec decoderCodec =
+                    CodecContractConfigurations.decoderCodec(codec, input.length);
 
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
             codec.compress(
@@ -981,10 +859,10 @@ final class CodecChannelContractTest {
             );
 
             ByteArrayOutputStream exactBytes = new ByteArrayOutputStream();
-            CodecTransferResult exactResult = codec.decompress(
+            CodecTransferResult exactResult = decoderCodec.decompress(
                     Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
                     Channels.newChannel(exactBytes),
-                    exactOptions
+                    exactLimits
             );
             assertEquals(input.length, exactResult.outputBytes(), codec.name());
             assertArrayEquals(input, exactBytes.toByteArray(), codec.name());
@@ -996,15 +874,12 @@ final class CodecChannelContractTest {
             WritableByteChannel limitedTarget = Channels.newChannel(limitedBytes);
             DecompressionLimitException exception = assertThrows(
                     DecompressionLimitException.class,
-                    () -> codec.decompress(limitedSource, limitedTarget, smallerOptions),
+                    () -> decoderCodec.decompress(limitedSource, limitedTarget, smallerLimits),
                     codec.name()
             );
             assertEquals(smallerLimit, exception.maximumOutputSize(), codec.name());
-            assertEquals(
-                    "ppmd".equals(codec.name()) ? 0L : smallerLimit,
-                    limitedBytes.size(),
-                    codec.name()
-            );
+            assertEquals(smallerLimit, limitedBytes.size(), codec.name());
+
             assertTrue(limitedSource.isOpen(), codec.name());
             assertTrue(limitedTarget.isOpen(), codec.name());
 
@@ -1013,13 +888,16 @@ final class CodecChannelContractTest {
             );
             assertThrows(
                     IllegalArgumentException.class,
-                    () -> codec.openDecoder(invalidSource, invalidOptions, ChannelOwnership.RETAIN),
+                    () -> decoderCodec.openDecoder(
+                            invalidSource,
+                            DecompressionLimits.ofMaximumOutputSize(-2L),
+                            ChannelOwnership.RETAIN
+                    ),
                     codec.name()
             );
             assertTrue(invalidSource.isOpen(), codec.name());
         }
     }
-
     /// Returns all remaining bytes from a buffer without changing the original buffer state.
     private static byte[] bufferBytes(ByteBuffer buffer) {
         ByteBuffer view = buffer.duplicate();
@@ -1083,6 +961,38 @@ final class CodecChannelContractTest {
         return encoded.toByteArray();
     }
 
+    /// Returns whether a new encoder exposes incremental flush support.
+    private static boolean hasFlushableEncoder(CompressionCodec codec) throws IOException {
+        try (CompressionEncoder encoder = codec.newEncoder()) {
+            return encoder instanceof FlushableCompressionEncoder;
+        }
+    }
+
+    /// Returns whether a new encoder can finish multiple independent frames.
+    private static boolean hasFramedEncoder(CompressionCodec codec) throws IOException {
+        try (CompressionEncoder encoder = codec.newEncoder()) {
+            return encoder instanceof FramedCompressionEncoder;
+        }
+    }
+
+    /// Returns whether a new decoder can traverse concatenated independent frames.
+    private static boolean hasFramedDecoder(CompressionCodec codec) throws IOException {
+        CompressionCodec decoderCodec = CodecContractConfigurations.decoderCodec(codec, 0L);
+        try (CompressionDecoder decoder = decoderCodec.newDecoder()) {
+            return decoder instanceof FramedCompressionDecoder;
+        }
+    }
+
+    /// Writes all bytes to a channel while requiring forward progress.
+    private static void writeAll(WritableByteChannel target, byte[] bytes) throws IOException {
+        ByteBuffer source = ByteBuffer.wrap(bytes);
+        while (source.hasRemaining()) {
+            if (target.write(source) == 0) {
+                throw new IOException("Test channel write made no progress");
+            }
+        }
+    }
+
     /// Verifies applicable codecs enforce fixed and declared decoding-window limits before producing output.
     @Test
     void enforcesMaximumWindowSizeAcrossApplicableCodecs() throws IOException {
@@ -1100,51 +1010,35 @@ final class CodecChannelContractTest {
         byte[] input = ("bounded decoding window " + "abcdefghijklmnop".repeat(256))
                 .getBytes(StandardCharsets.UTF_8);
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.canCompress() || !codec.canDecompress()) {
-                continue;
-            }
             boolean expected = windowCodecs.contains(codec.name());
-            assertEquals(
-                    expected,
-                    codec.capabilities().decompressionOptions().contains(StandardCodecOptions.MAX_WINDOW_SIZE),
-                    codec.name()
-            );
+            CompressionCodec decoderCodec =
+                    CodecContractConfigurations.decoderCodec(codec, input.length);
 
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
             codec.compress(
                     Channels.newChannel(new ByteArrayInputStream(input)),
                     Channels.newChannel(compressedBytes)
             );
-            CodecOptions.Builder unlimitedBuilder = CodecOptions.builder()
-                    .set(StandardCodecOptions.MAX_WINDOW_SIZE, Long.MAX_VALUE);
-            CodecContractOptions.addRequiredDecoderOptions(unlimitedBuilder, codec, input.length);
-            CodecOptions unlimitedOptions = unlimitedBuilder.build();
-            CodecOptions.Builder zeroBuilder = CodecOptions.builder()
-                    .set(StandardCodecOptions.MAX_WINDOW_SIZE, 0L);
-            CodecContractOptions.addRequiredDecoderOptions(zeroBuilder, codec, input.length);
-            CodecOptions zeroOptions = zeroBuilder.build();
-            CodecOptions.Builder invalidBuilder = CodecOptions.builder()
-                    .set(StandardCodecOptions.MAX_WINDOW_SIZE, -1L);
-            CodecContractOptions.addRequiredDecoderOptions(invalidBuilder, codec, input.length);
-            CodecOptions invalidOptions = invalidBuilder.build();
+            DecompressionLimits unlimitedLimits =
+                    DecompressionLimits.ofMaximumWindowSize(Long.MAX_VALUE);
+            DecompressionLimits zeroLimits =
+                    DecompressionLimits.ofMaximumWindowSize(0L);
             if (!expected) {
-                assertThrows(
-                        UnsupportedOperationException.class,
-                        () -> codec.openDecoder(
-                                Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
-                                unlimitedOptions,
-                                ChannelOwnership.RETAIN
-                        ),
-                        codec.name()
+                ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
+                decoderCodec.decompress(
+                        Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
+                        Channels.newChannel(decodedBytes),
+                        zeroLimits
                 );
+                assertArrayEquals(input, decodedBytes.toByteArray(), codec.name());
                 continue;
             }
 
             ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
-            codec.decompress(
+            decoderCodec.decompress(
                     Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
                     Channels.newChannel(decodedBytes),
-                    unlimitedOptions
+                    unlimitedLimits
             );
             assertArrayEquals(input, decodedBytes.toByteArray(), codec.name());
 
@@ -1154,10 +1048,10 @@ final class CodecChannelContractTest {
             ByteArrayOutputStream limitedBytes = new ByteArrayOutputStream();
             DecompressionWindowLimitException exception = assertThrows(
                     DecompressionWindowLimitException.class,
-                    () -> codec.decompress(
+                    () -> decoderCodec.decompress(
                             limitedSource,
                             Channels.newChannel(limitedBytes),
-                            zeroOptions
+                            zeroLimits
                     ),
                     codec.name()
             );
@@ -1171,10 +1065,13 @@ final class CodecChannelContractTest {
             );
             assertThrows(
                     IllegalArgumentException.class,
-                    () -> codec.openDecoder(invalidSource, invalidOptions, ChannelOwnership.RETAIN),
+                    () -> decoderCodec.openDecoder(
+                            invalidSource,
+                            DecompressionLimits.ofMaximumWindowSize(-2L),
+                            ChannelOwnership.RETAIN
+                    ),
                     codec.name()
             );
             assertTrue(invalidSource.isOpen(), codec.name());
         }
-    }
-}
+    }}

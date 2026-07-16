@@ -3,11 +3,9 @@
 
 package org.glavo.arkivo.codec.ppmd;
 
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionFeature;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -30,14 +28,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Tests transport-independent raw PPMd7 encoder and decoder behavior.
 @NotNullByDefault
 public final class PPMdBufferEngineTest {
-    /// Shared codec under test.
-    private static final PPMdCodec CODEC = new PPMdCodec();
-
     /// Maximum context order used by the fragmentation tests.
-    private static final long MAXIMUM_ORDER = 6L;
+    private static final int MAXIMUM_ORDER = 6;
 
     /// Model memory used by the fragmentation tests.
     private static final long MEMORY_SIZE = 1L << 20;
+
+    /// Shared codec under test.
+    private static final PPMdCodec CODEC = new PPMdCodec()
+            .withMaximumOrder(MAXIMUM_ORDER)
+            .withMemorySize(MEMORY_SIZE);
 
     /// Verifies one-byte fresh sources, one-byte direct targets, and preservation of trailing container bytes.
     @Test
@@ -69,27 +69,24 @@ public final class PPMdBufferEngineTest {
         assertTrue(result.consumedInput() <= encoded.length);
     }
 
-    /// Verifies empty-stream prefix handling, reset determinism, flush continuation, and closure checks.
+    /// Verifies empty-stream prefix handling, reset determinism, and closure checks.
     @Test
-    public void lifecycleEmptyStreamAndCapabilities() throws IOException {
+    public void lifecycleAndEmptyStream() throws IOException {
         byte[] empty = encodeFragmented(new byte[0], 1, 1);
         assertEquals(5, empty.length);
         assertArrayEquals(new byte[0], decodeFragmented(empty, 0, 1, 1, true).content());
 
         byte[] content = patternedData(8_193);
-        CompressionEncoder encoder = CODEC.newEncoder(encoderOptions());
-        byte[] first = encodeWithResettableEncoder(encoder, content, true);
+        CompressionEncoder encoder = CODEC.newEncoder();
+        byte[] first = encodeWithResettableEncoder(encoder, content);
         encoder.reset();
-        byte[] second = encodeWithResettableEncoder(encoder, content, false);
+        byte[] second = encodeWithResettableEncoder(encoder, content);
         assertArrayEquals(first, second);
         assertEquals(CodecOutcome.FINISHED, encoder.finish(ByteBuffer.allocate(1)));
         encoder.close();
         assertThrows(IllegalStateException.class, encoder::reset);
 
         assertArrayEquals(content, decodeFragmented(first, content.length, 1, 2, true).content());
-        assertTrue(CODEC.capabilities().supports(CompressionFeature.BUFFER_COMPRESSION));
-        assertTrue(CODEC.capabilities().supports(CompressionFeature.BUFFER_DECOMPRESSION));
-        assertFalse(CODEC.capabilities().supports(CompressionFeature.FLUSH));
     }
 
     /// Verifies terminal input exhaustion is distinguished from temporary source fragmentation.
@@ -100,7 +97,7 @@ public final class PPMdBufferEngineTest {
 
         for (int length = 0; length < 5; length++) {
             ByteBuffer source = ByteBuffer.wrap(Arrays.copyOf(encoded, length));
-            try (CompressionDecoder decoder = CODEC.newDecoder(decoderOptions(content.length))) {
+            try (CompressionDecoder decoder = CODEC.withDecodedSize(content.length).newDecoder()) {
                 assertThrows(
                         EOFException.class,
                         () -> decoder.decode(source, ByteBuffer.allocate(1), true),
@@ -112,7 +109,7 @@ public final class PPMdBufferEngineTest {
         int truncatedLength = Math.max(5, encoded.length / 2);
         ByteBuffer source = ByteBuffer.wrap(Arrays.copyOf(encoded, truncatedLength));
         ByteBuffer target = ByteBuffer.allocate(content.length);
-        try (CompressionDecoder decoder = CODEC.newDecoder(decoderOptions(content.length))) {
+        try (CompressionDecoder decoder = CODEC.withDecodedSize(content.length).newDecoder()) {
             assertThrows(EOFException.class, () -> decoder.decode(source, target, true));
         }
     }
@@ -124,7 +121,7 @@ public final class PPMdBufferEngineTest {
             int targetSize
     ) throws IOException {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        try (CompressionEncoder encoder = CODEC.newEncoder(encoderOptions())) {
+        try (CompressionEncoder encoder = CODEC.newEncoder()) {
             for (int offset = 0; offset < content.length; offset += sourceFragmentSize) {
                 int length = Math.min(sourceFragmentSize, content.length - offset);
                 ByteBuffer source = ByteBuffer.allocateDirect(length);
@@ -136,24 +133,14 @@ public final class PPMdBufferEngineTest {
         return encoded.toByteArray();
     }
 
-    /// Encodes one complete stream with an existing encoder and an optional nonterminal transport flush.
+    /// Encodes one complete stream with an existing resettable encoder.
     private static byte[] encodeWithResettableEncoder(
             CompressionEncoder encoder,
-            byte[] content,
-            boolean flush
+            byte[] content
     ) throws IOException {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         int split = content.length / 2;
         encodeSource(encoder, ByteBuffer.wrap(content, 0, split).slice(), encoded, 3);
-        if (flush) {
-            CodecOutcome outcome;
-            do {
-                ByteBuffer target = ByteBuffer.allocateDirect(1);
-                outcome = encoder.flush(target);
-                drain(target, encoded);
-            } while (outcome == CodecOutcome.NEEDS_OUTPUT);
-            assertEquals(CodecOutcome.FLUSHED, outcome);
-        }
         encodeSource(
                 encoder,
                 ByteBuffer.wrap(content, split, content.length - split).slice(),
@@ -206,7 +193,7 @@ public final class PPMdBufferEngineTest {
     ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         int offset = 0;
-        try (CompressionDecoder decoder = CODEC.newDecoder(decoderOptions(decodedSize))) {
+        try (CompressionDecoder decoder = CODEC.withDecodedSize(decodedSize).newDecoder()) {
             while (true) {
                 int length = Math.min(sourceFragmentSize, encoded.length - offset);
                 ByteBuffer source = ByteBuffer.wrap(encoded, offset, length).slice();
@@ -251,23 +238,6 @@ public final class PPMdBufferEngineTest {
                     : (byte) random.nextInt();
         }
         return content;
-    }
-
-    /// Returns the explicit encoder model configuration used by this test.
-    private static CodecOptions encoderOptions() {
-        return CodecOptions.builder()
-                .set(PPMdCodecOptions.MAXIMUM_ORDER, MAXIMUM_ORDER)
-                .set(PPMdCodecOptions.MEMORY_SIZE, MEMORY_SIZE)
-                .build();
-    }
-
-    /// Returns the matching decoder model configuration and exact decoded size.
-    private static CodecOptions decoderOptions(long decodedSize) {
-        return CodecOptions.builder()
-                .set(PPMdCodecOptions.MAXIMUM_ORDER, MAXIMUM_ORDER)
-                .set(PPMdCodecOptions.MEMORY_SIZE, MEMORY_SIZE)
-                .set(PPMdCodecOptions.DECODED_SIZE, decodedSize)
-                .build();
     }
 
     /// Captures decoded bytes and the exact caller-source position where the declared size completed.

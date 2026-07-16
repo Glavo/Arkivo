@@ -20,13 +20,6 @@ public interface CompressionEncoder extends AutoCloseable {
     /// `CodecOutcome.NEEDS_OUTPUT` when the target was filled first
     CodecOutcome encode(ByteBuffer source, ByteBuffer target) throws IOException;
 
-    /// Emits all currently pending output to a decodable boundary without ending the encoding.
-    ///
-    /// Callers repeat this operation with fresh target space after `CodecOutcome.NEEDS_OUTPUT`.
-    ///
-    /// @return `CodecOutcome.FLUSHED` when flushing completed, or `CodecOutcome.NEEDS_OUTPUT` otherwise
-    CodecOutcome flush(ByteBuffer target) throws IOException;
-
     /// Finishes the current encoding and emits its remaining payload and trailer.
     ///
     /// Callers repeat this operation with fresh target space after `CodecOutcome.NEEDS_OUTPUT`.

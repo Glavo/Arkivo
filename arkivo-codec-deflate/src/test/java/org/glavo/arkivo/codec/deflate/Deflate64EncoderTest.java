@@ -5,13 +5,11 @@ package org.glavo.arkivo.codec.deflate;
 
 import org.apache.commons.compress.compressors.deflate64.Deflate64CompressorInputStream;
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.EncodeDirective;
-import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -133,13 +131,10 @@ final class Deflate64EncoderTest {
 
     /// Encodes one byte array at a selected compression level.
     private static byte[] encode(byte[] input, long level) throws IOException {
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.COMPRESSION_LEVEL, level)
-                .build();
+        Deflate64Codec codec = CODEC.withCompressionLevel(level);
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        try (CompressingWritableByteChannel encoder = CODEC.openEncoder(
+        try (CompressingWritableByteChannel encoder = codec.openEncoder(
                 Channels.newChannel(bytes),
-                options,
                 ChannelOwnership.RETAIN
         )) {
             encoder.write(ByteBuffer.wrap(input));

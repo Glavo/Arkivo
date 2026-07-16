@@ -9,7 +9,6 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
 import java.util.List;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -99,10 +98,6 @@ public final class CompressionCodecRegistryTest {
     /// A small immutable codec used to exercise registry metadata.
     @NotNullByDefault
     private static class TestCodec implements CompressionCodec {
-        /// Empty capabilities used because registry tests do not create engines.
-        private static final CompressionCapabilities CAPABILITIES =
-                CompressionCapabilities.of(Set.of());
-
         /// The stable test codec name.
         private final String name;
 
@@ -140,10 +135,16 @@ public final class CompressionCodecRegistryTest {
             return aliases;
         }
 
-        /// Returns empty engine capabilities.
+        /// Rejects encoder creation because registry tests only exercise metadata.
         @Override
-        public CompressionCapabilities capabilities() {
-            return CAPABILITIES;
+        public CompressionEncoder newEncoder() {
+            throw new UnsupportedOperationException("Test codec has no encoder");
+        }
+
+        /// Rejects decoder creation because registry tests only exercise metadata.
+        @Override
+        public CompressionDecoder newDecoder(DecompressionLimits limits) {
+            throw new UnsupportedOperationException("Test codec has no decoder");
         }
 
         /// Returns the preferred signature size.

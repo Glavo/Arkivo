@@ -3,13 +3,15 @@
 
 package org.glavo.arkivo.codec.internal;
 
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.DecompressionLimitException;
+import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DictionaryCompressionDecoder;
+import org.glavo.arkivo.codec.FramedCompressionDecoder;
+import org.glavo.arkivo.codec.PledgedSourceSizeCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -32,14 +34,14 @@ final class DirectByteBufferCodecSupport {
     /// Compresses all source bytes into a dynamically growing heap buffer.
     static ByteBuffer compressAllocating(
             CompressionCodec codec,
-            ByteBuffer source,
-            CodecOptions options
+            ByteBuffer source
     ) throws IOException {
+        int sourceSize = source.remaining();
         GrowingByteBuffer output = new GrowingByteBuffer(
-                compressionInitialCapacity(codec, source.remaining()),
+                compressionInitialCapacity(codec, sourceSize),
                 Integer.MAX_VALUE
         );
-        try (CompressionEncoder encoder = codec.newEncoder(options)) {
+        try (CompressionEncoder encoder = newEncoder(codec, sourceSize)) {
             encode(encoder, source, output);
         }
         return output.toReadableBuffer();
@@ -49,10 +51,10 @@ final class DirectByteBufferCodecSupport {
     static void compress(
             CompressionCodec codec,
             ByteBuffer source,
-            ByteBuffer target,
-            CodecOptions options
+            ByteBuffer target
     ) throws IOException {
-        try (CompressionEncoder encoder = codec.newEncoder(options)) {
+        int sourceSize = source.remaining();
+        try (CompressionEncoder encoder = newEncoder(codec, sourceSize)) {
             encode(encoder, source, target);
         }
     }
@@ -62,9 +64,9 @@ final class DirectByteBufferCodecSupport {
             CompressionCodec codec,
             ByteBuffer source,
             int maximumOutputSize,
-            CodecOptions options
+            DecompressionLimits limits
     ) throws IOException {
-        return decodeAllocating(codec, source, maximumOutputSize, options, false);
+        return decodeAllocating(codec, source, maximumOutputSize, limits, false);
     }
 
     /// Decompresses complete input into the fixed caller-owned target.
@@ -72,9 +74,9 @@ final class DirectByteBufferCodecSupport {
             CompressionCodec codec,
             ByteBuffer source,
             ByteBuffer target,
-            CodecOptions options
+            DecompressionLimits limits
     ) throws IOException {
-        decode(codec, source, target, options, false);
+        decode(codec, source, target, limits, false);
     }
 
     /// Decompresses one frame into a dynamically growing bounded heap buffer.
@@ -82,9 +84,9 @@ final class DirectByteBufferCodecSupport {
             CompressionCodec codec,
             ByteBuffer source,
             int maximumOutputSize,
-            CodecOptions options
+            DecompressionLimits limits
     ) throws IOException {
-        return decodeAllocating(codec, source, maximumOutputSize, options, true);
+        return decodeAllocating(codec, source, maximumOutputSize, limits, true);
     }
 
     /// Decompresses one frame into the fixed caller-owned target.
@@ -92,9 +94,17 @@ final class DirectByteBufferCodecSupport {
             CompressionCodec codec,
             ByteBuffer source,
             ByteBuffer target,
-            CodecOptions options
+            DecompressionLimits limits
     ) throws IOException {
-        decode(codec, source, target, options, true);
+        decode(codec, source, target, limits, true);
+    }
+
+    /// Creates an encoder and supplies the exact one-shot source size when the codec supports it.
+    private static CompressionEncoder newEncoder(CompressionCodec codec, long sourceSize) throws IOException {
+        if (codec instanceof PledgedSourceSizeCodec pledgedSourceSizeCodec) {
+            return pledgedSourceSizeCodec.newEncoder(sourceSize);
+        }
+        return codec.newEncoder();
     }
 
     /// Drives one encoder into dynamically growing output.
@@ -201,18 +211,20 @@ final class DirectByteBufferCodecSupport {
             CompressionCodec codec,
             ByteBuffer source,
             int maximumOutputSize,
-            CodecOptions options,
+            DecompressionLimits limits,
             boolean singleFrame
     ) throws IOException {
         GrowingByteBuffer output = new GrowingByteBuffer(
                 decompressionInitialCapacity(source.remaining(), maximumOutputSize),
                 maximumOutputSize
         );
-        boolean supportsConcatenation = codec.capabilities().supports(CompressionFeature.CONCATENATED_FRAMES);
-        boolean continueFrames = supportsConcatenation && !singleFrame;
         ByteBuffer overflowProbe = ByteBuffer.allocate(1);
+        DecompressionLimits engineLimits =
+                limits.withMaximumOutputSize(DecompressionLimits.UNLIMITED_SIZE);
 
-        try (CompressionDecoder decoder = codec.newDecoder(options)) {
+        try (CompressionDecoder decoder = codec.newDecoder(engineLimits)) {
+            boolean supportsConcatenation = decoder instanceof FramedCompressionDecoder;
+            boolean continueFrames = supportsConcatenation && !singleFrame;
             if (supportsConcatenation && !source.hasRemaining()) {
                 return output.toReadableBuffer();
             }
@@ -247,30 +259,53 @@ final class DirectByteBufferCodecSupport {
         }
     }
 
-    /// Drives one decoder into fixed output.
+    /// Drives one decoder into fixed output while enforcing a total operation output limit.
     private static void decode(
             CompressionCodec codec,
             ByteBuffer source,
             ByteBuffer target,
-            CodecOptions options,
+            DecompressionLimits limits,
             boolean singleFrame
     ) throws IOException {
-        boolean supportsConcatenation = codec.capabilities().supports(CompressionFeature.CONCATENATED_FRAMES);
-        boolean continueFrames = supportsConcatenation && !singleFrame;
+        long maximumOutputSize = limits.maximumOutputSize();
+        int outputStart = target.position();
         ByteBuffer overflowProbe = ByteBuffer.allocate(1);
+        DecompressionLimits engineLimits =
+                limits.withMaximumOutputSize(DecompressionLimits.UNLIMITED_SIZE);
 
-        try (CompressionDecoder decoder = codec.newDecoder(options)) {
+        try (CompressionDecoder decoder = codec.newDecoder(engineLimits)) {
+            boolean supportsConcatenation = decoder instanceof FramedCompressionDecoder;
+            boolean continueFrames = supportsConcatenation && !singleFrame;
             if (supportsConcatenation && !source.hasRemaining()) {
                 return;
             }
             while (true) {
-                boolean probing = !target.hasRemaining();
+                long outputBytes = target.position() - (long) outputStart;
+                boolean limitReached =
+                        maximumOutputSize >= 0L && outputBytes == maximumOutputSize;
+                boolean probing = limitReached || !target.hasRemaining();
                 ByteBuffer operationTarget = probing ? overflowProbe.clear() : target;
+                int originalLimit = operationTarget.limit();
+                if (!probing && maximumOutputSize >= 0L) {
+                    long remaining = maximumOutputSize - outputBytes;
+                    if (operationTarget.remaining() > remaining) {
+                        operationTarget.limit(operationTarget.position() + Math.toIntExact(remaining));
+                    }
+                }
+
                 int sourcePosition = source.position();
                 int targetPosition = operationTarget.position();
-                CodecOutcome outcome = decoder.decode(source, operationTarget, true);
+                CodecOutcome outcome;
+                try {
+                    outcome = decoder.decode(source, operationTarget, true);
+                } finally {
+                    operationTarget.limit(originalLimit);
+                }
                 int produced = operationTarget.position() - targetPosition;
                 if (probing && produced != 0) {
+                    if (limitReached) {
+                        throw new DecompressionLimitException(maximumOutputSize);
+                    }
                     throw new BufferOverflowException();
                 }
 
@@ -310,7 +345,10 @@ final class DirectByteBufferCodecSupport {
             int targetPosition
     ) throws IOException {
         if (outcome == CodecOutcome.NEEDS_DICTIONARY) {
-            throw new IOException("Compression decoder requires dictionary " + decoder.requiredDictionaryId());
+            long dictionaryId = decoder instanceof DictionaryCompressionDecoder dictionaryDecoder
+                    ? dictionaryDecoder.requiredDictionaryId()
+                    : CompressionCodec.UNKNOWN_SIZE;
+            throw new IOException("Compression decoder requires dictionary " + dictionaryId);
         }
         if (outcome == CodecOutcome.NEEDS_INPUT) {
             if (source.hasRemaining()) {

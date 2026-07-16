@@ -4,9 +4,7 @@
 package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.CompressionFeature;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -26,15 +24,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies the public Deflate64 codec contract.
 @NotNullByDefault
 final class Deflate64CodecTest {
-    /// Verifies that Deflate64 exposes bidirectional channel capabilities and compression levels.
+    /// Verifies immutable Deflate64 compression-level configuration.
     @Test
-    void exposesBidirectionalCapabilities() {
+    void exposesCompressionLevelConfiguration() {
         Deflate64Codec codec = new Deflate64Codec();
 
-        assertTrue(codec.canCompress());
-        assertTrue(codec.canDecompress());
-        assertTrue(codec.capabilities().supports(CompressionFeature.BUFFER_COMPRESSION));
-        assertTrue(codec.capabilities().supports(CompressionFeature.BUFFER_DECOMPRESSION));
+        assertEquals(6L, codec.compressionLevel());
+        assertEquals(9L, codec.withCompressionLevel(9L).compressionLevel());
         assertEquals(0L, codec.minimumCompressionLevel());
         assertEquals(9L, codec.maximumCompressionLevel());
         assertEquals(6L, codec.defaultCompressionLevel());
@@ -47,12 +43,10 @@ final class Deflate64CodecTest {
                 .getBytes(StandardCharsets.UTF_8);
         byte[] compressed = storedBlock(content);
         Deflate64Codec codec = new Deflate64Codec();
-        assertTrue(codec.capabilities().supports(CompressionFeature.DIRECT_BYTE_BUFFER));
 
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(compressed));
         DecompressingReadableByteChannel decoder = codec.openDecoder(
                 source,
-                CodecOptions.EMPTY,
                 ChannelOwnership.CLOSE
         );
         ByteBuffer output = ByteBuffer.allocateDirect(content.length);
@@ -72,7 +66,6 @@ final class Deflate64CodecTest {
         ReadableByteChannel retained = Channels.newChannel(new ByteArrayInputStream(compressed));
         DecompressingReadableByteChannel retainedDecoder = codec.openDecoder(
                 retained,
-                CodecOptions.EMPTY,
                 ChannelOwnership.RETAIN
         );
         retainedDecoder.close();

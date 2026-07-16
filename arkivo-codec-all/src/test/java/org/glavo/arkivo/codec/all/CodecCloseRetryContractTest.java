@@ -4,7 +4,6 @@
 package org.glavo.arkivo.codec.all;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
@@ -42,13 +41,10 @@ final class CodecCloseRetryContractTest {
     @Test
     void retriesEncoderTargetClosure() throws IOException {
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.canCompress() || !codec.canDecompress()) {
-                continue;
-            }
+
             FailingCloseWritableChannel target = new FailingCloseWritableChannel();
             CompressingWritableByteChannel encoder = codec.openEncoder(
                     target,
-                    CodecOptions.EMPTY,
                     ChannelOwnership.CLOSE
             );
             encoder.write(ByteBuffer.wrap(CONTENT));
@@ -71,13 +67,12 @@ final class CodecCloseRetryContractTest {
     @Test
     void retriesDecoderSourceClosure() throws IOException {
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.canCompress() || !codec.canDecompress()) {
-                continue;
-            }
+
             FailingCloseReadableChannel source = new FailingCloseReadableChannel(compress(codec, CONTENT));
-            DecompressingReadableByteChannel decoder = codec.openDecoder(
+            CompressionCodec decoderCodec =
+                    CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
+            DecompressingReadableByteChannel decoder = decoderCodec.openDecoder(
                     source,
-                    CodecContractOptions.decoderOptions(codec, CONTENT.length),
                     ChannelOwnership.CLOSE
             );
 
@@ -97,11 +92,11 @@ final class CodecCloseRetryContractTest {
     @Test
     void closesOwnedEndpointsAfterSetupFailures() throws IOException {
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (codec.canCompress()) {
+            {
                 WriteFailingWritableChannel target = new WriteFailingWritableChannel();
                 @Nullable CompressingWritableByteChannel encoder = null;
                 try {
-                    encoder = codec.openEncoder(target, CodecOptions.EMPTY, ChannelOwnership.CLOSE);
+                    encoder = codec.openEncoder(target, ChannelOwnership.CLOSE);
                     assertThrows(IOException.class, encoder::finish, codec.name());
                 } catch (IOException exception) {
                     assertEquals("write failed", exception.getMessage(), codec.name());
@@ -115,11 +110,11 @@ final class CodecCloseRetryContractTest {
                 assertEquals(1, target.closeCount(), codec.name());
             }
 
-            if (codec.canDecompress()) {
+            {
                 ReadFailingReadableChannel source = new ReadFailingReadableChannel();
                 @Nullable DecompressingReadableByteChannel decoder = null;
                 try {
-                    decoder = codec.openDecoder(source, decompressionOptions(codec), ChannelOwnership.CLOSE);
+                    decoder = decoderCodec(codec, 0L).openDecoder(source, ChannelOwnership.CLOSE);
                 } catch (IOException exception) {
                     assertEquals("read failed", exception.getMessage(), codec.name());
                 } finally {
@@ -137,11 +132,11 @@ final class CodecCloseRetryContractTest {
     @Test
     void retainsEndpointsAfterSetupFailures() throws IOException {
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (codec.canCompress()) {
+            {
                 WriteFailingWritableChannel target = new WriteFailingWritableChannel();
                 @Nullable CompressingWritableByteChannel encoder = null;
                 try {
-                    encoder = codec.openEncoder(target, CodecOptions.EMPTY, ChannelOwnership.RETAIN);
+                    encoder = codec.openEncoder(target, ChannelOwnership.RETAIN);
                     assertThrows(IOException.class, encoder::finish, codec.name());
                 } catch (IOException exception) {
                     assertEquals("write failed", exception.getMessage(), codec.name());
@@ -155,11 +150,11 @@ final class CodecCloseRetryContractTest {
                 assertEquals(0, target.closeCount(), codec.name());
             }
 
-            if (codec.canDecompress()) {
+            {
                 ReadFailingReadableChannel source = new ReadFailingReadableChannel();
                 @Nullable DecompressingReadableByteChannel decoder = null;
                 try {
-                    decoder = codec.openDecoder(source, decompressionOptions(codec), ChannelOwnership.RETAIN);
+                    decoder = decoderCodec(codec, 0L).openDecoder(source, ChannelOwnership.RETAIN);
                 } catch (IOException exception) {
                     assertEquals("read failed", exception.getMessage(), codec.name());
                 } finally {
@@ -173,18 +168,16 @@ final class CodecCloseRetryContractTest {
         }
     }
 
-    /// Returns the minimum valid setup options for codecs whose raw streams are not self-describing.
-    private static CodecOptions decompressionOptions(CompressionCodec codec) {
-        return CodecContractOptions.decoderOptions(codec, 0L);
+    /// Returns a decoder configuration carrying required external stream metadata.
+    private static CompressionCodec decoderCodec(CompressionCodec codec, long decodedSize) {
+        return CodecContractConfigurations.decoderCodec(codec, decodedSize);
     }
 
     /// Verifies OutputStream convenience adapters retry caller-stream closure without re-finalizing frames.
     @Test
     void retriesConvenienceOutputStreamClosure() throws IOException {
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.canCompress() || !codec.canDecompress()) {
-                continue;
-            }
+
             FailingCloseOutputStream target = new FailingCloseOutputStream();
             OutputStream output = codec.compressTo(target);
             output.write(CONTENT);
@@ -204,15 +197,9 @@ final class CodecCloseRetryContractTest {
     @Test
     void retriesConvenienceInputStreamClosure() throws IOException {
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.canCompress() || !codec.canDecompress()) {
-                continue;
-            }
-            if (CodecContractOptions.requiresDecoderOptions(codec)) {
-                continue;
-            }
 
             FailingCloseInputStream source = new FailingCloseInputStream(compress(codec, CONTENT));
-            InputStream input = codec.decompressFrom(source);
+            InputStream input = decoderCodec(codec, CONTENT.length).decompressFrom(source);
             assertArrayEquals(CONTENT, input.readAllBytes(), codec.name());
             IOException failure = assertThrows(IOException.class, input::close, codec.name());
             assertEquals("close failed", failure.getMessage(), codec.name());
@@ -236,10 +223,9 @@ final class CodecCloseRetryContractTest {
     /// Decompresses bytes without transferring endpoint ownership.
     private static byte[] decompress(CompressionCodec codec, byte[] input) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        codec.decompress(
+        decoderCodec(codec, CONTENT.length).decompress(
                 Channels.newChannel(new ByteArrayInputStream(input)),
-                Channels.newChannel(output),
-                CodecContractOptions.decoderOptions(codec, CONTENT.length)
+                Channels.newChannel(output)
         );
         return output.toByteArray();
     }

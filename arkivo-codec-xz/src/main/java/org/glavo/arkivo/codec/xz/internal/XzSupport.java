@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.xz.internal;
 
-import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
+import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 

@@ -4,11 +4,11 @@
 package org.glavo.arkivo.codec.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecTransferResult;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.CompressingWritableByteChannel;
+import org.glavo.arkivo.codec.DecompressionLimits;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -31,15 +31,14 @@ public final class CodecTransferSupport {
     public static CodecTransferResult compress(
             CompressionCodec codec,
             ReadableByteChannel source,
-            WritableByteChannel target,
-            CodecOptions options
+            WritableByteChannel target
     ) throws IOException {
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(options, "options");
 
-        try (CompressingWritableByteChannel encoder = codec.openEncoder(target, options, ChannelOwnership.RETAIN)) {
+        try (CompressingWritableByteChannel encoder =
+                     codec.openEncoder(target, ChannelOwnership.RETAIN)) {
             transferIntoEncoder(source, encoder);
             encoder.finish();
             return new CodecTransferResult(encoder.inputBytes(), encoder.outputBytes());
@@ -51,14 +50,15 @@ public final class CodecTransferSupport {
             CompressionCodec codec,
             ReadableByteChannel source,
             WritableByteChannel target,
-            CodecOptions options
+            DecompressionLimits limits
     ) throws IOException {
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(options, "options");
+        Objects.requireNonNull(limits, "limits");
 
-        try (DecompressingReadableByteChannel decoder = codec.openDecoder(source, options, ChannelOwnership.RETAIN)) {
+        try (DecompressingReadableByteChannel decoder =
+                     codec.openDecoder(source, limits, ChannelOwnership.RETAIN)) {
             return decompress(decoder, target);
         }
     }
@@ -101,7 +101,7 @@ public final class CodecTransferSupport {
             WritableByteChannel target
     ) throws IOException {
         ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);
-        long outputBytes = 0;
+        long outputBytes = 0L;
         while (true) {
             int read = decoder.read(buffer);
             if (read < 0) {

@@ -5,8 +5,8 @@ package org.glavo.arkivo.codec.xz.internal;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
-import org.glavo.arkivo.codec.FramedCompressionEncoder;
-import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
+import org.glavo.arkivo.codec.FlushableFramedCompressionEncoder;
+import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.xz.XZFilterChain;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -22,7 +22,7 @@ import java.util.Objects;
 /// The pure Java XZ writer receives bounded source slices and writes complete encoded bytes into a private memory sink.
 /// No additional source is accepted while encoded bytes await caller-owned target space.
 @NotNullByDefault
-public final class XzEncoder implements FramedCompressionEncoder {
+public final class XzEncoder implements FlushableFramedCompressionEncoder {
     /// The largest source slice passed to the XZ writer in one operation.
     private static final int SOURCE_SLICE_SIZE = 16 * 1024;
 

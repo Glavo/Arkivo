@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.codec.lzma.internal;
 
+import org.glavo.arkivo.codec.lzma.LZMAProperties;
+
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 

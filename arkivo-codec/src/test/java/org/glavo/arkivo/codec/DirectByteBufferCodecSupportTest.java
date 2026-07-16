@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.codec;
 
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -12,13 +13,12 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-/// Verifies one-shot ByteBuffer operations directly drive advertised buffer engines.
+/// Verifies one-shot ByteBuffer operations directly drive mandatory buffer engines.
 @NotNullByDefault
 final class DirectByteBufferCodecSupportTest {
     /// Verifies allocating and fixed operations never open channel adapters.
@@ -133,48 +133,31 @@ final class DirectByteBufferCodecSupportTest {
     /// Provides a length-prefixed identity format exclusively through buffer engines.
     @NotNullByDefault
     private static final class LengthPrefixedCodec implements CompressionCodec {
-        /// The direct-engine features supported by the test format.
-        private static final CompressionCapabilities CAPABILITIES = CompressionCapabilities.of(Set.of(
-                CompressionFeature.COMPRESSION,
-                CompressionFeature.DECOMPRESSION,
-                CompressionFeature.ONE_SHOT_COMPRESSION,
-                CompressionFeature.ONE_SHOT_DECOMPRESSION,
-                CompressionFeature.BUFFER_COMPRESSION,
-                CompressionFeature.BUFFER_DECOMPRESSION,
-                CompressionFeature.CONCATENATED_FRAMES
-        ));
-
         /// Returns the test codec name.
         @Override
         public String name() {
             return "length-prefixed";
         }
 
-        /// Returns the direct-engine test capabilities.
-        @Override
-        public CompressionCapabilities capabilities() {
-            return CAPABILITIES;
-        }
-
         /// Creates a length-prefixed identity encoder.
         @Override
-        public CompressionEncoder newEncoder(CodecOptions options) {
-            options.requireSupported(CAPABILITIES.compressionOptions(), "length-prefixed compression");
+        public CompressionEncoder newEncoder() {
             return new LengthPrefixedEncoder();
         }
 
         /// Creates a length-prefixed identity decoder.
         @Override
-        public CompressionDecoder newDecoder(CodecOptions options) {
-            options.requireSupported(CAPABILITIES.decompressionOptions(), "length-prefixed decompression");
-            return new LengthPrefixedDecoder();
+        public CompressionDecoder newDecoder(DecompressionLimits limits) {
+            return CompressionDecoderSupport.limitEngineOutput(
+                    new LengthPrefixedDecoder(),
+                    limits.maximumOutputSize()
+            );
         }
 
         /// Rejects accidental use of the channel encoding path.
         @Override
         public CompressingWritableByteChannel openEncoder(
                 WritableByteChannel target,
-                CodecOptions options,
                 ChannelOwnership ownership
         ) {
             throw new AssertionError("Channel encoder path must not be used");
@@ -184,7 +167,7 @@ final class DirectByteBufferCodecSupportTest {
         @Override
         public DecompressingReadableByteChannel openDecoder(
                 ReadableByteChannel source,
-                CodecOptions options,
+                DecompressionLimits limits,
                 ChannelOwnership ownership
         ) {
             throw new AssertionError("Channel decoder path must not be used");
@@ -193,7 +176,7 @@ final class DirectByteBufferCodecSupportTest {
 
     /// Encodes one length-prefixed identity frame.
     @NotNullByDefault
-    private static final class LengthPrefixedEncoder implements CompressionEncoder {
+    private static final class LengthPrefixedEncoder implements FlushableCompressionEncoder {
         /// The source byte count captured from the first encode operation.
         private int sourceSize = -1;
 
@@ -275,7 +258,7 @@ final class DirectByteBufferCodecSupportTest {
 
     /// Decodes one length-prefixed identity frame.
     @NotNullByDefault
-    private static final class LengthPrefixedDecoder implements CompressionDecoder {
+    private static final class LengthPrefixedDecoder implements FramedCompressionDecoder {
         /// The declared frame payload size, or a negative value before the header.
         private int expectedSize = -1;
 

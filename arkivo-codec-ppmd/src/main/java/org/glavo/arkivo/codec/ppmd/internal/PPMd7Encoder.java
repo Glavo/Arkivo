@@ -77,7 +77,6 @@ public final class PPMd7Encoder implements CompressionEncoder {
     }
 
     /// Drains every complete arithmetic byte currently available without ending the raw stream.
-    @Override
     public CodecOutcome flush(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();

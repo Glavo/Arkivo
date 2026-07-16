@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.codec.lzma.internal;
 
+import org.glavo.arkivo.codec.lzma.LZMAProperties;
+
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;

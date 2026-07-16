@@ -84,8 +84,6 @@ import java.util.Set;
 
 import static org.glavo.arkivo.archive.tar.internal.TarCompressionStreams.openArchiveInput;
 import static org.glavo.arkivo.archive.tar.internal.TarCompressionStreams.openArchiveOutput;
-import static org.glavo.arkivo.archive.tar.internal.TarCompressionStreams.requireCompression;
-import static org.glavo.arkivo.archive.tar.internal.TarCompressionStreams.requireDecompression;
 
 /// Implements a TAR archive file system backed by an in-memory index or a forward-only writer.
 @NotNullByDefault
@@ -255,7 +253,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     if (compressionCodec == null) {
                         compressionCodec = detectCompression(archivePath);
                     }
-                    requireDecompression(compressionCodec);
                     try (InputStream input = openArchiveInput(
                             Files.newInputStream(archivePath, StandardOpenOption.READ),
                             compressionCodec
@@ -267,7 +264,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 } else {
                     throw new NoSuchFileException(archivePath.toString());
                 }
-                requireCompression(compressionCodec);
                 @Nullable ArkivoCommitTarget commitTarget = ArkivoFileSystem.COMMIT_TARGET.read(environment);
                 if (commitTarget == null) {
                     commitTarget = ArkivoCommitTarget.atomicReplace(defaultCommitDirectory(archivePath));
@@ -301,7 +297,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             if (ArkivoFileSystem.COMMIT_TARGET.read(environment) != null) {
                 throw new UnsupportedOperationException("TAR archive writes do not support commit targets");
             }
-            requireCompression(requestedCompression);
             OutputStream output = openArchiveOutput(
                     Files.newOutputStream(archivePath, openOptions.toArray(OpenOption[]::new)),
                     requestedCompression
@@ -333,7 +328,6 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             if (compressionCodec == null) {
                 compressionCodec = detectCompression(archivePath);
             }
-            requireDecompression(compressionCodec);
             Map<String, Node> nodes;
             try (InputStream input = openArchiveInput(
                     Files.newInputStream(archivePath, openOptions.toArray(OpenOption[]::new)),
@@ -419,9 +413,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                     compressionCodec = detectCompression(probeChannel);
                 }
             }
-            requireDecompression(compressionCodec);
             if (updateMode) {
-                requireCompression(compressionCodec);
             }
             long archiveSize;
             Map<String, Node> nodes;
@@ -2124,7 +2116,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// Detects a compression codec whose decoded channel prefix is a valid TAR archive.
     private static @Nullable CompressionCodec detectCompression(SeekableByteChannel channel) throws IOException {
         @Nullable CompressionCodec candidate = CompressionCodecs.detect(channel);
-        if (candidate == null || !candidate.canDecompress()) {
+        if (candidate == null) {
             return null;
         }
         channel.position(0L);

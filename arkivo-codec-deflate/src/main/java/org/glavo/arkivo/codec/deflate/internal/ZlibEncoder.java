@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.FlushableCompressionEncoder;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -19,7 +19,7 @@ import java.util.zip.Adler32;
 
 /// Incrementally encodes one zlib stream with the shared pure Java Deflate engine.
 @NotNullByDefault
-public final class ZlibEncoder implements CompressionEncoder {
+public final class ZlibEncoder implements FlushableCompressionEncoder {
     /// Shared empty output marker.
     private static final @Unmodifiable ByteBuffer EMPTY_OUTPUT = ByteBuffer.allocate(0);
 

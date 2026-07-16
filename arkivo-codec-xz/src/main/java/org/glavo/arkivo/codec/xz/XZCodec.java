@@ -3,93 +3,76 @@
 
 package org.glavo.arkivo.codec.xz;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.ChecksumMode;
-import org.glavo.arkivo.codec.CodecOption;
-import org.glavo.arkivo.codec.CodecOptions;
-import org.glavo.arkivo.codec.CompressionCapabilities;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.CompressionFeature;
-import org.glavo.arkivo.codec.StandardCodecOptions;
-import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
-import org.glavo.arkivo.codec.lzma.LZMAOptions;
-import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
+import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.FlushableFramedCompressionEncoder;
+import org.glavo.arkivo.codec.lzma.LZMAProperties;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.xz.internal.XzChannelEncoder;
 import org.glavo.arkivo.codec.xz.internal.XzDecoder;
 import org.glavo.arkivo.codec.xz.internal.XzEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.ReadableByteChannel;
-import java.nio.channels.WritableByteChannel;
-import java.util.Set;
+import java.util.Objects;
 
-/// Provides pure Java XZ buffer engines and shared channel adapters.
+/// Provides an immutable XZ configuration and pure Java transport-independent engines.
 @NotNullByDefault
 public final class XZCodec implements CompressionCodec {
     /// The stable XZ codec name.
     public static final String NAME = "xz";
 
+    /// The default XZ LZMA2 dictionary size.
+    public static final int DEFAULT_DICTIONARY_SIZE = XzChannelEncoder.DEFAULT_DICTIONARY_SIZE;
+
     /// The default immutable XZ codec configuration.
-    public static final XZCodec DEFAULT = new XZCodec();
-
-    /// Selects the XZ LZMA2 dictionary size in bytes.
-    public static final CodecOption<Long> DICTIONARY_SIZE =
-            CodecOption.of("xz.dictionarySize", Long.class);
-
-    /// Selects the exact XZ block integrity-check algorithm.
-    public static final CodecOption<XZCheckType> CHECK_TYPE =
-            CodecOption.of("xz.checkType", XZCheckType.class);
-
-    /// Selects the ordered size-preserving filters applied before LZMA2.
-    public static final CodecOption<XZFilterChain> FILTER_CHAIN =
-            CodecOption.of("xz.filterChain", XZFilterChain.class);
-
-    /// Selects the maximum uncompressed bytes per XZ Block; zero keeps one unbounded Block.
-    public static final CodecOption<Long> BLOCK_SIZE =
-            CodecOption.of("xz.blockSize", Long.class);
-
-    /// The supported XZ operations.
-    private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(Set.of(
-            CompressionFeature.COMPRESSION,
-            CompressionFeature.DECOMPRESSION,
-            CompressionFeature.ONE_SHOT_COMPRESSION,
-            CompressionFeature.ONE_SHOT_DECOMPRESSION,
-            CompressionFeature.FLUSH,
-            CompressionFeature.DIRECT_BYTE_BUFFER,
-            CompressionFeature.BUFFER_COMPRESSION,
-            CompressionFeature.BUFFER_DECOMPRESSION,
-            CompressionFeature.MULTI_FRAME,
-            CompressionFeature.CONCATENATED_FRAMES
-    ), Set.of(
-            DICTIONARY_SIZE,
-            LZMAOptions.LITERAL_CONTEXT_BITS,
-            LZMAOptions.LITERAL_POSITION_BITS,
-            LZMAOptions.POSITION_BITS,
-            StandardCodecOptions.CHECKSUM,
-            CHECK_TYPE,
-            FILTER_CHAIN,
-            BLOCK_SIZE
-    ), Set.of(
-            StandardCodecOptions.CHECKSUM,
-            StandardCodecOptions.MAX_OUTPUT_SIZE,
-            StandardCodecOptions.MAX_WINDOW_SIZE
-    ));
+    public static final XZCodec DEFAULT = builder().build();
 
     /// The XZ stream header magic bytes.
     private static final byte @Unmodifiable [] HEADER_MAGIC = {
             (byte) 0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00
     };
 
-    /// Creates an XZ codec.
+    /// The configured LZMA2 model properties.
+    private final LZMAProperties properties;
+
+    /// The configured block integrity check.
+    private final XZCheckType checkType;
+
+    /// The configured ordered preprocessing filter chain.
+    private final XZFilterChain filterChain;
+
+    /// The maximum uncompressed bytes per XZ block, or zero for one unbounded block.
+    private final long blockSize;
+
+    /// Whether decoders verify block integrity checks.
+    private final boolean verifyChecksums;
+
+    /// Creates the default XZ codec configuration.
     public XZCodec() {
+        this(new Builder());
+    }
+
+    /// Creates an immutable XZ codec from a validated builder snapshot.
+    private XZCodec(Builder builder) {
+        this.properties = Objects.requireNonNull(builder.properties, "properties");
+        this.checkType = Objects.requireNonNull(builder.checkType, "checkType");
+        this.filterChain = Objects.requireNonNull(builder.filterChain, "filterChain");
+        this.blockSize = builder.blockSize;
+        this.verifyChecksums = builder.verifyChecksums;
+    }
+
+    /// Returns a new builder initialized to XZ defaults.
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    /// Returns a mutable builder initialized from this immutable configuration.
+    public Builder toBuilder() {
+        return new Builder(this);
     }
 
     /// Returns the stable XZ codec name.
@@ -98,10 +81,72 @@ public final class XZCodec implements CompressionCodec {
         return NAME;
     }
 
-    /// Returns the supported XZ operations and options.
-    @Override
-    public CompressionCapabilities capabilities() {
-        return CAPABILITIES;
+    /// Returns the configured LZMA2 model properties.
+    public LZMAProperties properties() {
+        return properties;
+    }
+
+    /// Returns the configured block integrity check.
+    public XZCheckType checkType() {
+        return checkType;
+    }
+
+    /// Returns the configured ordered preprocessing filter chain.
+    public XZFilterChain filterChain() {
+        return filterChain;
+    }
+
+    /// Returns the maximum uncompressed bytes per XZ block, or zero for one unbounded block.
+    public long blockSize() {
+        return blockSize;
+    }
+
+    /// Returns whether decoders verify block integrity checks.
+    public boolean verifyChecksums() {
+        return verifyChecksums;
+    }
+
+    /// Returns an immutable XZ codec with the requested LZMA2 properties.
+    public XZCodec withProperties(LZMAProperties properties) {
+        Objects.requireNonNull(properties, "properties");
+        return properties.equals(this.properties)
+                ? this
+                : toBuilder().properties(properties).build();
+    }
+
+    /// Returns an immutable XZ codec with the requested dictionary size.
+    public XZCodec withDictionarySize(int dictionarySize) {
+        return withProperties(properties.withDictionarySize(dictionarySize));
+    }
+
+    /// Returns an immutable XZ codec with the requested block integrity check.
+    public XZCodec withCheckType(XZCheckType checkType) {
+        Objects.requireNonNull(checkType, "checkType");
+        return checkType == this.checkType
+                ? this
+                : toBuilder().checkType(checkType).build();
+    }
+
+    /// Returns an immutable XZ codec with the requested preprocessing filters.
+    public XZCodec withFilterChain(XZFilterChain filterChain) {
+        Objects.requireNonNull(filterChain, "filterChain");
+        return filterChain.equals(this.filterChain)
+                ? this
+                : toBuilder().filterChain(filterChain).build();
+    }
+
+    /// Returns an immutable XZ codec with the requested block size.
+    public XZCodec withBlockSize(long blockSize) {
+        return blockSize == this.blockSize
+                ? this
+                : toBuilder().blockSize(blockSize).build();
+    }
+
+    /// Returns an immutable XZ codec with the requested checksum-verification behavior.
+    public XZCodec withVerifyChecksums(boolean verifyChecksums) {
+        return verifyChecksums == this.verifyChecksums
+                ? this
+                : toBuilder().verifyChecksums(verifyChecksums).build();
     }
 
     /// Returns the number of leading bytes used to identify XZ streams.
@@ -118,78 +163,123 @@ public final class XZCodec implements CompressionCodec {
             return false;
         }
 
-        for (int i = 0; i < HEADER_MAGIC.length; i++) {
-            if (prefix.get(position + i) != HEADER_MAGIC[i]) {
+        for (int index = 0; index < HEADER_MAGIC.length; index++) {
+            if (prefix.get(position + index) != HEADER_MAGIC[index]) {
                 return false;
             }
         }
         return true;
     }
 
-    /// Creates a configured transport-independent XZ encoder.
+    /// Creates a flushable transport-independent XZ stream encoder.
     @Override
-    public CompressionEncoder newEncoder(CodecOptions options) throws IOException {
-        options.requireSupported(CAPABILITIES.compressionOptions(), "XZ compression");
-        LZMAProperties properties = LZMAProperties.fromOptions(
-                options,
-                DICTIONARY_SIZE,
-                XzChannelEncoder.DEFAULT_DICTIONARY_SIZE
-        );
+    public FlushableFramedCompressionEncoder newEncoder() throws IOException {
+        return new XzEncoder(properties, checkType.flag(), filterChain, blockSize);
+    }
 
-        @Nullable ChecksumMode checksum = options.get(StandardCodecOptions.CHECKSUM);
-        @Nullable XZCheckType requestedCheck = options.get(CHECK_TYPE);
-        if (checksum != null && checksum != ChecksumMode.DEFAULT && requestedCheck != null) {
-            throw new IllegalArgumentException("XZ CHECKSUM and CHECK_TYPE options cannot both select a check");
+    /// Creates a transport-independent XZ stream decoder with operation-scoped limits.
+    @Override
+    public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
+        Objects.requireNonNull(limits, "limits");
+        return CompressionDecoderSupport.limitEngineOutput(
+                new XzDecoder(limits.maximumWindowSize(), verifyChecksums),
+                limits.maximumOutputSize()
+        );
+    }
+
+    /// Builds immutable XZ codec configurations.
+    ///
+    /// Builders are mutable and not safe for concurrent use.
+    @NotNullByDefault
+    public static final class Builder {
+        /// The selected LZMA2 model properties.
+        private LZMAProperties properties = LZMAProperties.defaults(DEFAULT_DICTIONARY_SIZE);
+
+        /// The selected block integrity check.
+        private XZCheckType checkType = XZCheckType.CRC64;
+
+        /// The selected ordered preprocessing filter chain.
+        private XZFilterChain filterChain = XZFilterChain.EMPTY;
+
+        /// The selected maximum uncompressed bytes per block.
+        private long blockSize;
+
+        /// Whether decoders verify block integrity checks.
+        private boolean verifyChecksums = true;
+
+        /// Creates a builder initialized to XZ defaults.
+        private Builder() {
         }
-        XZCheckType checkType = requestedCheck != null
-                ? requestedCheck
-                : checksum == ChecksumMode.DISABLED ? XZCheckType.NONE : XZCheckType.CRC64;
-        @Nullable XZFilterChain requestedFilters = options.get(FILTER_CHAIN);
-        XZFilterChain filterChain = requestedFilters != null ? requestedFilters : XZFilterChain.EMPTY;
-        @Nullable Long requestedBlockSize = options.get(BLOCK_SIZE);
-        long blockSize = requestedBlockSize != null ? requestedBlockSize : 0L;
-        if (blockSize < 0L) {
-            throw new IllegalArgumentException("XZ Block size must not be negative: " + blockSize);
+
+        /// Creates a builder initialized from an immutable codec.
+        private Builder(XZCodec codec) {
+            properties = codec.properties;
+            checkType = codec.checkType;
+            filterChain = codec.filterChain;
+            blockSize = codec.blockSize;
+            verifyChecksums = codec.verifyChecksums;
         }
-        return new XzEncoder(
-                properties,
-                checkType.flag(),
-                filterChain,
-                blockSize
-        );
-    }
 
-    /// Opens the transport-independent XZ encoder through the shared blocking channel adapter.
-    @Override
-    public CompressingWritableByteChannel openEncoder(
-            WritableByteChannel target,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
-        return CompressionCodec.super.openEncoder(target, options, ownership);
-    }
+        /// Selects all LZMA2 model properties.
+        public Builder properties(LZMAProperties properties) {
+            this.properties = Objects.requireNonNull(properties, "properties");
+            return this;
+        }
 
-    /// Creates a configured transport-independent XZ decoder.
-    @Override
-    public CompressionDecoder newDecoder(CodecOptions options) throws IOException {
-        options.requireSupported(CAPABILITIES.decompressionOptions(), "XZ decompression");
-        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
-        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
-        @Nullable ChecksumMode checksum = options.get(StandardCodecOptions.CHECKSUM);
-        boolean verifyChecksums = checksum != ChecksumMode.DISABLED;
-        return StandardCodecOptionSupport.limitOutput(
-                new XzDecoder(maximumWindowSize, verifyChecksums),
-                maximumOutputSize
-        );
-    }
+        /// Selects the LZMA2 dictionary size.
+        public Builder dictionarySize(int dictionarySize) {
+            properties = properties.withDictionarySize(dictionarySize);
+            return this;
+        }
 
-    /// Opens the transport-independent XZ decoder through the shared blocking channel adapter.
-    @Override
-    public DecompressingReadableByteChannel openDecoder(
-            ReadableByteChannel source,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
-        return CompressionCodec.super.openDecoder(source, options, ownership);
+        /// Selects the LZMA literal-context bit count.
+        public Builder literalContextBits(int literalContextBits) {
+            properties = properties.withLiteralContextBits(literalContextBits);
+            return this;
+        }
+
+        /// Selects the LZMA literal-position bit count.
+        public Builder literalPositionBits(int literalPositionBits) {
+            properties = properties.withLiteralPositionBits(literalPositionBits);
+            return this;
+        }
+
+        /// Selects the LZMA match-position bit count.
+        public Builder positionBits(int positionBits) {
+            properties = properties.withPositionBits(positionBits);
+            return this;
+        }
+
+        /// Selects the exact XZ block integrity check.
+        public Builder checkType(XZCheckType checkType) {
+            this.checkType = Objects.requireNonNull(checkType, "checkType");
+            return this;
+        }
+
+        /// Selects the ordered size-preserving preprocessing filter chain.
+        public Builder filterChain(XZFilterChain filterChain) {
+            this.filterChain = Objects.requireNonNull(filterChain, "filterChain");
+            return this;
+        }
+
+        /// Selects the maximum uncompressed bytes per block; zero keeps one unbounded block.
+        public Builder blockSize(long blockSize) {
+            if (blockSize < 0L) {
+                throw new IllegalArgumentException("XZ blockSize must not be negative");
+            }
+            this.blockSize = blockSize;
+            return this;
+        }
+
+        /// Selects whether decoders verify XZ block integrity checks.
+        public Builder verifyChecksums(boolean verifyChecksums) {
+            this.verifyChecksums = verifyChecksums;
+            return this;
+        }
+
+        /// Builds an immutable XZ codec configuration.
+        public XZCodec build() {
+            return new XZCodec(this);
+        }
     }
 }

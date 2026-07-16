@@ -3,14 +3,13 @@
 
 package org.glavo.arkivo.codec.xz;
 
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.DecompressionLimitException;
+import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.FlushableFramedCompressionEncoder;
 import org.glavo.arkivo.codec.FramedCompressionEncoder;
-import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -35,11 +34,11 @@ public final class XZBufferEngineTest {
     /// Shared XZ codec under test.
     private static final XZCodec CODEC = new XZCodec();
 
-    /// Shared options exercising multi-Block layout and a stateful filter chain.
-    private static final CodecOptions FILTERED_OPTIONS = CodecOptions.builder()
-            .set(XZCodec.BLOCK_SIZE, 4096L)
-            .set(XZCodec.CHECK_TYPE, XZCheckType.SHA256)
-            .set(XZCodec.FILTER_CHAIN, new XZFilterChain(List.of(
+    /// Shared codec exercising multi-Block layout and a stateful filter chain.
+    private static final XZCodec FILTERED_CODEC = XZCodec.builder()
+            .blockSize(4096L)
+            .checkType(XZCheckType.SHA256)
+            .filterChain(new XZFilterChain(List.of(
                     new XZDeltaFilter(7L),
                     new XZBCJFilter(XZBCJFilter.Architecture.X86, 32L)
             )))
@@ -49,12 +48,12 @@ public final class XZBufferEngineTest {
     @Test
     public void fragmentedBuffersAndTrailingInput() throws IOException {
         byte[] content = patternedData(30_017);
-        byte[] encoded = encode(content, FILTERED_OPTIONS, 3, 1);
+        byte[] encoded = encode(content, FILTERED_CODEC, 3, 1);
         byte[] tail = {11, 22, 33, 44};
         byte[] withTail = Arrays.copyOf(encoded, encoded.length + tail.length);
         System.arraycopy(tail, 0, withTail, encoded.length, tail.length);
 
-        DecodeResult result = decodeFreshBuffers(withTail, CodecOptions.EMPTY, 1, 2, false);
+        DecodeResult result = decodeFreshBuffers(withTail, CODEC, 1, 2, false);
 
         assertArrayEquals(content, result.content());
         assertEquals(encoded.length, result.consumedInput());
@@ -69,7 +68,7 @@ public final class XZBufferEngineTest {
         ByteArrayOutputStream firstEncoded = new ByteArrayOutputStream();
         ByteArrayOutputStream secondEncoded = new ByteArrayOutputStream();
 
-        try (CompressionEncoder generic = CODEC.newEncoder(FILTERED_OPTIONS)) {
+        try (CompressionEncoder generic = FILTERED_CODEC.newEncoder()) {
             FramedCompressionEncoder encoder = assertInstanceOf(FramedCompressionEncoder.class, generic);
             encodeSource(encoder, ByteBuffer.wrap(first), firstEncoded, 3);
             finishFrame(encoder, firstEncoded, 1);
@@ -114,7 +113,7 @@ public final class XZBufferEngineTest {
         byte[] second = patternedData(8_123);
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
 
-        try (CompressionEncoder encoder = CODEC.newEncoder(FILTERED_OPTIONS)) {
+        try (FlushableFramedCompressionEncoder encoder = FILTERED_CODEC.newEncoder()) {
             encodeSource(encoder, ByteBuffer.wrap(first), encoded, 3);
             CodecOutcome flushOutcome;
             do {
@@ -143,11 +142,11 @@ public final class XZBufferEngineTest {
         assertArrayEquals(concatenate(first, second), readBytes(restored));
     }
 
-    /// Verifies reset, output limits, closure, independent interoperability, and advertised buffer capabilities.
+    /// Verifies reset, output limits, closure, independent interoperability, and framed engine behavior.
     @Test
     public void lifecycleLimitsInteroperabilityAndCapabilities() throws IOException {
         byte[] content = patternedData(12_345);
-        CompressionEncoder encoder = CODEC.newEncoder(FILTERED_OPTIONS);
+        CompressionEncoder encoder = FILTERED_CODEC.newEncoder();
         ByteArrayOutputStream first = new ByteArrayOutputStream();
         encodeSource(encoder, ByteBuffer.wrap(content), first, 7);
         finish(encoder, first, 2);
@@ -167,27 +166,24 @@ public final class XZBufferEngineTest {
             assertArrayEquals(content, input.readAllBytes());
         }
 
-        CodecOptions limited = CodecOptions.builder()
-                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, (long) content.length - 1L)
-                .build();
+        DecompressionLimits limited =
+                DecompressionLimits.ofMaximumOutputSize((long) content.length - 1L);
         assertThrows(
                 DecompressionLimitException.class,
-                () -> CODEC.decompress(ByteBuffer.wrap(first.toByteArray()), content.length, limited)
+                () -> CODEC.decompress(ByteBuffer.wrap(first.toByteArray()), limited)
         );
-        assertTrue(CODEC.capabilities().supports(CompressionFeature.BUFFER_COMPRESSION));
-        assertTrue(CODEC.capabilities().supports(CompressionFeature.BUFFER_DECOMPRESSION));
-        assertTrue(CODEC.capabilities().supports(CompressionFeature.FLUSH));
+        assertInstanceOf(FlushableFramedCompressionEncoder.class, CODEC.newEncoder()).close();
     }
 
     /// Encodes source fragments into one XZ Stream.
     private static byte[] encode(
             byte[] content,
-            CodecOptions options,
+            XZCodec codec,
             int sourceFragmentSize,
             int targetSize
     ) throws IOException {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        try (CompressionEncoder encoder = CODEC.newEncoder(options)) {
+        try (CompressionEncoder encoder = codec.newEncoder()) {
             for (int offset = 0; offset < content.length; offset += sourceFragmentSize) {
                 int length = Math.min(sourceFragmentSize, content.length - offset);
                 encodeSource(
@@ -205,14 +201,14 @@ public final class XZBufferEngineTest {
     /// Decodes with fresh source and target buffers for every operation.
     private static DecodeResult decodeFreshBuffers(
             byte[] encoded,
-            CodecOptions options,
+            XZCodec codec,
             int sourceFragmentSize,
             int targetSize,
             boolean endAtArrayBoundary
     ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         int offset = 0;
-        try (CompressionDecoder decoder = CODEC.newDecoder(options)) {
+        try (CompressionDecoder decoder = codec.newDecoder()) {
             CodecOutcome outcome = CodecOutcome.NEEDS_INPUT;
             while (outcome != CodecOutcome.FINISHED) {
                 int length = Math.min(sourceFragmentSize, encoded.length - offset);

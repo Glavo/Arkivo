@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.codec.lzma.internal;
 
+import org.glavo.arkivo.codec.lzma.LZMAProperties;
+
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -142,7 +144,7 @@ final class LZMAEncoderEngine {
     LZMAEncoderEngine(LZMAChannelOutput output, LZMAProperties properties) {
         this.properties = Objects.requireNonNull(properties, "properties");
         rangeEncoder = new LZMARangeEncoder(Objects.requireNonNull(output, "output"));
-        dictionary = new byte[properties.allocatedDictionarySize()];
+        dictionary = new byte[Math.max(properties.dictionarySize(), LZMAProperties.MINIMUM_DICTIONARY_SIZE)];
         positionMask = (1 << properties.positionBits()) - 1;
         literalPositionMask = (1 << properties.literalPositionBits()) - 1;
         literalProbabilities = new short[

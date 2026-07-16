@@ -3,13 +3,11 @@
 
 package org.glavo.arkivo.codec.bzip2;
 
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.DecompressionLimitException;
-import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.FramedCompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -35,7 +33,7 @@ public final class BZip2BufferEngineTest {
     @Test
     public void fragmentedBuffersAndTrailingInput() throws IOException {
         byte[] content = patternedData(24_013);
-        byte[] encoded = encode(content, CodecOptions.EMPTY, 3, 1);
+        byte[] encoded = encode(content, CODEC, 3, 1);
         byte[] tail = {11, 22, 33, 44};
         ByteBuffer source = ByteBuffer.allocateDirect(encoded.length + tail.length);
         source.put(encoded).put(tail).flip();
@@ -62,10 +60,8 @@ public final class BZip2BufferEngineTest {
     @Test
     public void decoderReplaysIncompleteBlocksAcrossFreshInputs() throws IOException {
         byte[] content = patternedData(230_017);
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.COMPRESSION_LEVEL, 1L)
-                .build();
-        byte[] encoded = encode(content, options, 257, 31);
+        BZip2Codec codec = CODEC.withCompressionLevel(1L);
+        byte[] encoded = encode(content, codec, 257, 31);
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
 
         try (CompressionDecoder decoder = CODEC.newDecoder()) {
@@ -91,22 +87,22 @@ public final class BZip2BufferEngineTest {
         assertArrayEquals(content, decoded.toByteArray());
     }
 
-    /// Verifies flush emits a complete frame while preserving a continuing encoding session.
+    /// Verifies frame completion emits a decodable boundary while preserving the encoding session.
     @Test
-    public void flushProducesDecodableFrameBoundary() throws IOException {
+    public void finishFrameProducesDecodableBoundary() throws IOException {
         byte[] first = patternedData(17_003);
         byte[] second = patternedData(9_001);
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
 
-        try (CompressionEncoder encoder = CODEC.newEncoder()) {
+        try (FramedCompressionEncoder encoder = CODEC.newEncoder()) {
             encodeSource(encoder, ByteBuffer.wrap(first), encoded, 5);
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocateDirect(1);
-                outcome = encoder.flush(target);
+                outcome = encoder.finishFrame(target);
                 drain(target, encoded);
             } while (outcome == CodecOutcome.NEEDS_OUTPUT);
-            assertEquals(CodecOutcome.FLUSHED, outcome);
+            assertEquals(CodecOutcome.BOUNDARY_REACHED, outcome);
 
             byte[] firstFrame = encoded.toByteArray();
             ByteBuffer firstSource = ByteBuffer.wrap(firstFrame);
@@ -132,11 +128,11 @@ public final class BZip2BufferEngineTest {
         assertArrayEquals(expected, actual);
     }
 
-    /// Verifies reset, output limiting, closure, and advertised buffer capabilities.
+    /// Verifies reset, output limiting, and closure.
     @Test
-    public void lifecycleLimitsAndCapabilities() throws IOException {
+    public void lifecycleAndLimits() throws IOException {
         byte[] content = patternedData(12_345);
-        CompressionEncoder encoder = CODEC.newEncoder();
+        FramedCompressionEncoder encoder = CODEC.newEncoder();
         ByteArrayOutputStream first = new ByteArrayOutputStream();
         encodeSource(encoder, ByteBuffer.wrap(content), first, 7);
         finish(encoder, first, 2);
@@ -150,26 +146,23 @@ public final class BZip2BufferEngineTest {
         encoder.close();
         assertThrows(IllegalStateException.class, encoder::reset);
 
-        CodecOptions limited = CodecOptions.builder()
-                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, (long) content.length - 1L)
-                .build();
+        DecompressionLimits limits =
+                DecompressionLimits.ofMaximumOutputSize(content.length - 1L);
         assertThrows(
                 DecompressionLimitException.class,
-                () -> CODEC.decompress(ByteBuffer.wrap(first.toByteArray()), content.length, limited)
+                () -> CODEC.decompress(ByteBuffer.wrap(first.toByteArray()), limits)
         );
-        assertTrue(CODEC.capabilities().supports(CompressionFeature.BUFFER_COMPRESSION));
-        assertTrue(CODEC.capabilities().supports(CompressionFeature.BUFFER_DECOMPRESSION));
     }
 
     /// Encodes source fragments into one BZip2 frame.
     private static byte[] encode(
             byte[] content,
-            CodecOptions options,
+            BZip2Codec codec,
             int sourceFragmentSize,
             int targetSize
     ) throws IOException {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        try (CompressionEncoder encoder = CODEC.newEncoder(options)) {
+        try (FramedCompressionEncoder encoder = codec.newEncoder()) {
             for (int offset = 0; offset < content.length; offset += sourceFragmentSize) {
                 int length = Math.min(sourceFragmentSize, content.length - offset);
                 encodeSource(
@@ -186,7 +179,7 @@ public final class BZip2BufferEngineTest {
 
     /// Drives one source buffer until the encoder requests more input.
     private static void encodeSource(
-            CompressionEncoder encoder,
+            FramedCompressionEncoder encoder,
             ByteBuffer source,
             ByteArrayOutputStream encoded,
             int targetSize
@@ -203,7 +196,7 @@ public final class BZip2BufferEngineTest {
 
     /// Drains encoder finalization with bounded target buffers.
     private static void finish(
-            CompressionEncoder encoder,
+            FramedCompressionEncoder encoder,
             ByteArrayOutputStream encoded,
             int targetSize
     ) throws IOException {

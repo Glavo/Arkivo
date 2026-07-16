@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.codec.lzma.internal;
 
+import org.glavo.arkivo.codec.lzma.LZMAProperties;
+
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -75,7 +77,6 @@ public final class LZMA2Encoder implements CompressionEncoder {
     }
 
     /// Emits the current partial chunk without ending the LZMA2 stream.
-    @Override
     public CodecOutcome flush(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();

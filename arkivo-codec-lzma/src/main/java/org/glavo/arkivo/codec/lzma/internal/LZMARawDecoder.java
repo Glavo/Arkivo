@@ -3,10 +3,12 @@
 
 package org.glavo.arkivo.codec.lzma.internal;
 
+import org.glavo.arkivo.codec.lzma.LZMAProperties;
+
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -60,7 +62,7 @@ public final class LZMARawDecoder implements CompressionDecoder {
         }
         this.properties = Objects.requireNonNull(properties, "properties");
         this.expectedSize = decodedSize;
-        StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, properties.dictionarySize());
+        CompressionDecoderSupport.requireWindowSize(maximumWindowSize, properties.dictionarySize());
         decoder = createDecoder();
     }
 

@@ -3,55 +3,58 @@
 
 package org.glavo.arkivo.codec.deflate;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOptions;
-import org.glavo.arkivo.codec.CompressionCapabilities;
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.CompressionFeature;
-import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.CompressionLevelCodec;
+import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.FlushableCompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.Deflate64Decoder;
 import org.glavo.arkivo.codec.deflate.internal.Deflate64Encoder;
-import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
-import java.nio.channels.ReadableByteChannel;
-import java.nio.channels.WritableByteChannel;
 import java.util.List;
-import java.util.Set;
+import java.util.Objects;
 
-/// Provides pure Java raw Deflate64 buffer engines and blocking channel adapters.
+/// Provides an immutable raw Deflate64 configuration and pure Java buffer engines.
 @NotNullByDefault
-public final class Deflate64Codec implements CompressionCodec {
+public final class Deflate64Codec implements CompressionLevelCodec {
     /// The stable Deflate64 codec name.
     public static final String NAME = "deflate64";
 
-    /// The default immutable Deflate64 codec configuration.
-    public static final Deflate64Codec DEFAULT = new Deflate64Codec();
+    /// The minimum Deflate64 match-search level.
+    public static final int MINIMUM_COMPRESSION_LEVEL = 0;
 
-    /// The supported Deflate64 operations.
-    private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(Set.of(
-            CompressionFeature.COMPRESSION,
-            CompressionFeature.DECOMPRESSION,
-            CompressionFeature.ONE_SHOT_COMPRESSION,
-            CompressionFeature.ONE_SHOT_DECOMPRESSION,
-            CompressionFeature.FLUSH,
-            CompressionFeature.DIRECT_BYTE_BUFFER,
-            CompressionFeature.BUFFER_COMPRESSION,
-            CompressionFeature.BUFFER_DECOMPRESSION
-    ), Set.of(StandardCodecOptions.COMPRESSION_LEVEL), Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE, StandardCodecOptions.MAX_WINDOW_SIZE));
+    /// The maximum Deflate64 match-search level.
+    public static final int MAXIMUM_COMPRESSION_LEVEL = 9;
+
+    /// The default Deflate64 match-search level.
+    public static final int DEFAULT_COMPRESSION_LEVEL = 6;
+
+    /// The default immutable Deflate64 codec configuration.
+    public static final Deflate64Codec DEFAULT = new Deflate64Codec(DEFAULT_COMPRESSION_LEVEL);
 
     /// The fixed Deflate64 history-window size.
     private static final long DECODING_WINDOW_SIZE = 1L << 16;
 
-    /// Creates a Deflate64 codec.
+    /// The configured match-search level.
+    private final int compressionLevel;
+
+    /// Creates the default Deflate64 codec configuration.
     public Deflate64Codec() {
+        this(DEFAULT_COMPRESSION_LEVEL);
+    }
+
+    /// Creates a validated Deflate64 codec configuration.
+    private Deflate64Codec(long compressionLevel) {
+        if (compressionLevel < MINIMUM_COMPRESSION_LEVEL
+                || compressionLevel > MAXIMUM_COMPRESSION_LEVEL) {
+            throw new IllegalArgumentException(
+                    "Deflate64 compression level must be between 0 and 9: " + compressionLevel
+            );
+        }
+        this.compressionLevel = Math.toIntExact(compressionLevel);
     }
 
     /// Returns the stable Deflate64 codec name.
@@ -72,69 +75,52 @@ public final class Deflate64Codec implements CompressionCodec {
         return List.of();
     }
 
-    /// Returns the supported Deflate64 operations and options.
+    /// Returns the configured Deflate64 match-search level.
     @Override
-    public CompressionCapabilities capabilities() {
-        return CAPABILITIES;
+    public long compressionLevel() {
+        return compressionLevel;
     }
 
     /// Returns the minimum Deflate64 match-search level.
     @Override
     public long minimumCompressionLevel() {
-        return 0L;
+        return MINIMUM_COMPRESSION_LEVEL;
     }
 
     /// Returns the maximum Deflate64 match-search level.
     @Override
     public long maximumCompressionLevel() {
-        return 9L;
+        return MAXIMUM_COMPRESSION_LEVEL;
     }
 
     /// Returns the default Deflate64 match-search level.
     @Override
     public long defaultCompressionLevel() {
-        return 6L;
+        return DEFAULT_COMPRESSION_LEVEL;
     }
 
-    /// Creates a configured transport-independent raw Deflate64 encoder.
+    /// Returns an immutable Deflate64 codec with the requested match-search level.
     @Override
-    public CompressionEncoder newEncoder(CodecOptions options) {
-        options.requireSupported(CAPABILITIES.compressionOptions(), "Deflate64 compression");
-        @Nullable Long requested = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
-        long level = requested != null ? requested : defaultCompressionLevel();
-        if (level < minimumCompressionLevel() || level > maximumCompressionLevel()) {
-            throw new IllegalArgumentException("Deflate64 compression level must be between 0 and 9: " + level);
-        }
-        return new Deflate64Encoder((int) level);
+    public Deflate64Codec withCompressionLevel(long compressionLevel) {
+        return compressionLevel == this.compressionLevel
+                ? this
+                : new Deflate64Codec(compressionLevel);
     }
 
-    /// Opens the transport-independent Deflate64 encoder through the shared blocking channel adapter.
+    /// Creates a transport-independent raw Deflate64 encoder.
     @Override
-    public CompressingWritableByteChannel openEncoder(
-            WritableByteChannel target,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
-        return CompressionCodec.super.openEncoder(target, options, ownership);
+    public FlushableCompressionEncoder newEncoder() {
+        return new Deflate64Encoder(compressionLevel);
     }
 
-    /// Creates a configured transport-independent raw Deflate64 decoder.
+    /// Creates a transport-independent raw Deflate64 decoder with operation-scoped limits.
     @Override
-    public CompressionDecoder newDecoder(CodecOptions options) throws IOException {
-        options.requireSupported(CAPABILITIES.decompressionOptions(), "Deflate64 decompression");
-        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
-        StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, DECODING_WINDOW_SIZE);
-        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
-        return StandardCodecOptionSupport.limitOutput(new Deflate64Decoder(), maximumOutputSize);
-    }
-
-    /// Opens the transport-independent Deflate64 decoder through the shared blocking channel adapter.
-    @Override
-    public DecompressingReadableByteChannel openDecoder(
-            ReadableByteChannel source,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
-        return CompressionCodec.super.openDecoder(source, options, ownership);
+    public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
+        Objects.requireNonNull(limits, "limits");
+        limits.requireWindowSize(DECODING_WINDOW_SIZE);
+        return CompressionDecoderSupport.limitEngineOutput(
+                new Deflate64Decoder(),
+                limits.maximumOutputSize()
+        );
     }
 }

@@ -7,6 +7,7 @@ module org.glavo.arkivo.archive.zip {
     requires org.glavo.arkivo.base;
     requires org.glavo.arkivo.codec;
     requires org.glavo.arkivo.codec.deflate;
+    requires static org.glavo.arkivo.codec.lzma;
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.archive.zip;

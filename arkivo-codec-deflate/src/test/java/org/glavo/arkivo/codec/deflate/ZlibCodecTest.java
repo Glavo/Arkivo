@@ -4,13 +4,11 @@
 package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionCodecs;
-import org.glavo.arkivo.codec.CompressionFeature;
+import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
-import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -46,8 +44,6 @@ public final class ZlibCodecTest {
 
         assertEquals(true, codec instanceof CompressionCodec);
         assertEquals(ZlibCodec.NAME, codec.name());
-        assertEquals(true, codec.canCompress());
-        assertEquals(true, codec.canDecompress());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
@@ -84,7 +80,7 @@ public final class ZlibCodecTest {
         codec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(compressed)),
                 Channels.newChannel(decodedBytes),
-                CodecOptions.builder().set(StandardCodecOptions.MAX_WINDOW_SIZE, 256L).build()
+                DecompressionLimits.ofMaximumWindowSize(256L)
         );
         assertArrayEquals(content, decodedBytes.toByteArray());
 
@@ -93,7 +89,7 @@ public final class ZlibCodecTest {
                 () -> codec.decompress(
                         Channels.newChannel(new ByteArrayInputStream(compressed)),
                         Channels.newChannel(new ByteArrayOutputStream()),
-                        CodecOptions.builder().set(StandardCodecOptions.MAX_WINDOW_SIZE, 255L).build()
+                        DecompressionLimits.ofMaximumWindowSize(255L)
                 )
         );
         assertEquals(255L, exception.maximumWindowSize());
@@ -104,7 +100,7 @@ public final class ZlibCodecTest {
                 () -> codec.decompress(
                         Channels.newChannel(new ByteArrayInputStream(new byte[]{0x78, 0x00})),
                         Channels.newChannel(new ByteArrayOutputStream()),
-                        CodecOptions.builder().set(StandardCodecOptions.MAX_WINDOW_SIZE, 0L).build()
+                        DecompressionLimits.ofMaximumWindowSize(0L)
                 )
         );
         assertFalse(malformed instanceof DecompressionWindowLimitException);
@@ -120,17 +116,13 @@ public final class ZlibCodecTest {
         Adler32 adler32 = new Adler32();
         adler32.update(dictionaryBytes);
         CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes, adler32.getValue());
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.DICTIONARY, dictionary)
-                .build();
-        ZlibCodec codec = new ZlibCodec();
+        ZlibCodec codec = new ZlibCodec().withDictionary(dictionary);
 
-        assertEquals(true, codec.capabilities().supports(CompressionFeature.DICTIONARY));
+        assertEquals(dictionary, codec.dictionary());
         ByteArrayOutputStream compressedByCodec = new ByteArrayOutputStream();
         codec.compress(
                 Channels.newChannel(new ByteArrayInputStream(input)),
-                Channels.newChannel(compressedByCodec),
-                options
+                Channels.newChannel(compressedByCodec)
         );
         Inflater inflater = new Inflater();
         try {
@@ -156,8 +148,7 @@ public final class ZlibCodecTest {
         ByteArrayOutputStream decodedByCodec = new ByteArrayOutputStream();
         codec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(compressedByCodec.toByteArray())),
-                Channels.newChannel(decodedByCodec),
-                options
+                Channels.newChannel(decodedByCodec)
         );
         assertArrayEquals(input, decodedByCodec.toByteArray());
 
@@ -170,52 +161,43 @@ public final class ZlibCodecTest {
         ByteArrayOutputStream decodedJdkStream = new ByteArrayOutputStream();
         codec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(compressedByJdk.toByteArray())),
-                Channels.newChannel(decodedJdkStream),
-                options
+                Channels.newChannel(decodedJdkStream)
         );
         assertArrayEquals(input, decodedJdkStream.toByteArray());
 
         assertThrows(
                 IOException.class,
-                () -> codec.decompress(
+                () -> new ZlibCodec().decompress(
                         Channels.newChannel(new ByteArrayInputStream(compressedByJdk.toByteArray())),
                         Channels.newChannel(new ByteArrayOutputStream())
                 )
         );
-        CodecOptions wrongBytes = CodecOptions.builder()
-                .set(
-                        StandardCodecOptions.DICTIONARY,
-                        CompressionDictionary.of(new byte[dictionaryBytes.length])
-                )
-                .build();
+        ZlibCodec wrongBytesCodec = new ZlibCodec().withDictionary(
+                CompressionDictionary.of(new byte[dictionaryBytes.length])
+        );
         assertThrows(
                 IOException.class,
-                () -> codec.decompress(
+                () -> wrongBytesCodec.decompress(
                         Channels.newChannel(new ByteArrayInputStream(compressedByJdk.toByteArray())),
-                        Channels.newChannel(new ByteArrayOutputStream()),
-                        wrongBytes
+                        Channels.newChannel(new ByteArrayOutputStream())
                 )
         );
 
         CompressionDictionary wrongIdentifier =
                 CompressionDictionary.of(dictionaryBytes, adler32.getValue() + 1L);
-        CodecOptions wrongIdentifierOptions = CodecOptions.builder()
-                .set(StandardCodecOptions.DICTIONARY, wrongIdentifier)
-                .build();
+        ZlibCodec wrongIdentifierCodec = new ZlibCodec().withDictionary(wrongIdentifier);
         assertThrows(
                 IllegalArgumentException.class,
-                () -> codec.openEncoder(
+                () -> wrongIdentifierCodec.openEncoder(
                         Channels.newChannel(new ByteArrayOutputStream()),
-                        wrongIdentifierOptions,
                         ChannelOwnership.RETAIN
                 )
         );
         assertThrows(
                 IOException.class,
-                () -> codec.decompress(
+                () -> wrongIdentifierCodec.decompress(
                         Channels.newChannel(new ByteArrayInputStream(compressedByJdk.toByteArray())),
-                        Channels.newChannel(new ByteArrayOutputStream()),
-                        wrongIdentifierOptions
+                        Channels.newChannel(new ByteArrayOutputStream())
                 )
         );
     }

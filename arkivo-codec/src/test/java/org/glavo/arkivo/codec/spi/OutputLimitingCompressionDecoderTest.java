@@ -21,7 +21,7 @@ final class OutputLimitingCompressionDecoderTest {
     /// Verifies an exact limit can finish through an internal one-byte probe after delivering its prefix.
     @Test
     void acceptsExactLimitWhenDelegateRequestsFinalOutputCall() throws Exception {
-        CompressionDecoder decoder = StandardCodecOptionSupport.limitOutput(
+        CompressionDecoder decoder = CompressionDecoderSupport.limitEngineOutput(
                 new StagedDecoder(new byte[]{1, 2, 3}),
                 3L
         );
@@ -37,7 +37,7 @@ final class OutputLimitingCompressionDecoderTest {
     /// Verifies the hidden probe rejects the first byte beyond the configured limit after delivering its prefix.
     @Test
     void rejectsStagedExcessOutputAfterPrefix() throws Exception {
-        CompressionDecoder decoder = StandardCodecOptionSupport.limitOutput(
+        CompressionDecoder decoder = CompressionDecoderSupport.limitEngineOutput(
                 new StagedDecoder(new byte[]{1, 2, 3, 4}),
                 3L
         );

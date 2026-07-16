@@ -20,5 +20,12 @@ public interface FramedCompressionEncoder extends CompressionEncoder {
     ///
     /// @return `CodecOutcome.BOUNDARY_REACHED` when the frame boundary completed, or
     /// `CodecOutcome.NEEDS_OUTPUT` otherwise
-    CodecOutcome finishFrame(ByteBuffer target) throws IOException;
+    default CodecOutcome finishFrame(ByteBuffer target) throws IOException {
+        CodecOutcome outcome = finish(target);
+        if (outcome == CodecOutcome.FINISHED) {
+            reset();
+            return CodecOutcome.BOUNDARY_REACHED;
+        }
+        return outcome;
+    }
 }

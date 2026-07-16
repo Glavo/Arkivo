@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.FlushableCompressionEncoder;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -15,7 +15,7 @@ import java.nio.ByteBuffer;
 
 /// Exposes the shared pure Java Deflate encoder under the raw Deflate module's internal type.
 @NotNullByDefault
-public final class DeflateEncoder implements CompressionEncoder {
+public final class DeflateEncoder implements FlushableCompressionEncoder {
     /// Shared format-parameterized encoder implementation.
     private final DeflateEncoderEngine engine;
 

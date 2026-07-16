@@ -6,7 +6,6 @@ package org.glavo.arkivo.all.internal;
 import org.glavo.arkivo.archive.spi.ArkivoStreamingSource;
 import org.glavo.arkivo.archive.spi.ArkivoStreamingSourceProvider;
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
@@ -39,18 +38,9 @@ public final class CompressionStreamingSourceProvider implements ArkivoStreaming
         if (codec == null) {
             return new ArkivoStreamingSource(false, probe.channel());
         }
-        if (!codec.canDecompress()) {
-            UnsupportedOperationException failure = new UnsupportedOperationException(
-                    "Compression codec does not support decompression: " + codec.name()
-            );
-            closeAfterFailure(probe.channel(), failure);
-            throw failure;
-        }
-
         try {
             DecompressingReadableByteChannel decoder = codec.openDecoder(
                     probe.channel(),
-                    CodecOptions.EMPTY,
                     ChannelOwnership.CLOSE
             );
             return new ArkivoStreamingSource(true, decoder);

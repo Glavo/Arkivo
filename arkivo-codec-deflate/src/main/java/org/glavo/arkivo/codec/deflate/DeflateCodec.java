@@ -3,64 +3,78 @@
 
 package org.glavo.arkivo.codec.deflate;
 
-import org.glavo.arkivo.codec.CodecOptions;
-import org.glavo.arkivo.codec.CompressionCapabilities;
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionFeature;
-import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.CompressionLevelCodec;
+import org.glavo.arkivo.codec.CompressionStrategy;
+import org.glavo.arkivo.codec.CompressionStrategyCodec;
+import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DictionaryCompressionCodec;
+import org.glavo.arkivo.codec.FlushableCompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.DeflateDecoder;
 import org.glavo.arkivo.codec.deflate.internal.DeflateEncoder;
-import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
-import java.util.Set;
+import java.util.Objects;
 
-/// Provides pure Java raw Deflate buffer engines and shared channel adapters.
+/// Provides an immutable raw Deflate configuration and pure Java buffer engines.
 ///
 /// Raw Deflate carries no dictionary identifier or content checksum, so callers must supply the exact dictionary used
 /// by the encoder; a different dictionary is not always detectable.
 @NotNullByDefault
-public final class DeflateCodec implements CompressionCodec {
+public final class DeflateCodec
+        implements CompressionLevelCodec, CompressionStrategyCodec, DictionaryCompressionCodec {
     /// The stable raw Deflate codec name.
     public static final String NAME = "deflate";
 
-    /// The default immutable raw Deflate codec configuration.
-    public static final DeflateCodec DEFAULT = new DeflateCodec();
+    /// The minimum raw Deflate match-search level.
+    public static final int MINIMUM_COMPRESSION_LEVEL = 0;
 
-    /// The supported raw Deflate operations.
-    private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(
-            Set.of(
-                    CompressionFeature.COMPRESSION,
-                    CompressionFeature.DECOMPRESSION,
-                    CompressionFeature.ONE_SHOT_COMPRESSION,
-                    CompressionFeature.ONE_SHOT_DECOMPRESSION,
-                    CompressionFeature.FLUSH,
-                    CompressionFeature.DICTIONARY,
-                    CompressionFeature.DIRECT_BYTE_BUFFER,
-                    CompressionFeature.BUFFER_COMPRESSION,
-                    CompressionFeature.BUFFER_DECOMPRESSION
-            ),
-            Set.of(
-                    StandardCodecOptions.COMPRESSION_LEVEL,
-                    StandardCodecOptions.COMPRESSION_STRATEGY,
-                    StandardCodecOptions.DICTIONARY
-            ),
-            Set.of(
-                    StandardCodecOptions.DICTIONARY,
-                    StandardCodecOptions.MAX_OUTPUT_SIZE,
-                    StandardCodecOptions.MAX_WINDOW_SIZE
-            )
-    );
+    /// The maximum raw Deflate match-search level.
+    public static final int MAXIMUM_COMPRESSION_LEVEL = 9;
+
+    /// The default raw Deflate match-search level.
+    public static final int DEFAULT_COMPRESSION_LEVEL = 6;
+
+    /// The default immutable raw Deflate codec configuration.
+    public static final DeflateCodec DEFAULT =
+            new DeflateCodec(DEFAULT_COMPRESSION_LEVEL, CompressionStrategy.DEFAULT, null);
 
     /// The fixed Deflate history-window size.
     private static final long DECODING_WINDOW_SIZE = 1L << 15;
 
-    /// Creates a raw Deflate codec.
+    /// The configured match-search level.
+    private final int compressionLevel;
+
+    /// The configured generic compression strategy.
+    private final CompressionStrategy compressionStrategy;
+
+    /// The configured preset dictionary, or null.
+    private final @Nullable CompressionDictionary dictionary;
+
+    /// Creates the default raw Deflate codec configuration.
     public DeflateCodec() {
+        this(DEFAULT_COMPRESSION_LEVEL, CompressionStrategy.DEFAULT, null);
+    }
+
+    /// Creates a validated raw Deflate codec configuration.
+    private DeflateCodec(
+            long compressionLevel,
+            CompressionStrategy compressionStrategy,
+            @Nullable CompressionDictionary dictionary
+    ) {
+        if (compressionLevel < MINIMUM_COMPRESSION_LEVEL
+                || compressionLevel > MAXIMUM_COMPRESSION_LEVEL) {
+            throw new IllegalArgumentException(
+                    "Raw Deflate compression level must be between 0 and 9: " + compressionLevel
+            );
+        }
+        this.compressionLevel = Math.toIntExact(compressionLevel);
+        this.compressionStrategy = Objects.requireNonNull(compressionStrategy, "compressionStrategy");
+        this.dictionary = dictionary;
     }
 
     /// Returns the stable raw Deflate codec name.
@@ -69,62 +83,90 @@ public final class DeflateCodec implements CompressionCodec {
         return NAME;
     }
 
-    /// Returns the supported raw Deflate operations and options.
+    /// Returns the configured match-search level.
     @Override
-    public CompressionCapabilities capabilities() {
-        return CAPABILITIES;
+    public long compressionLevel() {
+        return compressionLevel;
     }
 
     /// Returns the minimum raw Deflate match-search level.
     @Override
     public long minimumCompressionLevel() {
-        return 0L;
+        return MINIMUM_COMPRESSION_LEVEL;
     }
 
     /// Returns the maximum raw Deflate match-search level.
     @Override
     public long maximumCompressionLevel() {
-        return 9L;
+        return MAXIMUM_COMPRESSION_LEVEL;
     }
 
     /// Returns the default raw Deflate match-search level.
     @Override
     public long defaultCompressionLevel() {
-        return 6L;
+        return DEFAULT_COMPRESSION_LEVEL;
     }
 
-    /// Creates a configured transport-independent raw Deflate encoder.
+    /// Returns an immutable codec with the requested match-search level.
     @Override
-    public CompressionEncoder newEncoder(CodecOptions options) {
-        options.requireSupported(CAPABILITIES.compressionOptions(), "Deflate compression");
-        return new DeflateEncoder(
-                compressionLevel(options),
-                options.get(StandardCodecOptions.DICTIONARY),
-                StandardCodecOptionSupport.compressionStrategy(options)
-        );
+    public DeflateCodec withCompressionLevel(long compressionLevel) {
+        return compressionLevel == this.compressionLevel
+                ? this
+                : new DeflateCodec(compressionLevel, compressionStrategy, dictionary);
     }
 
-    /// Creates a configured transport-independent raw Deflate decoder.
+    /// Returns the configured generic compression strategy.
     @Override
-    public CompressionDecoder newDecoder(CodecOptions options) throws IOException {
-        options.requireSupported(CAPABILITIES.decompressionOptions(), "Deflate decompression");
-        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
-        StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, DECODING_WINDOW_SIZE);
-        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
-        return StandardCodecOptionSupport.limitOutput(
-                new DeflateDecoder(options.get(StandardCodecOptions.DICTIONARY)),
-                maximumOutputSize
-        );
+    public CompressionStrategy compressionStrategy() {
+        return compressionStrategy;
     }
 
+    /// Returns an immutable codec with the requested generic compression strategy.
+    @Override
+    public DeflateCodec withCompressionStrategy(CompressionStrategy compressionStrategy) {
+        Objects.requireNonNull(compressionStrategy, "compressionStrategy");
+        return compressionStrategy == this.compressionStrategy
+                ? this
+                : new DeflateCodec(compressionLevel, compressionStrategy, dictionary);
+    }
 
-    /// Resolves and validates the compression level for one encoder engine.
-    private int compressionLevel(CodecOptions options) {
-        @Nullable Long requested = options.get(StandardCodecOptions.COMPRESSION_LEVEL);
-        long level = requested != null ? requested : defaultCompressionLevel();
-        if (level < minimumCompressionLevel() || level > maximumCompressionLevel()) {
-            throw new IllegalArgumentException("Raw Deflate compression level is out of range");
-        }
-        return Math.toIntExact(level);
+    /// Returns the configured preset dictionary, or null.
+    @Override
+    public @Nullable CompressionDictionary dictionary() {
+        return dictionary;
+    }
+
+    /// Returns an immutable codec with the requested preset dictionary.
+    @Override
+    public DeflateCodec withDictionary(CompressionDictionary dictionary) {
+        Objects.requireNonNull(dictionary, "dictionary");
+        return dictionary == this.dictionary
+                ? this
+                : new DeflateCodec(compressionLevel, compressionStrategy, dictionary);
+    }
+
+    /// Returns an immutable codec without a preset dictionary.
+    @Override
+    public DeflateCodec withoutDictionary() {
+        return dictionary == null
+                ? this
+                : new DeflateCodec(compressionLevel, compressionStrategy, null);
+    }
+
+    /// Creates a transport-independent raw Deflate encoder.
+    @Override
+    public FlushableCompressionEncoder newEncoder() {
+        return new DeflateEncoder(compressionLevel, dictionary, compressionStrategy);
+    }
+
+    /// Creates a transport-independent raw Deflate decoder with operation-scoped limits.
+    @Override
+    public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
+        Objects.requireNonNull(limits, "limits");
+        limits.requireWindowSize(DECODING_WINDOW_SIZE);
+        return CompressionDecoderSupport.limitEngineOutput(
+                new DeflateDecoder(dictionary),
+                limits.maximumOutputSize()
+        );
     }
 }

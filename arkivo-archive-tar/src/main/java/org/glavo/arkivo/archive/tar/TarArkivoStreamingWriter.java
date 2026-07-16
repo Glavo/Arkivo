@@ -54,7 +54,6 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
         Objects.requireNonNull(environment, "environment");
         @Nullable CompressionCodec compressionCodec = TarArkivoFileSystem.COMPRESSION.read(environment);
         @Nullable ArkivoEditStorage bodyStorage = ArkivoFileSystem.EDIT_STORAGE.read(environment);
-        TarCompressionStreams.requireCompression(compressionCodec);
         WritableByteChannel archiveOutput = TarCompressionStreams.openArchiveOutput(
                 Files.newByteChannel(
                         path,
@@ -99,7 +98,6 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
             );
         }
         @Nullable CompressionCodec compressionCodec = TarArkivoFileSystem.COMPRESSION.read(environment);
-        TarCompressionStreams.requireCompression(compressionCodec);
         return new TarArkivoStreamingWriterImpl(
                 StreamChannelAdapters.outputStream(TarCompressionStreams.openArchiveOutput(
                         Files.newByteChannel(

@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
-import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.FlushableFramedCompressionEncoder;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -17,7 +17,7 @@ import java.util.zip.CRC32;
 
 /// Incrementally encodes one gzip member with the shared pure Java Deflate engine.
 @NotNullByDefault
-public final class GzipEncoder implements CompressionEncoder {
+public final class GzipEncoder implements FlushableFramedCompressionEncoder {
     /// Shared empty output marker.
     private static final @Unmodifiable ByteBuffer EMPTY_OUTPUT = ByteBuffer.allocate(0);
 

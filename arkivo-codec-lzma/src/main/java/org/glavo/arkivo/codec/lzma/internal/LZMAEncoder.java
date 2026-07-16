@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.codec.lzma.internal;
 
+import org.glavo.arkivo.codec.lzma.LZMAProperties;
+
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionEncoder;
@@ -60,7 +62,6 @@ public final class LZMAEncoder implements CompressionEncoder {
     }
 
     /// Flushes complete range-coded bytes after draining the fixed header.
-    @Override
     public CodecOutcome flush(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();

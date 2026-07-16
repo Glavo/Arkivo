@@ -17,7 +17,6 @@ import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoFileSystemImpl;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemConfig;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemImpl;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.tukaani.xz.LZMA2Options;
 import org.tukaani.xz.LZMAOutputStream;
@@ -10184,7 +10183,7 @@ public final class ZipArkivoFileSystemTest {
 
     /// Returns Zstandard-compressed bytes for a ZIP Zstandard entry.
     private static byte[] zstandard(byte[] content) throws IOException {
-        ByteBuffer compressed = new ZstdCodec().compress(ByteBuffer.wrap(content), CodecOptions.EMPTY);
+        ByteBuffer compressed = new ZstdCodec().compress(ByteBuffer.wrap(content));
         byte[] result = new byte[compressed.remaining()];
         compressed.get(result);
         return result;

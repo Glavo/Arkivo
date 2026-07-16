@@ -3,65 +3,42 @@
 
 package org.glavo.arkivo.codec.lzma;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOption;
-import org.glavo.arkivo.codec.CodecOptions;
-import org.glavo.arkivo.codec.CompressionCapabilities;
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.CompressionFeature;
-import org.glavo.arkivo.codec.StandardCodecOptions;
-import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
-
+import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.PledgedSourceSizeCodec;
 import org.glavo.arkivo.codec.lzma.internal.LZMADecoder;
 import org.glavo.arkivo.codec.lzma.internal.LZMAEncoder;
-import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
-import java.nio.channels.ReadableByteChannel;
-import java.nio.channels.WritableByteChannel;
-import java.util.Set;
+import java.util.Objects;
 
-/// Provides transport-independent LZMA-alone compression and decompression.
+/// Provides an immutable LZMA-alone configuration and transport-independent engines.
 @NotNullByDefault
-public final class LZMACodec implements CompressionCodec {
+public final class LZMACodec implements PledgedSourceSizeCodec {
     /// The stable LZMA codec name.
     public static final String NAME = "lzma";
 
+    /// The default LZMA dictionary size used for encoding.
+    public static final int DEFAULT_DICTIONARY_SIZE = 1 << 20;
+
     /// The default immutable LZMA-alone codec configuration.
-    public static final LZMACodec DEFAULT = new LZMACodec();
+    public static final LZMACodec DEFAULT =
+            new LZMACodec(LZMAProperties.defaults(DEFAULT_DICTIONARY_SIZE));
 
-    /// Selects the LZMA dictionary size in bytes.
-    ///
-    /// This alias identifies the same option as `LZMAOptions.DICTIONARY_SIZE`.
-    public static final CodecOption<Long> DICTIONARY_SIZE = LZMAOptions.DICTIONARY_SIZE;
+    /// The configured LZMA model properties used for encoding.
+    private final LZMAProperties properties;
 
-    /// The default LZMA dictionary size used by this codec.
-    public static final long DEFAULT_DICTIONARY_SIZE = 1L << 20;
-
-    /// The supported LZMA operations.
-    private static final CompressionCapabilities CAPABILITIES = new CompressionCapabilities(Set.of(
-            CompressionFeature.COMPRESSION,
-            CompressionFeature.DECOMPRESSION,
-            CompressionFeature.BUFFER_COMPRESSION,
-            CompressionFeature.BUFFER_DECOMPRESSION,
-            CompressionFeature.ONE_SHOT_COMPRESSION,
-            CompressionFeature.ONE_SHOT_DECOMPRESSION,
-            CompressionFeature.DIRECT_BYTE_BUFFER
-    ), Set.of(
-            LZMAOptions.DICTIONARY_SIZE,
-            LZMAOptions.LITERAL_CONTEXT_BITS,
-            LZMAOptions.LITERAL_POSITION_BITS,
-            LZMAOptions.POSITION_BITS,
-            StandardCodecOptions.PLEDGED_SOURCE_SIZE
-    ), Set.of(StandardCodecOptions.MAX_OUTPUT_SIZE, StandardCodecOptions.MAX_WINDOW_SIZE));
-
-    /// Creates an LZMA codec.
+    /// Creates the default LZMA-alone codec configuration.
     public LZMACodec() {
+        this(LZMAProperties.defaults(DEFAULT_DICTIONARY_SIZE));
+    }
+
+    /// Creates an LZMA-alone codec with the requested model properties.
+    public LZMACodec(LZMAProperties properties) {
+        this.properties = Objects.requireNonNull(properties, "properties");
     }
 
     /// Returns the stable LZMA codec name.
@@ -70,52 +47,45 @@ public final class LZMACodec implements CompressionCodec {
         return NAME;
     }
 
-    /// Returns the supported LZMA operations and options.
-    @Override
-    public CompressionCapabilities capabilities() {
-        return CAPABILITIES;
+    /// Returns the configured LZMA model properties used for encoding.
+    public LZMAProperties properties() {
+        return properties;
     }
 
-    /// Creates a configured transport-independent LZMA-alone encoder.
+    /// Returns an immutable LZMA codec with the requested model properties.
+    public LZMACodec withProperties(LZMAProperties properties) {
+        Objects.requireNonNull(properties, "properties");
+        return properties.equals(this.properties) ? this : new LZMACodec(properties);
+    }
+
+    /// Returns an immutable LZMA codec with the requested dictionary size.
+    public LZMACodec withDictionarySize(int dictionarySize) {
+        return withProperties(properties.withDictionarySize(dictionarySize));
+    }
+
+    /// Creates an LZMA-alone encoder with optional exact source-size metadata.
     @Override
-    public CompressionEncoder newEncoder(CodecOptions options) {
-        options.requireSupported(CAPABILITIES.compressionOptions(), "LZMA compression");
-        LZMAProperties properties = LZMAProperties.fromOptions(
-                options,
-                LZMAOptions.DICTIONARY_SIZE,
-                (int) DEFAULT_DICTIONARY_SIZE
-        );
-        long pledgedSourceSize = StandardCodecOptionSupport.pledgedSourceSize(options);
+    public CompressionEncoder newEncoder(long pledgedSourceSize) {
+        requirePledgedSourceSize(pledgedSourceSize);
         return new LZMAEncoder(properties, pledgedSourceSize);
     }
 
-    /// Opens a configured LZMA-alone encoder through the shared buffer-engine channel adapter.
+    /// Creates an LZMA-alone decoder with operation-scoped safety limits.
     @Override
-    public CompressingWritableByteChannel openEncoder(
-            WritableByteChannel target,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
-        return CompressionCodec.super.openEncoder(target, options, ownership);
+    public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
+        Objects.requireNonNull(limits, "limits");
+        return CompressionDecoderSupport.limitEngineOutput(
+                new LZMADecoder(limits.maximumWindowSize()),
+                limits.maximumOutputSize()
+        );
     }
 
-    /// Creates a configured transport-independent LZMA-alone decoder.
-    @Override
-    public CompressionDecoder newDecoder(CodecOptions options) throws IOException {
-        options.requireSupported(CAPABILITIES.decompressionOptions(), "LZMA decompression");
-        long maximumWindowSize = StandardCodecOptionSupport.maximumWindowSize(options);
-        long maximumOutputSize = StandardCodecOptionSupport.maximumOutputSize(options);
-        CompressionDecoder decoder = new LZMADecoder(maximumWindowSize);
-        return StandardCodecOptionSupport.limitOutput(decoder, maximumOutputSize);
-    }
-
-    /// Opens a configured LZMA-alone decoder through the shared buffer-engine channel adapter.
-    @Override
-    public DecompressingReadableByteChannel openDecoder(
-            ReadableByteChannel source,
-            CodecOptions options,
-            ChannelOwnership ownership
-    ) throws IOException {
-        return CompressionCodec.super.openDecoder(source, options, ownership);
+    /// Validates a known or unknown pledged source size.
+    private static void requirePledgedSourceSize(long pledgedSourceSize) {
+        if (pledgedSourceSize < UNKNOWN_SIZE) {
+            throw new IllegalArgumentException(
+                    "pledgedSourceSize must be non-negative or UNKNOWN_SIZE"
+            );
+        }
     }
 }

@@ -3,18 +3,14 @@
 
 package org.glavo.arkivo.codec;
 
-import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.UnmodifiableView;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
 import java.nio.ReadOnlyBufferException;
-import java.nio.channels.ReadableByteChannel;
-import java.nio.channels.WritableByteChannel;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -35,8 +31,6 @@ final class CompressionCodecBufferTest {
         compressed.position(2);
         compressed.limit(5);
 
-        assertTrue(codec.canCompressBuffers());
-        assertTrue(codec.canDecompressBuffers());
         codec.compress(source, compressed);
 
         assertEquals(4, source.position());
@@ -108,7 +102,7 @@ final class CompressionCodecBufferTest {
                 () -> codec.decompress(ByteBuffer.allocate(0), (long) Integer.MAX_VALUE + 1L)
         );
     }
-    /// Verifies one-shot adapters restore read-ahead and failed decoder construction.
+    /// Verifies one-shot operations preserve trailing input and failed decoder construction.
     @Test
     void restoresReadAheadSourcePositions() throws IOException {
         CompressionCodec codec = new ReadAheadCodec(3, false);
@@ -146,7 +140,7 @@ final class CompressionCodecBufferTest {
         ByteBuffer compressionSource = ByteBuffer.wrap(new byte[]{1, 2, 3, 4});
         ByteBuffer compressionTarget = ByteBuffer.allocate(2);
         assertThrows(BufferOverflowException.class, () -> codec.compress(compressionSource, compressionTarget));
-        assertEquals(0, compressionSource.position());
+        assertEquals(2, compressionSource.position());
         assertEquals(2, compressionTarget.position());
 
         ByteBuffer decompressionSource = ByteBuffer.wrap(new byte[]{1, 2, 3, 4});
@@ -166,117 +160,16 @@ final class CompressionCodecBufferTest {
         return bytes;
     }
 
-    /// Implements a decoder that prefetches its complete source but exposes only one logical prefix.
-    @NotNullByDefault
-    private static final class ReadAheadDecoder implements DecompressingReadableByteChannel {
-        /// The prefetched source bytes.
-        private final ByteBuffer content;
-
-        /// The logical decoded prefix length.
-        private final int decodedSize;
-
-        /// The number of decoded bytes returned.
-        private long outputBytes;
-
-        /// Whether this decoder remains open.
-        private boolean open = true;
-
-        /// Prefetches the source into a fixed test buffer.
-        private ReadAheadDecoder(ReadableByteChannel source, int decodedSize) throws IOException {
-            ByteBuffer prefetched = ByteBuffer.allocate(32);
-            while (true) {
-                int read = source.read(prefetched);
-                if (read < 0) {
-                    break;
-                }
-                if (read == 0) {
-                    throw new IOException("Read-ahead test source made no progress");
-                }
-            }
-            prefetched.flip();
-            if (decodedSize < 0 || decodedSize > prefetched.remaining()) {
-                throw new IllegalArgumentException("decodedSize is out of range");
-            }
-            content = prefetched;
-            this.decodedSize = decodedSize;
-        }
-
-        /// Returns bytes from the logical decoded prefix.
-        @Override
-        public int read(ByteBuffer target) throws IOException {
-            if (!open) {
-                throw new java.nio.channels.ClosedChannelException();
-            }
-            if (!target.hasRemaining()) {
-                return 0;
-            }
-            if (content.position() >= decodedSize) {
-                return -1;
-            }
-            int count = Math.min(target.remaining(), decodedSize - content.position());
-            ByteBuffer chunk = content.slice();
-            chunk.limit(count);
-            target.put(chunk);
-            content.position(content.position() + count);
-            outputBytes += count;
-            return count;
-        }
-
-        /// Returns the logical compressed prefix consumed.
-        @Override
-        public long inputBytes() {
-            return content.position();
-        }
-
-        /// Returns the complete prefetched source size.
-        @Override
-        public long sourceBytes() {
-            return content.limit();
-        }
-
-        /// Returns a read-only view of the prefetched suffix.
-        @Override
-        public @UnmodifiableView ByteBuffer unconsumedInput() {
-            return content.asReadOnlyBuffer();
-        }
-
-        /// Returns decoded bytes delivered to callers.
-        @Override
-        public long outputBytes() {
-            return outputBytes;
-        }
-
-        /// Returns whether this decoder remains open.
-        @Override
-        public boolean isOpen() {
-            return open;
-        }
-
-        /// Closes this decoder.
-        @Override
-        public void close() {
-            open = false;
-        }
-    }
-
-    /// Provides identity encoding and configurable read-ahead decoding.
+    /// Provides identity encoding and decoding of one logical source prefix.
     @NotNullByDefault
     private static final class ReadAheadCodec implements CompressionCodec {
-        /// The supported test operations.
-        private static final CompressionCapabilities CAPABILITIES = CompressionCapabilities.of(Set.of(
-                CompressionFeature.COMPRESSION,
-                CompressionFeature.DECOMPRESSION,
-                CompressionFeature.ONE_SHOT_COMPRESSION,
-                CompressionFeature.ONE_SHOT_DECOMPRESSION
-        ));
-
         /// The logical decoded prefix length.
         private final int decodedSize;
 
-        /// Whether decoder construction consumes input and fails.
+        /// Whether decoder construction fails.
         private final boolean failOpen;
 
-        /// Creates a configurable read-ahead codec.
+        /// Creates a configurable logical-prefix codec.
         private ReadAheadCodec(int decodedSize, boolean failOpen) {
             this.decodedSize = decodedSize;
             this.failOpen = failOpen;
@@ -288,50 +181,28 @@ final class CompressionCodecBufferTest {
             return "read-ahead";
         }
 
-        /// Returns the test codec capabilities.
+        /// Creates a fresh identity encoder.
         @Override
-        public CompressionCapabilities capabilities() {
-            return CAPABILITIES;
+        public CompressionEncoder newEncoder() {
+            return new IdentityEncoder();
         }
 
-        /// Opens an identity encoder.
+        /// Creates a prefix decoder or fails before consuming caller input.
         @Override
-        public CompressingWritableByteChannel openEncoder(
-                WritableByteChannel target,
-                CodecOptions options,
-                ChannelOwnership ownership
-        ) throws IOException {
-            options.requireSupported(CAPABILITIES.compressionOptions(), "read-ahead compression");
-            return StreamCodecAdapters.openEncoder(target, ownership, output -> output);
-        }
-
-        /// Opens a read-ahead decoder or fails after consuming one source byte.
-        @Override
-        public DecompressingReadableByteChannel openDecoder(
-                ReadableByteChannel source,
-                CodecOptions options,
-                ChannelOwnership ownership
-        ) throws IOException {
-            options.requireSupported(CAPABILITIES.decompressionOptions(), "read-ahead decompression");
+        public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
             if (failOpen) {
-                source.read(ByteBuffer.allocate(1));
                 throw new IOException("Read-ahead decoder construction failed");
             }
-            return new ReadAheadDecoder(source, decodedSize);
+            return CompressionDecoderSupport.limitEngineOutput(
+                    new PrefixDecoder(decodedSize),
+                    limits.maximumOutputSize()
+            );
         }
     }
 
-    /// Implements an identity transformation through the channel API.
+    /// Implements an identity transformation through buffer engines.
     @NotNullByDefault
     private static final class IdentityCodec implements CompressionCodec {
-        /// The supported identity operations.
-        private static final CompressionCapabilities CAPABILITIES = CompressionCapabilities.of(Set.of(
-                CompressionFeature.COMPRESSION,
-                CompressionFeature.DECOMPRESSION,
-                CompressionFeature.ONE_SHOT_COMPRESSION,
-                CompressionFeature.ONE_SHOT_DECOMPRESSION
-        ));
-
         /// Creates an identity codec.
         private IdentityCodec() {
         }
@@ -342,32 +213,136 @@ final class CompressionCodecBufferTest {
             return "identity";
         }
 
-        /// Returns the supported identity operations.
+        /// Creates a fresh identity encoder.
         @Override
-        public CompressionCapabilities capabilities() {
-            return CAPABILITIES;
+        public CompressionEncoder newEncoder() {
+            return new IdentityEncoder();
         }
 
-        /// Opens an identity encoder.
+        /// Creates a fresh identity decoder with the requested output limit.
         @Override
-        public CompressingWritableByteChannel openEncoder(
-                WritableByteChannel target,
-                CodecOptions options,
-                ChannelOwnership ownership
-        ) throws IOException {
-            options.requireSupported(CAPABILITIES.compressionOptions(), "identity compression");
-            return StreamCodecAdapters.openEncoder(target, ownership, output -> output);
+        public CompressionDecoder newDecoder(DecompressionLimits limits) {
+            return CompressionDecoderSupport.limitEngineOutput(
+                    new IdentityDecoder(),
+                    limits.maximumOutputSize()
+            );
+        }
+    }
+
+    /// Copies source bytes directly into compressed output.
+    @NotNullByDefault
+    private static final class IdentityEncoder implements CompressionEncoder {
+        /// Copies as many bytes as the target can accept.
+        @Override
+        public CodecOutcome encode(ByteBuffer source, ByteBuffer target) {
+            int count = Math.min(source.remaining(), target.remaining());
+            ByteBuffer chunk = source.slice();
+            chunk.limit(count);
+            target.put(chunk);
+            source.position(source.position() + count);
+            return source.hasRemaining() ? CodecOutcome.NEEDS_OUTPUT : CodecOutcome.NEEDS_INPUT;
         }
 
-        /// Opens an identity decoder.
+        /// Reports terminal completion because identity coding has no trailer.
         @Override
-        public DecompressingReadableByteChannel openDecoder(
-                ReadableByteChannel source,
-                CodecOptions options,
-                ChannelOwnership ownership
+        public CodecOutcome finish(ByteBuffer target) {
+            return CodecOutcome.FINISHED;
+        }
+
+        /// Restores no mutable coding state.
+        @Override
+        public void reset() {
+        }
+
+        /// Releases no external resources.
+        @Override
+        public void close() {
+        }
+    }
+
+    /// Copies all identity bytes directly into decoded output.
+    @NotNullByDefault
+    private static final class IdentityDecoder implements CompressionDecoder {
+        /// Copies available bytes and finishes when physical input has ended.
+        @Override
+        public CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) {
+            int count = Math.min(source.remaining(), target.remaining());
+            ByteBuffer chunk = source.slice();
+            chunk.limit(count);
+            target.put(chunk);
+            source.position(source.position() + count);
+            if (source.hasRemaining()) {
+                return CodecOutcome.NEEDS_OUTPUT;
+            }
+            return endOfInput ? CodecOutcome.FINISHED : CodecOutcome.NEEDS_INPUT;
+        }
+
+        /// Restores no mutable coding state.
+        @Override
+        public void reset() {
+        }
+
+        /// Releases no external resources.
+        @Override
+        public void close() {
+        }
+    }
+
+    /// Decodes exactly one logical prefix and preserves any following bytes.
+    @NotNullByDefault
+    private static final class PrefixDecoder implements CompressionDecoder {
+        /// Number of logical payload bytes still required.
+        private final int decodedSize;
+
+        /// Number of logical payload bytes still required in the current run.
+        private int remaining;
+
+        /// Creates a prefix decoder.
+        private PrefixDecoder(int decodedSize) {
+            if (decodedSize < 0) {
+                throw new IllegalArgumentException("decodedSize must not be negative");
+            }
+            this.decodedSize = decodedSize;
+            remaining = decodedSize;
+        }
+
+        /// Copies logical payload bytes without consuming the following suffix.
+        @Override
+        public CodecOutcome decode(
+                ByteBuffer source,
+                ByteBuffer target,
+                boolean endOfInput
         ) throws IOException {
-            options.requireSupported(CAPABILITIES.decompressionOptions(), "identity decompression");
-            return StreamCodecAdapters.openDecoder(source, ownership, input -> input);
+            int count = Math.min(
+                    remaining,
+                    Math.min(source.remaining(), target.remaining())
+            );
+            ByteBuffer chunk = source.slice();
+            chunk.limit(count);
+            target.put(chunk);
+            source.position(source.position() + count);
+            remaining -= count;
+            if (remaining == 0) {
+                return CodecOutcome.FINISHED;
+            }
+            if (!target.hasRemaining()) {
+                return CodecOutcome.NEEDS_OUTPUT;
+            }
+            if (endOfInput) {
+                throw new IOException("Truncated logical prefix");
+            }
+            return CodecOutcome.NEEDS_INPUT;
+        }
+
+        /// Restores the logical prefix length.
+        @Override
+        public void reset() {
+            remaining = decodedSize;
+        }
+
+        /// Releases no external resources.
+        @Override
+        public void close() {
         }
     }
 }

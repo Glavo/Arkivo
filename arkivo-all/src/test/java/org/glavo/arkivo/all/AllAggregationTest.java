@@ -13,12 +13,10 @@ import org.glavo.arkivo.archive.rar.RarArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.tar.TarArkivoFileSystemProvider;
+import org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
-import org.glavo.arkivo.codec.CodecOptions;
-import org.glavo.arkivo.codec.lzma.LZMAOptions;
-import org.glavo.arkivo.codec.ppmd.PPMdCodecOptions;
-import org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter;
+import org.glavo.arkivo.codec.ppmd.PPMdCodec;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystemProvider;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -272,9 +270,6 @@ final class AllAggregationTest {
                 .getBytes(StandardCharsets.UTF_8);
 
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.canCompressBuffers() || !codec.canDecompressBuffers()) {
-                continue;
-            }
 
             ByteBuffer source = ByteBuffer.allocateDirect(expected.length + 4);
             source.position(2);
@@ -294,21 +289,10 @@ final class AllAggregationTest {
             int decodedStart = 2;
             decoded.position(decodedStart);
             decoded.limit(decodedStart + expected.length);
-            CodecOptions decoderOptions;
-            if ("ppmd".equals(codec.name())) {
-                decoderOptions = CodecOptions.builder()
-                        .set(PPMdCodecOptions.MAXIMUM_ORDER, 6L)
-                        .set(PPMdCodecOptions.MEMORY_SIZE, 16L << 20)
-                        .set(PPMdCodecOptions.DECODED_SIZE, (long) expected.length)
-                        .build();
-            } else if ("lzma-raw".equals(codec.name()) || "lzma2".equals(codec.name())) {
-                decoderOptions = CodecOptions.builder()
-                        .set(LZMAOptions.DICTIONARY_SIZE, 1L << 20)
-                        .build();
-            } else {
-                decoderOptions = CodecOptions.EMPTY;
-            }
-            codec.decompress(compressed, decoded, decoderOptions);
+            CompressionCodec decoderCodec = codec instanceof PPMdCodec ppmdCodec
+                    ? ppmdCodec.withDecodedSize(expected.length)
+                    : codec;
+            decoderCodec.decompress(compressed, decoded);
 
             if (!"ppmd".equals(codec.name())) {
                 assertFalse(compressed.hasRemaining(), codec.name());

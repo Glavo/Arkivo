@@ -3,11 +3,9 @@
 
 package org.glavo.arkivo.benchmark;
 
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.deflate.DeflateCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -112,11 +110,8 @@ public class DeflateComparisonBenchmark {
         jdkEncoded = new byte[SOURCE_SIZE + OUTPUT_SLACK];
         jdkDecoded = new byte[SOURCE_SIZE + 1];
 
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.COMPRESSION_LEVEL, (long) level)
-                .build();
-        DeflateCodec codec = new DeflateCodec();
-        arkivoEncoder = codec.newEncoder(options);
+        DeflateCodec codec = new DeflateCodec().withCompressionLevel(level);
+        arkivoEncoder = codec.newEncoder();
         arkivoDecoder = codec.newDecoder();
         jdkDeflater = new Deflater(level, true);
         jdkInflater = new Inflater(true);

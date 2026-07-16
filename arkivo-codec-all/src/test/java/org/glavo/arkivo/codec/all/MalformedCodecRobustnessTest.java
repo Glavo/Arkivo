@@ -4,11 +4,10 @@
 package org.glavo.arkivo.codec.all;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.DecompressionLimits;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -54,27 +53,25 @@ final class MalformedCodecRobustnessTest {
     @Timeout(value = 120, unit = TimeUnit.SECONDS)
     void boundsAndNormalizesMalformedCodecFailures() throws IOException {
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.canCompress() || !codec.canDecompress()) {
-                continue;
-            }
-
             byte[] validFrame = compress(codec);
-            CodecOptions options = boundedOptions(codec);
-            assertArrayEquals(CONTENT, decodeNamed(codec, validFrame, options), codec.name());
+            CompressionCodec decoderCodec =
+                    CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
+            DecompressionLimits limits = boundedLimits();
+            assertArrayEquals(CONTENT, decodeNamed(decoderCodec, validFrame, limits), codec.name());
             boolean detectable = codec.matches(ByteBuffer.wrap(validFrame).asReadOnlyBuffer());
             if (detectable) {
-                assertArrayEquals(CONTENT, decodeDetected(validFrame, options), codec.name());
+                assertArrayEquals(CONTENT, decodeDetected(validFrame, limits), codec.name());
             }
 
             for (int length : truncationLengths(validFrame.length)) {
                 byte[] truncated = Arrays.copyOf(validFrame, length);
-                exerciseMalformedFrame(codec, truncated, options, detectable, "truncation@" + length);
+                exerciseMalformedFrame(codec, decoderCodec, truncated, limits, detectable, "truncation@" + length);
             }
 
             SplittableRandom random = new SplittableRandom(MUTATION_SEED ^ codec.name().hashCode());
             for (int index = 0; index < MUTATION_COUNT; index++) {
                 byte[] mutated = mutate(validFrame, random);
-                exerciseMalformedFrame(codec, mutated, options, detectable, "mutation#" + index);
+                exerciseMalformedFrame(codec, decoderCodec, mutated, limits, detectable, "mutation#" + index);
             }
         }
     }
@@ -89,24 +86,17 @@ final class MalformedCodecRobustnessTest {
         return output.toByteArray();
     }
 
-    /// Builds only the defensive decoder options advertised by one provider.
-    private static CodecOptions boundedOptions(CompressionCodec codec) {
-        CodecOptions.Builder builder = CodecOptions.builder();
-        if (codec.capabilities().decompressionOptions().contains(StandardCodecOptions.MAX_OUTPUT_SIZE)) {
-            builder.set(StandardCodecOptions.MAX_OUTPUT_SIZE, MAX_OUTPUT_SIZE);
-        }
-        if (codec.capabilities().decompressionOptions().contains(StandardCodecOptions.MAX_WINDOW_SIZE)) {
-            builder.set(StandardCodecOptions.MAX_WINDOW_SIZE, MAX_WINDOW_SIZE);
-        }
-        CodecContractOptions.addRequiredDecoderOptions(builder, codec, CONTENT.length);
-        return builder.build();
+    /// Returns the defensive limits applied to every damaged-frame decoder.
+    private static DecompressionLimits boundedLimits() {
+        return new DecompressionLimits(MAX_OUTPUT_SIZE, MAX_WINDOW_SIZE);
     }
 
     /// Exercises signature detection and every applicable decoder factory for one damaged frame.
     private static void exerciseMalformedFrame(
             CompressionCodec codec,
+            CompressionCodec decoderCodec,
             byte[] frame,
-            CodecOptions options,
+            DecompressionLimits limits,
             boolean detectable,
             String variant
     ) {
@@ -116,12 +106,12 @@ final class MalformedCodecRobustnessTest {
                 context + " detection"
         );
         tolerateMalformedFailure(
-                () -> decodeNamed(codec, frame, options),
+                () -> decodeNamed(decoderCodec, frame, limits),
                 context + " named decoder"
         );
         if (detectable) {
             tolerateMalformedFailure(
-                    () -> decodeDetected(frame, options),
+                    () -> decodeDetected(frame, limits),
                     context + " detected decoder"
             );
         }
@@ -131,11 +121,11 @@ final class MalformedCodecRobustnessTest {
     private static byte[] decodeNamed(
             CompressionCodec codec,
             byte[] frame,
-            CodecOptions options
+            DecompressionLimits limits
     ) throws IOException {
         try (DecompressingReadableByteChannel decoder = codec.openDecoder(
                 Channels.newChannel(new ByteArrayInputStream(frame)),
-                options,
+                limits,
                 ChannelOwnership.RETAIN
         )) {
             return consumeDecoder(decoder);
@@ -143,10 +133,10 @@ final class MalformedCodecRobustnessTest {
     }
 
     /// Decodes a frame through generic signature detection.
-    private static byte[] decodeDetected(byte[] frame, CodecOptions options) throws IOException {
+    private static byte[] decodeDetected(byte[] frame, DecompressionLimits limits) throws IOException {
         try (DecompressingReadableByteChannel decoder = CompressionCodecs.openDecoder(
                 Channels.newChannel(new ByteArrayInputStream(frame)),
-                options
+                limits
         )) {
             return consumeDecoder(decoder);
         }

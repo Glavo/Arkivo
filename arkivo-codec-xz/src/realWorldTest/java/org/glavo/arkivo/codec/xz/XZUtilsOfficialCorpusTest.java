@@ -3,9 +3,8 @@
 
 package org.glavo.arkivo.codec.xz;
 
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.StandardCodecOptions;
+import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.lzma.LZMACodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -197,13 +196,11 @@ public final class XZUtilsOfficialCorpusTest {
 
     /// Decompresses one complete file through the given Arkivo channel codec with a bounded output.
     private static byte[] decompress(CompressionCodec codec, Path sourcePath) throws IOException {
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, MAXIMUM_OUTPUT_SIZE)
-                .build();
+
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         try (var source = Files.newByteChannel(sourcePath);
              var target = Channels.newChannel(decoded)) {
-            codec.decompress(source, target, options);
+            codec.decompress(source, target, DecompressionLimits.ofMaximumOutputSize(MAXIMUM_OUTPUT_SIZE));
         }
         return decoded.toByteArray();
     }

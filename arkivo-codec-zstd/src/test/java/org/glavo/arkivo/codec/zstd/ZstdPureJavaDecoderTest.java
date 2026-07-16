@@ -4,13 +4,10 @@
 package org.glavo.arkivo.codec.zstd;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.ChecksumMode;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.CodecOptions;
-import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.glavo.arkivo.codec.DecodeDirective;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -98,18 +95,14 @@ public final class ZstdPureJavaDecoderTest {
         corrupt[corrupt.length - 1] ^= 1;
         assertThrows(IOException.class, () -> decompress(corrupt));
 
-        CodecOptions disabled = CodecOptions.builder()
-                .set(StandardCodecOptions.CHECKSUM, ChecksumMode.DISABLED)
-                .build();
+        ZstdCodec unverified = new ZstdCodec().withVerifyChecksums(false);
         assertArrayEquals(
                 "abcabc".getBytes(StandardCharsets.US_ASCII),
-                decompress(concatenate(corrupt, RAW_FRAME), disabled)
+                decompress(concatenate(corrupt, RAW_FRAME), unverified)
         );
 
-        CodecOptions enabled = CodecOptions.builder()
-                .set(StandardCodecOptions.CHECKSUM, ChecksumMode.ENABLED)
-                .build();
-        assertThrows(IOException.class, () -> decompress(corrupt, enabled));
+        ZstdCodec verified = unverified.withVerifyChecksums(true);
+        assertThrows(IOException.class, () -> decompress(corrupt, verified));
     }
 
     /// Decodes explicitly selected magicless frames without confusing their boundaries.
@@ -117,21 +110,18 @@ public final class ZstdPureJavaDecoderTest {
     public void decodesFixedMagiclessFrames() throws IOException {
         byte[] raw = java.util.Arrays.copyOfRange(RAW_FRAME, Integer.BYTES, RAW_FRAME.length);
         byte[] rle = java.util.Arrays.copyOfRange(RLE_FRAME, Integer.BYTES, RLE_FRAME.length);
-        CodecOptions options = CodecOptions.builder()
-                .set(ZstdCodec.FRAME_FORMAT, ZstdFrameFormat.MAGICLESS)
-                .build();
+        ZstdCodec codec = new ZstdCodec().withFrameFormat(ZstdFrameFormat.MAGICLESS);
 
         byte[] frames = concatenate(raw, rle);
         assertArrayEquals(
                 "abcxxxxx".getBytes(StandardCharsets.US_ASCII),
-                decompress(frames, options)
+                decompress(frames, codec)
         );
         assertThrows(IOException.class, () -> decompress(raw));
 
         ByteBuffer output = ByteBuffer.allocate(8);
-        try (DecompressingReadableByteChannel decoder = new ZstdCodec().openDecoder(
+        try (DecompressingReadableByteChannel decoder = codec.openDecoder(
                 Channels.newChannel(new ByteArrayInputStream(frames)),
-                options,
                 ChannelOwnership.RETAIN
         )) {
             CodecResult first = decoder.decode(output, DecodeDirective.STOP_AT_FRAME);
@@ -164,27 +154,20 @@ public final class ZstdPureJavaDecoderTest {
                 "raw dictionary content".getBytes(StandardCharsets.US_ASCII),
                 127L
         );
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.DICTIONARY, dictionary)
-                .build();
+        ZstdCodec codec = new ZstdCodec().withDictionary(dictionary);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        new ZstdCodec().decompress(
+        codec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(DICTIONARY_ID_FRAME)),
-                Channels.newChannel(output),
-                options
+                Channels.newChannel(output)
         );
         assertArrayEquals("abc".getBytes(StandardCharsets.US_ASCII), output.toByteArray());
 
-        CodecOptions wrongOptions = CodecOptions.builder()
-                .set(
-                        StandardCodecOptions.DICTIONARY,
-                        CompressionDictionary.of(dictionary.bytes(), 126L)
-                )
-                .build();
-        assertThrows(IOException.class, () -> new ZstdCodec().decompress(
+        ZstdCodec wrongCodec = new ZstdCodec().withDictionary(
+                CompressionDictionary.of(dictionary.bytes(), 126L)
+        );
+        assertThrows(IOException.class, () -> wrongCodec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(DICTIONARY_ID_FRAME)),
-                Channels.newChannel(new ByteArrayOutputStream()),
-                wrongOptions
+                Channels.newChannel(new ByteArrayOutputStream())
         ));
     }
 
@@ -195,7 +178,6 @@ public final class ZstdPureJavaDecoderTest {
         ByteBuffer output = ByteBuffer.allocate(16);
         try (DecompressingReadableByteChannel decoder = new ZstdCodec().openDecoder(
                 Channels.newChannel(new ByteArrayInputStream(encoded)),
-                CodecOptions.EMPTY,
                 ChannelOwnership.RETAIN
         )) {
             CodecResult skipped = decoder.decode(output, DecodeDirective.STOP_AT_FRAME);
@@ -226,7 +208,6 @@ public final class ZstdPureJavaDecoderTest {
         ByteBuffer output = ByteBuffer.allocate(16);
         try (DecompressingReadableByteChannel decoder = new ZstdCodec().openDecoder(
                 Channels.newChannel(new ByteArrayInputStream(encoded)),
-                CodecOptions.EMPTY,
                 ChannelOwnership.RETAIN
         )) {
             CodecResult result = decoder.decode(output, DecodeDirective.STOP_AT_FRAME);
@@ -244,16 +225,15 @@ public final class ZstdPureJavaDecoderTest {
 
     /// Decompresses all bytes through the public channel API.
     private static byte[] decompress(byte[] encoded) throws IOException {
-        return decompress(encoded, CodecOptions.EMPTY);
+        return decompress(encoded, new ZstdCodec());
     }
 
     /// Decompresses all bytes through the configured public channel API.
-    private static byte[] decompress(byte[] encoded, CodecOptions options) throws IOException {
+    private static byte[] decompress(byte[] encoded, ZstdCodec codec) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        new ZstdCodec().decompress(
+        codec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(encoded)),
-                Channels.newChannel(output),
-                options
+                Channels.newChannel(output)
         );
         return output.toByteArray();
     }

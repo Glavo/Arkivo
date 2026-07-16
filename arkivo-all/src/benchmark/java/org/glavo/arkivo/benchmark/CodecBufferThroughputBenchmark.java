@@ -3,14 +3,14 @@
 
 package org.glavo.arkivo.benchmark;
 
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.lzma.LZMAOptions;
-import org.glavo.arkivo.codec.ppmd.PPMdCodecOptions;
+import org.glavo.arkivo.codec.lzma.LZMA2Codec;
+import org.glavo.arkivo.codec.lzma.RawLZMACodec;
+import org.glavo.arkivo.codec.ppmd.PPMdCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -51,7 +51,7 @@ public class CodecBufferThroughputBenchmark {
     private static final int FALLBACK_CAPACITY_MULTIPLIER = 2;
 
     /// The externally declared raw LZMA-family dictionary size.
-    private static final long LZMA_DICTIONARY_SIZE = 1L << 20;
+    private static final int LZMA_DICTIONARY_SIZE = 1 << 20;
 
     /// The stable codec name selected for the current benchmark trial.
     @Param({"bzip2", "deflate", "deflate64", "gzip", "lzma", "lzma-raw", "lzma2", "ppmd", "xz", "zlib", "zstd"})
@@ -72,14 +72,11 @@ public class CodecBufferThroughputBenchmark {
     /// The reusable caller-owned decompression target.
     private ByteBuffer decodedOutput = ByteBuffer.allocate(0);
 
-    /// The codec whose public one-shot buffer operations are under measurement.
-    private @Nullable CompressionCodec codec;
+    /// The immutable codec configuration used by compression operations in the current trial.
+    private @Nullable CompressionCodec compressionCodec;
 
-    /// Immutable encoder options used by compression operations in the current trial.
-    private CodecOptions compressionOptions = CodecOptions.EMPTY;
-
-    /// Immutable decoder options used by decompression operations in the current trial.
-    private CodecOptions decompressionOptions = CodecOptions.EMPTY;
+    /// The immutable codec configuration used by decompression operations in the current trial.
+    private @Nullable CompressionCodec decompressionCodec;
 
     /// The transport-independent encoder under measurement.
     private @Nullable CompressionEncoder encoder;
@@ -95,28 +92,27 @@ public class CodecBufferThroughputBenchmark {
             throw new IllegalArgumentException("Compression codec is not installed: " + codecName);
         }
 
-        codec = selectedCodec;
-        if (codecName.equals("ppmd")) {
-            compressionOptions = CodecOptions.builder()
-                    .set(PPMdCodecOptions.MAXIMUM_ORDER, 6L)
-                    .set(PPMdCodecOptions.MEMORY_SIZE, 16L << 20)
-                    .build();
-            decompressionOptions = CodecOptions.builder()
-                    .set(PPMdCodecOptions.MAXIMUM_ORDER, 6L)
-                    .set(PPMdCodecOptions.MEMORY_SIZE, 16L << 20)
-                    .set(PPMdCodecOptions.DECODED_SIZE, (long) SOURCE_SIZE)
-                    .build();
-        } else if (codecName.equals("lzma2") || codecName.equals("lzma-raw")) {
-            compressionOptions = CodecOptions.builder()
-                    .set(LZMAOptions.DICTIONARY_SIZE, LZMA_DICTIONARY_SIZE)
-                    .build();
-            decompressionOptions = compressionOptions;
-        } else {
-            compressionOptions = CodecOptions.EMPTY;
-            decompressionOptions = CodecOptions.EMPTY;
+        CompressionCodec compressionConfiguration = selectedCodec;
+        CompressionCodec decompressionConfiguration = selectedCodec;
+        if (selectedCodec instanceof PPMdCodec ppmdCodec) {
+            PPMdCodec configured = ppmdCodec
+                    .withMaximumOrder(6L)
+                    .withMemorySize(16L << 20);
+            compressionConfiguration = configured;
+            decompressionConfiguration = configured.withDecodedSize(SOURCE_SIZE);
+        } else if (selectedCodec instanceof LZMA2Codec lzma2Codec) {
+            LZMA2Codec configured = lzma2Codec.withDictionarySize(LZMA_DICTIONARY_SIZE);
+            compressionConfiguration = configured;
+            decompressionConfiguration = configured;
+        } else if (selectedCodec instanceof RawLZMACodec rawLzmaCodec) {
+            RawLZMACodec configured = rawLzmaCodec.withDictionarySize(LZMA_DICTIONARY_SIZE);
+            compressionConfiguration = configured;
+            decompressionConfiguration = configured;
         }
-        encoder = selectedCodec.newEncoder(compressionOptions);
-        decoder = selectedCodec.newDecoder(decompressionOptions);
+        compressionCodec = compressionConfiguration;
+        decompressionCodec = decompressionConfiguration;
+        encoder = compressionConfiguration.newEncoder();
+        decoder = decompressionConfiguration.newDecoder();
 
         byte[] content = new byte[SOURCE_SIZE];
         for (int index = 0; index < content.length; index++) {
@@ -125,7 +121,7 @@ public class CodecBufferThroughputBenchmark {
         }
         expected = content;
         sourceInput = ByteBuffer.wrap(content).asReadOnlyBuffer();
-        encodedOutput = ByteBuffer.allocate(compressionCapacity(selectedCodec));
+        encodedOutput = ByteBuffer.allocate(compressionCapacity(compressionConfiguration));
         decodedOutput = ByteBuffer.allocate(SOURCE_SIZE + 1);
 
         int compressedSize = encodeOnce();
@@ -144,9 +140,8 @@ public class CodecBufferThroughputBenchmark {
     /// Releases the trial's reusable codec engines.
     @TearDown
     public void tearDown() {
-        codec = null;
-        compressionOptions = CodecOptions.EMPTY;
-        decompressionOptions = CodecOptions.EMPTY;
+        compressionCodec = null;
+        decompressionCodec = null;
         CompressionEncoder currentEncoder = encoder;
         encoder = null;
         if (currentEncoder != null) {
@@ -165,7 +160,7 @@ public class CodecBufferThroughputBenchmark {
     @OperationsPerInvocation(SOURCE_SIZE)
     public ByteBuffer compressOneShot() throws IOException {
         sourceInput.clear();
-        return requireCodec().compress(sourceInput, compressionOptions);
+        return requireCompressionCodec().compress(sourceInput);
     }
 
     /// Decompresses one encoding through the public allocating ByteBuffer operation.
@@ -173,7 +168,7 @@ public class CodecBufferThroughputBenchmark {
     @OperationsPerInvocation(SOURCE_SIZE)
     public ByteBuffer decompressOneShot() throws IOException {
         compressedInput.clear();
-        ByteBuffer restored = requireCodec().decompress(compressedInput, SOURCE_SIZE, decompressionOptions);
+        ByteBuffer restored = requireDecompressionCodec().decompress(compressedInput, SOURCE_SIZE);
         if (restored.remaining() != SOURCE_SIZE) {
             throw new AssertionError("Unexpected one-shot decoded size: " + restored.remaining());
         }
@@ -273,11 +268,20 @@ public class CodecBufferThroughputBenchmark {
         }
     }
 
-    /// Returns the current initialized codec.
-    private CompressionCodec requireCodec() {
-        CompressionCodec current = codec;
+    /// Returns the current initialized compression configuration.
+    private CompressionCodec requireCompressionCodec() {
+        CompressionCodec current = compressionCodec;
         if (current == null) {
-            throw new IllegalStateException("Benchmark codec is not initialized");
+            throw new IllegalStateException("Benchmark compression codec is not initialized");
+        }
+        return current;
+    }
+
+    /// Returns the current initialized decompression configuration.
+    private CompressionCodec requireDecompressionCodec() {
+        CompressionCodec current = decompressionCodec;
+        if (current == null) {
+            throw new IllegalStateException("Benchmark decompression codec is not initialized");
         }
         return current;
     }

@@ -3,8 +3,6 @@
 
 package org.glavo.arkivo.codec.bzip2;
 
-import org.glavo.arkivo.codec.CodecOptions;
-import org.glavo.arkivo.codec.StandardCodecOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -44,10 +42,8 @@ public final class BZip2OfficialCorpusTest {
     public void roundTripsOfficialReferenceSample(String sampleName) throws IOException {
         byte[] input = Files.readAllBytes(corpusPath(sampleName + ".ref"));
         for (long level : new long[]{1L, 9L}) {
-            CodecOptions options = CodecOptions.builder()
-                    .set(StandardCodecOptions.COMPRESSION_LEVEL, level)
-                    .build();
-            assertArrayEquals(input, roundTrip(input, options), sampleName + " level " + level);
+            BZip2Codec codec = new BZip2Codec().withCompressionLevel(level);
+            assertArrayEquals(input, roundTrip(input, codec), sampleName + " level " + level);
         }
     }
 
@@ -78,13 +74,11 @@ public final class BZip2OfficialCorpusTest {
     }
 
     /// Compresses and decompresses bytes through independently configured channel operations.
-    private static byte[] roundTrip(byte[] input, CodecOptions compressionOptions) throws IOException {
-        BZip2Codec codec = new BZip2Codec();
+    private static byte[] roundTrip(byte[] input, BZip2Codec codec) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
         codec.compress(
                 Channels.newChannel(new ByteArrayInputStream(input)),
-                Channels.newChannel(compressed),
-                compressionOptions
+                Channels.newChannel(compressed)
         );
         return decompress(compressed.toByteArray());
     }

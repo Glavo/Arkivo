@@ -120,9 +120,10 @@ Compression support currently covers BZip2, raw Deflate, Deflate64, gzip, raw LZ
 zlib, and Zstandard. The codec layer also provides Delta and BCJ executable transforms. All compression implementations
 are pure Java.
 
-Not every format has the same lifecycle or framing model. Callers can inspect each codec's `CompressionCapabilities`
-and each archive format's implemented format interfaces instead of assuming universal compression, decompression,
-streaming, framing, mutation, or multi-volume support.
+Not every format has the same lifecycle or framing model. Codec objects are immutable configurations: generic optional
+configuration is exposed through codec subinterfaces, while incremental flush and frame behavior is exposed through
+encoder and decoder marker interfaces. Archive formats likewise advertise behavior through implemented format
+interfaces instead of assuming universal streaming, framing, mutation, or multi-volume support.
 
 ## Build and verification
 

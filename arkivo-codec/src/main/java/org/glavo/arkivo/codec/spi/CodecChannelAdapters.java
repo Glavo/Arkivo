@@ -10,8 +10,12 @@ import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.DictionaryCompressionDecoder;
+import org.glavo.arkivo.codec.FlushableCompressionEncoder;
+import org.glavo.arkivo.codec.FramedCompressionDecoder;
 import org.glavo.arkivo.codec.FramedCompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -34,20 +38,10 @@ public final class CodecChannelAdapters {
     private CodecChannelAdapters() {
     }
 
-    /// Creates an encoding channel and applies target ownership when engine creation fails.
+    /// Creates an encoding channel and derives frame behavior from the created engine.
     public static CompressingWritableByteChannel openEncoder(
             WritableByteChannel target,
             ChannelOwnership ownership,
-            EncoderFactory factory
-    ) throws IOException {
-        return openEncoder(target, ownership, false, factory);
-    }
-
-    /// Creates an encoding channel with explicit multiple-frame behavior.
-    public static CompressingWritableByteChannel openEncoder(
-            WritableByteChannel target,
-            ChannelOwnership ownership,
-            boolean multipleFrames,
             EncoderFactory factory
     ) throws IOException {
         Objects.requireNonNull(target, "target");
@@ -61,23 +55,17 @@ public final class CodecChannelAdapters {
             targetCloser.closeAfter(exception);
             throw new AssertionError("unreachable");
         }
-        return new EncodingChannel(target, targetCloser, encoder, multipleFrames);
+        return new EncodingChannel(
+                target,
+                targetCloser,
+                encoder,
+                encoder instanceof FramedCompressionEncoder
+        );
     }
-
-    /// Creates a decoding channel and applies source ownership when engine creation fails.
+    /// Creates a decoding channel and derives frame behavior from the created engine.
     public static DecompressingReadableByteChannel openDecoder(
             ReadableByteChannel source,
             ChannelOwnership ownership,
-            DecoderFactory factory
-    ) throws IOException {
-        return openDecoder(source, ownership, false, factory);
-    }
-
-    /// Creates a decoding channel with explicit concatenated-frame behavior.
-    public static DecompressingReadableByteChannel openDecoder(
-            ReadableByteChannel source,
-            ChannelOwnership ownership,
-            boolean concatenatedFrames,
             DecoderFactory factory
     ) throws IOException {
         Objects.requireNonNull(source, "source");
@@ -91,9 +79,13 @@ public final class CodecChannelAdapters {
             sourceCloser.closeAfter(exception);
             throw new AssertionError("unreachable");
         }
-        return new DecodingChannel(source, sourceCloser, decoder, concatenatedFrames);
+        return new DecodingChannel(
+                source,
+                sourceCloser,
+                decoder,
+                decoder instanceof FramedCompressionDecoder
+        );
     }
-
     /// Creates one transport-independent encoder.
     @FunctionalInterface
     public interface EncoderFactory {
@@ -196,9 +188,12 @@ public final class CodecChannelAdapters {
             if (multipleFrames && !frameActive) {
                 return;
             }
+            if (!(encoder instanceof FlushableCompressionEncoder flushableEncoder)) {
+                throw new UnsupportedOperationException("This compression format does not support flushing");
+            }
             while (true) {
                 output.clear();
-                CodecOutcome outcome = encoder.flush(output);
+                CodecOutcome outcome = flushableEncoder.flush(output);
                 writeOutput();
                 if (outcome == CodecOutcome.FLUSHED) {
                     return;
@@ -489,7 +484,10 @@ public final class CodecChannelAdapters {
                     continue;
                 }
                 if (outcome == CodecOutcome.NEEDS_DICTIONARY) {
-                    throw new IOException("Compression decoder requires dictionary " + decoder.requiredDictionaryId());
+                    long dictionaryId = decoder instanceof DictionaryCompressionDecoder dictionaryDecoder
+                            ? dictionaryDecoder.requiredDictionaryId()
+                            : CompressionDictionary.UNKNOWN_ID;
+                    throw new IOException("Compression decoder requires dictionary " + dictionaryId);
                 }
                 if (outcome == CodecOutcome.NEEDS_OUTPUT) {
                     if (target.position() == outputPosition && target.hasRemaining()) {

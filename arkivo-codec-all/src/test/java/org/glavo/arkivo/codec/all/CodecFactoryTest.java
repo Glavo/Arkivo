@@ -4,8 +4,6 @@
 package org.glavo.arkivo.codec.all;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CodecOption;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecTransferResult;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionCodecs;
@@ -45,15 +43,10 @@ final class CodecFactoryTest {
     @Test
     void roundTripsEveryCodecByName() throws IOException {
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.canCompress() || !codec.canDecompress()) {
-                continue;
-            }
-
             TrackingWritableChannel target = new TrackingWritableChannel();
             try (CompressingWritableByteChannel encoder = CompressionCodecs.openEncoder(
                     codec.name(),
                     target,
-                    CodecOptions.EMPTY,
                     ChannelOwnership.CLOSE
             )) {
                 writeAll(encoder, CONTENT);
@@ -61,10 +54,10 @@ final class CodecFactoryTest {
             assertFalse(target.isOpen(), codec.name());
 
             TrackingReadableChannel source = new TrackingReadableChannel(target.bytes());
-            try (DecompressingReadableByteChannel decoder = CompressionCodecs.openDecoder(
-                    codec.name(),
+            CompressionCodec decoderCodec =
+                    CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
+            try (DecompressingReadableByteChannel decoder = decoderCodec.openDecoder(
                     source,
-                    CodecContractOptions.decoderOptions(codec, CONTENT.length),
                     ChannelOwnership.CLOSE
             )) {
                 assertArrayEquals(CONTENT, readAll(decoder), codec.name());
@@ -85,8 +78,7 @@ final class CodecFactoryTest {
         TrackingReadableChannel source = new TrackingReadableChannel(target.bytes());
         try (DecompressingReadableByteChannel decoder = CompressionCodecs.openDecoder(
                 "BZIP2",
-                source,
-                CodecOptions.EMPTY
+                source
         )) {
             assertArrayEquals(CONTENT, readAll(decoder));
         }
@@ -126,16 +118,13 @@ final class CodecFactoryTest {
     @Test
     void transfersEveryCodecByName() throws IOException {
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.canCompress() || !codec.canDecompress()) {
-                continue;
-            }
+
             TrackingReadableChannel source = new TrackingReadableChannel(CONTENT);
             TrackingWritableChannel compressed = new TrackingWritableChannel();
             CodecTransferResult compression = CompressionCodecs.compress(
                     codec.name(),
                     source,
-                    compressed,
-                    CodecOptions.EMPTY
+                    compressed
             );
             assertEquals(CONTENT.length, compression.inputBytes(), codec.name());
             assertEquals(compressed.bytes().length, compression.outputBytes(), codec.name());
@@ -144,13 +133,10 @@ final class CodecFactoryTest {
 
             TrackingReadableChannel encoded = new TrackingReadableChannel(compressed.bytes());
             TrackingWritableChannel decoded = new TrackingWritableChannel();
-            CodecTransferResult decompression = CompressionCodecs.decompress(
-                    codec.name(),
-                    encoded,
-                    decoded,
-                    CodecContractOptions.decoderOptions(codec, CONTENT.length)
-            );
-            if (CodecContractOptions.requiresDecoderOptions(codec)) {
+            CompressionCodec decoderCodec =
+                    CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
+            CodecTransferResult decompression = decoderCodec.decompress(encoded, decoded);
+            if (CodecContractConfigurations.requiresDecoderConfiguration(codec)) {
                 assertTrue(decompression.inputBytes() <= compressed.bytes().length, codec.name());
             } else {
                 assertEquals(compressed.bytes().length, decompression.inputBytes(), codec.name());
@@ -166,8 +152,7 @@ final class CodecFactoryTest {
                 TrackingWritableChannel detectedTarget = new TrackingWritableChannel();
                 CodecTransferResult detected = CompressionCodecs.decompress(
                         detectedSource,
-                        detectedTarget,
-                        CodecOptions.EMPTY
+                        detectedTarget
                 );
                 assertEquals(CONTENT.length, detected.outputBytes(), codec.name());
                 assertArrayEquals(CONTENT, detectedTarget.bytes(), codec.name());
@@ -188,25 +173,20 @@ final class CodecFactoryTest {
     @Test
     void opensNamedAndDetectedStreamAdapters() throws IOException {
         for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (!codec.canCompress() || !codec.canDecompress()) {
-                continue;
-            }
+
             TrackingOutputStream compressed = new TrackingOutputStream();
             try (OutputStream output = CompressionCodecs.compressTo(
                     codec.name(),
-                    compressed,
-                    CodecOptions.EMPTY
+                    compressed
             )) {
                 output.write(CONTENT);
             }
             assertTrue(compressed.closed(), codec.name());
 
             TrackingInputStream encoded = new TrackingInputStream(compressed.bytes());
-            try (InputStream input = CompressionCodecs.decompressFrom(
-                    codec.name(),
-                    encoded,
-                    CodecContractOptions.decoderOptions(codec, CONTENT.length)
-            )) {
+            CompressionCodec decoderCodec =
+                    CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
+            try (InputStream input = decoderCodec.decompressFrom(encoded)) {
                 assertArrayEquals(CONTENT, input.readAllBytes(), codec.name());
             }
             assertTrue(encoded.closed(), codec.name());
@@ -259,7 +239,6 @@ final class CodecFactoryTest {
                 () -> CompressionCodecs.openEncoder(
                         "missing",
                         ownedTarget,
-                        CodecOptions.EMPTY,
                         ChannelOwnership.CLOSE
                 )
         );
@@ -287,25 +266,14 @@ final class CodecFactoryTest {
     /// Verifies setup failures close owned endpoints and preserve close failures as suppressed exceptions.
     @Test
     void closesOwnedChannelsAfterSetupFailure() throws IOException {
-        CodecOption<String> unsupported = CodecOption.of("test.unsupported", String.class);
-        CodecOptions options = CodecOptions.builder().set(unsupported, "value").build();
-
-        TrackingWritableChannel target = new TrackingWritableChannel();
+        TrackingReadableChannel source = new TrackingReadableChannel(new byte[0]);
         assertThrows(
-                UnsupportedOperationException.class,
-                () -> CompressionCodecs.openEncoder(
-                        "gzip",
-                        target,
-                        options,
+                IllegalStateException.class,
+                () -> CompressionCodecs.openDecoder(
+                        "ppmd",
+                        source,
                         ChannelOwnership.CLOSE
                 )
-        );
-        assertFalse(target.isOpen());
-
-        TrackingReadableChannel source = new TrackingReadableChannel(encode("gzip"));
-        assertThrows(
-                UnsupportedOperationException.class,
-                () -> CompressionCodecs.openDecoder(source, options, ChannelOwnership.CLOSE)
         );
         assertFalse(source.isOpen());
 
@@ -315,7 +283,6 @@ final class CodecFactoryTest {
                 () -> CompressionCodecs.openEncoder(
                         "missing",
                         failing,
-                        CodecOptions.EMPTY,
                         ChannelOwnership.CLOSE
                 )
         );
@@ -330,7 +297,6 @@ final class CodecFactoryTest {
         try (CompressingWritableByteChannel encoder = CompressionCodecs.openEncoder(
                 codecName,
                 target,
-                CodecOptions.EMPTY,
                 ChannelOwnership.CLOSE
         )) {
             writeAll(encoder, CONTENT);

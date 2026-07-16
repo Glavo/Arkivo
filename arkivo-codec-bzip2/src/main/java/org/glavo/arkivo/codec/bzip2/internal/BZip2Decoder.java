@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.bzip2.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.FramedCompressionDecoder;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -15,7 +15,7 @@ import java.nio.ByteBuffer;
 /// Incomplete compressed blocks are retained only as owned bytes. The shared pure Java decoder parses each block
 /// transactionally and returns any compressed read-ahead to the current caller buffer after a successful boundary.
 @NotNullByDefault
-public final class BZip2Decoder extends BZip2ChannelDecoder implements CompressionDecoder {
+public final class BZip2Decoder extends BZip2ChannelDecoder implements FramedCompressionDecoder {
     /// Creates an empty BZip2 decoder with no attached transport.
     public BZip2Decoder() {
         super();

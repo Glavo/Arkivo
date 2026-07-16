@@ -3,21 +3,19 @@
 
 package org.glavo.arkivo.codec.zstd;
 
-import org.glavo.arkivo.codec.ChecksumMode;
-import org.glavo.arkivo.codec.CodecOptions;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionFeature;
 import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimitException;
+import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DictionaryCompressionDecoder;
+import org.glavo.arkivo.codec.FlushableFramedCompressionEncoder;
 import org.glavo.arkivo.codec.FramedCompressionEncoder;
-import org.glavo.arkivo.codec.StandardCodecOptions;
-import org.glavo.arkivo.codec.WorkerCount;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -42,7 +40,7 @@ public final class ZstdBufferEngineTest {
     @Test
     public void fragmentedBuffersAndTrailingInput() throws IOException {
         byte[] input = testData(180_003);
-        byte[] encoded = encode(input, CodecOptions.EMPTY, 113, 1, false);
+        byte[] encoded = encode(input, CODEC.newEncoder(), 113, 1, false);
         byte[] tail = {9, 8, 7, 6};
         ByteBuffer source = ByteBuffer.allocateDirect(encoded.length + tail.length);
         source.put(encoded).put(tail).flip();
@@ -69,34 +67,24 @@ public final class ZstdBufferEngineTest {
     @Test
     public void fragmentedInputAndFlush() throws IOException {
         byte[] input = testData(96_127);
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.CHECKSUM, ChecksumMode.ENABLED)
-                .build();
-        byte[] encoded = encode(input, options, 5, 2, true);
-        assertArrayEquals(input, decodeFragments(encoded, options, 3, 2));
+        ZstdCodec codec = CODEC.withFrameChecksum(true);
+        byte[] encoded = encode(input, codec.newEncoder(), 5, 2, true);
+        assertArrayEquals(input, decodeFragments(encoded, codec, 3, 2));
     }
 
     /// Verifies pledged size, magicless framing, and worker configuration on the buffer API.
     @Test
-    public void exposesAdvancedEncoderOptions() throws IOException {
+    public void exposesAdvancedEncoderConfiguration() throws IOException {
         byte[] input = testData(700_123);
-        CodecOptions options = CodecOptions.builder()
-                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) input.length)
-                .set(StandardCodecOptions.WORKER_COUNT, new WorkerCount(2))
-                .set(StandardCodecOptions.CHECKSUM, ChecksumMode.ENABLED)
-                .set(ZstdCodec.FRAME_FORMAT, ZstdFrameFormat.MAGICLESS)
+        ZstdCodec codec = ZstdCodec.builder()
+                .workerCount(2)
+                .frameChecksum(true)
+                .frameFormat(ZstdFrameFormat.MAGICLESS)
                 .build();
-        byte[] encoded = encode(input, options, 8191, 17, false);
-        CodecOptions decoderOptions = CodecOptions.builder()
-                .set(StandardCodecOptions.CHECKSUM, ChecksumMode.ENABLED)
-                .set(ZstdCodec.FRAME_FORMAT, ZstdFrameFormat.MAGICLESS)
-                .build();
-        assertArrayEquals(input, decode(encoded, decoderOptions, 19));
+        byte[] encoded = encode(input, codec.newEncoder(input.length), 8191, 17, false);
+        assertArrayEquals(input, decode(encoded, codec, 19));
 
-        CodecOptions wrongPledge = CodecOptions.builder()
-                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) input.length + 1L)
-                .build();
-        CompressionEncoder encoder = CODEC.newEncoder(wrongPledge);
+        CompressionEncoder encoder = CODEC.newEncoder((long) input.length + 1L);
         try {
             ByteArrayOutputStream ignored = new ByteArrayOutputStream();
             encodeSource(encoder, ByteBuffer.wrap(input), ignored, 64);
@@ -112,15 +100,12 @@ public final class ZstdBufferEngineTest {
         byte[] dictionaryBytes = testData(4096);
         CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes, 77L);
         byte[] input = Arrays.copyOfRange(dictionaryBytes, 1024, 3072);
-        CodecOptions encoderOptions = CodecOptions.builder()
-                .set(StandardCodecOptions.DICTIONARY, dictionary)
-                .set(StandardCodecOptions.PLEDGED_SOURCE_SIZE, (long) input.length)
-                .build();
-        byte[] encoded = encode(input, encoderOptions, 31, 3, false);
+        ZstdCodec encoderCodec = CODEC.withDictionary(dictionary);
+        byte[] encoded = encode(input, encoderCodec.newEncoder(input.length), 31, 3, false);
         ByteBuffer source = ByteBuffer.wrap(encoded);
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
 
-        try (CompressionDecoder decoder = CODEC.newDecoder()) {
+        try (DictionaryCompressionDecoder decoder = CODEC.newDecoder()) {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocate(7);
@@ -159,36 +144,32 @@ public final class ZstdBufferEngineTest {
         assertEquals(8 + payload.length, skippable.position());
 
         byte[] input = testData(4097);
-        byte[] encoded = encode(input, CodecOptions.EMPTY, 101, 5, false);
-        CodecOptions exact = CodecOptions.builder()
-                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, (long) input.length)
-                .build();
-        CodecOptions shortLimit = CodecOptions.builder()
-                .set(StandardCodecOptions.MAX_OUTPUT_SIZE, (long) input.length - 1L)
-                .build();
-        assertArrayEquals(input, decode(encoded, exact, 1));
-        assertThrows(DecompressionLimitException.class, () -> decode(encoded, shortLimit, 1));
+        byte[] encoded = encode(input, CODEC.newEncoder(), 101, 5, false);
+        DecompressionLimits exact = DecompressionLimits.ofMaximumOutputSize(input.length);
+        DecompressionLimits shortLimit =
+                DecompressionLimits.ofMaximumOutputSize((long) input.length - 1L);
+        assertArrayEquals(input, decode(encoded, CODEC, exact, 1));
+        assertThrows(
+                DecompressionLimitException.class,
+                () -> decode(encoded, CODEC, shortLimit, 1)
+        );
     }
 
     /// Verifies truncated input, checksum corruption, and maximum-window enforcement.
     @Test
     public void rejectsMalformedAndOversizedFrames() throws IOException {
         byte[] input = testData(24_019);
-        CodecOptions checksumOptions = CodecOptions.builder()
-                .set(StandardCodecOptions.CHECKSUM, ChecksumMode.ENABLED)
-                .build();
-        byte[] encoded = encode(input, checksumOptions, 257, 11, false);
+        ZstdCodec codec = CODEC.withFrameChecksum(true);
+        byte[] encoded = encode(input, codec.newEncoder(), 257, 11, false);
 
         byte[] truncated = Arrays.copyOf(encoded, encoded.length - 1);
-        assertThrows(IOException.class, () -> decode(truncated, checksumOptions, 17));
+        assertThrows(IOException.class, () -> decode(truncated, codec, 17));
         byte[] corrupt = encoded.clone();
         corrupt[corrupt.length - 1] ^= 1;
-        assertThrows(IOException.class, () -> decode(corrupt, checksumOptions, 17));
+        assertThrows(IOException.class, () -> decode(corrupt, codec, 17));
 
-        CodecOptions smallWindow = CodecOptions.builder()
-                .set(StandardCodecOptions.MAX_WINDOW_SIZE, 1024L)
-                .build();
-        assertThrows(IOException.class, () -> decode(encoded, smallWindow, 17));
+        DecompressionLimits smallWindow = DecompressionLimits.ofMaximumWindowSize(1024L);
+        assertThrows(IOException.class, () -> decode(encoded, codec, smallWindow, 17));
     }
 
     /// Verifies Channel adaptation exposes one exact frame boundary before physical EOF.
@@ -218,11 +199,9 @@ public final class ZstdBufferEngineTest {
         }
     }
 
-    /// Verifies reset and advertised transport-independent capabilities.
+    /// Verifies encoder reset and deterministic output.
     @Test
-    public void resetAndCapabilities() throws IOException {
-        assertTrue(CODEC.capabilities().supports(CompressionFeature.BUFFER_COMPRESSION));
-        assertTrue(CODEC.capabilities().supports(CompressionFeature.BUFFER_DECOMPRESSION));
+    public void resetProducesDeterministicOutput() throws IOException {
         byte[] input = testData(20_003);
         CompressionEncoder encoder = CODEC.newEncoder();
         ByteArrayOutputStream first = new ByteArrayOutputStream();
@@ -266,21 +245,21 @@ public final class ZstdBufferEngineTest {
                     secondEnd - firstEnd,
                     CODEC.frameCompressedSize(ByteBuffer.wrap(frames, firstEnd, secondEnd - firstEnd).slice())
             );
-            assertArrayEquals(first, decode(Arrays.copyOfRange(frames, 0, firstEnd), CodecOptions.EMPTY, 2));
-            assertArrayEquals(second, decode(Arrays.copyOfRange(frames, firstEnd, secondEnd), CodecOptions.EMPTY, 2));
+            assertArrayEquals(first, decode(Arrays.copyOfRange(frames, 0, firstEnd), CODEC, 2));
+            assertArrayEquals(second, decode(Arrays.copyOfRange(frames, firstEnd, secondEnd), CODEC, 2));
         }
     }
 
     /// Encodes input fragments into one frame.
     private static byte[] encode(
             byte[] input,
-            CodecOptions options,
+            FlushableFramedCompressionEncoder encoder,
             int sourceFragmentSize,
             int targetSize,
             boolean flushEachFragment
     ) throws IOException {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        try (CompressionEncoder encoder = CODEC.newEncoder(options)) {
+        try (encoder) {
             for (int offset = 0; offset < input.length; offset += sourceFragmentSize) {
                 int end = Math.min(input.length, offset + sourceFragmentSize);
                 encodeSource(encoder, ByteBuffer.wrap(Arrays.copyOfRange(input, offset, end)), encoded, targetSize);
@@ -311,7 +290,7 @@ public final class ZstdBufferEngineTest {
     }
 
     /// Drains one encoder flush operation.
-    private static void flush(CompressionEncoder encoder, ByteArrayOutputStream encoded, int targetSize)
+    private static void flush(FlushableFramedCompressionEncoder encoder, ByteArrayOutputStream encoded, int targetSize)
             throws IOException {
         CodecOutcome outcome;
         do {
@@ -350,10 +329,20 @@ public final class ZstdBufferEngineTest {
     }
 
     /// Decodes one frame from one complete source buffer.
-    private static byte[] decode(byte[] encoded, CodecOptions options, int targetSize) throws IOException {
+    private static byte[] decode(byte[] encoded, ZstdCodec codec, int targetSize) throws IOException {
+        return decode(encoded, codec, DecompressionLimits.UNLIMITED, targetSize);
+    }
+
+    /// Decodes one frame from one complete source buffer with operation-scoped limits.
+    private static byte[] decode(
+            byte[] encoded,
+            ZstdCodec codec,
+            DecompressionLimits limits,
+            int targetSize
+    ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         ByteBuffer source = ByteBuffer.wrap(encoded);
-        try (CompressionDecoder decoder = CODEC.newDecoder(options)) {
+        try (CompressionDecoder decoder = codec.newDecoder(limits)) {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocate(targetSize);
@@ -368,12 +357,12 @@ public final class ZstdBufferEngineTest {
     /// Decodes one frame while replacing the source buffer after each input request.
     private static byte[] decodeFragments(
             byte[] encoded,
-            CodecOptions options,
+            ZstdCodec codec,
             int sourceFragmentSize,
             int targetSize
     ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
-        try (CompressionDecoder decoder = CODEC.newDecoder(options)) {
+        try (CompressionDecoder decoder = codec.newDecoder()) {
             int offset = 0;
             CodecOutcome outcome = CodecOutcome.NEEDS_INPUT;
             while (outcome != CodecOutcome.FINISHED) {

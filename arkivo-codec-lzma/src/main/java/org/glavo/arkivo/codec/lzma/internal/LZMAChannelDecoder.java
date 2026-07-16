@@ -3,11 +3,13 @@
 
 package org.glavo.arkivo.codec.lzma.internal;
 
+import org.glavo.arkivo.codec.lzma.LZMAProperties;
+
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
-import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.UnmodifiableView;
 
@@ -71,7 +73,7 @@ public final class LZMAChannelDecoder implements DecompressingReadableByteChanne
             } catch (IllegalArgumentException exception) {
                 throw new IOException("Invalid LZMA properties", exception);
             }
-            StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, properties.dictionarySize());
+            CompressionDecoderSupport.requireWindowSize(maximumWindowSize, properties.dictionarySize());
             decoder = new LZMADecoderEngine(properties.dictionarySize());
             decoder.configure(properties.propertyByte());
             decoder.resetDictionary();

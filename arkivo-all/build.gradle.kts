@@ -359,7 +359,10 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.codec.delta" to setOf(codecModule),
             "org.glavo.arkivo.codec.lzma" to setOf(codecModule),
             "org.glavo.arkivo.codec.ppmd" to setOf(codecModule),
-            "org.glavo.arkivo.codec.xz" to setOf(codecModule),
+            "org.glavo.arkivo.codec.xz" to setOf(
+                codecModule,
+                "org.glavo.arkivo.codec.lzma"
+            ),
             "org.glavo.arkivo.codec.zstd" to setOf(codecModule)
         )
         descriptors.forEach { (moduleName, descriptor) ->

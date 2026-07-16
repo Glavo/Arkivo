@@ -5,9 +5,10 @@ package org.glavo.arkivo.codec.zstd.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DictionaryCompressionDecoder;
+import org.glavo.arkivo.codec.FramedCompressionDecoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.zstd.ZstdFrameInfo;
 import org.glavo.arkivo.codec.zstd.ZstdSkippableFrameInfo;
 import org.glavo.arkivo.codec.zstd.ZstdStandardFrameInfo;
@@ -21,7 +22,7 @@ import java.util.Objects;
 
 /// Incrementally decodes one Zstandard frame without retaining caller-owned buffers.
 @NotNullByDefault
-public final class ZstdDecoder implements CompressionDecoder {
+public final class ZstdDecoder implements FramedCompressionDecoder, DictionaryCompressionDecoder {
     /// Empty decoded output.
     private static final ByteBuffer EMPTY_OUTPUT = ByteBuffer.allocate(0).asReadOnlyBuffer();
 
@@ -282,7 +283,7 @@ public final class ZstdDecoder implements CompressionDecoder {
         if (standard.contentSize() == ZstdStandardFrameInfo.CONTENT_SIZE_OVERFLOW) {
             throw new IOException("Zstandard frame content size exceeds the Java long range");
         }
-        StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, standard.windowSize());
+        CompressionDecoderSupport.requireWindowSize(maximumWindowSize, standard.windowSize());
         long dictionaryId = standard.dictionaryId();
         if (dictionaryId != CompressionDictionary.UNKNOWN_ID && dictionary.id() != dictionaryId) {
             frameInfo = standard;

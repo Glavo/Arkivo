@@ -5,9 +5,9 @@ package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.DictionaryCompressionDecoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -19,7 +19,7 @@ import java.util.zip.Adler32;
 
 /// Incrementally decodes and validates one zlib stream with explicit preset-dictionary negotiation.
 @NotNullByDefault
-public final class ZlibDecoder implements CompressionDecoder {
+public final class ZlibDecoder implements DictionaryCompressionDecoder {
     /// Zlib flag indicating a four-byte preset-dictionary identifier.
     private static final int FLAG_PRESET_DICTIONARY = 0x20;
 
@@ -225,7 +225,7 @@ public final class ZlibDecoder implements CompressionDecoder {
             throw new IOException("Invalid zlib header");
         }
         declaredWindowSize = 1 << (windowInformation + 8);
-        StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, declaredWindowSize);
+        CompressionDecoderSupport.requireWindowSize(maximumWindowSize, declaredWindowSize);
     }
 
     /// Starts raw Deflate decoding with the selected dictionary and declared window.

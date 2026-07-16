@@ -8,6 +8,8 @@ module org.glavo.arkivo.archive.sevenzip {
     requires org.glavo.arkivo.codec;
     requires org.glavo.arkivo.codec.bcj;
     requires org.glavo.arkivo.codec.delta;
+    requires static org.glavo.arkivo.codec.lzma;
+    requires static org.glavo.arkivo.codec.ppmd;
     requires static org.jetbrains.annotations;
 
     exports org.glavo.arkivo.archive.sevenzip;

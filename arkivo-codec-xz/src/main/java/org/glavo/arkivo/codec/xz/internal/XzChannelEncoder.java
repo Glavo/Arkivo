@@ -9,7 +9,7 @@ import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.delta.DeltaTransform;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2ChannelEncoder;
-import org.glavo.arkivo.codec.lzma.internal.LZMAProperties;
+import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.transform.ByteTransform;
 import org.glavo.arkivo.codec.transform.TransformingWritableByteChannel;
 import org.glavo.arkivo.codec.xz.XZBCJFilter;

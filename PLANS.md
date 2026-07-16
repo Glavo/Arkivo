@@ -176,10 +176,10 @@ Deflate, Deflate64, gzip, and zlib share pure Java format-parameterized buffer e
 LZMA-alone, raw LZMA2, XZ, and PPMd also provide transport-independent buffer engines. PPMd range decoding preserves
 partially normalized arithmetic intervals and context-chain progress across arbitrarily fragmented caller buffers.
 
-Allocating and fixed `ByteBuffer` operations drive transport-independent engines directly when advertised. They accept
-heap and direct buffers in any source and target combination, including read-only sources and nonzero buffer ranges. Targets must be writable, and one buffer instance
-cannot serve as both source and target. Configured and unconfigured overloads follow the same validation and exception
-contract.
+Allocating and fixed `ByteBuffer` operations drive transport-independent engines directly. They accept heap and direct
+buffers in any source and target combination, including read-only sources and nonzero buffer ranges. Targets must be
+writable, and one buffer instance cannot serve as both source and target. Immutable codec configurations and
+operation-scoped `DecompressionLimits` follow the same validation and exception contract across adapters.
 
 `CompressionCodecs` should open encoder and decoder contexts by stable codec name and should automatically open decoders for streams with reliable signatures. Context factories should apply explicit channel ownership consistently during lookup, detection, setup, and close. Named channel transfers should retain caller endpoints, while stream adapters should own their input or output stream.
 
@@ -188,14 +188,15 @@ changing the probe buffer. Generic decoder factories accept streams beginning wi
 `STOP_AT_FRAME` decoding reports each skippable frame as a distinct boundary while preserving prefetched later frames.
 The Zstandard codec also exposes explicit standard and magicless frame formats across channel, buffer, and frame-
 inspection APIs. Magicless streams require caller selection and do not participate in signature detection. Decoder
-checksum policy verifies XXH64 trailers by default or consumes them without verification when `ChecksumMode.DISABLED` is
-selected, preserving subsequent concatenated-frame boundaries in either physical format.
+checksum policy verifies XXH64 trailers by default or consumes them without verification when
+`ZstdCodec.withVerifyChecksums(false)` is selected, preserving subsequent concatenated-frame boundaries in either
+physical format.
 
-XZ exposes the same decompression checksum policy for optional Block Checks. Default and enabled modes verify every
-supported Check, while disabled mode consumes the format-defined Check field without calculating it and can therefore
-decode future Check IDs whose algorithms are not yet implemented. Stream, Block Header, Index, and Footer CRC validation
-remains mandatory in every mode because those checks protect the container structure rather than optional content
-integrity.
+XZ exposes the same decompression checksum policy for optional Block Checks. The default configuration verifies every
+supported Check, while `XZCodec.withVerifyChecksums(false)` consumes the format-defined Check field without calculating
+it and can therefore decode future Check IDs whose algorithms are not yet implemented. Stream, Block Header, Index, and
+Footer CRC validation remains mandatory because those checks protect the container structure rather than optional
+content integrity.
 
 Initial compression formats:
 

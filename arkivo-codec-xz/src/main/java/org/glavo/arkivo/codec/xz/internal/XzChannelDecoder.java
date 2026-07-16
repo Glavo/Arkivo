@@ -11,7 +11,7 @@ import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.glavo.arkivo.codec.DecodeDirective;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
-import org.glavo.arkivo.codec.spi.StandardCodecOptionSupport;
+import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.delta.DeltaTransform;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2ChannelDecoder;
@@ -562,7 +562,7 @@ public final class XzChannelDecoder implements DecompressingReadableByteChannel 
                     throw new IOException("XZ LZMA2 filter requires one property byte");
                 }
                 int dictionarySize = XzSupport.lzma2DictionarySize(Byte.toUnsignedInt(properties[0]));
-                StandardCodecOptionSupport.requireWindowSize(maximumWindowSize, dictionarySize);
+                CompressionDecoderSupport.requireWindowSize(maximumWindowSize, dictionarySize);
                 return new LZMA2ChannelDecoder(
                         downstream,
                         ChannelOwnership.RETAIN,
