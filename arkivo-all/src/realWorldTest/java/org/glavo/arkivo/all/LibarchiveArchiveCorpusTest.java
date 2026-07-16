@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.all;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
@@ -241,11 +242,11 @@ public final class LibarchiveArchiveCorpusTest {
         Path archive = temporaryDirectory.resolve(fixtureName.substring(0, fixtureName.length() - 3));
         Files.write(archive, archiveBytes);
 
-        for (Map<String, ?> environment : List.<Map<String, ?>>of(
-                Map.of(),
-                Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), WRONG_ZIP_PASSWORD)
+        for (ArchiveOptions options : List.of(
+                ArchiveOptions.EMPTY,
+                ArchiveOptions.of(ZipArkivoFileSystem.PASSWORD_PROVIDER, WRONG_ZIP_PASSWORD)
         )) {
-            try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive, environment)) {
+            try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive, options)) {
                 for (Map.Entry<String, Long> expectedEntry : expectedEntries.entrySet()) {
                     Path entry = fileSystem.getPath("/" + expectedEntry.getKey());
                     ZipArkivoEntryAttributes attributes = Files.readAttributes(entry, ZipArkivoEntryAttributes.class);
@@ -257,11 +258,11 @@ public final class LibarchiveArchiveCorpusTest {
             }
         }
 
-        Map<String, ?> correctEnvironment = Map.of(
-                ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+        ArchiveOptions correctOptions = ArchiveOptions.of(
+                ZipArkivoFileSystem.PASSWORD_PROVIDER,
                 ArkivoPasswordProvider.fixed(password.toCharArray(), StandardCharsets.UTF_8)
         );
-        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive, correctEnvironment)) {
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive, correctOptions)) {
             for (Map.Entry<String, Long> expectedEntry : expectedEntries.entrySet()) {
                 Path entry = fileSystem.getPath("/" + expectedEntry.getKey());
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(entry, ZipArkivoEntryAttributes.class);
@@ -288,7 +289,7 @@ public final class LibarchiveArchiveCorpusTest {
 
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(archiveBytes));
         Set<String> streamedEntries = new HashSet<>();
-        try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(source, correctEnvironment)) {
+        try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(source, correctOptions)) {
             while (reader.next()) {
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 if (!attributes.isRegularFile()) {
@@ -469,8 +470,8 @@ public final class LibarchiveArchiveCorpusTest {
     /// Verifies data-only, header, and partially encrypted 7z archives with the password-provider API.
     @Test
     public void readsEncryptedSevenZipArchives(@TempDir Path temporaryDirectory) throws IOException {
-        Map<String, ?> environment = Map.of(
-                SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+        ArchiveOptions options = ArchiveOptions.of(
+                SevenZipArkivoFileSystem.PASSWORD_PROVIDER,
                 SEVEN_ZIP_PASSWORD
         );
         byte[] expected = "foo\n".getBytes(StandardCharsets.US_ASCII);
@@ -480,7 +481,7 @@ public final class LibarchiveArchiveCorpusTest {
                 "encrypted-data.7z",
                 temporaryDirectory
         );
-        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(encryptedData, environment)) {
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(encryptedData, options)) {
             assertArrayEquals(expected, Files.readAllBytes(fileSystem.getPath("/bar.txt")));
         }
 
@@ -489,7 +490,7 @@ public final class LibarchiveArchiveCorpusTest {
                 "encrypted-header.7z",
                 temporaryDirectory
         );
-        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(encryptedHeader, environment)) {
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(encryptedHeader, options)) {
             assertArrayEquals(expected, Files.readAllBytes(fileSystem.getPath("/bar.txt")));
         }
 
@@ -505,7 +506,7 @@ public final class LibarchiveArchiveCorpusTest {
                     () -> Files.readAllBytes(fileSystem.getPath("/bar_encrypted.txt"))
             );
         }
-        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(partiallyEncrypted, environment)) {
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(partiallyEncrypted, options)) {
             assertArrayEquals(expected, Files.readAllBytes(fileSystem.getPath("/bar_encrypted.txt")));
         }
     }

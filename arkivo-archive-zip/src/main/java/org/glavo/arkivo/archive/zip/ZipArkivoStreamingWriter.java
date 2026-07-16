@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.zip;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
@@ -14,7 +15,6 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
-import java.util.Map;
 import java.util.Objects;
 
 /// Writes ZIP entries to a forward-only stream.
@@ -27,14 +27,14 @@ public abstract sealed class ZipArkivoStreamingWriter extends ArkivoStreamingWri
 
     /// Creates a streaming ZIP writer that writes to an archive path.
     public static ZipArkivoStreamingWriter create(Path path) throws IOException {
-        return create(path, Map.of());
+        return create(path, ArchiveOptions.EMPTY);
     }
 
-    /// Creates a streaming ZIP writer that writes to an archive path with environment options.
-    public static ZipArkivoStreamingWriter create(Path path, Map<String, ?> environment) throws IOException {
+    /// Creates a streaming ZIP writer that writes to an archive path with options.
+    public static ZipArkivoStreamingWriter create(Path path, ArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
-        Objects.requireNonNull(environment, "environment");
-        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromWriterEnvironment(environment);
+        Objects.requireNonNull(options, "options");
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromWriterOptions(options);
         if (!config.archiveWritable()) {
             throw new IllegalArgumentException("ZIP streaming writer open options must include WRITE");
         }
@@ -43,61 +43,58 @@ public abstract sealed class ZipArkivoStreamingWriter extends ArkivoStreamingWri
 
     /// Opens a streaming ZIP writer over an output stream.
     public static ZipArkivoStreamingWriter open(OutputStream output) {
-        return open(output, Map.of());
+        return open(output, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a streaming ZIP writer over an output stream with environment options.
-    public static ZipArkivoStreamingWriter open(OutputStream output, Map<String, ?> environment) {
+    /// Opens a streaming ZIP writer over an output stream with options.
+    public static ZipArkivoStreamingWriter open(OutputStream output, ArchiveOptions options) {
         Objects.requireNonNull(output, "output");
-        Objects.requireNonNull(environment, "environment");
-        return open(StreamChannelAdapters.writableChannel(output), environment);
+        Objects.requireNonNull(options, "options");
+        return open(StreamChannelAdapters.writableChannel(output), options);
     }
 
     /// Opens a streaming ZIP writer over a writable channel.
     public static ZipArkivoStreamingWriter open(WritableByteChannel output) {
-        return open(output, Map.of());
+        return open(output, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a streaming ZIP writer over a writable channel with environment options.
+    /// Opens a streaming ZIP writer over a writable channel with options.
     public static ZipArkivoStreamingWriter open(
             WritableByteChannel output,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) {
         Objects.requireNonNull(output, "output");
-        Objects.requireNonNull(environment, "environment");
-        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+        Objects.requireNonNull(options, "options");
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromOptions(options);
         return ZipArkivoStreamingWriterImpl.open(output, config);
     }
 
     /// Opens a split streaming ZIP writer over a transactional volume target.
     public static ZipArkivoStreamingWriter open(ArkivoVolumeTarget target, long splitSize) throws IOException {
-        return open(target, splitSize, Map.of());
+        return open(target, splitSize, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a split streaming ZIP writer over a transactional volume target with environment options.
+    /// Opens a split streaming ZIP writer over a transactional volume target with options.
     public static ZipArkivoStreamingWriter open(
             ArkivoVolumeTarget target,
             long splitSize,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         if (splitSize < ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE
                 || splitSize > ZipArkivoFileSystem.MAXIMUM_SPLIT_SIZE) {
             throw new IllegalArgumentException(
                     "splitSize must be between MINIMUM_SPLIT_SIZE and MAXIMUM_SPLIT_SIZE"
             );
         }
-        if (environment.containsKey(ZipArkivoFileSystem.SPLIT_SIZE.key())) {
+        if (options.contains(ZipArkivoFileSystem.SPLIT_SIZE)) {
             throw new IllegalArgumentException(
                     "ZIP volume target splitSize must be provided as the factory argument"
             );
         }
-        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromOptions(options);
         return ZipArkivoStreamingWriterImpl.open(target, splitSize, config);
     }
 
-    /// Closes this streaming writer and finishes the ZIP stream.
-    @Override
-    public abstract void close() throws IOException;
 }

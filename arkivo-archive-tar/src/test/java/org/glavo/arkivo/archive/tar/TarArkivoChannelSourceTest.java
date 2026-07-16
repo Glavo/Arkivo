@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.tar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
@@ -71,7 +72,7 @@ final class TarArkivoChannelSourceTest {
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
             );
 
-            assertThrows(IllegalArgumentException.class, () -> TarArkivoFileSystem.open(source, environment));
+            assertThrows(IllegalArgumentException.class, () -> TarArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment)));
             assertEquals(0, source.openCount());
             assertEquals(1, source.closeCount());
         } finally {
@@ -100,7 +101,7 @@ final class TarArkivoChannelSourceTest {
                     target
             );
 
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(source, environment)) {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment))) {
                 assertFalse(fileSystem.isReadOnly());
                 Files.writeString(fileSystem.getPath("/value.txt"), "updated", StandardCharsets.UTF_8);
                 Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
@@ -138,7 +139,7 @@ final class TarArkivoChannelSourceTest {
                     ArkivoCommitTarget.writeTo(targetPath)
             );
 
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(channel, environment)) {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(channel, ArchiveOptions.fromEnvironment(environment))) {
                 Files.delete(fileSystem.getPath("/value.txt"));
                 Files.writeString(fileSystem.getPath("/replacement.txt"), "replacement", StandardCharsets.UTF_8);
             }
@@ -180,7 +181,7 @@ final class TarArkivoChannelSourceTest {
                     failingTarget
             );
 
-            TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(source, environment);
+            TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment));
             Files.writeString(fileSystem.getPath("/value.txt"), "changed", StandardCharsets.UTF_8);
             IOException exception = assertThrows(IOException.class, fileSystem::close);
 
@@ -210,7 +211,7 @@ final class TarArkivoChannelSourceTest {
                     ArkivoCommitTarget.writeTo(targetPath)
             );
 
-            try (TarArkivoFileSystem ignored = TarArkivoFileSystem.open(source, environment)) {
+            try (TarArkivoFileSystem ignored = TarArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment))) {
             }
 
             assertFalse(Files.exists(targetPath));

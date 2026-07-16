@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.tar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
@@ -60,7 +61,7 @@ public final class TarIndexedStorageTest {
 
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(
                 archive,
-                Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage)
+                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
         )) {
             writer.beginFile("file.txt");
             try (OutputStream output = writer.openOutputStream()) {
@@ -80,7 +81,7 @@ public final class TarIndexedStorageTest {
         try {
             try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(
                     archivePath,
-                    Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage)
+                    ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
             )) {
                 byte[] expected = "shared-content".getBytes(StandardCharsets.UTF_8);
                 assertArrayEquals(expected, Files.readAllBytes(fileSystem.getPath("/file.txt")));
@@ -101,7 +102,7 @@ public final class TarIndexedStorageTest {
         TrackingEditStorage storage = new TrackingEditStorage(true);
         TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(
                 archivePath,
-                Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage)
+                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
         );
         try {
             IOException failure = assertThrows(IOException.class, fileSystem::close);

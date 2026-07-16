@@ -23,7 +23,8 @@ import java.util.Objects;
 public final class ZlibCodec
         implements CompressionCodec.LevelConfigurable<ZlibCodec>,
         CompressionCodec.StrategyConfigurable<ZlibCodec>,
-        CompressionCodec.DictionaryConfigurable<ZlibCodec, ZlibDictionary> {
+        CompressionCodec.DictionaryConfigurable<ZlibCodec, ZlibDictionary>,
+        CompressionCodec.Flushable<ZlibCodec> {
     /// The stable zlib compression format name.
     public static final String NAME = "zlib";
 

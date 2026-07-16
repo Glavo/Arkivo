@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.ar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
@@ -643,7 +645,7 @@ public final class ArArkivoStreamingReaderTest {
         );
 
         try {
-            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, environment)) {
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 assertEquals(false, fileSystem.isReadOnly());
 
                 Path directory = fileSystem.getPath("/dir");
@@ -800,7 +802,7 @@ public final class ArArkivoStreamingReaderTest {
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
             );
             FileTime modifiedTime = FileTime.from(Instant.parse("2032-03-04T05:06:07Z"));
-            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, environment)) {
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 assertEquals(false, fileSystem.isReadOnly());
                 Path keep = fileSystem.getPath("/keep.txt");
                 assertArrayEquals(keepContent, Files.readAllBytes(keep));
@@ -919,7 +921,7 @@ public final class ArArkivoStreamingReaderTest {
                     ArkivoFileSystem.COMMIT_TARGET.key(),
                     ArkivoCommitTarget.writeTo(derivedPath)
             );
-            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, environment)) {
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 Files.writeString(fileSystem.getPath("/value.txt"), "after", StandardCharsets.UTF_8);
             }
 
@@ -953,7 +955,7 @@ public final class ArArkivoStreamingReaderTest {
                     failingTarget
             );
 
-            ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, environment);
+            ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment));
             Files.writeString(fileSystem.getPath("/value.txt"), "after", StandardCharsets.UTF_8);
             IOException exception = assertThrows(IOException.class, fileSystem::close);
             assertEquals("commit target failed", exception.getMessage());
@@ -976,7 +978,7 @@ public final class ArArkivoStreamingReaderTest {
                     ArkivoFileSystem.OPEN_OPTIONS.key(),
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
             );
-            try (ArArkivoFileSystem ignored = ArArkivoFileSystem.open(archivePath, environment)) {
+            try (ArArkivoFileSystem ignored = ArArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
             }
             assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
         } finally {
@@ -994,7 +996,7 @@ public final class ArArkivoStreamingReaderTest {
                     ArkivoFileSystem.OPEN_OPTIONS.key(),
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
             );
-            try (ArArkivoFileSystem ignored = ArArkivoFileSystem.open(archivePath, environment)) {
+            try (ArArkivoFileSystem ignored = ArArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
             }
             assertEquals(true, Files.exists(archivePath));
             try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath);
@@ -1022,7 +1024,7 @@ public final class ArArkivoStreamingReaderTest {
                     ArkivoFileSystem.OPEN_OPTIONS.key(),
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
             );
-            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, environment)) {
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/value.txt")));
                 Files.writeString(fileSystem.getPath("/new.txt"), "new", StandardCharsets.UTF_8);
             }
@@ -1119,7 +1121,7 @@ public final class ArArkivoStreamingReaderTest {
 
         try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                Map.of(ArkivoFileSystem.MAX_METADATA_SIZE.key(), maximum)
+                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.MAX_METADATA_SIZE.key(), maximum))
         )) {
             ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
             assertEquals(ArkivoReadLimitKind.METADATA_SIZE, exception.kind());

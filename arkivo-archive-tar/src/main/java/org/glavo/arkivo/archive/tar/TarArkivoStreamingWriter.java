@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.tar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
@@ -19,7 +20,6 @@ import java.nio.channels.WritableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.Map;
 import java.util.Objects;
 
 /// Writes TAR entries to a forward-only stream.
@@ -45,15 +45,15 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
         ));
     }
 
-    /// Creates a streaming TAR writer at an archive path with environment options.
+    /// Creates a streaming TAR writer at an archive path with options.
     public static TarArkivoStreamingWriter create(
             Path path,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(path, "path");
-        Objects.requireNonNull(environment, "environment");
-        @Nullable CompressionCodec<?> compressionCodec = TarArkivoFileSystem.COMPRESSION.read(environment);
-        @Nullable ArkivoEditStorage bodyStorage = ArkivoFileSystem.EDIT_STORAGE.read(environment);
+        Objects.requireNonNull(options, "options");
+        @Nullable CompressionCodec<?> compressionCodec = options.get(TarArkivoFileSystem.COMPRESSION);
+        @Nullable ArkivoEditStorage bodyStorage = options.get(ArkivoFileSystem.EDIT_STORAGE);
         WritableByteChannel archiveOutput = TarCompressionStreams.openArchiveOutput(
                 Files.newByteChannel(
                         path,
@@ -83,21 +83,21 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
         ), bodyStorage);
     }
 
-    /// Creates a streaming TAR writer at an archive path with owned body storage and environment options.
+    /// Creates a streaming TAR writer at an archive path with owned body storage and options.
     public static TarArkivoStreamingWriter create(
             Path path,
             ArkivoEditStorage bodyStorage,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(bodyStorage, "bodyStorage");
-        Objects.requireNonNull(environment, "environment");
-        if (environment.containsKey(ArkivoFileSystem.EDIT_STORAGE.key())) {
+        Objects.requireNonNull(options, "options");
+        if (options.contains(ArkivoFileSystem.EDIT_STORAGE)) {
             throw new IllegalArgumentException(
-                    "TAR body storage must be provided either as an argument or an environment option"
+                    "TAR body storage must be provided either as an argument or an option"
             );
         }
-        @Nullable CompressionCodec<?> compressionCodec = TarArkivoFileSystem.COMPRESSION.read(environment);
+        @Nullable CompressionCodec<?> compressionCodec = options.get(TarArkivoFileSystem.COMPRESSION);
         return new TarArkivoStreamingWriterImpl(
                 StreamChannelAdapters.outputStream(TarCompressionStreams.openArchiveOutput(
                         Files.newByteChannel(
@@ -118,14 +118,14 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
         return open(StreamChannelAdapters.writableChannel(output));
     }
 
-    /// Opens a streaming TAR writer over an output stream with environment options.
+    /// Opens a streaming TAR writer over an output stream with options.
     public static TarArkivoStreamingWriter open(
             OutputStream output,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(output, "output");
-        Objects.requireNonNull(environment, "environment");
-        return open(StreamChannelAdapters.writableChannel(output), environment);
+        Objects.requireNonNull(options, "options");
+        return open(StreamChannelAdapters.writableChannel(output), options);
     }
 
     /// Opens a streaming TAR writer over an output stream and owns the given body storage.
@@ -135,16 +135,16 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
         return open(StreamChannelAdapters.writableChannel(output), bodyStorage);
     }
 
-    /// Opens a streaming TAR writer over an output stream with owned body storage and environment options.
+    /// Opens a streaming TAR writer over an output stream with owned body storage and options.
     public static TarArkivoStreamingWriter open(
             OutputStream output,
             ArkivoEditStorage bodyStorage,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(bodyStorage, "bodyStorage");
-        Objects.requireNonNull(environment, "environment");
-        return open(StreamChannelAdapters.writableChannel(output), bodyStorage, environment);
+        Objects.requireNonNull(options, "options");
+        return open(StreamChannelAdapters.writableChannel(output), bodyStorage, options);
     }
 
     /// Opens a streaming TAR writer over a writable channel.
@@ -153,15 +153,15 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
         return new TarArkivoStreamingWriterImpl(StreamChannelAdapters.outputStream(output));
     }
 
-    /// Opens a streaming TAR writer over a writable channel with environment options.
+    /// Opens a streaming TAR writer over a writable channel with options.
     public static TarArkivoStreamingWriter open(
             WritableByteChannel output,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(output, "output");
-        Objects.requireNonNull(environment, "environment");
-        @Nullable CompressionCodec<?> compressionCodec = TarArkivoFileSystem.COMPRESSION.read(environment);
-        @Nullable ArkivoEditStorage bodyStorage = ArkivoFileSystem.EDIT_STORAGE.read(environment);
+        Objects.requireNonNull(options, "options");
+        @Nullable CompressionCodec<?> compressionCodec = options.get(TarArkivoFileSystem.COMPRESSION);
+        @Nullable ArkivoEditStorage bodyStorage = options.get(ArkivoFileSystem.EDIT_STORAGE);
         WritableByteChannel archiveOutput = TarCompressionStreams.openArchiveOutput(output, compressionCodec);
         return bodyStorage == null
                 ? new TarArkivoStreamingWriterImpl(StreamChannelAdapters.outputStream(archiveOutput))
@@ -180,21 +180,21 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
         );
     }
 
-    /// Opens a streaming TAR writer over a writable channel with owned body storage and environment options.
+    /// Opens a streaming TAR writer over a writable channel with owned body storage and options.
     public static TarArkivoStreamingWriter open(
             WritableByteChannel output,
             ArkivoEditStorage bodyStorage,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(bodyStorage, "bodyStorage");
-        Objects.requireNonNull(environment, "environment");
-        if (environment.containsKey(ArkivoFileSystem.EDIT_STORAGE.key())) {
+        Objects.requireNonNull(options, "options");
+        if (options.contains(ArkivoFileSystem.EDIT_STORAGE)) {
             throw new IllegalArgumentException(
-                    "TAR body storage must be provided either as an argument or an environment option"
+                    "TAR body storage must be provided either as an argument or an option"
             );
         }
-        @Nullable CompressionCodec<?> compressionCodec = TarArkivoFileSystem.COMPRESSION.read(environment);
+        @Nullable CompressionCodec<?> compressionCodec = options.get(TarArkivoFileSystem.COMPRESSION);
         return new TarArkivoStreamingWriterImpl(
                 StreamChannelAdapters.outputStream(TarCompressionStreams.openArchiveOutput(
                         output,
@@ -205,5 +205,11 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
     }
 
     /// Begins a pending hard link entry for the given logical archive path and target archive path.
-    public abstract void beginHardLink(String path, String target) throws IOException;
+    public final ArkivoStreamingWriter.Entry beginHardLink(String path, String target) throws IOException {
+        String checkedTarget = Objects.requireNonNull(target, "target");
+        return beginCustomEntry(path, checkedPath -> beginHardLinkEntry(checkedPath, checkedTarget));
+    }
+
+    /// Begins a format-specific pending hard link entry.
+    protected abstract void beginHardLinkEntry(String path, String target) throws IOException;
 }

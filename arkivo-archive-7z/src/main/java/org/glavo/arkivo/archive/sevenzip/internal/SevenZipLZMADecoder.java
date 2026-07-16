@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.sevenzip.internal;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.transform.TransformingInputStream;
+import org.glavo.arkivo.codec.transform.ByteTransform.Direction;
 import org.glavo.arkivo.codec.delta.DeltaTransform;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -657,7 +658,7 @@ final class SevenZipLZMADecoder {
             throw new IOException("7z Delta coder properties must contain one byte");
         }
         int distance = Byte.toUnsignedInt(properties[0]) + 1;
-        return new TransformingInputStream(input, new DeltaTransform(false, distance));
+        return new TransformingInputStream(input, new DeltaTransform(Direction.DECODE, distance));
     }
 
     /// Opens a raw BCJ filter decoder for 7z coder properties.
@@ -694,61 +695,61 @@ final class SevenZipLZMADecoder {
     /// Opens a raw x86 BCJ filter decoder for 7z coder properties.
     static InputStream openX86Filter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        int startOffset = bcjStartOffset(properties, "7z x86 BCJ coder", 1);
-        return new TransformingInputStream(input, BCJTransforms.x86(false, startOffset));
+        long startOffset = bcjStartOffset(properties, "7z x86 BCJ coder", 1);
+        return new TransformingInputStream(input, BCJTransforms.x86(Direction.DECODE, startOffset));
     }
 
     /// Opens a raw PowerPC BCJ filter decoder for 7z coder properties.
     static InputStream openPowerPCFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        int startOffset = bcjStartOffset(properties, "7z PowerPC BCJ coder", 4);
-        return new TransformingInputStream(input, BCJTransforms.powerPc(false, startOffset));
+        long startOffset = bcjStartOffset(properties, "7z PowerPC BCJ coder", 4);
+        return new TransformingInputStream(input, BCJTransforms.powerPC(Direction.DECODE, startOffset));
     }
 
     /// Opens a raw IA-64 BCJ filter decoder for 7z coder properties.
     static InputStream openIA64Filter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        int startOffset = bcjStartOffset(properties, "7z IA-64 BCJ coder", 16);
-        return new TransformingInputStream(input, BCJTransforms.ia64(false, startOffset));
+        long startOffset = bcjStartOffset(properties, "7z IA-64 BCJ coder", 16);
+        return new TransformingInputStream(input, BCJTransforms.ia64(Direction.DECODE, startOffset));
     }
 
     /// Opens a raw ARM BCJ filter decoder for 7z coder properties.
     static InputStream openARMFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        int startOffset = bcjStartOffset(properties, "7z ARM BCJ coder", 4);
-        return new TransformingInputStream(input, BCJTransforms.arm(false, startOffset));
+        long startOffset = bcjStartOffset(properties, "7z ARM BCJ coder", 4);
+        return new TransformingInputStream(input, BCJTransforms.arm(Direction.DECODE, startOffset));
     }
 
     /// Opens a raw ARM-Thumb BCJ filter decoder for 7z coder properties.
     static InputStream openARMThumbFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        int startOffset = bcjStartOffset(properties, "7z ARM-Thumb BCJ coder", 2);
-        return new TransformingInputStream(input, BCJTransforms.armThumb(false, startOffset));
+        long startOffset = bcjStartOffset(properties, "7z ARM-Thumb BCJ coder", 2);
+        return new TransformingInputStream(input, BCJTransforms.armThumb(Direction.DECODE, startOffset));
     }
 
     /// Opens a raw SPARC BCJ filter decoder for 7z coder properties.
     static InputStream openSPARCFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        int startOffset = bcjStartOffset(properties, "7z SPARC BCJ coder", 4);
-        return new TransformingInputStream(input, BCJTransforms.sparc(false, startOffset));
+        long startOffset = bcjStartOffset(properties, "7z SPARC BCJ coder", 4);
+        return new TransformingInputStream(input, BCJTransforms.sparc(Direction.DECODE, startOffset));
     }
 
     /// Opens a raw ARM64 BCJ filter decoder for 7z coder properties.
     static InputStream openARM64Filter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        int startOffset = bcjStartOffset(properties, "7z ARM64 BCJ coder", 4);
-        return new TransformingInputStream(input, BCJTransforms.arm64(false, startOffset));
+        long startOffset = bcjStartOffset(properties, "7z ARM64 BCJ coder", 4);
+        return new TransformingInputStream(input, BCJTransforms.arm64(Direction.DECODE, startOffset));
     }
 
     /// Opens a raw RISC-V BCJ filter decoder for 7z coder properties.
     static InputStream openRiscVFilter(InputStream input, byte[] properties) throws IOException {
         Objects.requireNonNull(input, "input");
-        int startOffset = bcjStartOffset(properties, "7z RISC-V BCJ coder", 2);
-        return new TransformingInputStream(input, BCJTransforms.riscV(false, startOffset));
+        long startOffset = bcjStartOffset(properties, "7z RISC-V BCJ coder", 2);
+        return new TransformingInputStream(input, BCJTransforms.riscV(Direction.DECODE, startOffset));
     }
 
     /// Reads BCJ filter properties as an optional little-endian start offset.
-    private static int bcjStartOffset(
+    private static long bcjStartOffset(
             byte[] properties,
             String description,
             int alignment
@@ -760,7 +761,7 @@ final class SevenZipLZMADecoder {
         if (properties.length != 4) {
             throw new IOException(description + " properties must contain zero or four bytes");
         }
-        int startOffset = ByteArrayAccess.readIntLittleEndian(properties, 0);
+        long startOffset = Integer.toUnsignedLong(ByteArrayAccess.readIntLittleEndian(properties, 0));
         if ((startOffset & (alignment - 1)) != 0) {
             throw new IOException(description + " start offset must be aligned to " + alignment);
         }

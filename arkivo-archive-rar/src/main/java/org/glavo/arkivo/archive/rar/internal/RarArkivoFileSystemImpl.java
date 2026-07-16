@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.rar.internal;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
@@ -15,7 +16,7 @@ import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.rar.RarArkivoFileSystem;
-import org.glavo.arkivo.archive.rar.RarArkivoFileSystemProvider;
+import org.glavo.arkivo.archive.rar.internal.RarArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.rar.RarArkivoStreamingReader;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -87,8 +88,8 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     /// The repeatable volume source used for metadata scans and lazy entry decoding.
     private final ArkivoVolumeSource volumes;
 
-    /// The immutable environment reused by lazy entry decoders.
-    private final @Unmodifiable Map<String, ?> environment;
+    /// The immutable options reused by lazy entry decoders.
+    private final ArchiveOptions options;
 
     /// The action invoked when this file system closes.
     private final Runnable closeAction;
@@ -136,7 +137,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             Map<String, Node> nodes,
             ArkivoEditStorage editStorage,
             Set<ArkivoStoredContent> ownedContents,
-            Map<String, ?> environment,
+            ArchiveOptions options,
             Runnable closeAction
     ) {
         super(threadSafety);
@@ -147,7 +148,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         this.archivePath = archivePath != null ? archivePath.toAbsolutePath().normalize() : null;
         this.archiveUri = archiveUri;
         this.volumes = Objects.requireNonNull(volumes, "volumes");
-        this.environment = Collections.unmodifiableMap(new LinkedHashMap<>(environment));
+        this.options = Objects.requireNonNull(options, "options");
         this.closeAction = Objects.requireNonNull(closeAction, "closeAction");
         this.nodes = Map.copyOf(nodes);
         this.editStorage = Objects.requireNonNull(editStorage, "editStorage");
@@ -160,17 +161,13 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             RarArkivoFileSystemProvider provider,
             Path archivePath,
             URI archiveUri,
-            Map<String, ?> environment,
+            ArchiveOptions options,
             Runnable closeAction
     ) throws IOException {
-        Objects.requireNonNull(environment, "environment");
-        ArkivoFileSystemThreadSafety threadSafety = ArkivoFileSystem.THREAD_SAFETY.readOrDefault(
-                environment,
-                ArkivoFileSystemThreadSafety.CONCURRENT_READ
+        Objects.requireNonNull(options, "options");
+        ArkivoFileSystemThreadSafety threadSafety = options.getOrDefault(ArkivoFileSystem.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
         );
-        Set<OpenOption> openOptions = ArkivoFileSystem.OPEN_OPTIONS.readOrDefault(
-                environment,
-                Set.of(StandardOpenOption.READ)
+        Set<OpenOption> openOptions = options.getOrDefault(ArkivoFileSystem.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
         );
         for (OpenOption option : openOptions) {
             if (option != StandardOpenOption.READ) {
@@ -182,12 +179,12 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         ArkivoVolumeSource volumes = ArkivoVolumeSource.of(
                 splitVolumePaths != null ? splitVolumePaths : List.of(archivePath)
         );
-        ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(environment);
+        ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(options);
         Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
         try {
             Map<String, Node> nodes;
             try (InputStream input = new RarVolumeInputStream(volumes)) {
-                nodes = readNodes(input, environment);
+                nodes = readNodes(input, options);
             }
             return new RarArkivoFileSystemImpl(
                     provider,
@@ -198,7 +195,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                     nodes,
                     editStorage,
                     ownedContents,
-                    environment,
+                    options,
                     closeAction
             );
         } catch (IOException | RuntimeException | Error exception) {
@@ -212,17 +209,13 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     public static RarArkivoFileSystemImpl open(
             RarArkivoFileSystemProvider provider,
             ArkivoVolumeSource volumes,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(volumes, "volumes");
-        Objects.requireNonNull(environment, "environment");
-        ArkivoFileSystemThreadSafety threadSafety = ArkivoFileSystem.THREAD_SAFETY.readOrDefault(
-                environment,
-                ArkivoFileSystemThreadSafety.CONCURRENT_READ
+        Objects.requireNonNull(options, "options");
+        ArkivoFileSystemThreadSafety threadSafety = options.getOrDefault(ArkivoFileSystem.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
         );
-        Set<OpenOption> openOptions = ArkivoFileSystem.OPEN_OPTIONS.readOrDefault(
-                environment,
-                Set.of(StandardOpenOption.READ)
+        Set<OpenOption> openOptions = options.getOrDefault(ArkivoFileSystem.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
         );
         for (OpenOption option : openOptions) {
             if (option != StandardOpenOption.READ) {
@@ -239,7 +232,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
 
         ArkivoEditStorage editStorage;
         try {
-            editStorage = StoredContentSupport.selectStorage(environment);
+            editStorage = StoredContentSupport.selectStorage(options);
         } catch (RuntimeException | Error exception) {
             try {
                 volumes.close();
@@ -252,7 +245,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         try {
             Map<String, Node> nodes;
             try (InputStream input = new RarVolumeInputStream(volumes)) {
-                nodes = readNodes(input, environment);
+                nodes = readNodes(input, options);
             }
             return new RarArkivoFileSystemImpl(
                     provider,
@@ -263,7 +256,7 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                     nodes,
                     editStorage,
                     ownedContents,
-                    environment,
+                    options,
                     () -> {
                     }
             );
@@ -834,8 +827,8 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         try (InputStream input = new RarVolumeInputStream(volumes);
              RarArkivoStreamingReader reader = new RarArkivoStreamingReaderImpl(
                      input,
-                     RarArkivoFileSystem.PASSWORD_PROVIDER.read(environment),
-                     environment,
+                     options.get(RarArkivoFileSystem.PASSWORD_PROVIDER),
+                     options,
                      false
              )) {
             RarArkivoStreamingReaderImpl readerImpl = (RarArkivoStreamingReaderImpl) reader;
@@ -915,17 +908,17 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     /// Reads entry metadata without retaining decoded file bodies.
     private static Map<String, Node> readNodes(
             InputStream input,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         LinkedHashMap<String, Node> nodes = new LinkedHashMap<>();
         Node root = new Node("", rootAttributes(), true, false, null);
         nodes.put("", root);
-        boolean encryptedContentAvailable = RarArkivoFileSystem.PASSWORD_PROVIDER.read(environment) != null;
+        boolean encryptedContentAvailable = options.get(RarArkivoFileSystem.PASSWORD_PROVIDER) != null;
 
         try (RarArkivoStreamingReader reader = new RarArkivoStreamingReaderImpl(
                 input,
-                RarArkivoFileSystem.PASSWORD_PROVIDER.read(environment),
-                environment,
+                options.get(RarArkivoFileSystem.PASSWORD_PROVIDER),
+                options,
                 false
         )) {
             RarArkivoStreamingReaderImpl readerImpl = (RarArkivoStreamingReaderImpl) reader;

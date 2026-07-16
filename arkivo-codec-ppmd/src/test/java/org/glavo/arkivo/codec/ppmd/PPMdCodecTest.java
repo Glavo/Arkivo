@@ -41,7 +41,7 @@ final class PPMdCodecTest {
         assertEquals(PPMdCodec.DEFAULT_MAXIMUM_ORDER, codec.maximumOrder());
         assertEquals(PPMdCodec.DEFAULT_MEMORY_SIZE, codec.memorySize());
         assertEquals(PPMdCodec.UNKNOWN_SIZE, codec.decodedSize());
-        PPMdCodec configured = codec.withMaximumOrder(4L).withMemorySize(1L << 20);
+        PPMdCodec configured = codec.withMaximumOrder(4).withMemorySize(1L << 20);
         assertEquals(4, configured.maximumOrder());
         assertEquals(1L << 20, configured.memorySize());
         assertEquals(PPMdCodec.DEFAULT_MAXIMUM_ORDER, codec.maximumOrder());
@@ -127,7 +127,7 @@ final class PPMdCodecTest {
     void validatesCompressionParametersAndHonorsOwnership() throws IOException {
         PPMdCodec codec = new PPMdCodec();
         WritableByteChannel lowOrderTarget = Channels.newChannel(new ByteArrayOutputStream());
-        assertThrows(IllegalArgumentException.class, () -> codec.withMaximumOrder(1L));
+        assertThrows(IllegalArgumentException.class, () -> codec.withMaximumOrder(1));
         assertTrue(lowOrderTarget.isOpen());
 
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
@@ -183,6 +183,6 @@ final class PPMdCodecTest {
 
     /// Creates the explicit model configuration used by channel round-trip tests.
     private static PPMdCodec modelCodec() {
-        return new PPMdCodec().withMaximumOrder(4L).withMemorySize(1L << 20);
+        return new PPMdCodec().withMaximumOrder(4).withMemorySize(1L << 20);
     }
 }

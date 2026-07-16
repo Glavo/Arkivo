@@ -109,48 +109,56 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         return openDecoder(source, DecompressionLimits.UNLIMITED, ChannelOwnership.RETAIN);
     }
 
-    /// Opens a compatibility channel that closes its target when compression finishes.
-    default WritableByteChannel compressTo(WritableByteChannel target) throws IOException {
-        return openEncoder(target, ChannelOwnership.CLOSE);
-    }
-
-    /// Opens a compatibility stream that closes its target when compression finishes.
-    default OutputStream compressTo(OutputStream target) throws IOException {
+    /// Opens an encoder output stream with explicit target ownership.
+    default OutputStream openEncoder(
+            OutputStream target,
+            ChannelOwnership ownership
+    ) throws IOException {
         Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(ownership, "ownership");
         return StreamChannelAdapters.outputStream(
-                openEncoder(StreamChannelAdapters.writableChannel(target), ChannelOwnership.CLOSE)
+                openEncoder(StreamChannelAdapters.writableChannel(target), ownership)
         );
     }
 
-    /// Opens a compatibility channel that closes its source with the decoder.
-    default ReadableByteChannel decompressFrom(ReadableByteChannel source) throws IOException {
-        return openDecoder(source, DecompressionLimits.UNLIMITED, ChannelOwnership.CLOSE);
+    /// Opens an encoder output stream and retains ownership of the target stream.
+    default OutputStream openEncoder(OutputStream target) throws IOException {
+        return openEncoder(target, ChannelOwnership.RETAIN);
     }
 
-    /// Opens a limited compatibility channel that closes its source with the decoder.
-    default ReadableByteChannel decompressFrom(
-            ReadableByteChannel source,
-            DecompressionLimits limits
+    /// Opens a decoder input stream with operation-scoped limits and explicit source ownership.
+    default InputStream openDecoder(
+            InputStream source,
+            DecompressionLimits limits,
+            ChannelOwnership ownership
     ) throws IOException {
-        return openDecoder(source, limits, ChannelOwnership.CLOSE);
-    }
-
-    /// Opens a compatibility stream that closes its source with the decoder.
-    default InputStream decompressFrom(InputStream source) throws IOException {
-        return decompressFrom(source, DecompressionLimits.UNLIMITED);
-    }
-
-    /// Opens a limited compatibility stream that closes its source with the decoder.
-    default InputStream decompressFrom(InputStream source, DecompressionLimits limits) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(limits, "limits");
+        Objects.requireNonNull(ownership, "ownership");
         return StreamChannelAdapters.inputStream(
-                openDecoder(
-                        StreamChannelAdapters.readableChannel(source),
-                        limits,
-                        ChannelOwnership.CLOSE
-                )
+                openDecoder(StreamChannelAdapters.readableChannel(source), limits, ownership)
         );
+    }
+
+    /// Opens a limited decoder input stream and retains ownership of the source stream.
+    default InputStream openDecoder(
+            InputStream source,
+            DecompressionLimits limits
+    ) throws IOException {
+        return openDecoder(source, limits, ChannelOwnership.RETAIN);
+    }
+
+    /// Opens an unlimited decoder input stream with explicit source ownership.
+    default InputStream openDecoder(
+            InputStream source,
+            ChannelOwnership ownership
+    ) throws IOException {
+        return openDecoder(source, DecompressionLimits.UNLIMITED, ownership);
+    }
+
+    /// Opens an unlimited decoder input stream and retains ownership of the source stream.
+    default InputStream openDecoder(InputStream source) throws IOException {
+        return openDecoder(source, DecompressionLimits.UNLIMITED, ChannelOwnership.RETAIN);
     }
 
     /// Compresses all bytes between channels without closing either channel.
@@ -198,18 +206,6 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         return ByteBufferCodecSupport.decompressAllocating(this, source, limits);
     }
 
-    /// Decompresses one frame into a newly allocated bounded heap buffer.
-    default ByteBuffer decompressFrame(ByteBuffer source, long maximumOutputSize) throws IOException {
-        return decompressFrame(source, DecompressionLimits.ofMaximumOutputSize(maximumOutputSize));
-    }
-
-    /// Decompresses one frame using operation-scoped limits.
-    ///
-    /// The source position stops after the first complete frame, preserving following frames or trailing bytes.
-    default ByteBuffer decompressFrame(ByteBuffer source, DecompressionLimits limits) throws IOException {
-        return ByteBufferCodecSupport.decompressFrameAllocating(this, source, limits);
-    }
-
     /// Compresses all remaining bytes from source into target.
     ///
     /// Both buffers are advanced by the number of bytes consumed and produced.
@@ -231,20 +227,176 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         ByteBufferCodecSupport.decompress(this, source, target, limits);
     }
 
-    /// Decompresses one frame into target without a history-window limit.
-    default void decompressFrame(ByteBuffer source, ByteBuffer target) throws IOException {
-        decompressFrame(source, target, DecompressionLimits.UNLIMITED);
+    /// Describes a format whose encoder can flush pending output without ending the active encoding.
+    ///
+    /// @param <C> the concrete immutable codec type returned by configuration methods
+    @NotNullByDefault
+    interface Flushable<C extends CompressionCodec<C>> extends CompressionCodec<C> {
+        /// Creates a fresh flush-capable encoder.
+        @Override
+        CompressionEncoder.Flushable newEncoder() throws IOException;
+
+        /// Opens a flush-capable encoder context over a target channel.
+        @Override
+        default CompressingWritableByteChannel.Flushable openEncoder(
+                WritableByteChannel target,
+                ChannelOwnership ownership
+        ) throws IOException {
+            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(ownership, "ownership");
+            return CodecChannelAdapters.openFlushableEncoder(target, ownership, this::newEncoder);
+        }
+
+        /// Opens a flush-capable encoder and retains target ownership.
+        @Override
+        default CompressingWritableByteChannel.Flushable openEncoder(
+                WritableByteChannel target
+        ) throws IOException {
+            return openEncoder(target, ChannelOwnership.RETAIN);
+        }
     }
 
-    /// Decompresses one frame into target using operation-scoped limits.
+    /// Describes a format composed of independently terminated, concatenable frames.
     ///
-    /// The source position stops after the first complete frame. The target must hold the complete decoded frame.
-    default void decompressFrame(
-            ByteBuffer source,
-            ByteBuffer target,
-            DecompressionLimits limits
-    ) throws IOException {
-        ByteBufferCodecSupport.decompressFrame(this, source, target, limits);
+    /// @param <C> the concrete immutable codec type returned by configuration methods
+    @NotNullByDefault
+    interface Framed<C extends CompressionCodec<C>> extends CompressionCodec<C> {
+        /// Creates a fresh frame-capable encoder.
+        @Override
+        CompressionEncoder.Framed newEncoder() throws IOException;
+
+        /// Creates a fresh frame-capable decoder using operation-scoped safety limits.
+        @Override
+        CompressionDecoder.Framed newDecoder(DecompressionLimits limits) throws IOException;
+
+        /// Creates a fresh frame-capable decoder without output or history-window limits.
+        @Override
+        default CompressionDecoder.Framed newDecoder() throws IOException {
+            return newDecoder(DecompressionLimits.UNLIMITED);
+        }
+
+        /// Opens a frame-capable encoder context over a target channel.
+        @Override
+        default CompressingWritableByteChannel.Framed openEncoder(
+                WritableByteChannel target,
+                ChannelOwnership ownership
+        ) throws IOException {
+            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(ownership, "ownership");
+            return CodecChannelAdapters.openFramedEncoder(target, ownership, this::newEncoder);
+        }
+
+        /// Opens a frame-capable encoder and retains target ownership.
+        @Override
+        default CompressingWritableByteChannel.Framed openEncoder(
+                WritableByteChannel target
+        ) throws IOException {
+            return openEncoder(target, ChannelOwnership.RETAIN);
+        }
+
+        /// Opens a frame-capable decoder context with operation-scoped safety limits.
+        @Override
+        default DecompressingReadableByteChannel.Framed openDecoder(
+                ReadableByteChannel source,
+                DecompressionLimits limits,
+                ChannelOwnership ownership
+        ) throws IOException {
+            Objects.requireNonNull(source, "source");
+            Objects.requireNonNull(limits, "limits");
+            Objects.requireNonNull(ownership, "ownership");
+
+            DecompressionLimits engineLimits =
+                    limits.withMaximumOutputSize(DecompressionLimits.UNLIMITED_SIZE);
+            DecompressingReadableByteChannel.Framed decoder = CodecChannelAdapters.openFramedDecoder(
+                    source,
+                    ownership,
+                    () -> newDecoder(engineLimits)
+            );
+            return CompressionDecoderSupport.limitChannelOutput(decoder, limits.maximumOutputSize());
+        }
+
+        /// Opens a frame-capable decoder with limits and retains source ownership.
+        @Override
+        default DecompressingReadableByteChannel.Framed openDecoder(
+                ReadableByteChannel source,
+                DecompressionLimits limits
+        ) throws IOException {
+            return openDecoder(source, limits, ChannelOwnership.RETAIN);
+        }
+
+        /// Opens a frame-capable decoder without safety limits and with explicit source ownership.
+        @Override
+        default DecompressingReadableByteChannel.Framed openDecoder(
+                ReadableByteChannel source,
+                ChannelOwnership ownership
+        ) throws IOException {
+            return openDecoder(source, DecompressionLimits.UNLIMITED, ownership);
+        }
+
+        /// Opens a frame-capable decoder without safety limits and retains source ownership.
+        @Override
+        default DecompressingReadableByteChannel.Framed openDecoder(
+                ReadableByteChannel source
+        ) throws IOException {
+            return openDecoder(source, DecompressionLimits.UNLIMITED, ChannelOwnership.RETAIN);
+        }
+
+        /// Decompresses one frame into a newly allocated bounded heap buffer.
+        default ByteBuffer decompressFrame(ByteBuffer source, long maximumOutputSize) throws IOException {
+            return decompressFrame(source, DecompressionLimits.ofMaximumOutputSize(maximumOutputSize));
+        }
+
+        /// Decompresses one frame using operation-scoped limits.
+        ///
+        /// The source position stops after the first complete frame, preserving following frames or trailing bytes.
+        default ByteBuffer decompressFrame(ByteBuffer source, DecompressionLimits limits) throws IOException {
+            return ByteBufferCodecSupport.decompressFrameAllocating(this, source, limits);
+        }
+
+        /// Decompresses one frame into target without a history-window limit.
+        default void decompressFrame(ByteBuffer source, ByteBuffer target) throws IOException {
+            decompressFrame(source, target, DecompressionLimits.UNLIMITED);
+        }
+
+        /// Decompresses one frame into target using operation-scoped limits.
+        ///
+        /// The source position stops after the first complete frame. The target must hold the complete decoded frame.
+        default void decompressFrame(
+                ByteBuffer source,
+                ByteBuffer target,
+                DecompressionLimits limits
+        ) throws IOException {
+            ByteBufferCodecSupport.decompressFrame(this, source, target, limits);
+        }
+    }
+
+    /// Describes a framed format whose encoder also supports nonterminal flushing.
+    ///
+    /// @param <C> the concrete immutable codec type returned by configuration methods
+    @NotNullByDefault
+    interface FlushableFramed<C extends CompressionCodec<C>> extends Flushable<C>, Framed<C> {
+        /// Creates a fresh frame- and flush-capable encoder.
+        @Override
+        CompressionEncoder.FlushableFramed newEncoder() throws IOException;
+
+        /// Opens a frame- and flush-capable encoder context over a target channel.
+        @Override
+        default CompressingWritableByteChannel.FlushableFramed openEncoder(
+                WritableByteChannel target,
+                ChannelOwnership ownership
+        ) throws IOException {
+            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(ownership, "ownership");
+            return CodecChannelAdapters.openFlushableFramedEncoder(target, ownership, this::newEncoder);
+        }
+
+        /// Opens a frame- and flush-capable encoder and retains target ownership.
+        @Override
+        default CompressingWritableByteChannel.FlushableFramed openEncoder(
+                WritableByteChannel target
+        ) throws IOException {
+            return openEncoder(target, ChannelOwnership.RETAIN);
+        }
     }
 
     /// Describes an immutable codec configuration with a selectable compression level.
@@ -302,13 +454,17 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// Creates encoders that can receive an exact uncompressed source size as operation-scoped metadata.
     ///
     /// @param <C> the concrete immutable codec type returned by configuration methods
+    /// @param <E> the encoder capability type created by this codec
     @NotNullByDefault
-    interface PledgedSourceSizeEncoderFactory<C extends CompressionCodec<C>> extends CompressionCodec<C> {
+    interface PledgedSourceSizeEncoderFactory<
+            C extends CompressionCodec<C>,
+            E extends CompressionEncoder
+    > extends CompressionCodec<C> {
         /// Creates an encoder for a source with the requested exact byte count.
         ///
         /// `pledgedSourceSize` may be `CompressionCodec.UNKNOWN_SIZE` when the size is not known before encoding
         /// starts.
-        CompressionEncoder newEncoder(long pledgedSourceSize) throws IOException;
+        E newEncoder(long pledgedSourceSize) throws IOException;
 
         /// Opens an encoder context with exact uncompressed source-size metadata.
         default CompressingWritableByteChannel openEncoder(
@@ -335,7 +491,7 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
 
         /// Creates an encoder without a known source size.
         @Override
-        default CompressionEncoder newEncoder() throws IOException {
+        default E newEncoder() throws IOException {
             return newEncoder(UNKNOWN_SIZE);
         }
     }

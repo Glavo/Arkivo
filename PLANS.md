@@ -72,7 +72,7 @@ non-transitive. Staged Maven verification derives Arkivo dependency scopes from 
 scope. Aggregate verification also checks the exact public and qualified exports, transitive requirements, service uses,
 and service providers of every packaged Arkivo module.
 
-The aggregate API boundary suite records the reviewed public type set and inspects every public and protected class,
+The aggregate API boundary suite records the reviewed public and protected API type set and inspects every reachable class,
 field, constructor, method, generic, record, exception, and sealed-type signature. Public signatures may use only JDK
 types or exported Arkivo types from the same module or a transitively required module. Sealed declarations may keep
 their permitted implementations encapsulated inside the declaring module.
@@ -108,20 +108,22 @@ Primary factory methods should use `open(...)`. The target class name defines th
 
 ```java
 ZipArkivoFileSystem.open(path)
-ZipArkivoFileSystem.open(path, environment)
+ZipArkivoFileSystem.open(path, options)
 ```
 
-Common file system configuration options should live on `ArkivoFileSystem` as typed `ArkivoFileSystemOption`
+Common file system configuration options should live on `ArkivoFileSystem` as typed `ArchiveOption`
 constants, such as `ArkivoFileSystem.THREAD_SAFETY`.
 Format-specific file system configuration options should live on the concrete file system utility class as typed
-`ArkivoFileSystemOption` constants.
-Environment option keys should use a compact Arkivo namespace. Common option keys should use `arkivo.<option>`,
+`ArchiveOption` constants.
+Application-facing factories should accept immutable `ArchiveOptions`; raw NIO environment maps should be converted
+at the `FileSystemProvider` boundary.
+Option keys should use a compact Arkivo namespace. Common option keys should use `arkivo.<option>`,
 such as `arkivo.threadSafety`, while format-specific option keys should use `arkivo.<format>.<option>`, such as
 `arkivo.zip.passwordProvider`.
-`ArkivoFileSystemOption` should model the namespace and local option name separately, with the environment key derived
+`ArchiveOption` should model the namespace and local option name separately, with the environment key derived
 from those parts.
 Standalone string key constants should not be exposed by concrete file system utility classes; callers can use
-`ArkivoFileSystemOption.key()` when they need the stable map key.
+`ArchiveOption.key()` when they need the stable NIO environment key.
 
 Low-level reader, writer, editor, and streaming APIs should be introduced when a concrete use case cannot be served well through `FileSystem` and file attribute views.
 
@@ -134,10 +136,13 @@ Potential core types include:
 ```java
 ArkivoFormat
 ArkivoFormats
+ArchiveFormatRegistry
+ArchiveEntryAttributes
+ArchiveOption
+ArchiveOptions
 ArkivoPasswordProvider
 ArkivoVolumeSource
 ArkivoPathVolumeFormat
-ArkivoFileSystemOption
 ArkivoFileSystem
 ArkivoFileSystemFormat
 ArkivoVolumeFileSystemFormat
@@ -186,12 +191,12 @@ operation-scoped `DecompressionLimits` follow the same validation and exception 
 
 `CompressionFormats` should find format identities and open their default encoder and decoder contexts by stable format
 name. It should automatically open decoders for streams with reliable signatures. Context factories should apply explicit
-channel ownership consistently during lookup, detection, setup, and close. Named channel transfers should retain caller
-endpoints, while stream adapters should own their input or output stream.
+channel ownership consistently during lookup, detection, setup, and close. Channel and stream adapters retain caller
+endpoints by default and transfer ownership only when `ChannelOwnership.CLOSE` is selected explicitly.
 
 Zstandard signature detection recognizes the standard frame magic and all sixteen skippable-frame identifiers without
-changing the probe buffer. Generic decoder factories accept streams beginning with skippable frames, and incremental
-`STOP_AT_FRAME` decoding reports each skippable frame as a distinct boundary while preserving prefetched later frames.
+changing the probe buffer. Generic decoder factories accept streams beginning with skippable frames, and framed decoder
+contexts can stop after one frame while preserving prefetched later frames.
 The Zstandard codec also exposes explicit standard and magicless frame formats across channel, buffer, and frame-
 inspection APIs. Magicless streams require caller selection and do not participate in signature detection. Decoder
 checksum policy verifies XXH64 trailers by default or consumes them without verification when
@@ -282,7 +287,7 @@ retaining unrelated bodies; cached storage cleanup waits for active body channel
 
 AR, TAR, single-volume ZIP, and single-volume 7z complete-rewrite updates support both path-backed archives and arbitrary repeatable seekable channel sources. Non-path update sessions require an explicit commit target and can publish a derived archive without mutating the source; fixed path targets accept the absent source path while source-replacement targets reject it.
 
-`ArkivoFormats` preserves that update contract for both detected and explicitly named formats when opening owned seekable channels or repeatable channel sources. It forwards the complete environment unchanged, transfers endpoint ownership exactly once, and rejects non-path updates without a commit target before exposing a writable file system.
+`ArkivoFormats` preserves that update contract for both detected and explicitly named formats when opening owned seekable channels or repeatable channel sources. It forwards immutable options unchanged, transfers endpoint ownership exactly once, and rejects non-path updates without a commit target before exposing a writable file system.
 
 Named and detected streaming factories use channel-first endpoints. Stream overloads adapt to the same channel factories, named single-volume and multi-volume operations share capability resolution, and closeable endpoints transfer exactly once after argument validation. Detection borrows its source, while paths and volume targets remain caller-owned configuration values; selected formats own only the transactions opened from volume targets.
 
@@ -327,9 +332,9 @@ Streaming creation mode should reject operations that do not fit append-only ZIP
 
 Archive file system factories should support format-specific open options in addition to simple `Path` and channel overloads.
 
-Open environment maps should carry operation-level settings that are not entry metadata, including passwords, encryption defaults, character set policies, timestamp policies, overwrite behavior, and format-specific compatibility choices.
+`ArchiveOptions` should carry operation-level settings that are not entry metadata, including passwords, encryption defaults, character set policies, timestamp policies, overwrite behavior, and format-specific compatibility choices.
 
-ZIP entry name decoding should prefer authoritative Unicode metadata before falling back to an environment policy.
+ZIP entry name decoding should prefer authoritative Unicode metadata before falling back to a configured option.
 Readers should first honor validated Info-ZIP Unicode path and comment extra fields, then the UTF-8 general purpose bit flag, then the configured `ZipEntryNameEncoding` policy.
 The policy should support standard CP437 fallback, an explicit fallback charset, and deterministic automatic detection from a caller-provided or default candidate list.
 
@@ -348,7 +353,7 @@ falling back to one forward-only file and its optional outer codec transformatio
 
 Single-file archives may continue to use `Path`, `ReadableByteChannel`, `WritableByteChannel`, and `SeekableByteChannel` overloads. Split archives need storage abstractions that can resolve multiple physical volumes into one logical archive view.
 
-Read support should be able to locate and open a sequence of volumes, such as numbered 7z, zip, or rar parts. Write support should be able to create successive volumes according to explicit file system environment keys such as maximum volume size and naming policy.
+Read support should be able to locate and open a sequence of volumes, such as numbered 7z, zip, or rar parts. Write support should be able to create successive volumes according to explicit archive options such as maximum volume size and naming policy.
 
 Random-access formats should expose split archives through a logical seekable view so parser code can work with archive offsets without repeatedly handling physical volume boundaries.
 
@@ -356,11 +361,11 @@ Random-access formats should expose split archives through a logical seekable vi
 
 Passwords and other credentials should be treated as operation inputs, not archive metadata.
 
-Archive open environments should provide password or password-provider configuration for encrypted archives. Password providers should allow future support for formats that need more than one password attempt or entry-specific password lookup.
+Archive open options should provide password or password-provider configuration for encrypted archives. Password providers should allow future support for formats that need more than one password attempt or entry-specific password lookup.
 
-Encryption settings for newly written archives should be explicit write environment values. When a format supports entry-level encryption, such as ZIP, the entry writing model should allow per-item encryption choices in addition to archive-level defaults.
+Encryption settings for newly written archives should be explicit write options. When a format supports entry-level encryption, such as ZIP, the entry writing model should allow per-item encryption choices in addition to archive-level defaults.
 
-Formats with archive-level encryption features, such as 7z header encryption, should expose those features through format-specific write environment keys.
+Formats with archive-level encryption features, such as 7z header encryption, should expose those features through format-specific write options.
 
 The public API should distinguish between persistent file attributes, encryption method selection, and sensitive password material. Passwords should remain operation inputs and must not be exposed as archive entry attributes.
 
@@ -376,12 +381,12 @@ arkivo-archive-zip
   ZipArkivoFileSystem
   ZipArkivoEntryAttributes
   ZipArkivoEntryAttributeView
-  ZipArkivoFileSystemProvider
+  internal.ZipArkivoFileSystemProvider
 
 arkivo-archive-7z
   SevenZipArkivoFormat
   SevenZipArkivoFileSystem
-  SevenZipArkivoFileSystemProvider
+  internal.SevenZipArkivoFileSystemProvider
 
 arkivo-archive-tar
   TarArkivoFileSystem
@@ -405,8 +410,9 @@ classpath service discovery:
 FileSystems.newFileSystem(archivePath)
 ```
 
-The provider implementation and registration live in the concrete format module, while URI parsing, path format
-claiming, and registered instance lifecycle behavior remain shared archive infrastructure.
+Provider implementations are encapsulated in each format module's internal package. Their service registration lives
+in the concrete format module, while URI parsing, path format claiming, and registered instance lifecycle behavior
+remain shared archive infrastructure.
 
 Provider integration tests open AR, TAR, ZIP, 7z, and RAR through `FileSystems.newFileSystem(URI, ...)`, resolve entry
 URIs through `Path.of(URI)`, exercise content and extension routing through `FileSystems.newFileSystem(Path)`, and
@@ -508,7 +514,7 @@ Each archive format should define only the attribute interfaces it needs, such a
 2. Implement `arkivo-archive` with archive-format discovery, `FileSystem` support contracts, password and volume-source contracts, and archive-oriented buffer utilities.
 3. Implement `arkivo-codec` with independent codec contracts, service discovery, and byte-transform support.
 4. Implement the raw Deflate, Deflate64, gzip, and zlib codec family module to validate the buffer-first compression API.
-5. Define archive file system environment keys, password provider contracts, and split archive source abstractions.
+5. Define typed archive options, password provider contracts, and split archive source abstractions.
 6. Implement `ZipArkivoFileSystem` inside `arkivo-archive-zip`.
 7. Implement ZIP-specific entry attribute views.
 8. Implement ZIP file system mutation support with explicit writeback semantics.
@@ -589,4 +595,4 @@ Some formats may not support efficient random write operations. These formats sh
 
 Format-specific features should be represented through concrete format APIs rather than shared capability interfaces or boolean capability objects.
 
-Feature details such as supported encryption methods, header encryption support, split volume naming schemes, and write-time volume size constraints should remain in format-specific environment keys and attribute views.
+Feature details such as supported encryption methods, header encryption support, split volume naming schemes, and write-time volume size constraints should remain in format-specific options and attribute views.

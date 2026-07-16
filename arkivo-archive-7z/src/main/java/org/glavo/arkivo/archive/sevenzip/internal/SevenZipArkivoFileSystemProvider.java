@@ -1,8 +1,11 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.archive.sevenzip;
+package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFormat;
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemConfig;
@@ -36,7 +39,7 @@ import java.util.Set;
 @NotNullByDefault
 public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
     /// The URI scheme handled by the 7z Arkivo file system provider.
-    public static final String SCHEME = "arkivo+7z";
+    public static final String SCHEME = SevenZipArkivoFormat.instance().uriScheme();
 
     /// The shared provider instance used by Arkivo convenience factories.
     private static final SevenZipArkivoFileSystemProvider INSTANCE = new SevenZipArkivoFileSystemProvider();
@@ -65,7 +68,8 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
     public ArkivoFileSystem newFileSystem(URI uri, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(environment, "environment");
         ArkivoFileSystemProviderSupport.ParsedUri parsedUri = parseUri(uri, false);
-        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromEnvironment(environment);
+        SevenZipArkivoFileSystemConfig config =
+                SevenZipArkivoFileSystemConfig.fromOptions(ArchiveOptions.fromEnvironment(environment));
         return fileSystems.open(parsedUri.archiveUri(), closeAction -> new SevenZipArkivoFileSystemImpl(
                 this,
                 parsedUri.archivePath(),
@@ -81,13 +85,13 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
         ArkivoFileSystemProviderSupport.requirePathFormat(path, SevenZipArkivoFormat.instance());
-        return openPath(path, environment);
+        return openPath(path, ArchiveOptions.fromEnvironment(environment));
     }
 
     /// Opens a 7z archive path whose format has already been selected explicitly.
-    SevenZipArkivoFileSystem openPath(Path path, Map<String, ?> environment) throws IOException {
+    public SevenZipArkivoFileSystem openPath(Path path, ArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
-        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromEnvironment(environment);
+        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromOptions(options);
         return new SevenZipArkivoFileSystemImpl(this, path, null, config);
     }
 

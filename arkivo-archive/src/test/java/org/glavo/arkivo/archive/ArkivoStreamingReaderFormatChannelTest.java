@@ -16,7 +16,6 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.util.Map;
 import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -34,12 +33,12 @@ public final class ArkivoStreamingReaderFormatChannelTest {
         Method channelMethod = ArkivoStreamingReaderFormat.class.getMethod(
                 "openStreamingReader",
                 ReadableByteChannel.class,
-                Map.class
+                ArchiveOptions.class
         );
         Method streamMethod = ArkivoStreamingReaderFormat.class.getMethod(
                 "openStreamingReader",
                 InputStream.class,
-                Map.class
+                ArchiveOptions.class
         );
 
         assertTrue(Modifier.isAbstract(channelMethod.getModifiers()));
@@ -53,7 +52,7 @@ public final class ArkivoStreamingReaderFormatChannelTest {
         TestStreamingReaderFormat format = new TestStreamingReaderFormat();
         ByteArrayInputStream source = new ByteArrayInputStream(new byte[]{1, 2, 3});
 
-        ArkivoStreamingReader reader = format.openStreamingReader(source, Map.of());
+        ArkivoStreamingReader reader = format.openStreamingReader(source, ArchiveOptions.EMPTY);
         ReadableByteChannel openedChannel = Objects.requireNonNull(format.openedChannel);
         assertSame(openedChannel, ((TestStreamingReader) reader).source);
         assertTrue(openedChannel.isOpen());
@@ -68,7 +67,7 @@ public final class ArkivoStreamingReaderFormatChannelTest {
         Path path = Files.createTempFile("arkivo-reader-format-", ".bin");
         try {
             TestStreamingReaderFormat format = new TestStreamingReaderFormat();
-            ArkivoStreamingReader reader = format.openStreamingReader(path, Map.of());
+            ArkivoStreamingReader reader = format.openStreamingReader(path, ArchiveOptions.EMPTY);
             ReadableByteChannel openedChannel = Objects.requireNonNull(format.openedChannel);
 
             assertTrue(openedChannel.isOpen());
@@ -86,7 +85,7 @@ public final class ArkivoStreamingReaderFormatChannelTest {
         try {
             FailingStreamingReaderFormat format = new FailingStreamingReaderFormat();
 
-            assertThrows(IOException.class, () -> format.openStreamingReader(path, Map.of()));
+            assertThrows(IOException.class, () -> format.openStreamingReader(path, ArchiveOptions.EMPTY));
 
             assertNotNull(format.openedChannel);
             assertFalse(format.openedChannel.isOpen());
@@ -111,7 +110,7 @@ public final class ArkivoStreamingReaderFormatChannelTest {
         @Override
         public ArkivoStreamingReader openStreamingReader(
                 ReadableByteChannel source,
-                Map<String, ?> environment
+                ArchiveOptions options
         ) {
             openedChannel = source;
             return new TestStreamingReader(source);
@@ -134,7 +133,7 @@ public final class ArkivoStreamingReaderFormatChannelTest {
         @Override
         public ArkivoStreamingReader openStreamingReader(
                 ReadableByteChannel source,
-                Map<String, ?> environment
+                ArchiveOptions options
         ) throws IOException {
             openedChannel = source;
             throw new IOException("setup failed");
@@ -154,25 +153,25 @@ public final class ArkivoStreamingReaderFormatChannelTest {
 
         /// Reports that the test archive has no entries.
         @Override
-        public boolean next() {
+        protected boolean advance() {
             return false;
         }
 
         /// Rejects attribute reads because no entry exists.
         @Override
-        public <A extends BasicFileAttributes> A readAttributes(Class<A> type) {
+        protected <A extends BasicFileAttributes> A readCurrentAttributes(Class<A> type) {
             throw new IllegalStateException("No current test entry");
         }
 
         /// Rejects body access because no entry exists.
         @Override
-        public ReadableByteChannel openChannel() {
+        protected ReadableByteChannel openCurrentChannel() {
             throw new IllegalStateException("No current test entry");
         }
 
         /// Closes the owned source channel.
         @Override
-        public void close() throws IOException {
+        protected void closeReader() throws IOException {
             source.close();
         }
     }

@@ -13,10 +13,9 @@ import java.util.Objects;
 /// Accepts uncompressed bytes and writes encoded bytes to a backing channel.
 @NotNullByDefault
 public interface CompressingWritableByteChannel extends WritableByteChannel {
-    /// Processes all remaining source bytes and applies the requested frame directive.
-    default CodecResult encode(ByteBuffer source, Directive directive) throws IOException {
+    /// Processes all remaining source bytes while keeping the active encoding open.
+    default CodecResult encode(ByteBuffer source) throws IOException {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(directive, "directive");
         long inputBefore = inputBytes();
         long outputBefore = outputBytes();
         while (source.hasRemaining()) {
@@ -24,34 +23,14 @@ public interface CompressingWritableByteChannel extends WritableByteChannel {
                 throw new IOException("Compression encoder made no progress");
             }
         }
-
-        CodecResult.Status status;
-        if (directive == Directive.FLUSH) {
-            flush();
-            status = CodecResult.Status.FLUSHED;
-        } else if (directive == Directive.END_FRAME) {
-            finishFrame();
-            status = CodecResult.Status.FRAME_FINISHED;
-        } else {
-            status = CodecResult.Status.ACTIVE;
-        }
-        return new CodecResult(inputBytes() - inputBefore, outputBytes() - outputBefore, status);
+        return new CodecResult(
+                inputBytes() - inputBefore,
+                outputBytes() - outputBefore,
+                CodecResult.Status.ACTIVE
+        );
     }
 
-    /// Flushes currently pending output without ending the current frame.
-    ///
-    /// This operation throws UnsupportedOperationException when the engine is not a CompressionEncoder.Flushable.
-    void flush() throws IOException;
-
-    /// Finishes the current frame.
-    ///
-    /// A CompressionEncoder.Framed remains open and starts another frame lazily.
-    /// Other encoders finish and release their resources.
-    default void finishFrame() throws IOException {
-        finish();
-    }
-
-    /// Finishes the active frame and releases encoder resources without necessarily closing the backing channel.
+    /// Finishes the complete encoding and releases encoder resources without necessarily closing the backing channel.
     ///
     /// The encoder is no longer open after finalization is attempted, even when this method throws. If closing an owned
     /// target fails, a later `finish()` or `close()` retries only target closure and does not emit the frame trailer again.
@@ -67,18 +46,50 @@ public interface CompressingWritableByteChannel extends WritableByteChannel {
     @Override
     void close() throws IOException;
 
-    /// Selects how an incremental encoder handles input supplied by one operation.
+    /// Writes a format that can flush pending output without ending the active encoding.
     @NotNullByDefault
-    enum Directive {
-        /// Consumes input while keeping codec state available for later input.
-        CONTINUE,
+    interface Flushable extends CompressingWritableByteChannel {
+        /// Processes all source bytes and flushes pending output to a decodable boundary.
+        default CodecResult flush(ByteBuffer source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            long inputBefore = inputBytes();
+            long outputBefore = outputBytes();
+            encode(source);
+            flush();
+            return new CodecResult(
+                    inputBytes() - inputBefore,
+                    outputBytes() - outputBefore,
+                    CodecResult.Status.FLUSHED
+            );
+        }
 
-        /// Consumes input and flushes pending output without ending the frame.
-        FLUSH,
+        /// Flushes currently pending output to a decodable boundary without ending the active encoding.
+        void flush() throws IOException;
+    }
 
-        /// Consumes input and finishes the current frame.
-        ///
-        /// Multi-frame encoders remain open; other encoders release their resources.
-        END_FRAME
+    /// Writes independently terminated frames while retaining the channel between frames.
+    @NotNullByDefault
+    interface Framed extends CompressingWritableByteChannel {
+        /// Processes all source bytes and finishes the active frame.
+        default CodecResult finishFrame(ByteBuffer source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            long inputBefore = inputBytes();
+            long outputBefore = outputBytes();
+            encode(source);
+            finishFrame();
+            return new CodecResult(
+                    inputBytes() - inputBefore,
+                    outputBytes() - outputBefore,
+                    CodecResult.Status.FRAME_FINISHED
+            );
+        }
+
+        /// Finishes the active frame and leaves the channel ready for a following frame.
+        void finishFrame() throws IOException;
+    }
+
+    /// Writes independently terminated frames and supports nonterminal flushing within each frame.
+    @NotNullByDefault
+    interface FlushableFramed extends Flushable, Framed {
     }
 }

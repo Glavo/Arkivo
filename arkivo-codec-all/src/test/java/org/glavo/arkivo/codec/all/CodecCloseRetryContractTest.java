@@ -178,14 +178,14 @@ final class CodecCloseRetryContractTest {
         return CodecContractConfigurations.decoderCodec(codec, decodedSize);
     }
 
-    /// Verifies OutputStream convenience adapters retry caller-stream closure without re-finalizing frames.
+    /// Verifies explicitly owning OutputStream adapters retry closure without re-finalizing frames.
     @Test
     void retriesConvenienceOutputStreamClosure() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
             CompressionCodec<?> codec = format.defaultCodec();
 
             FailingCloseOutputStream target = new FailingCloseOutputStream();
-            OutputStream output = codec.compressTo(target);
+            OutputStream output = codec.openEncoder(target, ChannelOwnership.CLOSE);
             output.write(CONTENT);
             IOException failure = assertThrows(IOException.class, output::close, codec.format().name());
             assertEquals("close failed", failure.getMessage(), codec.format().name());
@@ -199,14 +199,17 @@ final class CodecCloseRetryContractTest {
         }
     }
 
-    /// Verifies InputStream convenience adapters retry caller-stream closure after decoder release.
+    /// Verifies explicitly owning InputStream adapters retry closure after decoder release.
     @Test
     void retriesConvenienceInputStreamClosure() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
             CompressionCodec<?> codec = format.defaultCodec();
 
             FailingCloseInputStream source = new FailingCloseInputStream(compress(codec, CONTENT));
-            InputStream input = decoderCodec(codec, CONTENT.length).decompressFrom(source);
+            InputStream input = decoderCodec(codec, CONTENT.length).openDecoder(
+                    source,
+                    ChannelOwnership.CLOSE
+            );
             assertArrayEquals(CONTENT, input.readAllBytes(), codec.format().name());
             IOException failure = assertThrows(IOException.class, input::close, codec.format().name());
             assertEquals("close failed", failure.getMessage(), codec.format().name());

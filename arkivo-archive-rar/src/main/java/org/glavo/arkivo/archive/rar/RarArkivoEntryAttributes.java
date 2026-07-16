@@ -3,15 +3,15 @@
 
 package org.glavo.arkivo.archive.rar;
 
+import org.glavo.arkivo.archive.ArchiveEntryAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
-import java.nio.file.attribute.BasicFileAttributes;
 
 /// Exposes metadata parsed from one RAR archive file header.
 @NotNullByDefault
-public interface RarArkivoEntryAttributes extends BasicFileAttributes {
+public interface RarArkivoEntryAttributes extends ArchiveEntryAttributes {
     /// The sentinel for optional numeric values that are absent or unknown.
     long UNKNOWN_NUMERIC_VALUE = -1L;
 

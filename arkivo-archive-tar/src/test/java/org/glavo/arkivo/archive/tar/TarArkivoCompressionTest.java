@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.tar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
@@ -18,7 +19,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -42,11 +42,11 @@ final class TarArkivoCompressionTest {
             assertEquals("gzip", detected.name());
             assertArchiveContent(archivePath);
 
-            Map<String, Object> updateEnvironment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+            ArchiveOptions updateOptions = ArchiveOptions.of(
+                    ArkivoFileSystem.OPEN_OPTIONS,
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
             );
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, updateEnvironment)) {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, updateOptions)) {
                 Files.writeString(
                         fileSystem.getPath("/value.txt"),
                         "updated",
@@ -95,14 +95,12 @@ final class TarArkivoCompressionTest {
         try {
             createCompressedArchive(sourcePath, "gzip");
             byte[] original = Files.readAllBytes(sourcePath);
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
-                    ArkivoFileSystem.COMMIT_TARGET.key(),
-                    ArkivoCommitTarget.writeTo(targetPath)
-            );
+            ArchiveOptions options = ArchiveOptions.builder()
+                    .set(ArkivoFileSystem.OPEN_OPTIONS, Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE))
+                    .set(ArkivoFileSystem.COMMIT_TARGET, ArkivoCommitTarget.writeTo(targetPath))
+                    .build();
 
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(source, environment)) {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(source, options)) {
                 Files.writeString(fileSystem.getPath("/value.txt"), "updated", StandardCharsets.UTF_8);
             }
 
@@ -131,16 +129,13 @@ final class TarArkivoCompressionTest {
         try {
             createCompressedArchive(sourcePath, "deflate");
             byte[] original = Files.readAllBytes(sourcePath);
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
-                    ArkivoFileSystem.COMMIT_TARGET.key(),
-                    ArkivoCommitTarget.writeTo(targetPath),
-                    TarArkivoFileSystem.COMPRESSION.key(),
-                    "deflate"
-            );
+            ArchiveOptions options = ArchiveOptions.builder()
+                    .set(ArkivoFileSystem.OPEN_OPTIONS, Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE))
+                    .set(ArkivoFileSystem.COMMIT_TARGET, ArkivoCommitTarget.writeTo(targetPath))
+                    .setString(TarArkivoFileSystem.COMPRESSION, "deflate")
+                    .build();
 
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(source, environment)) {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(source, options)) {
                 Files.writeString(fileSystem.getPath("/value.txt"), "updated", StandardCharsets.UTF_8);
             }
 
@@ -149,7 +144,7 @@ final class TarArkivoCompressionTest {
             assertTrue(source.closed());
             try (TarArkivoFileSystem derived = TarArkivoFileSystem.open(
                     targetPath,
-                    Map.of(TarArkivoFileSystem.COMPRESSION.key(), "deflate")
+                    ArchiveOptions.EMPTY.withString(TarArkivoFileSystem.COMPRESSION, "deflate")
             )) {
                 assertEquals("updated", Files.readString(derived.getPath("/value.txt"), StandardCharsets.UTF_8));
             }
@@ -166,12 +161,9 @@ final class TarArkivoCompressionTest {
         try {
             createCompressedArchive(archivePath, "deflate");
 
-            assertThrows(IOException.class, () -> openAndClose(archivePath, Map.of()));
-            Map<String, Object> environment = Map.of(
-                    TarArkivoFileSystem.COMPRESSION.key(),
-                    "deflate"
-            );
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, environment)) {
+            assertThrows(IOException.class, () -> openAndClose(archivePath, ArchiveOptions.EMPTY));
+            ArchiveOptions options = ArchiveOptions.EMPTY.withString(TarArkivoFileSystem.COMPRESSION, "deflate");
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, options)) {
                 assertEquals("initial", Files.readString(fileSystem.getPath("/value.txt")));
             }
         } finally {
@@ -188,7 +180,7 @@ final class TarArkivoCompressionTest {
                     IllegalArgumentException.class,
                     () -> openAndClose(
                             archivePath,
-                            Map.of(TarArkivoFileSystem.COMPRESSION.key(), "missing-codec")
+                            ArchiveOptions.EMPTY.withString(TarArkivoFileSystem.COMPRESSION, "missing-codec")
                     )
             );
             assertTrue(exception.getMessage().contains("missing-codec"));
@@ -203,15 +195,15 @@ final class TarArkivoCompressionTest {
         Path archivePath = Files.createTempFile("arkivo-tar-zlib-prefix-", ".tar");
         String entryName = "x\u0001value.txt";
         try {
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
+            ArchiveOptions options = ArchiveOptions.of(
+                    ArkivoFileSystem.OPEN_OPTIONS,
                     Set.of(
                             StandardOpenOption.CREATE,
                             StandardOpenOption.TRUNCATE_EXISTING,
                             StandardOpenOption.WRITE
                     )
             );
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, environment)) {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, options)) {
                 Files.writeString(fileSystem.getPath("/" + entryName), "raw", StandardCharsets.UTF_8);
             }
 
@@ -228,17 +220,15 @@ final class TarArkivoCompressionTest {
 
     /// Creates a compressed forward-only TAR archive.
     private static void createCompressedArchive(Path archivePath, String formatName) throws IOException {
-        Map<String, Object> environment = Map.of(
-                ArkivoFileSystem.OPEN_OPTIONS.key(),
-                Set.of(
+        ArchiveOptions options = ArchiveOptions.builder()
+                .set(ArkivoFileSystem.OPEN_OPTIONS, Set.of(
                         StandardOpenOption.CREATE,
                         StandardOpenOption.TRUNCATE_EXISTING,
                         StandardOpenOption.WRITE
-                ),
-                TarArkivoFileSystem.COMPRESSION.key(),
-                formatName
-        );
-        try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, environment)) {
+                ))
+                .setString(TarArkivoFileSystem.COMPRESSION, formatName)
+                .build();
+        try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, options)) {
             Files.writeString(fileSystem.getPath("/value.txt"), "initial", StandardCharsets.UTF_8);
         }
     }
@@ -255,8 +245,8 @@ final class TarArkivoCompressionTest {
     }
 
     /// Opens and closes a TAR file system so failed exception assertions cannot leak it.
-    private static void openAndClose(Path archivePath, Map<String, ?> environment) throws IOException {
-        try (TarArkivoFileSystem ignored = TarArkivoFileSystem.open(archivePath, environment)) {
+    private static void openAndClose(Path archivePath, ArchiveOptions options) throws IOException {
+        try (TarArkivoFileSystem ignored = TarArkivoFileSystem.open(archivePath, options)) {
             assertTrue(ignored.isOpen());
         }
     }

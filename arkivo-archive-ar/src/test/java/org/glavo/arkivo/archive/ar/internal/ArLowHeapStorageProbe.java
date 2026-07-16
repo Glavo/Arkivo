@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.ar.internal;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributeView;
@@ -83,7 +84,7 @@ public final class ArLowHeapStorageProbe {
                 ArkivoFileSystem.EDIT_STORAGE.key(),
                 ArkivoEditStorage.temporaryFiles(storageDirectory)
         );
-        try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, environment)) {
+        try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
             Path entry = fileSystem.getPath("/large.bin");
             ArArkivoEntryAttributeView attributes = Objects.requireNonNull(
                     Files.getFileAttributeView(entry, ArArkivoEntryAttributeView.class)

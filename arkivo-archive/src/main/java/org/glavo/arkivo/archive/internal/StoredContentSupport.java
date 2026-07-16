@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.internal;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
@@ -19,7 +20,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Collections;
 import java.util.IdentityHashMap;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -40,9 +40,9 @@ public final class StoredContentSupport {
 
     /// Returns configured edit storage or temporary-file storage in the default system temporary directory.
     @SuppressWarnings("resource")
-    public static ArkivoEditStorage selectStorage(Map<String, ?> environment) {
-        Objects.requireNonNull(environment, "environment");
-        @Nullable ArkivoEditStorage configured = ArkivoFileSystem.EDIT_STORAGE.read(environment);
+    public static ArkivoEditStorage selectStorage(ArchiveOptions options) {
+        Objects.requireNonNull(options, "options");
+        @Nullable ArkivoEditStorage configured = options.get(ArkivoFileSystem.EDIT_STORAGE);
         return configured != null
                 ? configured
                 : ArkivoEditStorage.temporaryFiles(defaultStorageDirectory());

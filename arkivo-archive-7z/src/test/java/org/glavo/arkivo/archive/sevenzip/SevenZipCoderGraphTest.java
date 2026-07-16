@@ -11,6 +11,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Tests public immutable 7z coder metadata.
 @NotNullByDefault
@@ -24,7 +25,8 @@ public final class SevenZipCoderGraphTest {
         byte[] returnedProperties = coder.properties();
         returnedProperties[0] = 3;
 
-        assertArrayEquals(new byte[]{1}, coder.properties());        SevenZipCoder equalCoder = new SevenZipCoder(
+        assertArrayEquals(new byte[]{1}, coder.properties());
+        SevenZipCoder equalCoder = new SevenZipCoder(
                 SevenZipCoderMethod.LZMA2,
                 new byte[]{1},
                 1,
@@ -34,7 +36,7 @@ public final class SevenZipCoderGraphTest {
         );
         assertEquals(coder, equalCoder);
         assertEquals(coder.hashCode(), equalCoder.hashCode());
-        assertEquals(true, coder.toString().contains("properties=[1]"));
+        assertTrue(coder.toString().contains("properties=[1]"));
         byte[] methodId = SevenZipCoderMethod.BCJ_ARM64.methodId();
         methodId[0] = 0;
         assertArrayEquals(new byte[]{0x0a}, SevenZipCoderMethod.BCJ_ARM64.methodId());
@@ -71,7 +73,8 @@ public final class SevenZipCoderGraphTest {
         assertEquals(-1, graph.packedStreamOrdinal(1));
         assertEquals(12L, graph.unpackSize(0));
         assertEquals(1, graph.finalOutputStreamIndex());
-        assertEquals(12L, graph.finalUnpackSize());        SevenZipCoderGraph equalGraph = new SevenZipCoderGraph(
+        assertEquals(12L, graph.finalUnpackSize());
+        SevenZipCoderGraph equalGraph = new SevenZipCoderGraph(
                 coders,
                 new int[]{-1, 0},
                 new int[]{0, -1},
@@ -80,7 +83,7 @@ public final class SevenZipCoderGraphTest {
         );
         assertEquals(graph, equalGraph);
         assertEquals(graph.hashCode(), equalGraph.hashCode());
-        assertEquals(true, graph.toString().contains("packedStreamOrdinalByInput=[0, -1]"));
+        assertTrue(graph.toString().contains("packedStreamOrdinalByInput=[0, -1]"));
     }
 
     /// Verifies malformed input sources, bindings, sizes, and final outputs are rejected.
@@ -101,7 +104,8 @@ public final class SevenZipCoderGraphTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> new SevenZipCoderGraph(coders, new int[]{-1, 0}, new int[]{0, -1}, new long[]{1, 1}, 0)
-        );        List<SevenZipCoder> disconnectedCoders = List.of(
+        );
+        List<SevenZipCoder> disconnectedCoders = List.of(
                 new SevenZipCoder(SevenZipCoderMethod.COPY, new byte[0], 1, 1, 0, 0),
                 new SevenZipCoder(SevenZipCoderMethod.COPY, new byte[0], 1, 1, 1, 1),
                 new SevenZipCoder(SevenZipCoderMethod.COPY, new byte[0], 1, 1, 2, 2)

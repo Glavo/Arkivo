@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.tar.internal;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
@@ -78,7 +79,7 @@ public final class TarLowHeapStorageProbe {
                 ArkivoFileSystem.EDIT_STORAGE.key(),
                 ArkivoEditStorage.temporaryFiles(storageDirectory)
         );
-        try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, environment);
+        try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment));
              SeekableByteChannel channel = Files.newByteChannel(
                      fileSystem.getPath("/large.bin"),
                      Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)

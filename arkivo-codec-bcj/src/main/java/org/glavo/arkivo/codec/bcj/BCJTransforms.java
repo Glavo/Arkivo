@@ -4,9 +4,12 @@
 package org.glavo.arkivo.codec.bcj;
 
 import org.glavo.arkivo.codec.transform.ByteTransform;
+import org.glavo.arkivo.codec.transform.ByteTransform.Direction;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
+
+import java.util.Objects;
 
 /// Creates stateful branch-conversion transforms shared by XZ and 7z filters.
 @NotNullByDefault
@@ -16,43 +19,56 @@ public final class BCJTransforms {
     }
 
     /// Creates an x86 BCJ transform.
-    public static ByteTransform x86(boolean encoder, int startOffset) {
-        return new X86Transform(encoder, startOffset);
+    public static ByteTransform x86(Direction direction, long startOffset) {
+        return new X86Transform(isEncoder(direction), requireStartOffset(startOffset));
     }
 
     /// Creates a big-endian PowerPC BCJ transform.
-    public static ByteTransform powerPc(boolean encoder, int startOffset) {
-        return new PowerPCTransform(encoder, startOffset);
+    public static ByteTransform powerPC(Direction direction, long startOffset) {
+        return new PowerPCTransform(isEncoder(direction), requireStartOffset(startOffset));
     }
 
     /// Creates an IA-64 BCJ transform.
-    public static ByteTransform ia64(boolean encoder, int startOffset) {
-        return new Ia64Transform(encoder, startOffset);
+    public static ByteTransform ia64(Direction direction, long startOffset) {
+        return new Ia64Transform(isEncoder(direction), requireStartOffset(startOffset));
     }
 
     /// Creates a little-endian ARM BCJ transform.
-    public static ByteTransform arm(boolean encoder, int startOffset) {
-        return new ArmTransform(encoder, startOffset);
+    public static ByteTransform arm(Direction direction, long startOffset) {
+        return new ArmTransform(isEncoder(direction), requireStartOffset(startOffset));
     }
 
     /// Creates a little-endian ARM-Thumb BCJ transform.
-    public static ByteTransform armThumb(boolean encoder, int startOffset) {
-        return new ArmThumbTransform(encoder, startOffset);
+    public static ByteTransform armThumb(Direction direction, long startOffset) {
+        return new ArmThumbTransform(isEncoder(direction), requireStartOffset(startOffset));
     }
 
     /// Creates a big-endian SPARC BCJ transform.
-    public static ByteTransform sparc(boolean encoder, int startOffset) {
-        return new SparcTransform(encoder, startOffset);
+    public static ByteTransform sparc(Direction direction, long startOffset) {
+        return new SparcTransform(isEncoder(direction), requireStartOffset(startOffset));
     }
 
     /// Creates a little-endian ARM64 BCJ transform.
-    public static ByteTransform arm64(boolean encoder, int startOffset) {
-        return new Arm64Transform(encoder, startOffset);
+    public static ByteTransform arm64(Direction direction, long startOffset) {
+        return new Arm64Transform(isEncoder(direction), requireStartOffset(startOffset));
     }
 
     /// Creates a little-endian RISC-V BCJ transform.
-    public static ByteTransform riscV(boolean encoder, int startOffset) {
-        return new RiscVTransform(encoder, startOffset);
+    public static ByteTransform riscV(Direction direction, long startOffset) {
+        return new RiscVTransform(isEncoder(direction), requireStartOffset(startOffset));
+    }
+
+    /// Returns whether the requested transform direction is encoding.
+    private static boolean isEncoder(Direction direction) {
+        return Objects.requireNonNull(direction, "direction") == Direction.ENCODE;
+    }
+
+    /// Validates and narrows an unsigned 32-bit stream start offset.
+    private static int requireStartOffset(long startOffset) {
+        if (startOffset < 0L || startOffset > 0xffff_ffffL) {
+            throw new IllegalArgumentException("startOffset must be an unsigned 32-bit value: " + startOffset);
+        }
+        return (int) startOffset;
     }
 
     /// Converts x86 CALL and JMP relative addresses.

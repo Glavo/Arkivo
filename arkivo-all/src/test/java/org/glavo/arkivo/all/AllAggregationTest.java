@@ -7,18 +7,18 @@ import org.glavo.arkivo.archive.ArkivoFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoFormat;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
-import org.glavo.arkivo.archive.ar.ArArkivoFileSystemProvider;
+import org.glavo.arkivo.archive.ar.ArArkivoFormat;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter;
-import org.glavo.arkivo.archive.rar.RarArkivoFileSystemProvider;
-import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystemProvider;
+import org.glavo.arkivo.archive.rar.RarArkivoFormat;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFormat;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
-import org.glavo.arkivo.archive.tar.TarArkivoFileSystemProvider;
+import org.glavo.arkivo.archive.tar.TarArkivoFormat;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.ppmd.PPMdCodec;
-import org.glavo.arkivo.archive.zip.ZipArkivoFileSystemProvider;
+import org.glavo.arkivo.archive.zip.ZipArkivoFormat;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -113,11 +113,11 @@ final class AllAggregationTest {
         createRarFixture(rarArchive, content);
 
         Map<String, Path> archives = Map.of(
-                ArArkivoFileSystemProvider.SCHEME, arArchive,
-                TarArkivoFileSystemProvider.SCHEME, tarArchive,
-                ZipArkivoFileSystemProvider.SCHEME, zipArchive,
-                SevenZipArkivoFileSystemProvider.SCHEME, sevenZipArchive,
-                RarArkivoFileSystemProvider.SCHEME, rarArchive
+                ArArkivoFormat.instance().uriScheme(), arArchive,
+                TarArkivoFormat.instance().uriScheme(), tarArchive,
+                ZipArkivoFormat.instance().uriScheme(), zipArchive,
+                SevenZipArkivoFormat.instance().uriScheme(), sevenZipArchive,
+                RarArkivoFormat.instance().uriScheme(), rarArchive
         );
         Set<String> installedSchemes = FileSystemProvider.installedProviders()
                 .stream()
@@ -159,13 +159,13 @@ final class AllAggregationTest {
 
         Path misleadingZipArchive = temporaryDirectory.resolve("zip-content.ar");
         Files.copy(zipArchive, misleadingZipArchive);
-        assertPathFileSystem(misleadingZipArchive, ZipArkivoFileSystemProvider.SCHEME, content);
+        assertPathFileSystem(misleadingZipArchive, ZipArkivoFormat.instance().uriScheme(), content);
 
         Path compressedTarArchive = temporaryDirectory.resolve("sample.tar.gz");
         try (OutputStream output = new GZIPOutputStream(Files.newOutputStream(compressedTarArchive))) {
             output.write(Files.readAllBytes(tarArchive));
         }
-        assertPathFileSystem(compressedTarArchive, TarArkivoFileSystemProvider.SCHEME, content);
+        assertPathFileSystem(compressedTarArchive, TarArkivoFormat.instance().uriScheme(), content);
 
         Path unknownArchive = temporaryDirectory.resolve("unknown.bin");
         Files.write(unknownArchive, new byte[]{1, 2, 3, 4});
@@ -323,7 +323,7 @@ final class AllAggregationTest {
                 continue;
             }
             ByteArrayOutputStream output = new ByteArrayOutputStream();
-            try (OutputStream compressor = codec.compressTo(output)) {
+            try (OutputStream compressor = codec.openEncoder(output)) {
                 compressor.write(content);
             }
             byte[] compressed = output.toByteArray();
@@ -404,7 +404,7 @@ final class AllAggregationTest {
     private static void assertPathFileSystem(Path archive, String expectedScheme, byte[] expectedContent)
             throws IOException {
         try (FileSystem fileSystem = FileSystems.newFileSystem(archive)) {
-            String expectedPathScheme = ZipArkivoFileSystemProvider.SCHEME.equals(expectedScheme)
+            String expectedPathScheme = ZipArkivoFormat.instance().uriScheme().equals(expectedScheme)
                     ? "jar"
                     : expectedScheme;
             assertEquals(expectedPathScheme, fileSystem.provider().getScheme());

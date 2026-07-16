@@ -21,7 +21,7 @@ import java.util.Objects;
 
 /// Provides an immutable XZ configuration and pure Java transport-independent engines.
 @NotNullByDefault
-public final class XZCodec implements CompressionCodec<XZCodec> {
+public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> {
     /// The stable XZ compression format name.
     public static final String NAME = "xz";
 
@@ -98,7 +98,7 @@ public final class XZCodec implements CompressionCodec<XZCodec> {
     }
 
     /// Returns whether decoders verify block integrity checks.
-    public boolean verifyChecksums() {
+    public boolean verifiesChecksums() {
         return verifyChecksums;
     }
 
@@ -154,7 +154,7 @@ public final class XZCodec implements CompressionCodec<XZCodec> {
 
     /// Creates a transport-independent XZ stream decoder with operation-scoped limits.
     @Override
-    public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
+    public CompressionDecoder.Framed newDecoder(DecompressionLimits limits) throws IOException {
         Objects.requireNonNull(limits, "limits");
         return CompressionDecoderSupport.limitEngineOutput(
                 new XZDecoder(limits.maximumWindowSize(), verifyChecksums),

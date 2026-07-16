@@ -10,7 +10,6 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.Map;
 import java.util.Objects;
 
 /// Describes an archive format that can expose a random-access NIO file system.
@@ -19,21 +18,26 @@ import java.util.Objects;
 /// logical archive offset zero at its current position.
 @NotNullByDefault
 public interface ArkivoFileSystemFormat extends ArkivoFormat {
-    /// Opens an archive file system from a path.
-    default ArkivoFileSystem open(Path path) throws IOException {
-        return open(path, Map.of());
+    /// Returns the URI scheme used by the installed NIO file-system provider.
+    default String uriScheme() {
+        return "arkivo+" + name();
     }
 
-    /// Opens an archive file system from a path with environment options.
+    /// Opens an archive file system from a path.
+    default ArkivoFileSystem open(Path path) throws IOException {
+        return open(path, ArchiveOptions.EMPTY);
+    }
+
+    /// Opens an archive file system from a path with options.
     ///
     /// The default implementation opens one read-only seekable channel. Formats may override this method to support
     /// path-specific storage layouts or write modes.
-    default ArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
+    default ArkivoFileSystem open(Path path, ArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         SeekableByteChannel source = Files.newByteChannel(path, StandardOpenOption.READ);
         try {
-            return open(source, environment);
+            return open(source, options);
         } catch (IOException | RuntimeException | Error exception) {
             if (source.isOpen()) {
                 try {
@@ -50,23 +54,23 @@ public interface ArkivoFileSystemFormat extends ArkivoFormat {
 
     /// Opens a read-only file system from an owned repeatable seekable channel source.
     default ArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
-        return open(source, Map.of());
+        return open(source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a file system from an owned repeatable seekable channel source with environment options.
+    /// Opens a file system from an owned repeatable seekable channel source with options.
     ArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException;
 
     /// Opens a read-only file system from one owned seekable channel.
     default ArkivoFileSystem open(SeekableByteChannel source) throws IOException {
-        return open(source, Map.of());
+        return open(source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a file system from one owned seekable channel with environment options.
+    /// Opens a file system from one owned seekable channel with options.
     ArkivoFileSystem open(
             SeekableByteChannel source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException;
 }

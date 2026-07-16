@@ -85,7 +85,7 @@ final class CompressionCodecBufferTest {
                 DecompressionLimitException.class,
                 () -> codec.decompress(exceededSource, 3L)
         );
-        assertEquals(3L, exception.maximumOutputSize());
+        assertEquals(3L, exception.maximum());
         assertEquals(4, exceededSource.position());
 
         assertEquals(0, codec.decompress(ByteBuffer.allocate(0), 0L).remaining());

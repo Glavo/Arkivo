@@ -11,6 +11,9 @@ import java.util.List;
 import java.util.Objects;
 
 /// Describes an archive format supported by Arkivo.
+///
+/// Implementations are immutable identities safe for concurrent use. Operational capabilities are exposed through
+/// subinterfaces such as `ArkivoFileSystemFormat` and `ArkivoStreamingReaderFormat`.
 @NotNullByDefault
 public interface ArkivoFormat {
     /// Returns the stable format name.

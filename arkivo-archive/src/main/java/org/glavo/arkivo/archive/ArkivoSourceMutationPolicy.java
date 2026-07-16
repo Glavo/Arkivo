@@ -9,6 +9,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.io.IOException;
 
 /// Decides whether an editor may directly mutate the source archive for an operation.
+@FunctionalInterface
 @NotNullByDefault
 public interface ArkivoSourceMutationPolicy {
     /// Returns a policy that never allows direct source-file mutation.

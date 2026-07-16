@@ -32,7 +32,7 @@ import java.util.TreeSet;
 /// Produces deterministic source and JVM signatures for the reviewed exported API types.
 @NotNullByDefault
 final class PublicApiSignatures {
-    /// The resource containing all reviewed exported public type names.
+    /// The resource containing all reviewed exported public and protected API type names.
     static final String TYPE_RESOURCE = "org/glavo/arkivo/all/public-api-types.txt";
 
     /// The resource containing the complete reviewed public signature baseline.
@@ -42,11 +42,20 @@ final class PublicApiSignatures {
     private PublicApiSignatures() {
     }
 
-    /// Collects sorted API signatures for every reviewed public type.
+    /// Collects sorted API signatures for every reviewed public or protected API type.
     static @Unmodifiable SortedSet<String> collect(ClassLoader loader) throws IOException, ClassNotFoundException {
+        return collect(loader, loadLines(loader, TYPE_RESOURCE));
+    }
+
+    /// Collects sorted API signatures for the supplied public type names.
+    static @Unmodifiable SortedSet<String> collect(
+            ClassLoader loader,
+            @Unmodifiable SortedSet<String> typeNames
+    ) throws ClassNotFoundException {
         Objects.requireNonNull(loader, "loader");
+        Objects.requireNonNull(typeNames, "typeNames");
         SortedSet<String> signatures = new TreeSet<>();
-        for (String typeName : loadLines(loader, TYPE_RESOURCE)) {
+        for (String typeName : typeNames) {
             Class<?> type = Class.forName(typeName, false, loader);
             appendTypeSignatures(type, signatures);
         }

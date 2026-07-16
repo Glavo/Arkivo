@@ -23,7 +23,7 @@ public final class CompressionFormatRegistryTest {
     void indexesFormats() {
         TestFormat alpha = new TestFormat("alpha", List.of("a"), 1, 0x11);
         TestFormat beta = new TestFormat("beta", List.of("b"), 2, 0x2233);
-        CompressionFormatRegistry registry = CompressionFormatRegistry.fromFormats(List.of(alpha, beta));
+        CompressionFormatRegistry registry = CompressionFormatRegistry.fromFormats(List.of(alpha, alpha, beta));
 
         assertEquals(List.of(alpha, beta), registry.formats());
         assertSame(alpha, registry.find("ALPHA"));
@@ -139,8 +139,9 @@ public final class CompressionFormatRegistryTest {
                 return false;
             }
             int value = 0;
+            int position = prefix.position();
             for (int index = 0; index < probeSize; index++) {
-                value = (value << Byte.SIZE) | Byte.toUnsignedInt(prefix.get());
+                value = (value << Byte.SIZE) | Byte.toUnsignedInt(prefix.get(position + index));
             }
             return value == marker;
         }
@@ -181,5 +182,4 @@ public final class CompressionFormatRegistryTest {
             throw new UnsupportedOperationException("Test codec has no decoder");
         }
     }
-
 }

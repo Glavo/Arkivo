@@ -79,7 +79,6 @@ public final class LZMARawChannelEncoder implements CompressingWritableByteChann
     }
 
     /// Writes currently staged complete range-coded bytes to the target.
-    @Override
     public void flush() throws IOException {
         ensureOpen();
         encoder.flush();

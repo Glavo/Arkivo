@@ -90,7 +90,6 @@ public final class LZMA2ChannelEncoder implements CompressingWritableByteChannel
     }
 
     /// Writes complete compressed chunks already emitted by the encoder.
-    @Override
     public void flush() throws IOException {
         ensureOpen();
         output.flush();

@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.sevenzip;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.util.Arrays;
@@ -180,9 +181,10 @@ public final class SevenZipCoderGraph {
         }
         coderStates[coderIndex] = 2;
     }
+
     /// Returns whether another graph has identical coders, bindings, packed inputs, sizes, and final output.
     @Override
-    public boolean equals(Object object) {
+    public boolean equals(@Nullable Object object) {
         return object instanceof SevenZipCoderGraph other
                 && coders.equals(other.coders)
                 && Arrays.equals(boundOutputByInput, other.boundOutputByInput)

@@ -6,6 +6,7 @@ package org.glavo.arkivo.codec.xz;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
@@ -23,5 +24,18 @@ public record XZFilterChain(@Unmodifiable List<XZFilter> filters) {
         if (filters.size() > 3) {
             throw new IllegalArgumentException("XZ supports at most three filters before LZMA2");
         }
+    }
+
+    /// Creates a filter chain from filters in encoding order.
+    public static XZFilterChain of(XZFilter... filters) {
+        Objects.requireNonNull(filters, "filters");
+        return filters.length == 0
+                ? EMPTY
+                : new XZFilterChain(Arrays.asList(filters.clone()));
+    }
+
+    /// Returns whether this chain contains no preprocessing filters.
+    public boolean isEmpty() {
+        return filters.isEmpty();
     }
 }

@@ -9,12 +9,15 @@ import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.ServiceLoader;
+import java.util.Set;
 
 /// Stores an immutable, validated set of discovered compression formats.
 ///
@@ -22,7 +25,7 @@ import java.util.ServiceLoader;
 /// derive immutable configured codec values.
 @NotNullByDefault
 public final class CompressionFormatRegistry {
-    /// Formats in service discovery order.
+    /// Formats in discovery or caller-supplied order, with repeated identities included once.
     private final @Unmodifiable List<CompressionFormat> formats;
 
     /// Formats indexed by normalized stable names and aliases.
@@ -34,10 +37,14 @@ public final class CompressionFormatRegistry {
     /// Creates and validates a registry by normalizing supplied descriptors to canonical format identities.
     private CompressionFormatRegistry(List<CompressionFormat> formats) {
         ArrayList<CompressionFormat> copiedFormats = new ArrayList<>(formats.size());
+        Set<CompressionFormat> seenFormats = Collections.newSetFromMap(new IdentityHashMap<>());
         LinkedHashMap<String, CompressionFormat> formatsByName = new LinkedHashMap<>();
         int probeSize = 0;
         for (CompressionFormat format : formats) {
             CompressionFormat checkedFormat = canonicalizeFormat(format);
+            if (!seenFormats.add(checkedFormat)) {
+                continue;
+            }
 
             registerName(formatsByName, checkedFormat.name(), checkedFormat);
             for (String alias : checkedFormat.aliases()) {
@@ -88,7 +95,7 @@ public final class CompressionFormatRegistry {
         return new CompressionFormatRegistry(copiedFormats);
     }
 
-    /// Returns formats in service discovery order.
+    /// Returns formats in discovery or caller-supplied order, with repeated identities included once.
     public @Unmodifiable List<CompressionFormat> formats() {
         return formats;
     }
@@ -110,17 +117,20 @@ public final class CompressionFormatRegistry {
         return format;
     }
 
-    /// Returns the first format matching the remaining prefix bytes.
+    /// Returns the matching format with the largest preferred probe size.
     ///
     /// The supplied buffer is not modified.
     public @Nullable CompressionFormat detect(ByteBuffer prefix) {
         Objects.requireNonNull(prefix, "prefix");
+        @Nullable CompressionFormat detected = null;
+        int detectedProbeSize = -1;
         for (CompressionFormat format : formats) {
-            if (format.matches(prefix.asReadOnlyBuffer())) {
-                return format;
+            if (format.matches(prefix.asReadOnlyBuffer()) && format.probeSize() > detectedProbeSize) {
+                detected = format;
+                detectedProbeSize = format.probeSize();
             }
         }
-        return null;
+        return detected;
     }
 
     /// Returns the largest preferred signature prefix requested by any format.
@@ -158,6 +168,7 @@ public final class CompressionFormatRegistry {
         }
         return canonicalFormat;
     }
+
     /// Registers one stable name or alias after validating it for unambiguous lookup.
     private static void registerName(
             Map<String, CompressionFormat> formatsByName,

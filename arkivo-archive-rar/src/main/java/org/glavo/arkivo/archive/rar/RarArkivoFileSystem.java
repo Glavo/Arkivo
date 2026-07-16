@@ -3,11 +3,13 @@
 
 package org.glavo.arkivo.archive.rar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.SeekableChannelSources;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
-import org.glavo.arkivo.archive.ArkivoFileSystemOption;
+import org.glavo.arkivo.archive.ArchiveOption;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.rar.internal.RarArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.rar.internal.RarArkivoFileSystemImpl;
@@ -16,7 +18,6 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.io.IOException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
-import java.util.Map;
 import java.util.Objects;
 
 /// Opens RAR archives as read-only NIO file systems.
@@ -37,12 +38,12 @@ import java.util.Objects;
 /// file retain their own metadata while sharing the target's lazily materialized content.
 @NotNullByDefault
 public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permits RarArkivoFileSystemImpl {
-    /// The environment option for an `ArkivoPasswordProvider` whose archive-level password decrypts RAR data.
+    /// The option for an `ArkivoPasswordProvider` whose archive-level password decrypts RAR data.
     ///
     /// Legacy RAR 1.3 through 2.x treats provider bytes as a raw single-byte password terminated by the first zero byte.
     /// RAR 3.x AES treats provider bytes as UTF-16LE, and RAR5 treats provider bytes as UTF-8.
-    public static final ArkivoFileSystemOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
-            ArkivoFileSystemOption.of("arkivo.rar", "passwordProvider", ArkivoPasswordProvider.class);
+    public static final ArchiveOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
+            ArchiveOption.of("arkivo.rar", "passwordProvider", ArkivoPasswordProvider.class);
 
     /// Creates a RAR archive file system base instance.
     protected RarArkivoFileSystem(ArkivoFileSystemThreadSafety threadSafety) {
@@ -51,17 +52,17 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
 
     /// Opens a RAR archive file system.
     public static RarArkivoFileSystem open(Path path) throws IOException {
-        return open(path, Map.of());
+        return open(path, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a RAR archive file system with environment options.
+    /// Opens a RAR archive file system with options.
     ///
     /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for readable entry bodies materialized on first access.
     /// `PASSWORD_PROVIDER` supplies passwords for encrypted RAR headers and readable entries.
-    public static RarArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
+    public static RarArkivoFileSystem open(Path path, ArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
-        Objects.requireNonNull(environment, "environment");
-        return RarArkivoFileSystemProvider.instance().openPath(path, environment);
+        Objects.requireNonNull(options, "options");
+        return RarArkivoFileSystemProvider.instance().openPath(path, options);
     }
 
     /// Opens a read-only RAR archive file system directly from one owned seekable channel.
@@ -69,52 +70,52 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// The channel's current position is the logical archive start. The returned file system owns and closes the
     /// channel.
     public static RarArkivoFileSystem open(SeekableByteChannel source) throws IOException {
-        return open(source, Map.of());
+        return open(source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a read-only RAR archive file system directly from one owned seekable channel with environment options.
+    /// Opens a read-only RAR archive file system directly from one owned seekable channel with options.
     public static RarArkivoFileSystem open(
             SeekableByteChannel source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
-        return SeekableChannelSources.open(source, channelSource -> open(channelSource, environment));
+        Objects.requireNonNull(options, "options");
+        return SeekableChannelSources.open(source, channelSource -> open(channelSource, options));
     }
 
     /// Opens a read-only RAR archive file system from a repeatable seekable channel source.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
     public static RarArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
-        return open(source, Map.of());
+        return open(source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a read-only RAR archive file system from a repeatable seekable channel source with environment options.
+    /// Opens a read-only RAR archive file system from a repeatable seekable channel source with options.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
     /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for readable entry bodies materialized on first access.
     /// `PASSWORD_PROVIDER` supplies passwords for encrypted RAR headers and readable entries.
     public static RarArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        return open((ArkivoVolumeSource) source, environment);
+        return open((ArkivoVolumeSource) source, options);
     }
 
     /// Opens a multi-volume RAR archive file system.
     public static RarArkivoFileSystem open(ArkivoVolumeSource volumes) throws IOException {
-        return open(volumes, Map.of());
+        return open(volumes, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a multi-volume RAR archive file system with environment options.
+    /// Opens a multi-volume RAR archive file system with options.
     ///
     /// The returned file system owns the volume source and selected edit storage after this method returns successfully.
     /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for readable entry bodies materialized on first access.
     /// `PASSWORD_PROVIDER` supplies the archive-level password for encrypted RAR headers and readable entries.
-    public static RarArkivoFileSystem open(ArkivoVolumeSource volumes, Map<String, ?> environment) throws IOException {
+    public static RarArkivoFileSystem open(ArkivoVolumeSource volumes, ArchiveOptions options) throws IOException {
         Objects.requireNonNull(volumes, "volumes");
-        Objects.requireNonNull(environment, "environment");
-        return RarArkivoFileSystemImpl.open(RarArkivoFileSystemProvider.instance(), volumes, environment);
+        Objects.requireNonNull(options, "options");
+        return RarArkivoFileSystemImpl.open(RarArkivoFileSystemProvider.instance(), volumes, options);
     }
 }

@@ -22,8 +22,8 @@ import java.util.Objects;
 
 /// Incrementally decodes one Zstandard frame without retaining caller-owned buffers.
 @NotNullByDefault
-public final class ZstdDecoder implements CompressionDecoder.Framed,
-        CompressionDecoder.DictionaryAware<ZstdDictionary, ZstdDictionaryRequest> {
+public final class ZstdDecoder
+        implements CompressionDecoder.FramedDictionaryAware<ZstdDictionary, ZstdDictionaryRequest> {
     /// Empty decoded output.
     private static final ByteBuffer EMPTY_OUTPUT = ByteBuffer.allocate(0).asReadOnlyBuffer();
 

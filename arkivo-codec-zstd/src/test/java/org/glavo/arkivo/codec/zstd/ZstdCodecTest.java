@@ -8,7 +8,6 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.CompressingWritableByteChannel.Directive;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -241,7 +240,7 @@ public final class ZstdCodecTest {
         assertArrayEquals(input, decodedBytes.toByteArray());
         assertEquals(-2L, codec.compressionLevel());
         assertEquals(dictionary, codec.dictionary());
-        assertTrue(codec.frameChecksum());
+        assertTrue(codec.emitsFrameChecksum());
         assertEquals(0, codec.workerCount());
         assertTrue(codec.minimumCompressionLevel() <= -2);
         assertTrue(codec.maximumCompressionLevel() >= -2);
@@ -257,15 +256,15 @@ public final class ZstdCodecTest {
         ZstdCodec codec = new ZstdCodec();
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
 
-        CompressingWritableByteChannel encoder = codec.openEncoder(
+        CompressingWritableByteChannel.FlushableFramed encoder = codec.openEncoder(
                 Channels.newChannel(compressed),
                 frame.length,
                 ChannelOwnership.RETAIN
         );
-        encoder.encode(ByteBuffer.wrap(frame), Directive.END_FRAME);
+        encoder.finishFrame(ByteBuffer.wrap(frame));
         int firstFrameSize = compressed.size();
         assertTrue(encoder.isOpen());
-        encoder.encode(ByteBuffer.wrap(frame), Directive.END_FRAME);
+        encoder.finishFrame(ByteBuffer.wrap(frame));
         int completeSize = compressed.size();
         assertTrue(completeSize > firstFrameSize);
         encoder.finish();
@@ -411,7 +410,7 @@ public final class ZstdCodecTest {
                 ZstdCodec.class,
                 Objects.requireNonNull(CompressionFormats.detect(ByteBuffer.wrap(prefixedFrame))).defaultCodec().getClass()
         );
-        try (InputStream decodedAfterSkippable = CompressionFormats.decompressFrom(
+        try (InputStream decodedAfterSkippable = CompressionFormats.openDecoder(
                 new ByteArrayInputStream(prefixedFrame)
         )) {
             assertArrayEquals(content, decodedAfterSkippable.readAllBytes());
@@ -455,7 +454,7 @@ public final class ZstdCodecTest {
         byte[] second = "second magicless frame".repeat(96).getBytes(StandardCharsets.UTF_8);
 
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        try (CompressingWritableByteChannel encoder = codec.openEncoder(
+        try (CompressingWritableByteChannel.FlushableFramed encoder = codec.openEncoder(
                 Channels.newChannel(encoded),
                 ChannelOwnership.RETAIN
         )) {
@@ -470,14 +469,10 @@ public final class ZstdCodecTest {
 
         ByteBuffer inspection = ByteBuffer.wrap(frames);
         int initialPosition = inspection.position();
-        ZstdStandardFrameInfo firstInfo = (ZstdStandardFrameInfo) standardCodec.frameInfo(
-                inspection,
-                ZstdFrameFormat.MAGICLESS
-        );
-        long firstFrameSize = standardCodec.frameCompressedSize(
-                inspection,
-                ZstdFrameFormat.MAGICLESS
-        );
+        ZstdStandardFrameInfo firstInfo =
+                (ZstdStandardFrameInfo) ZstdFrameFormat.MAGICLESS.frameInfo(inspection);
+        long firstFrameSize = ZstdFrameFormat.MAGICLESS.frameCompressedSize(inspection);
+
         assertTrue(firstInfo.headerSize() >= 2);
         assertTrue(firstFrameSize < frames.length);
         assertEquals(initialPosition, inspection.position());
@@ -485,7 +480,7 @@ public final class ZstdCodecTest {
         inspection.position(Math.toIntExact(firstFrameSize));
         assertEquals(
                 frames.length - firstFrameSize,
-                standardCodec.frameCompressedSize(inspection, ZstdFrameFormat.MAGICLESS)
+                ZstdFrameFormat.MAGICLESS.frameCompressedSize(inspection)
         );
 
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
@@ -550,8 +545,8 @@ public final class ZstdCodecTest {
                 .build();
         assertEquals(ZstdCodec.MINIMUM_WINDOW_LOG, combined.windowLog());
         assertEquals(ZstdStrategy.BT_OPT, combined.strategy());
-        assertEquals(false, combined.contentSize());
-        assertEquals(false, combined.dictionaryId());
+        assertEquals(false, combined.emitsContentSize());
+        assertEquals(false, combined.emitsDictionaryId());
         assertArrayEquals(input, transferRoundTrip(combined, input));
 
         for (ZstdStrategy strategy : ZstdStrategy.values()) {
@@ -627,11 +622,11 @@ public final class ZstdCodecTest {
     /// Compresses and decompresses the given bytes.
     private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-        try (OutputStream output = codec.compressTo(compressed)) {
+        try (OutputStream output = codec.openEncoder(compressed)) {
             output.write(input);
         }
 
-        try (InputStream inputStream = codec.decompressFrom(new ByteArrayInputStream(compressed.toByteArray()))) {
+        try (InputStream inputStream = codec.openDecoder(new ByteArrayInputStream(compressed.toByteArray()))) {
             return inputStream.readAllBytes();
         }
     }

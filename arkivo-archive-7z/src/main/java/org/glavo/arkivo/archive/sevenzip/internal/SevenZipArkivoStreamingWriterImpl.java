@@ -8,7 +8,7 @@ import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
-import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystemProvider;
+import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCoderGraph;
@@ -151,19 +151,19 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
 
     /// Begins a pending regular file entry.
     @Override
-    public void beginFile(String path) {
+    protected void beginFileEntry(String path) {
         beginEntry(path, EntryType.FILE, null);
     }
 
     /// Begins a pending directory entry.
     @Override
-    public void beginDirectory(String path) {
+    protected void beginDirectoryEntry(String path) {
         beginEntry(path, EntryType.DIRECTORY, null);
     }
 
     /// Begins a pending symbolic link entry.
     @Override
-    public void beginSymbolicLink(String path, String target) {
+    protected void beginSymbolicLinkEntry(String path, String target) {
         beginEntry(path, EntryType.SYMBOLIC_LINK, linkTargetText(target));
     }
 
@@ -186,7 +186,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
 
     /// Returns a mutable attribute view for the current pending entry.
     @Override
-    public <V extends FileAttributeView> @Nullable V attributeView(Class<V> type) {
+    protected <V extends FileAttributeView> @Nullable V currentAttributeView(Class<V> type) {
         Objects.requireNonNull(type, "type");
         lock();
         try {
@@ -206,7 +206,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
 
     /// Commits the current pending entry without leaving a body stream open.
     @Override
-    public void endEntry() throws IOException {
+    protected void finishCurrentEntry() throws IOException {
         lock();
         try {
             ensureOpen();
@@ -236,13 +236,12 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
 
     /// Opens a writable channel for the current pending file entry.
     @Override
-    public WritableByteChannel openChannel() throws IOException {
-        return StreamChannelAdapters.writableChannel(openOutputStream());
+    protected WritableByteChannel openCurrentChannel() throws IOException {
+        return StreamChannelAdapters.writableChannel(openBodyStream());
     }
 
     /// Opens an output stream that commits the current pending file entry when closed.
-    @Override
-    public OutputStream openOutputStream() throws IOException {
+    private OutputStream openBodyStream() throws IOException {
         lock();
         try {
             ensureOpen();
@@ -267,7 +266,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
 
     /// Closes any active entry, finalizes the archive, publishes staged output, and closes owned output.
     @Override
-    public void close() throws IOException {
+    protected void closeWriter() throws IOException {
         lock();
         try {
             @Nullable Throwable failure = null;
@@ -282,7 +281,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
 
             if (failure == null && pendingEntry != null && fileSystem.isOpen()) {
                 try {
-                    endEntry();
+                    finishCurrentEntry();
                 } catch (IOException | RuntimeException | Error exception) {
                     failure = exception;
                 }

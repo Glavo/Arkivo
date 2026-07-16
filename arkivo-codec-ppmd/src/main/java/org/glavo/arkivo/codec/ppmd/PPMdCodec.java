@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFormat;
-import org.glavo.arkivo.codec.DecompressionLimitException;
+import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7Decoder;
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7Encoder;
@@ -48,7 +48,7 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
     }
 
     /// Creates a validated raw PPMd7 codec configuration.
-    private PPMdCodec(long maximumOrder, long memorySize, long decodedSize) {
+    private PPMdCodec(int maximumOrder, long memorySize, long decodedSize) {
         validateMaximumOrder(maximumOrder);
         validateMemorySize(memorySize);
         if (decodedSize < UNKNOWN_SIZE) {
@@ -56,7 +56,7 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
                     "decodedSize must be non-negative or UNKNOWN_SIZE"
             );
         }
-        this.maximumOrder = Math.toIntExact(maximumOrder);
+        this.maximumOrder = maximumOrder;
         this.memorySize = memorySize;
         this.decodedSize = decodedSize;
     }
@@ -83,7 +83,7 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
     }
 
     /// Returns an immutable PPMd codec with the requested maximum context order.
-    public PPMdCodec withMaximumOrder(long maximumOrder) {
+    public PPMdCodec withMaximumOrder(int maximumOrder) {
         return maximumOrder == this.maximumOrder
                 ? this
                 : new PPMdCodec(maximumOrder, memorySize, decodedSize);
@@ -120,13 +120,13 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
         }
         long maximumOutputSize = limits.maximumOutputSize();
         if (maximumOutputSize >= 0L && decodedSize > maximumOutputSize) {
-            throw new DecompressionLimitException(maximumOutputSize);
+            throw new DecompressionOutputLimitException(maximumOutputSize);
         }
         return new PPMd7Decoder(maximumOrder, memorySize, decodedSize);
     }
 
     /// Validates a PPMd maximum context order.
-    private static void validateMaximumOrder(long maximumOrder) {
+    private static void validateMaximumOrder(int maximumOrder) {
         if (maximumOrder < 2L || maximumOrder > 64L) {
             throw new IllegalArgumentException(
                     "PPMd maximum order must be between 2 and 64: " + maximumOrder

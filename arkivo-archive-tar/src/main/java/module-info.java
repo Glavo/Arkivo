@@ -10,5 +10,5 @@ module org.glavo.arkivo.archive.tar {
     exports org.glavo.arkivo.archive.tar;
 
     provides org.glavo.arkivo.archive.ArkivoFormat with org.glavo.arkivo.archive.tar.TarArkivoFormat;
-    provides java.nio.file.spi.FileSystemProvider with org.glavo.arkivo.archive.tar.TarArkivoFileSystemProvider;
+    provides java.nio.file.spi.FileSystemProvider with org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemProvider;
 }

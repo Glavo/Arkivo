@@ -12,8 +12,9 @@ import java.util.Objects;
 
 /// Describes one discoverable compression format independently of a configured codec.
 ///
-/// Format instances are immutable identities supplied through service discovery. Encoding and decoding policy belongs
-/// to immutable `CompressionCodec<?>` values derived from the format's default codec.
+/// Implementations are immutable identities safe for concurrent use and may be supplied through service discovery.
+/// Encoding and decoding policy belongs to immutable `CompressionCodec<?>` values derived from the format's default
+/// codec.
 @NotNullByDefault
 public interface CompressionFormat {
     /// Returns the stable format name.

@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.zip;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
@@ -15,7 +16,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.file.Path;
-import java.util.Map;
 import java.util.Objects;
 
 /// Reads ZIP entries from a forward-only stream.
@@ -28,34 +28,34 @@ public abstract sealed class ZipArkivoStreamingReader extends ArkivoStreamingRea
 
     /// Opens a streaming ZIP reader from a final archive path and discovers conventional split volumes.
     public static ZipArkivoStreamingReader open(Path path) throws IOException {
-        return open(path, Map.of());
+        return open(path, ArchiveOptions.EMPTY);
     }
 
     /// Opens a configured streaming ZIP reader from a final archive path and discovers conventional split volumes.
     public static ZipArkivoStreamingReader open(
             Path path,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(path, "path");
-        Objects.requireNonNull(environment, "environment");
-        return open(ZipArkivoFormat.instance().openVolumeSource(path), environment);
+        Objects.requireNonNull(options, "options");
+        return open(ZipArkivoFormat.instance().openVolumeSource(path), options);
     }
 
     /// Opens a streaming ZIP reader from a multi-volume source.
     public static ZipArkivoStreamingReader open(ArkivoVolumeSource source) throws IOException {
-        return open(source, Map.of());
+        return open(source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a streaming ZIP reader from a multi-volume source with environment options.
+    /// Opens a streaming ZIP reader from a multi-volume source with options.
     ///
     /// The returned reader owns the source and every physical volume channel it opens.
     public static ZipArkivoStreamingReader open(
             ArkivoVolumeSource source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
-        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+        Objects.requireNonNull(options, "options");
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromOptions(options);
         ZipVolumeReadableByteChannel channel = new ZipVolumeReadableByteChannel(source);
         try {
             return new ZipArkivoStreamingReaderImpl(channel, config);
@@ -73,29 +73,29 @@ public abstract sealed class ZipArkivoStreamingReader extends ArkivoStreamingRea
 
     /// Opens a streaming ZIP reader from an input stream.
     public static ZipArkivoStreamingReader open(InputStream source) {
-        return open(source, Map.of());
+        return open(source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a streaming ZIP reader from an input stream with environment options.
-    public static ZipArkivoStreamingReader open(InputStream source, Map<String, ?> environment) {
+    /// Opens a streaming ZIP reader from an input stream with options.
+    public static ZipArkivoStreamingReader open(InputStream source, ArchiveOptions options) {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
-        return open(StreamChannelAdapters.readableChannel(source), environment);
+        Objects.requireNonNull(options, "options");
+        return open(StreamChannelAdapters.readableChannel(source), options);
     }
 
     /// Opens a streaming ZIP reader from a readable channel.
     public static ZipArkivoStreamingReader open(ReadableByteChannel source) {
-        return open(source, Map.of());
+        return open(source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a streaming ZIP reader from a readable channel with environment options.
+    /// Opens a streaming ZIP reader from a readable channel with options.
     public static ZipArkivoStreamingReader open(
             ReadableByteChannel source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
-        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+        Objects.requireNonNull(options, "options");
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromOptions(options);
         return new ZipArkivoStreamingReaderImpl(source, config);
     }
 }

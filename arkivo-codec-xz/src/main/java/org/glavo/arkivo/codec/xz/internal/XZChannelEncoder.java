@@ -11,6 +11,7 @@ import org.glavo.arkivo.codec.delta.DeltaTransform;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2ChannelEncoder;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.transform.ByteTransform;
+import org.glavo.arkivo.codec.transform.ByteTransform.Direction;
 import org.glavo.arkivo.codec.transform.TransformingWritableByteChannel;
 import org.glavo.arkivo.codec.xz.XZBCJFilter;
 import org.glavo.arkivo.codec.xz.XZDeltaFilter;
@@ -30,7 +31,7 @@ import java.util.Objects;
 
 /// Encodes standards-compliant multi-Block and concatenated XZ streams directly to a channel.
 @NotNullByDefault
-public final class XZChannelEncoder implements CompressingWritableByteChannel {
+public final class XZChannelEncoder implements CompressingWritableByteChannel.FlushableFramed {
     /// The default LZMA2 dictionary size.
     public static final int DEFAULT_DICTIONARY_SIZE = 8 * 1024 * 1024;
 
@@ -422,19 +423,19 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel {
     /// Creates the stateful encoding transform for one public filter.
     private static ByteTransform createEncodingTransform(XZFilter filter) {
         if (filter instanceof XZDeltaFilter delta) {
-            return new DeltaTransform(true, (int) delta.distance());
+            return new DeltaTransform(Direction.ENCODE, (int) delta.distance());
         }
         if (filter instanceof XZBCJFilter bcj) {
-            int startOffset = (int) bcj.startOffset();
+            long startOffset = bcj.startOffset();
             return switch (bcj.architecture()) {
-                case X86 -> BCJTransforms.x86(true, startOffset);
-                case POWER_PC -> BCJTransforms.powerPc(true, startOffset);
-                case IA64 -> BCJTransforms.ia64(true, startOffset);
-                case ARM -> BCJTransforms.arm(true, startOffset);
-                case ARM_THUMB -> BCJTransforms.armThumb(true, startOffset);
-                case SPARC -> BCJTransforms.sparc(true, startOffset);
-                case ARM64 -> BCJTransforms.arm64(true, startOffset);
-                case RISCV -> BCJTransforms.riscV(true, startOffset);
+                case X86 -> BCJTransforms.x86(Direction.ENCODE, startOffset);
+                case POWERPC -> BCJTransforms.powerPC(Direction.ENCODE, startOffset);
+                case IA64 -> BCJTransforms.ia64(Direction.ENCODE, startOffset);
+                case ARM -> BCJTransforms.arm(Direction.ENCODE, startOffset);
+                case ARM_THUMB -> BCJTransforms.armThumb(Direction.ENCODE, startOffset);
+                case SPARC -> BCJTransforms.sparc(Direction.ENCODE, startOffset);
+                case ARM64 -> BCJTransforms.arm64(Direction.ENCODE, startOffset);
+                case RISCV -> BCJTransforms.riscV(Direction.ENCODE, startOffset);
             };
         }
         throw new AssertionError(filter);

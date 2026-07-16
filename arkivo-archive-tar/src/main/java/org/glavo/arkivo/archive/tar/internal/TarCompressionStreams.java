@@ -33,7 +33,7 @@ public final class TarCompressionStreams {
             return source;
         }
         try {
-            return compressionCodec.decompressFrom(source);
+            return compressionCodec.openDecoder(source, ChannelOwnership.CLOSE);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterOpenFailure(source, exception);
             throw exception;
@@ -67,7 +67,7 @@ public final class TarCompressionStreams {
             return target;
         }
         try {
-            return compressionCodec.compressTo(target);
+            return compressionCodec.openEncoder(target, ChannelOwnership.CLOSE);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterOpenFailure(target, exception);
             throw exception;

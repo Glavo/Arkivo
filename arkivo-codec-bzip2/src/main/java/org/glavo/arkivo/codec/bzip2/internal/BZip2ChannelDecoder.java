@@ -7,7 +7,6 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -28,7 +27,7 @@ import java.util.Objects;
 /// inverse Burrows-Wheeler transform. The final run-length stage is produced lazily so a highly compressible block does
 /// not require an output-sized allocation.
 @NotNullByDefault
-public class BZip2ChannelDecoder implements DecompressingReadableByteChannel {
+public class BZip2ChannelDecoder implements DecompressingReadableByteChannel.Framed {
     /// The BZip2 block marker.
     private static final long BLOCK_MAGIC = 0x314159265359L;
 
@@ -348,11 +347,21 @@ public class BZip2ChannelDecoder implements DecompressingReadableByteChannel {
         return count == 0 ? -1 : count;
     }
 
-    /// Decodes one increment while optionally stopping after the current BZip2 stream.
+    /// Decodes one increment and continues across BZip2 stream boundaries.
     @Override
-    public CodecResult decode(ByteBuffer target, Directive directive) throws IOException {
+    public CodecResult decode(ByteBuffer target) throws IOException {
+        return decodeInternal(target, false);
+    }
+
+    /// Decodes one increment without beginning a following BZip2 stream.
+    @Override
+    public CodecResult decodeFrame(ByteBuffer target) throws IOException {
+        return decodeInternal(target, true);
+    }
+
+    /// Performs one decode operation with explicit stream-boundary behavior.
+    private CodecResult decodeInternal(ByteBuffer target, boolean stopAtFrame) throws IOException {
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(directive, "directive");
         ensureOpen();
         lastFrameFinished = false;
         long inputBefore = bits.byteCount();
@@ -361,7 +370,6 @@ public class BZip2ChannelDecoder implements DecompressingReadableByteChannel {
             return new CodecResult(0L, 0L, CodecResult.Status.ACTIVE);
         }
 
-        boolean stopAtFrame = directive == Directive.STOP_AT_FRAME;
         while (target.hasRemaining()) {
             int value = readDecodedByte(stopAtFrame);
             if (value < 0) {

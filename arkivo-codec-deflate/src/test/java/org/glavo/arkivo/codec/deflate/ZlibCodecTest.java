@@ -187,11 +187,11 @@ public final class ZlibCodecTest {
     /// Compresses and decompresses the given bytes.
     private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-        try (OutputStream output = codec.compressTo(compressed)) {
+        try (OutputStream output = codec.openEncoder(compressed)) {
             output.write(input);
         }
 
-        try (InputStream inputStream = codec.decompressFrom(new ByteArrayInputStream(compressed.toByteArray()))) {
+        try (InputStream inputStream = codec.openDecoder(new ByteArrayInputStream(compressed.toByteArray()))) {
             return inputStream.readAllBytes();
         }
     }

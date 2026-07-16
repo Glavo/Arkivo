@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.zip;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
@@ -38,9 +39,9 @@ final class ZipDecodedEntryStorageTest {
         Path archive = directory.resolve("storage.zip");
         createArchive(archive, compressedBytes, storedBytes);
         TrackingStorage storage = new TrackingStorage(directory.resolve("staging"), false);
-        ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive, Map.of(
+        ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive, ArchiveOptions.fromEnvironment(Map.of(
                 ArkivoFileSystem.EDIT_STORAGE.key(), storage
-        ));
+        )));
 
         try (SeekableByteChannel compressed = Files.newByteChannel(fileSystem.getPath("/compressed.bin"))) {
             assertEquals(1, storage.createCount);
@@ -76,9 +77,9 @@ final class ZipDecodedEntryStorageTest {
         Path archive = directory.resolve("retry.zip");
         createArchive(archive, compressedBytes, new byte[]{1, 2, 3});
         TrackingStorage storage = new TrackingStorage(directory.resolve("retry-staging"), true);
-        ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive, Map.of(
+        ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive, ArchiveOptions.fromEnvironment(Map.of(
                 ArkivoFileSystem.EDIT_STORAGE.key(), storage
-        ));
+        )));
         SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/compressed.bin"));
 
         assertThrows(IOException.class, channel::close);

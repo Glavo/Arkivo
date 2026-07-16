@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.all;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoFormats;
@@ -33,7 +34,6 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -76,12 +76,12 @@ final class ArchiveConcurrentReadStressTest {
     @Test
     @Timeout(value = 60)
     void strictCloseInvalidatesResourcesAcrossEveryFormat(@TempDir Path directory) throws Exception {
-        @Unmodifiable Map<String, Object> environment = Map.of(
-                ArkivoFileSystem.THREAD_SAFETY.key(),
+        ArchiveOptions options = ArchiveOptions.of(
+                ArkivoFileSystem.THREAD_SAFETY,
                 ArkivoFileSystemThreadSafety.STRICT
         );
         for (Path archive : createArchives(directory)) {
-            try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive, environment);
+            try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive, options);
                  SeekableByteChannel channel =
                          Files.newByteChannel(fileSystem.getPath("/" + entryName(0)));
                  InputStream input =
@@ -220,14 +220,12 @@ final class ArchiveConcurrentReadStressTest {
 
     /// Creates an LZMA2-compressed 7z fixture whose entries share solid folders.
     private static void createSevenZip(Path archive) throws IOException {
-        @Unmodifiable Map<String, Object> environment = Map.of(
-                SevenZipArkivoFileSystem.COMPRESSION.key(),
-                SevenZipCompression.lzma2(1024 * 1024),
-                SevenZipArkivoFileSystem.SOLID_FILE_COUNT.key(),
-                16
-        );
+        ArchiveOptions options = ArchiveOptions.builder()
+                .set(SevenZipArkivoFileSystem.COMPRESSION, SevenZipCompression.lzma2(1024 * 1024))
+                .set(SevenZipArkivoFileSystem.SOLID_FILE_COUNT, 16)
+                .build();
         try (SevenZipArkivoStreamingWriter writer =
-                     SevenZipArkivoStreamingWriter.create(archive, environment)) {
+                     SevenZipArkivoStreamingWriter.create(archive, options)) {
             writeEntries(writer);
         }
     }

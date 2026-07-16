@@ -52,7 +52,7 @@ final class OutputLimitingCompressionDecoderTest {
                 DecompressionLimitException.class,
                 () -> decoder.decode(ByteBuffer.allocate(0), target, true)
         );
-        assertEquals(3L, exception.maximumOutputSize());
+        assertEquals(3L, exception.maximum());
         assertThrows(
                 DecompressionLimitException.class,
                 () -> decoder.decode(ByteBuffer.allocate(0), target, true)

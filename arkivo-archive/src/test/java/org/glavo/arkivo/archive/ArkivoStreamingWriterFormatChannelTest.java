@@ -14,7 +14,6 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.attribute.FileAttributeView;
-import java.util.Map;
 import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -30,12 +29,12 @@ public final class ArkivoStreamingWriterFormatChannelTest {
         Method channelMethod = ArkivoStreamingWriterFormat.class.getMethod(
                 "openStreamingWriter",
                 WritableByteChannel.class,
-                Map.class
+                ArchiveOptions.class
         );
         Method streamMethod = ArkivoStreamingWriterFormat.class.getMethod(
                 "openStreamingWriter",
                 OutputStream.class,
-                Map.class
+                ArchiveOptions.class
         );
 
         assertTrue(Modifier.isAbstract(channelMethod.getModifiers()));
@@ -49,7 +48,7 @@ public final class ArkivoStreamingWriterFormatChannelTest {
         TestStreamingWriterFormat format = new TestStreamingWriterFormat();
         ByteArrayOutputStream target = new ByteArrayOutputStream();
 
-        ArkivoStreamingWriter writer = format.openStreamingWriter(target, Map.of());
+        ArkivoStreamingWriter writer = format.openStreamingWriter(target, ArchiveOptions.EMPTY);
         WritableByteChannel openedChannel = Objects.requireNonNull(format.openedChannel);
         assertSame(openedChannel, ((TestStreamingWriter) writer).target);
         assertTrue(openedChannel.isOpen());
@@ -74,7 +73,7 @@ public final class ArkivoStreamingWriterFormatChannelTest {
         @Override
         public ArkivoStreamingWriter openStreamingWriter(
                 WritableByteChannel target,
-                Map<String, ?> environment
+                ArchiveOptions options
         ) {
             openedChannel = target;
             return new TestStreamingWriter(target);
@@ -94,43 +93,43 @@ public final class ArkivoStreamingWriterFormatChannelTest {
 
         /// Rejects file creation in the minimal test writer.
         @Override
-        public void beginFile(String path) {
+        protected void beginFileEntry(String path) {
             throw new UnsupportedOperationException("Test writer does not create entries");
         }
 
         /// Rejects directory creation in the minimal test writer.
         @Override
-        public void beginDirectory(String path) {
+        protected void beginDirectoryEntry(String path) {
             throw new UnsupportedOperationException("Test writer does not create entries");
         }
 
         /// Rejects symbolic-link creation in the minimal test writer.
         @Override
-        public void beginSymbolicLink(String path, String linkTarget) {
+        protected void beginSymbolicLinkEntry(String path, String linkTarget) {
             throw new UnsupportedOperationException("Test writer does not create entries");
         }
 
         /// Returns no configurable attribute view.
         @Override
-        public <V extends FileAttributeView> @Nullable V attributeView(Class<V> type) {
+        protected <V extends FileAttributeView> @Nullable V currentAttributeView(Class<V> type) {
             return null;
         }
 
         /// Rejects entry completion in the minimal test writer.
         @Override
-        public void endEntry() {
+        protected void finishCurrentEntry() {
             throw new IllegalStateException("No current test entry");
         }
 
         /// Rejects body access in the minimal test writer.
         @Override
-        public WritableByteChannel openChannel() {
+        protected WritableByteChannel openCurrentChannel() {
             throw new IllegalStateException("No current test entry");
         }
 
         /// Closes the owned target channel.
         @Override
-        public void close() throws IOException {
+        protected void closeWriter() throws IOException {
             target.close();
         }
     }

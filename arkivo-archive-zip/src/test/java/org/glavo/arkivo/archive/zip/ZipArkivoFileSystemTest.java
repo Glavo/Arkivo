@@ -3,9 +3,11 @@
 
 package org.glavo.arkivo.archive.zip;
 
+import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemProvider;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream;
 import org.apache.commons.compress.compressors.xz.XZCompressorOutputStream;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
@@ -225,7 +227,7 @@ public final class ZipArkivoFileSystemTest {
             }
 
             try (ZipArkivoStreamingWriter writer =
-                         ZipArkivoStreamingWriter.create(archivePath, appendEnvironment)) {
+                         ZipArkivoStreamingWriter.create(archivePath, ArchiveOptions.fromEnvironment(appendEnvironment))) {
                 writer.beginFile("after.txt");
                 try (OutputStream output = writer.openOutputStream()) {
                     output.write("after".getBytes(StandardCharsets.UTF_8));
@@ -317,7 +319,7 @@ public final class ZipArkivoFileSystemTest {
         StreamingZipArkivoFileSystemImpl fileSystem = new StreamingZipArkivoFileSystemImpl(
                 ZipArkivoFileSystemProvider.instance(),
                 output,
-                ZipArkivoFileSystemConfig.fromEnvironment(Map.of())
+                ZipArkivoFileSystemConfig.fromOptions(ArchiveOptions.EMPTY)
         );
         Method writeDataDescriptor = StreamingZipArkivoFileSystemImpl.class.getDeclaredMethod(
                 "writeDataDescriptor",
@@ -425,7 +427,7 @@ public final class ZipArkivoFileSystemTest {
             Map<String, Object> environment = Map.of(
                     ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)
             );
-            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, environment)) {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 writer.beginFile("secret.txt");
                 ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
@@ -441,7 +443,7 @@ public final class ZipArkivoFileSystemTest {
                 }
             }
 
-            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, environment)) {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/secret.txt")));
                 assertArrayEquals(after, Files.readAllBytes(fileSystem.getPath("/after.txt")));
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(
@@ -870,7 +872,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 writer.beginFile("secret-xz.txt");
                 ZipArkivoEntryAttributeView xzView = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -893,7 +895,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes xzAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -931,7 +933,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 writer.beginFile("secret-lzma.txt");
                 ZipArkivoEntryAttributeView lzmaView = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -954,7 +956,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes lzmaAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -992,7 +994,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 writer.beginFile("aes-xz.txt");
                 ZipArkivoEntryAttributeView xzView = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -1015,7 +1017,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes xzAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -1106,7 +1108,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 writer.beginFile("secret-zstandard.txt");
                 ZipArkivoEntryAttributeView zstandardView = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -1129,7 +1131,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes zstandardAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -1168,7 +1170,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 writer.beginFile("secret-zstandard-descriptor-crc.txt");
                 ZipArkivoEntryAttributeView zstandardView = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -1191,7 +1193,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = tamperFirstDataDescriptorCrc(Files.readAllBytes(archivePath));
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -1230,7 +1232,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 writer.beginFile("aes-lzma.txt");
                 ZipArkivoEntryAttributeView lzmaView = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -1253,7 +1255,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes lzmaAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -1300,7 +1302,7 @@ public final class ZipArkivoFileSystemTest {
             );
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    environment
+                    ArchiveOptions.fromEnvironment(environment)
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -1340,7 +1342,7 @@ public final class ZipArkivoFileSystemTest {
             );
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    environment
+                    ArchiveOptions.fromEnvironment(environment)
             )) {
                 assertEquals(true, reader.next());
                 InputStream input = reader.openInputStream();
@@ -1377,7 +1379,7 @@ public final class ZipArkivoFileSystemTest {
             );
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    environment
+                    ArchiveOptions.fromEnvironment(environment)
             )) {
                 assertEquals(true, reader.next());
                 assertEquals(encryption, reader.readAttributes(ZipArkivoEntryAttributes.class).encryption());
@@ -1415,7 +1417,7 @@ public final class ZipArkivoFileSystemTest {
             );
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    environment
+                    ArchiveOptions.fromEnvironment(environment)
             )) {
                 assertEquals(true, reader.next());
                 InputStream input = reader.openInputStream();
@@ -1443,7 +1445,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 writer.beginFile("aes-zstandard.txt");
                 ZipArkivoEntryAttributeView zstandardView = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -1466,7 +1468,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes zstandardAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -1505,7 +1507,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 writer.beginFile("aes-zstandard-descriptor-crc.txt");
                 ZipArkivoEntryAttributeView zstandardView = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -1528,7 +1530,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = tamperFirstDataDescriptorCrc(Files.readAllBytes(archivePath));
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -1620,7 +1622,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 writer.beginFile("secret-bzip2.txt");
                 ZipArkivoEntryAttributeView bzip2View = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -1643,7 +1645,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes bzip2Attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -1682,7 +1684,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 writer.beginFile("secret-bzip2-descriptor-crc.txt");
                 ZipArkivoEntryAttributeView bzip2View = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -1705,7 +1707,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = tamperFirstDataDescriptorCrc(Files.readAllBytes(archivePath));
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -1744,7 +1746,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 writer.beginFile("aes-bzip2.txt");
                 ZipArkivoEntryAttributeView bzip2View = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -1767,7 +1769,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes bzip2Attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -1806,7 +1808,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 writer.beginFile("aes-bzip2-descriptor-crc.txt");
                 ZipArkivoEntryAttributeView bzip2View = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -1829,7 +1831,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = tamperFirstDataDescriptorCrc(Files.readAllBytes(archivePath));
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -1869,11 +1871,10 @@ public final class ZipArkivoFileSystemTest {
 
             reader.close();
 
-            IOException exception = assertThrows(
-                    IOException.class,
+            assertThrows(
+                    ClosedChannelException.class,
                     () -> reader.readAttributes(ZipArkivoEntryAttributes.class)
             );
-            assertEquals(true, exception.getMessage().contains("closed"));
         } finally {
             deleteTemporaryArchive(archivePath);
         }
@@ -2053,7 +2054,7 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try {
-            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, environment)) {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 writer.beginDirectory("secure");
                 writer.endEntry();
 
@@ -2068,7 +2069,7 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 Path directory = fileSystem.getPath("/secure");
                 Path file = fileSystem.getPath("/secure/message.txt");
@@ -2095,10 +2096,10 @@ public final class ZipArkivoFileSystemTest {
             }
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                             ArkivoPasswordProvider.fixed("wrong".getBytes(StandardCharsets.UTF_8))
-                    )
+                    ))
             )) {
                 assertThrows(IOException.class, () -> Files.readAllBytes(fileSystem.getPath("/secure/message.txt")));
             }
@@ -2118,7 +2119,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 writer.beginFile("stored.bin");
                 ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -2133,7 +2134,7 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 Path file = fileSystem.getPath("/stored.bin");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
@@ -2164,7 +2165,7 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try {
-            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, environment)) {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 writer.beginFile("secure/aes.txt");
                 ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
@@ -2176,7 +2177,7 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 Path file = fileSystem.getPath("/secure/aes.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
@@ -2194,7 +2195,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -2211,7 +2212,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] tampered = tamperLastDataDescriptorCrc(archive);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(tampered),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 IOException exception = assertThrows(IOException.class, () -> {
@@ -2240,7 +2241,7 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try {
-            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, environment)) {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 writer.beginFile("empty-password-aes.txt");
                 try (var output = writer.openOutputStream()) {
                     output.write(content);
@@ -2249,7 +2250,7 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 Path file = fileSystem.getPath("/empty-password-aes.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
@@ -2261,7 +2262,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -2288,7 +2289,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 writer.beginFile("stored-aes.bin");
                 ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -2303,7 +2304,7 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 Path file = fileSystem.getPath("/stored-aes.bin");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
@@ -2319,7 +2320,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -2346,7 +2347,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 writer.beginFile("stored-aes-descriptor.bin");
                 ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -2360,7 +2361,7 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 Path file = fileSystem.getPath("/stored-aes-descriptor.bin");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
@@ -2375,7 +2376,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -2392,7 +2393,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] tampered = tamperLastDataDescriptorCrc(archive);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(tampered),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 IOException exception = assertThrows(IOException.class, () -> {
@@ -2416,7 +2417,7 @@ public final class ZipArkivoFileSystemTest {
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
         )) {
             assertEquals(true, reader.next());
             ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -2440,7 +2441,7 @@ public final class ZipArkivoFileSystemTest {
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
         )) {
             assertEquals(true, reader.next());
             ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -2469,7 +2470,7 @@ public final class ZipArkivoFileSystemTest {
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
         )) {
             assertEquals(true, reader.next());
             ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -2506,7 +2507,7 @@ public final class ZipArkivoFileSystemTest {
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
         )) {
             assertEquals(true, reader.next());
             ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -2704,14 +2705,14 @@ public final class ZipArkivoFileSystemTest {
             try (ZipArkivoFileSystem fileSystem =
                          ZipArkivoFileSystem.open(
                                  archivePath,
-                                 Map.of(
+                                 ArchiveOptions.fromEnvironment(Map.of(
                                          ArkivoFileSystem.OPEN_OPTIONS.key(),
                                          Set.of(
                                                  StandardOpenOption.CREATE,
                                                  StandardOpenOption.TRUNCATE_EXISTING,
                                                  StandardOpenOption.WRITE
                                          )
-                                 )
+                                 ))
                          )) {
                 assertEquals(false, fileSystem.isReadOnly());
                 Path missing = fileSystem.getPath("/missing.txt");
@@ -2806,10 +2807,10 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             ArkivoFileSystem.OPEN_OPTIONS.key(),
                             Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
-                    )
+                    ))
             )) {
                 assertSymbolicLinkIdentity(fileSystem, true);
             }
@@ -2913,14 +2914,14 @@ public final class ZipArkivoFileSystemTest {
             try (ZipArkivoFileSystem sourceFileSystem = ZipArkivoFileSystem.open(sourcePath);
                  ZipArkivoFileSystem targetFileSystem = ZipArkivoFileSystem.open(
                          targetPath,
-                         Map.of(
+                         ArchiveOptions.fromEnvironment(Map.of(
                                  ArkivoFileSystem.OPEN_OPTIONS.key(),
                                  Set.of(
                                          StandardOpenOption.CREATE,
                                          StandardOpenOption.TRUNCATE_EXISTING,
                                          StandardOpenOption.WRITE
                                  )
-                         )
+                         ))
                  )) {
                 Path target = targetFileSystem.getPath("/copied.txt");
                 assertEquals(false, Files.exists(target));
@@ -2969,14 +2970,14 @@ public final class ZipArkivoFileSystemTest {
             try (ZipArkivoFileSystem sourceFileSystem = ZipArkivoFileSystem.open(sourcePath);
                  ZipArkivoFileSystem targetFileSystem = ZipArkivoFileSystem.open(
                          targetPath,
-                         Map.of(
+                         ArchiveOptions.fromEnvironment(Map.of(
                                  ArkivoFileSystem.OPEN_OPTIONS.key(),
                                  Set.of(
                                          StandardOpenOption.CREATE,
                                          StandardOpenOption.TRUNCATE_EXISTING,
                                          StandardOpenOption.WRITE
                                  )
-                         )
+                         ))
                  )) {
                 Path sourceLink = sourceFileSystem.getPath("/dir/link");
                 Files.copy(sourceLink, targetFileSystem.getPath("/followed.txt"));
@@ -3025,13 +3026,13 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try {
-            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, environment)) {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 Files.createSymbolicLink(fileSystem.getPath("/link"), Path.of("target.txt"));
             }
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 Path link = fileSystem.getPath("/link");
                 ZipArkivoEntryAttributes linkAttributes = Files.readAttributes(
@@ -3077,14 +3078,14 @@ public final class ZipArkivoFileSystemTest {
             try (ZipArkivoFileSystem fileSystem =
                          ZipArkivoFileSystem.open(
                                  archivePath,
-                                 Map.of(
+                                 ArchiveOptions.fromEnvironment(Map.of(
                                          ArkivoFileSystem.OPEN_OPTIONS.key(),
                                          Set.of(
                                                  StandardOpenOption.CREATE,
                                                  StandardOpenOption.TRUNCATE_EXISTING,
                                                  StandardOpenOption.WRITE
                                          )
-                                 )
+                                 ))
                          )) {
                 Files.createDirectory(
                         fileSystem.getPath("/bin"),
@@ -3138,7 +3139,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     sourcePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             ArkivoFileSystem.OPEN_OPTIONS.key(),
                             Set.of(
                                     StandardOpenOption.CREATE,
@@ -3147,7 +3148,7 @@ public final class ZipArkivoFileSystemTest {
                             ),
                             ArkivoFileSystem.COMMIT_TARGET.key(),
                             ArkivoCommitTarget.writeTo(targetPath)
-                    )
+                    ))
             )) {
                 Path committed = fileSystem.getPath("/committed.txt");
                 Files.writeString(committed, "committed", StandardCharsets.UTF_8);
@@ -3186,12 +3187,12 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     sourcePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             ArkivoFileSystem.OPEN_OPTIONS.key(),
                             Set.of(StandardOpenOption.APPEND, StandardOpenOption.WRITE),
                             ArkivoFileSystem.COMMIT_TARGET.key(),
                             ArkivoCommitTarget.writeTo(targetPath)
-                    )
+                    ))
             )) {
                 Files.writeString(fileSystem.getPath("/after.txt"), "after", StandardCharsets.UTF_8);
             }
@@ -3233,10 +3234,10 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             ArkivoFileSystem.OPEN_OPTIONS.key(),
                             Set.of(StandardOpenOption.APPEND, StandardOpenOption.WRITE)
-                    )
+                    ))
             )) {
                 Files.writeString(fileSystem.getPath("/before.txt"), "after", StandardCharsets.UTF_8);
                 assertThrows(
@@ -3280,12 +3281,12 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     sourcePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             ArkivoFileSystem.OPEN_OPTIONS.key(),
                             Set.of(StandardOpenOption.APPEND, StandardOpenOption.WRITE),
                             ArkivoFileSystem.COMMIT_TARGET.key(),
                             ArkivoCommitTarget.writeTo(targetPath)
-                    )
+                    ))
             )) {
                 Files.writeString(fileSystem.getPath("/before.txt"), "after", StandardCharsets.UTF_8);
             }
@@ -3331,10 +3332,10 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             ArkivoFileSystem.OPEN_OPTIONS.key(),
                             Set.of(StandardOpenOption.APPEND, StandardOpenOption.WRITE)
-                    )
+                    ))
             )) {
                 assertThrows(DirectoryNotEmptyException.class, () -> Files.delete(fileSystem.getPath("/dir")));
                 Files.delete(fileSystem.getPath("/remove.txt"));
@@ -3404,7 +3405,7 @@ public final class ZipArkivoFileSystemTest {
             }
             byte[] originalCompressedChild = compressedEntryPayload(archivePath, "dir/child.txt");
 
-            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, updateEnvironment)) {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(updateEnvironment))) {
                 Path directory = fileSystem.getPath("/dir");
                 Path movedDirectory = fileSystem.getPath("/renamed-目录");
                 Files.move(directory, movedDirectory, StandardCopyOption.ATOMIC_MOVE);
@@ -3545,12 +3546,12 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                             ArkivoPasswordProvider.fixed(password),
                             ZipArkivoFileSystem.DEFAULT_ENCRYPTION.key(),
                             ZipEncryption.traditional()
-                    )
+                    ))
             )) {
                 writer.beginDirectory("dir");
                 writer.endEntry();
@@ -3578,7 +3579,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] originalCompressedPayload = compressedEntryPayload(archivePath, "dir/existing.txt");
             byte[] originalEncryptedPayload = compressedEntryPayload(archivePath, "dir/encrypted.txt");
 
-            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, updateEnvironment)) {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(updateEnvironment))) {
                 Path existing = fileSystem.getPath("/dir/existing.txt");
                 Path directory = fileSystem.getPath("/dir");
                 Files.setLastModifiedTime(existing, existingTime);
@@ -3673,10 +3674,10 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                             ArkivoPasswordProvider.fixed(password)
-                    )
+                    ))
             )) {
                 ZipArkivoEntryAttributes existingAttributes = Files.readAttributes(
                         fileSystem.getPath("/dir/existing.txt"),
@@ -3749,7 +3750,7 @@ public final class ZipArkivoFileSystemTest {
                 }
             }
 
-            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, updateEnvironment)) {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(updateEnvironment))) {
                 assertEquals(false, fileSystem.isReadOnly());
                 assertEquals("before", Files.readString(fileSystem.getPath("/replace.txt"), StandardCharsets.UTF_8));
                 assertEquals("keep", Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8));
@@ -3794,7 +3795,7 @@ public final class ZipArkivoFileSystemTest {
                 writeStoredZipEntry(output, "conflict.txt", "stable".getBytes(StandardCharsets.UTF_8), null, null);
             }
 
-            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, updateEnvironment)) {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(updateEnvironment))) {
                 Path patch = fileSystem.getPath("/patch.txt");
                 try (SeekableByteChannel channel = Files.newByteChannel(
                         patch,
@@ -3908,10 +3909,10 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             ArkivoFileSystem.OPEN_OPTIONS.key(),
                             Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
-                    )
+                    ))
             )) {
                 Files.writeString(fileSystem.getPath("/replace.txt"), "after", StandardCharsets.UTF_8);
                 Files.delete(fileSystem.getPath("/remove.txt"));
@@ -3960,10 +3961,10 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             ArkivoFileSystem.OPEN_OPTIONS.key(),
                             Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
-                    )
+                    ))
             )) {
                 Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
             }
@@ -4018,10 +4019,10 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             ArkivoFileSystem.OPEN_OPTIONS.key(),
                             Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
-                    )
+                    ))
             )) {
                 Files.delete(fileSystem.getPath("/remove.txt"));
                 Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
@@ -4072,12 +4073,12 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     sourcePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             ArkivoFileSystem.OPEN_OPTIONS.key(),
                             Set.of(StandardOpenOption.APPEND, StandardOpenOption.WRITE),
                             ArkivoFileSystem.COMMIT_TARGET.key(),
                             ArkivoCommitTarget.writeTo(targetPath)
-                    )
+                    ))
             )) {
                 Files.delete(fileSystem.getPath("/remove.txt"));
             }
@@ -4110,7 +4111,7 @@ public final class ZipArkivoFileSystemTest {
             Files.write(archivePath, original);
             ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             ArkivoFileSystem.OPEN_OPTIONS.key(),
                             Set.of(
                                     StandardOpenOption.TRUNCATE_EXISTING,
@@ -4118,7 +4119,7 @@ public final class ZipArkivoFileSystemTest {
                             ),
                             ArkivoFileSystem.COMMIT_TARGET.key(),
                             ArkivoCommitTarget.atomicReplace(directory)
-                    )
+                    ))
             );
             try (fileSystem) {
                 Files.writeString(fileSystem.getPath("/replacement.txt"), "replacement", StandardCharsets.UTF_8);
@@ -4144,7 +4145,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             ArkivoFileSystem.OPEN_OPTIONS.key(),
                             Set.of(
                                     StandardOpenOption.CREATE,
@@ -4153,7 +4154,7 @@ public final class ZipArkivoFileSystemTest {
                             ),
                             ZipArkivoFileSystem.SPLIT_SIZE.key(),
                             (long) TEST_SPLIT_SIZE
-                    )
+                    ))
             )) {
                 Files.writeString(fileSystem.getPath("/hello.txt"), "split file system", StandardCharsets.UTF_8);
                 Files.write(fileSystem.getPath("/padding.bin"), splitTestContent(TEST_SPLIT_SIZE * 2));
@@ -4180,7 +4181,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), (long) TEST_SPLIT_SIZE)
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), (long) TEST_SPLIT_SIZE))
             )) {
                 writer.beginFile("stream.txt");
                 try (OutputStream output = writer.openOutputStream()) {
@@ -4489,7 +4490,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), (long) TEST_SPLIT_SIZE)
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), (long) TEST_SPLIT_SIZE))
             )) {
                 writer.beginFile("original.bin");
                 ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -4503,7 +4504,7 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), (long) TEST_SPLIT_SIZE)
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), (long) TEST_SPLIT_SIZE))
             )) {
                 writer.beginFile("replacement.txt");
                 try (OutputStream output = writer.openOutputStream()) {
@@ -4536,12 +4537,12 @@ public final class ZipArkivoFileSystemTest {
                     FileAlreadyExistsException.class,
                     () -> ZipArkivoStreamingWriter.create(
                             archivePath,
-                            Map.of(
+                            ArchiveOptions.fromEnvironment(Map.of(
                                     ArkivoFileSystem.OPEN_OPTIONS.key(),
                                     Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE),
                                     ZipArkivoFileSystem.SPLIT_SIZE.key(),
                                     (long) TEST_SPLIT_SIZE
-                            )
+                            ))
                     )
             );
             assertArrayEquals(existingContent, Files.readAllBytes(existingVolumePath));
@@ -4564,14 +4565,14 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             ArkivoFileSystem.OPEN_OPTIONS.key(),
                             Set.of(
                                     StandardOpenOption.CREATE,
                                     StandardOpenOption.TRUNCATE_EXISTING,
                                     StandardOpenOption.WRITE
                             )
-                    )
+                    ))
             )) {
                 SeekableByteChannel channel = Files.newByteChannel(
                         fileSystem.getPath("/channel.bin"),
@@ -4604,13 +4605,13 @@ public final class ZipArkivoFileSystemTest {
             try (ZipArkivoFileSystem fileSystem =
                          ZipArkivoFileSystem.open(
                                  archivePath,
-                                 Map.of(
+                                 ArchiveOptions.fromEnvironment(Map.of(
                                          ArkivoFileSystem.OPEN_OPTIONS.key(),
                                          new StandardOpenOption[]{
                                                  StandardOpenOption.CREATE_NEW,
                                                  StandardOpenOption.WRITE
                                          }
-                                 )
+                                 ))
                          )) {
                 Files.writeString(fileSystem.getPath("/hello.txt"), "hello", StandardCharsets.UTF_8);
             }
@@ -4633,10 +4634,10 @@ public final class ZipArkivoFileSystemTest {
                     IllegalArgumentException.class,
                     () -> ZipArkivoFileSystem.open(
                             archivePath,
-                            Map.of(
+                            ArchiveOptions.fromEnvironment(Map.of(
                                     ArkivoFileSystem.OPEN_OPTIONS.key(),
                                     Set.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE)
-                            )
+                            ))
                     )
             );
         } finally {
@@ -4647,10 +4648,10 @@ public final class ZipArkivoFileSystemTest {
     /// Verifies that read open options allow provider-specific non-write options.
     @Test
     public void fileSystemReadOpenOptionsAcceptProviderOptions() {
-        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromOptions(ArchiveOptions.fromEnvironment(Map.of(
                 ArkivoFileSystem.OPEN_OPTIONS.key(),
                 Set.<OpenOption>of(StandardOpenOption.READ, TestOpenOption.DIRECT)
-        ));
+        )));
 
         assertEquals(false, config.archiveWritable());
         assertEquals(Set.<OpenOption>of(StandardOpenOption.READ, TestOpenOption.DIRECT), config.openOptions());
@@ -5225,7 +5226,7 @@ public final class ZipArkivoFileSystemTest {
                 ZipEncryption.winZipAes256()
         }) {
             ByteArrayOutputStream archive = new ByteArrayOutputStream();
-            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(archive, environment)) {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(archive, ArchiveOptions.fromEnvironment(environment))) {
                 writer.beginFile("secret.txt");
                 ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
@@ -5246,7 +5247,7 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive.toByteArray()),
-                    environment
+                    ArchiveOptions.fromEnvironment(environment)
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -5493,7 +5494,7 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try {
-            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, environment)) {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 writer.beginFile("encrypted-stored-descriptor-crc.txt");
                 ZipArkivoEntryAttributeView firstView = writer.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(firstView);
@@ -5514,7 +5515,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = tamperFirstDataDescriptorCrc(Files.readAllBytes(archivePath));
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -5747,7 +5748,7 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try {
-            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, environment)) {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 writer.beginFile("deflated.txt");
                 try (var output = writer.openOutputStream()) {
                     output.write(deflatedContent);
@@ -5765,7 +5766,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes deflatedAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -5805,7 +5806,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 writer.beginFile("secret.txt");
                 ZipArkivoEntryAttributeView secretView = writer.attributeView(ZipArkivoEntryAttributeView.class);
@@ -5837,7 +5838,7 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes secretAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -5876,7 +5877,7 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try {
-            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, environment)) {
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 writer.beginFile("deflated.txt");
                 try (var output = writer.openOutputStream()) {
                     output.write(content);
@@ -5887,7 +5888,7 @@ public final class ZipArkivoFileSystemTest {
             byte[] tampered = tamperLastDataDescriptorCrc(archive);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(tampered),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -5917,7 +5918,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 Path file = fileSystem.getPath("/aes.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
@@ -5939,7 +5940,7 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
@@ -5969,7 +5970,7 @@ public final class ZipArkivoFileSystemTest {
         try {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 IOException exception = assertThrows(
                         IOException.class,
@@ -5980,7 +5981,7 @@ public final class ZipArkivoFileSystemTest {
 
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(
                     new ByteArrayInputStream(archive),
-                    Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password))
+                    ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), ArkivoPasswordProvider.fixed(password)))
             )) {
                 assertEquals(true, reader.next());
                 IOException exception = assertThrows(IOException.class, () -> {
@@ -6214,7 +6215,7 @@ public final class ZipArkivoFileSystemTest {
     public void failedSeekableChannelSourceReadClosesOpenedChannels() throws IOException {
         TestSeekableChannelSource source = new TestSeekableChannelSource(new byte[0]);
 
-        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(source, Map.of())) {
+        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(Map.of()))) {
             assertThrows(IOException.class, fileSystem::preambleSize);
             assertEquals(1, source.openCount());
             assertEquals(true, source.allOpenedChannelsClosed());
@@ -6238,7 +6239,7 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try {
-            assertThrows(IOException.class, () -> ZipArkivoFileSystem.open(source, environment));
+            assertThrows(IOException.class, () -> ZipArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment)));
             assertEquals(true, source.openCount() > 0);
             assertEquals(true, source.allOpenedChannelsClosed());
             assertEquals(1, source.closeCount());
@@ -6260,7 +6261,7 @@ public final class ZipArkivoFileSystemTest {
 
         assertThrows(
                 IllegalArgumentException.class,
-                () -> ZipArkivoFileSystem.open(source, environment)
+                () -> ZipArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment))
         );
         assertEquals(0, source.openCount());
         assertEquals(1, source.closeCount());
@@ -6282,7 +6283,7 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try {
-            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(source, environment)) {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment))) {
                 assertEquals(false, fileSystem.isReadOnly());
                 assertEquals(preamble.length, fileSystem.preambleSize());
                 assertPreambleContent(preamble, fileSystem);
@@ -6338,7 +6339,7 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try {
-            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(channel, environment)) {
+            try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(channel, ArchiveOptions.fromEnvironment(environment))) {
                 assertEquals("keep", Files.readString(fileSystem.getPath("/keep.txt"), StandardCharsets.UTF_8));
                 Files.delete(fileSystem.getPath("/remove.txt"));
                 Files.writeString(fileSystem.getPath("/added.txt"), "owned", StandardCharsets.UTF_8);
@@ -6373,7 +6374,7 @@ public final class ZipArkivoFileSystemTest {
                 failingTarget
         );
 
-        ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(source, environment);
+        ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment));
         Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
         IOException exception = assertThrows(IOException.class, fileSystem::close);
 
@@ -6398,7 +6399,7 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try {
-            ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(source, environment);
+            ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment));
             Files.writeString(fileSystem.getPath("/added.txt"), "retry", StandardCharsets.UTF_8);
 
             IOException exception = assertThrows(IOException.class, fileSystem::close);
@@ -9270,7 +9271,7 @@ public final class ZipArkivoFileSystemTest {
                 ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                 ArkivoPasswordProvider.fixed(password)
         );
-        try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(archive, environment)) {
+        try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(archive, ArchiveOptions.fromEnvironment(environment))) {
             writer.beginFile("deflated.txt");
             ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
             assertNotNull(view);
@@ -9303,7 +9304,7 @@ public final class ZipArkivoFileSystemTest {
                 ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                 ArkivoPasswordProvider.fixed(password)
         );
-        try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(archive, environment)) {
+        try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(archive, ArchiveOptions.fromEnvironment(environment))) {
             writer.beginFile("lzma.txt");
             ZipArkivoEntryAttributeView view = writer.attributeView(ZipArkivoEntryAttributeView.class);
             assertNotNull(view);

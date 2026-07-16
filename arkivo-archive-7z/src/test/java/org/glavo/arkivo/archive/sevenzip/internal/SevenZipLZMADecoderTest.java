@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -40,6 +41,17 @@ public final class SevenZipLZMADecoderTest {
                         new byte[]{0x01, 0x00, 0x00, 0x00}
                 )
         );
+    }
+
+    /// Verifies unsigned 32-bit BCJ start offsets are preserved instead of sign-extended.
+    @Test
+    public void acceptsUnsignedBcjStartOffset() throws IOException {
+        try (InputStream input = SevenZipLZMADecoder.openX86Filter(
+                new ByteArrayInputStream(new byte[0]),
+                new byte[]{(byte) 0xff, (byte) 0xff, (byte) 0xff, (byte) 0xff}
+        )) {
+            assertEquals(-1, input.read());
+        }
     }
 
     /// Verifies current and legacy Zstandard coder property lengths are accepted.

@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.rar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
@@ -13,7 +14,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.file.Path;
-import java.util.Map;
 import java.util.Objects;
 
 /// Reads RAR entries from a forward-only stream.
@@ -42,72 +42,72 @@ public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingRea
 
     /// Opens a streaming RAR reader from its first path and discovers conventional split volumes.
     public static RarArkivoStreamingReader open(Path path) throws IOException {
-        return open(path, Map.of());
+        return open(path, ArchiveOptions.EMPTY);
     }
 
     /// Opens a configured streaming RAR reader from its first path and discovers conventional split volumes.
     public static RarArkivoStreamingReader open(
             Path path,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(path, "path");
-        Objects.requireNonNull(environment, "environment");
-        return open(RarArkivoFormat.instance().openVolumeSource(path), environment);
+        Objects.requireNonNull(options, "options");
+        return open(RarArkivoFormat.instance().openVolumeSource(path), options);
     }
 
     /// Opens a streaming RAR reader from a multi-volume source.
     public static RarArkivoStreamingReader open(ArkivoVolumeSource source) {
-        return open(source, Map.of());
+        return open(source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a streaming RAR reader from a multi-volume source with environment options.
+    /// Opens a streaming RAR reader from a multi-volume source with options.
     ///
     /// The returned reader owns the source and every physical volume channel it opens.
     public static RarArkivoStreamingReader open(
             ArkivoVolumeSource source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         return new RarArkivoStreamingReaderImpl(
                 source,
-                RarArkivoFileSystem.PASSWORD_PROVIDER.read(environment),
-                environment
+                options.get(RarArkivoFileSystem.PASSWORD_PROVIDER),
+                options
         );
     }
 
     /// Opens a streaming RAR reader from an input stream.
     public static RarArkivoStreamingReader open(InputStream source) {
-        return open(source, Map.of());
+        return open(source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a streaming RAR reader from an input stream with environment options.
-    public static RarArkivoStreamingReader open(InputStream source, Map<String, ?> environment) {
+    /// Opens a streaming RAR reader from an input stream with options.
+    public static RarArkivoStreamingReader open(InputStream source, ArchiveOptions options) {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         return new RarArkivoStreamingReaderImpl(
                 source,
-                RarArkivoFileSystem.PASSWORD_PROVIDER.read(environment),
-                environment
+                options.get(RarArkivoFileSystem.PASSWORD_PROVIDER),
+                options
         );
     }
 
     /// Opens a streaming RAR reader from a readable channel.
     public static RarArkivoStreamingReader open(ReadableByteChannel source) {
-        return open(source, Map.of());
+        return open(source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a streaming RAR reader from a readable channel with environment options.
+    /// Opens a streaming RAR reader from a readable channel with options.
     public static RarArkivoStreamingReader open(
             ReadableByteChannel source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         return new RarArkivoStreamingReaderImpl(
                 StreamChannelAdapters.inputStream(source),
-                RarArkivoFileSystem.PASSWORD_PROVIDER.read(environment),
-                environment
+                options.get(RarArkivoFileSystem.PASSWORD_PROVIDER),
+                options
         );
     }
 }

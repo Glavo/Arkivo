@@ -3,13 +3,13 @@
 
 package org.glavo.arkivo.archive.ar;
 
+import org.glavo.arkivo.archive.ArchiveEntryAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
 
-import java.nio.file.attribute.BasicFileAttributes;
 
 /// Exposes metadata parsed from one AR archive member header.
 @NotNullByDefault
-public interface ArArkivoEntryAttributes extends BasicFileAttributes {
+public interface ArArkivoEntryAttributes extends ArchiveEntryAttributes {
     /// Returns the decoded archive member path.
     String path();
 

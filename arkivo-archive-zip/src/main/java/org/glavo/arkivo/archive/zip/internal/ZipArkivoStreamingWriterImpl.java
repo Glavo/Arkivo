@@ -7,7 +7,7 @@ import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
-import org.glavo.arkivo.archive.zip.ZipArkivoFileSystemProvider;
+import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.glavo.arkivo.archive.zip.ZipMethod;
@@ -128,19 +128,19 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
 
     /// Begins a pending regular file ZIP entry for the given logical archive path.
     @Override
-    public void beginFile(String path) {
+    protected void beginFileEntry(String path) {
         beginEntry(path, EntryType.FILE, null);
     }
 
     /// Begins a pending directory ZIP entry for the given logical archive path.
     @Override
-    public void beginDirectory(String path) {
+    protected void beginDirectoryEntry(String path) {
         beginEntry(path, EntryType.DIRECTORY, null);
     }
 
     /// Begins a pending symbolic link ZIP entry for the given logical archive path and target path text.
     @Override
-    public void beginSymbolicLink(String path, String target) {
+    protected void beginSymbolicLinkEntry(String path, String target) {
         beginEntry(path, EntryType.SYMBOLIC_LINK, linkTargetText(target));
     }
 
@@ -159,7 +159,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
 
     /// Returns an attribute view used to configure the current pending entry before it is committed.
     @Override
-    public <V extends FileAttributeView> @Nullable V attributeView(Class<V> type) {
+    protected <V extends FileAttributeView> @Nullable V currentAttributeView(Class<V> type) {
         Objects.requireNonNull(type, "type");
         lock();
         try {
@@ -178,7 +178,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
 
     /// Commits the current pending entry without opening a body channel.
     @Override
-    public void endEntry() throws IOException {
+    protected void finishCurrentEntry() throws IOException {
         lock();
         try {
             ZipStreamingEntry entry = requirePendingEntry();
@@ -218,13 +218,12 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
 
     /// Opens a writable channel for the current pending entry and commits its metadata.
     @Override
-    public WritableByteChannel openChannel() throws IOException {
-        return StreamChannelAdapters.writableChannel(openOutputStream());
+    protected WritableByteChannel openCurrentChannel() throws IOException {
+        return StreamChannelAdapters.writableChannel(openBodyStream());
     }
 
     /// Opens an output stream for the current pending entry and commits its metadata.
-    @Override
-    public OutputStream openOutputStream() throws IOException {
+    private OutputStream openBodyStream() throws IOException {
         lock();
         try {
             ZipStreamingEntry entry = requirePendingEntry();
@@ -247,7 +246,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
 
     /// Closes this streaming writer and finishes the ZIP stream.
     @Override
-    public void close() throws IOException {
+    protected void closeWriter() throws IOException {
         lock();
         try {
             fileSystem.close();

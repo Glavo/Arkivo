@@ -12,7 +12,7 @@ import java.util.Objects;
 ///
 /// @param dictionaryId nonzero unsigned 32-bit identifier from the Zstandard frame header
 @NotNullByDefault
-public record ZstdDictionaryRequest(long dictionaryId) implements DictionaryRequest {
+public record ZstdDictionaryRequest(long dictionaryId) implements DictionaryRequest<ZstdDictionary> {
     /// Validates the nonzero unsigned 32-bit identifier.
     public ZstdDictionaryRequest {
         if (dictionaryId <= ZstdDictionary.NO_DICTIONARY_ID || dictionaryId > 0xffff_ffffL) {
@@ -21,6 +21,7 @@ public record ZstdDictionaryRequest(long dictionaryId) implements DictionaryRequ
     }
 
     /// Returns whether the supplied dictionary satisfies this request.
+    @Override
     public boolean matches(ZstdDictionary dictionary) {
         return Objects.requireNonNull(dictionary, "dictionary").dictionaryId() == dictionaryId;
     }

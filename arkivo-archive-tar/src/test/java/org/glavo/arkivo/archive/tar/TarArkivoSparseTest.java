@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.tar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -262,7 +263,7 @@ final class TarArkivoSparseTest {
                     ArkivoFileSystem.OPEN_OPTIONS.key(),
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
             );
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, environment)) {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
             }
 

@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.ar.internal;
 
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
@@ -13,7 +14,7 @@ import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
 import org.glavo.arkivo.archive.ar.ArArkivoFileSystem;
-import org.glavo.arkivo.archive.ar.ArArkivoFileSystemProvider;
+import org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingReader;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter;
 import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
@@ -218,38 +219,34 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             ArArkivoFileSystemProvider provider,
             Path archivePath,
             URI archiveUri,
-            Map<String, ?> environment,
+            ArchiveOptions options,
             Runnable closeAction
     ) throws IOException {
-        Objects.requireNonNull(environment, "environment");
-        ArkivoFileSystemThreadSafety threadSafety = ArkivoFileSystem.THREAD_SAFETY.readOrDefault(
-                environment,
-                ArkivoFileSystemThreadSafety.CONCURRENT_READ
+        Objects.requireNonNull(options, "options");
+        ArkivoFileSystemThreadSafety threadSafety = options.getOrDefault(ArkivoFileSystem.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
         );
-        Set<OpenOption> openOptions = ArkivoFileSystem.OPEN_OPTIONS.readOrDefault(
-                environment,
-                Set.of(StandardOpenOption.READ)
+        Set<OpenOption> openOptions = options.getOrDefault(ArkivoFileSystem.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
         );
         if (isArchiveUpdateOpen(openOptions)) {
             validateArchiveUpdateOptions(openOptions);
-            if (ArkivoFileSystem.SOURCE_MUTATION_POLICY.isPresent(environment)) {
+            if (options.contains(ArkivoFileSystem.SOURCE_MUTATION_POLICY)) {
                 throw new UnsupportedOperationException("AR update mode always performs a complete archive rewrite");
             }
-            ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(environment);
+            ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(options);
             Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
             try {
                 boolean newArchive = !Files.exists(archivePath);
                 Map<String, Node> nodes;
                 if (!newArchive) {
                     try (InputStream input = Files.newInputStream(archivePath, StandardOpenOption.READ)) {
-                        nodes = readNodes(input, editStorage, ownedContents, environment);
+                        nodes = readNodes(input, editStorage, ownedContents, options);
                     }
                 } else if (openOptions.contains(StandardOpenOption.CREATE)) {
                     nodes = rootNodes();
                 } else {
                     throw new NoSuchFileException(archivePath.toString());
                 }
-                @Nullable ArkivoCommitTarget commitTarget = ArkivoFileSystem.COMMIT_TARGET.read(environment);
+                @Nullable ArkivoCommitTarget commitTarget = options.get(ArkivoFileSystem.COMMIT_TARGET);
                 if (commitTarget == null) {
                     commitTarget = ArkivoCommitTarget.atomicReplace(defaultCommitDirectory(archivePath));
                 }
@@ -278,7 +275,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
         if (isWriteArchiveOpen(openOptions)) {
             validateArchiveWriteOptions(openOptions);
-            if (ArkivoFileSystem.COMMIT_TARGET.read(environment) != null) {
+            if (options.get(ArkivoFileSystem.COMMIT_TARGET) != null) {
                 throw new UnsupportedOperationException("AR archive writes do not support commit targets");
             }
             OutputStream output = Files.newOutputStream(archivePath, openOptions.toArray(OpenOption[]::new));
@@ -301,12 +298,12 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
 
         validateArchiveReadOptions(openOptions);
-        ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(environment);
+        ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(options);
         Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
         try {
             Map<String, Node> nodes;
             try (InputStream input = Files.newInputStream(archivePath, openOptions.toArray(OpenOption[]::new))) {
-                nodes = readNodes(input, editStorage, ownedContents, environment);
+                nodes = readNodes(input, editStorage, ownedContents, options);
             }
             return new ArArkivoFileSystemImpl(
                     provider,
@@ -334,32 +331,28 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     public static ArArkivoFileSystemImpl open(
             ArArkivoFileSystemProvider provider,
             ArkivoSeekableChannelSource source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(provider, "provider");
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
 
         ArkivoFileSystemThreadSafety threadSafety;
         ArkivoEditStorage editStorage;
         boolean updateMode;
         @Nullable ArkivoCommitTarget commitTarget;
         try {
-            threadSafety = ArkivoFileSystem.THREAD_SAFETY.readOrDefault(
-                    environment,
-                    ArkivoFileSystemThreadSafety.CONCURRENT_READ
+            threadSafety = options.getOrDefault(ArkivoFileSystem.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
             );
-            Set<OpenOption> openOptions = ArkivoFileSystem.OPEN_OPTIONS.readOrDefault(
-                    environment,
-                    Set.of(StandardOpenOption.READ)
+            Set<OpenOption> openOptions = options.getOrDefault(ArkivoFileSystem.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
             );
             updateMode = isArchiveUpdateOpen(openOptions);
             if (updateMode) {
                 validateArchiveUpdateOptions(openOptions);
-                if (ArkivoFileSystem.SOURCE_MUTATION_POLICY.isPresent(environment)) {
+                if (options.contains(ArkivoFileSystem.SOURCE_MUTATION_POLICY)) {
                     throw new UnsupportedOperationException("AR update mode always performs a complete archive rewrite");
                 }
-                commitTarget = ArkivoFileSystem.COMMIT_TARGET.read(environment);
+                commitTarget = options.get(ArkivoFileSystem.COMMIT_TARGET);
                 if (commitTarget == null) {
                     throw new IllegalArgumentException(
                             "AR channel-source update mode requires ArkivoFileSystem.COMMIT_TARGET"
@@ -369,7 +362,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 validateArchiveReadOptions(openOptions);
                 commitTarget = null;
             }
-            editStorage = StoredContentSupport.selectStorage(environment);
+            editStorage = StoredContentSupport.selectStorage(options);
         } catch (RuntimeException | Error exception) {
             closeSourceAfterOpenFailure(source, exception);
             throw exception;
@@ -382,7 +375,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             try (SeekableByteChannel channel = source.openChannel()) {
                 archiveSize = channel.size();
                 channel.position(0L);
-                nodes = readNodes(Channels.newInputStream(channel), editStorage, ownedContents, environment);
+                nodes = readNodes(Channels.newInputStream(channel), editStorage, ownedContents, options);
             }
             return new ArArkivoFileSystemImpl(
                     provider,
@@ -2142,13 +2135,13 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             InputStream input,
             ArkivoEditStorage editStorage,
             Set<ArkivoStoredContent> ownedContents,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         LinkedHashMap<String, Node> nodes = new LinkedHashMap<>();
         Node root = new Node("", syntheticDirectoryAttributes("/"), true, null, true);
         nodes.put("", root);
 
-        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(input, environment)) {
+        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(input, options)) {
             while (reader.next()) {
                 ArArkivoEntryAttributes attributes = reader.readAttributes(ArArkivoEntryAttributes.class);
                 String path = normalizeEntryPath(attributes.path());

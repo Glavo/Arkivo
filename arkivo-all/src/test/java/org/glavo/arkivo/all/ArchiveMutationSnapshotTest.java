@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.all;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
@@ -199,10 +200,14 @@ final class ArchiveMutationSnapshotTest {
 
     /// Opens one complete-rewrite update session.
     private static ArkivoFileSystem openUpdate(FormatCase format, Path archive) throws IOException {
-        return ArkivoFormats.openFileSystem(format.name(), archive, Map.of(
-                ArkivoFileSystem.OPEN_OPTIONS.key(),
-                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
-        ));
+        return ArkivoFormats.openFileSystem(
+                format.name(),
+                archive,
+                ArchiveOptions.of(
+                        ArkivoFileSystem.OPEN_OPTIONS,
+                        Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+                )
+        );
     }
 
     /// Creates one archive through the generic streaming-writer API.

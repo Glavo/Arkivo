@@ -48,7 +48,7 @@ public final class CompressionFormats {
         return CompressionFormatRegistry.load().require(name);
     }
 
-    /// Returns the first installed format matching the remaining prefix bytes.
+    /// Returns the matching installed format with the largest preferred probe size.
     ///
     /// The supplied buffer is not modified.
     public static @Nullable CompressionFormat detect(ByteBuffer prefix) {
@@ -57,8 +57,8 @@ public final class CompressionFormats {
 
     /// Detects an installed format from a forward-only channel while preserving every source byte for later reads.
     ///
-    /// The returned channel must replace the original channel in the caller's read pipeline. Closing it leaves the
-    /// original channel open.
+    /// The result owns a replay channel until `takeChannel()` transfers it into the caller's read pipeline. Closing the
+    /// replay channel leaves the original channel open.
     public static CompressionProbeResult probe(ReadableByteChannel source) throws IOException {
         return probe(source, 0L, ChannelOwnership.RETAIN);
     }
@@ -73,9 +73,10 @@ public final class CompressionFormats {
 
     /// Detects an installed format while retaining at least the requested prefix and applying source ownership.
     ///
-    /// The returned channel replays all retained bytes before continuing from the source. A larger prefix allows a
-    /// container parser to reject signature collisions without reading the original channel twice. With CLOSE, the
-    /// source is closed when the replay channel closes or when probing fails after argument validation.
+    /// The result owns a channel that replays all retained bytes before continuing from the source. A larger prefix
+    /// allows a container parser to reject signature collisions without reading the original channel twice. Call
+    /// `takeChannel()` to transfer the replay channel; otherwise close the result. With CLOSE, the source is closed when
+    /// the owning result or transferred replay channel closes, or when probing fails after argument validation.
     public static CompressionProbeResult probe(
             ReadableByteChannel source,
             long minimumPrefixSize,
@@ -274,7 +275,7 @@ public final class CompressionFormats {
         Objects.requireNonNull(ownership, "ownership");
 
         CompressionProbeResult probe = probe(source, ownership);
-        ReadableByteChannel replay = probe.channel();
+        ReadableByteChannel replay = probe.takeChannel();
         try {
             @Nullable CompressionFormat format = probe.format();
             if (format == null) {
@@ -345,61 +346,101 @@ public final class CompressionFormats {
         }
     }
 
-    /// Opens an owning compression output stream for the named format.
-    public static OutputStream compressTo(String formatName, OutputStream target) throws IOException {
+    /// Opens an encoder output stream for the named format while retaining the target stream.
+    public static OutputStream openEncoder(String formatName, OutputStream target) throws IOException {
+        return openEncoder(formatName, target, ChannelOwnership.RETAIN);
+    }
+
+    /// Opens an encoder output stream for the named format with explicit target ownership.
+    public static OutputStream openEncoder(
+            String formatName,
+            OutputStream target,
+            ChannelOwnership ownership
+    ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(ownership, "ownership");
         return StreamChannelAdapters.outputStream(
-                openEncoder(
-                        formatName,
-                        StreamChannelAdapters.writableChannel(target),
-                        ChannelOwnership.CLOSE
-                )
+                openEncoder(formatName, StreamChannelAdapters.writableChannel(target), ownership)
         );
     }
 
-    /// Opens an owning unlimited decompression input stream for the named format.
-    public static InputStream decompressFrom(String formatName, InputStream source) throws IOException {
-        return decompressFrom(formatName, source, DecompressionLimits.UNLIMITED);
+    /// Opens an unlimited decoder input stream for the named format while retaining the source stream.
+    public static InputStream openDecoder(String formatName, InputStream source) throws IOException {
+        return openDecoder(formatName, source, DecompressionLimits.UNLIMITED, ChannelOwnership.RETAIN);
     }
 
-    /// Opens an owning limited decompression input stream for the named format.
-    public static InputStream decompressFrom(
+    /// Opens a limited decoder input stream for the named format while retaining the source stream.
+    public static InputStream openDecoder(
             String formatName,
             InputStream source,
             DecompressionLimits limits
     ) throws IOException {
+        return openDecoder(formatName, source, limits, ChannelOwnership.RETAIN);
+    }
+
+    /// Opens an unlimited decoder input stream for the named format with explicit source ownership.
+    public static InputStream openDecoder(
+            String formatName,
+            InputStream source,
+            ChannelOwnership ownership
+    ) throws IOException {
+        return openDecoder(formatName, source, DecompressionLimits.UNLIMITED, ownership);
+    }
+
+    /// Opens a limited decoder input stream for the named format with explicit source ownership.
+    public static InputStream openDecoder(
+            String formatName,
+            InputStream source,
+            DecompressionLimits limits,
+            ChannelOwnership ownership
+    ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(limits, "limits");
+        Objects.requireNonNull(ownership, "ownership");
         return StreamChannelAdapters.inputStream(
                 openDecoder(
                         formatName,
                         StreamChannelAdapters.readableChannel(source),
                         limits,
-                        ChannelOwnership.CLOSE
+                        ownership
                 )
         );
     }
 
-    /// Detects a signed stream and opens an owning unlimited decompression input stream.
-    public static InputStream decompressFrom(InputStream source) throws IOException {
-        return decompressFrom(source, DecompressionLimits.UNLIMITED);
+    /// Detects a signed stream and opens an unlimited decoder while retaining the source stream.
+    public static InputStream openDecoder(InputStream source) throws IOException {
+        return openDecoder(source, DecompressionLimits.UNLIMITED, ChannelOwnership.RETAIN);
     }
 
-    /// Detects a signed stream and opens an owning limited decompression input stream.
-    public static InputStream decompressFrom(
+    /// Detects a signed stream and opens a limited decoder while retaining the source stream.
+    public static InputStream openDecoder(
             InputStream source,
             DecompressionLimits limits
     ) throws IOException {
+        return openDecoder(source, limits, ChannelOwnership.RETAIN);
+    }
+
+    /// Detects a signed stream and opens an unlimited decoder with explicit source ownership.
+    public static InputStream openDecoder(
+            InputStream source,
+            ChannelOwnership ownership
+    ) throws IOException {
+        return openDecoder(source, DecompressionLimits.UNLIMITED, ownership);
+    }
+
+    /// Detects a signed stream and opens a limited decoder with explicit source ownership.
+    public static InputStream openDecoder(
+            InputStream source,
+            DecompressionLimits limits,
+            ChannelOwnership ownership
+    ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(limits, "limits");
+        Objects.requireNonNull(ownership, "ownership");
         return StreamChannelAdapters.inputStream(
-                openDecoder(
-                        StreamChannelAdapters.readableChannel(source),
-                        limits,
-                        ChannelOwnership.CLOSE
-                )
+                openDecoder(StreamChannelAdapters.readableChannel(source), limits, ownership)
         );
     }
 

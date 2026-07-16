@@ -173,6 +173,10 @@ public final class GzipBufferEngineTest {
         assertThrows(DecompressionLimitException.class, () -> decode(encoded, 1, shortLimits));
         try (CompressionEncoder.FlushableFramed encoder = CODEC.newEncoder()) {
             assertEquals(CodecOutcome.BOUNDARY_REACHED, encoder.finishFrame(ByteBuffer.allocate(32)));
+            ByteBuffer terminal = ByteBuffer.allocate(32);
+            assertEquals(CodecOutcome.FINISHED, encoder.finish(terminal));
+            assertEquals(0, terminal.position());
+            assertThrows(IllegalStateException.class, () -> encoder.finishFrame(ByteBuffer.allocate(32)));
         }
     }
 

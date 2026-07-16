@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.codec;
 
-import org.glavo.arkivo.codec.CompressingWritableByteChannel.Directive;
 
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -15,6 +14,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
+import java.util.Objects;
 import java.nio.channels.WritableByteChannel;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -27,17 +27,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @NotNullByDefault
 final class CompressionChannelContextTest {
     /// The identity codec used to isolate generic channel behavior.
-    private static final CompressionCodec<?> CODEC = new IdentityCodec();
+    private static final CompressionCodec.FlushableFramed<IdentityCodec> CODEC = new IdentityCodec();
 
-    /// Verifies explicit encoder directives and retained target ownership.
+    /// Verifies explicit flush and frame operations with retained target ownership.
     @Test
     void encodesIncrementallyAndRetainsTargetByDefault() throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         WritableByteChannel target = Channels.newChannel(bytes);
-        CompressingWritableByteChannel encoder = CODEC.openEncoder(target);
+        CompressingWritableByteChannel.FlushableFramed encoder = CODEC.openEncoder(target);
 
-        CodecResult flushed = encoder.encode(ByteBuffer.wrap(new byte[]{1, 2, 3}), Directive.FLUSH);
-        CodecResult finished = encoder.encode(ByteBuffer.wrap(new byte[]{4}), Directive.END_FRAME);
+        CodecResult flushed = encoder.flush(ByteBuffer.wrap(new byte[]{1, 2, 3}));
+        CodecResult finished = encoder.finishFrame(ByteBuffer.wrap(new byte[]{4}));
 
         assertEquals(new CodecResult(3, 3, CodecResult.Status.FLUSHED), flushed);
         assertEquals(new CodecResult(1, 1, CodecResult.Status.FRAME_FINISHED), finished);
@@ -71,11 +71,11 @@ final class CompressionChannelContextTest {
     @Test
     void closesOwnedBackingChannels() throws IOException {
         WritableByteChannel target = Channels.newChannel(new ByteArrayOutputStream());
-        try (CompressingWritableByteChannel encoder = CODEC.openEncoder(
+        try (CompressingWritableByteChannel.Framed encoder = CODEC.openEncoder(
                 target,
                 ChannelOwnership.CLOSE
         )) {
-            encoder.encode(ByteBuffer.wrap(new byte[]{1}), Directive.END_FRAME);
+            encoder.finishFrame(ByteBuffer.wrap(new byte[]{1}));
         }
         assertFalse(target.isOpen());
 
@@ -151,7 +151,7 @@ final class CompressionChannelContextTest {
         assertFalse(CODEC instanceof CompressionCodec.LevelConfigurable<?>);
         assertFalse(CODEC instanceof CompressionCodec.StrategyConfigurable<?>);
         assertFalse(CODEC instanceof CompressionCodec.DictionaryConfigurable<?, ?>);
-        assertFalse(CODEC instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?>);
+        assertFalse(CODEC instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?, ?>);
     }
 
     /// Implements a writable byte-array channel that fails its first close attempt.
@@ -243,7 +243,8 @@ final class CompressionChannelContextTest {
 
     /// Implements transport-independent identity coding for generic channel tests.
     @NotNullByDefault
-    private static final class IdentityCodec implements CompressionCodec<IdentityCodec>, CompressionFormat {
+    private static final class IdentityCodec
+            implements CompressionCodec.FlushableFramed<IdentityCodec>, CompressionFormat {
         /// Creates an identity codec.
         private IdentityCodec() {
         }
@@ -268,13 +269,13 @@ final class CompressionChannelContextTest {
 
         /// Creates a fresh identity encoder.
         @Override
-        public CompressionEncoder newEncoder() {
+        public CompressionEncoder.FlushableFramed newEncoder() {
             return new IdentityEncoder();
         }
 
         /// Creates a fresh identity decoder with the requested output limit.
         @Override
-        public CompressionDecoder newDecoder(DecompressionLimits limits) {
+        public CompressionDecoder.Framed newDecoder(DecompressionLimits limits) {
             return CompressionDecoderSupport.limitEngineOutput(
                     new IdentityDecoder(),
                     limits.maximumOutputSize()
@@ -308,6 +309,13 @@ final class CompressionChannelContextTest {
             return CodecOutcome.FINISHED;
         }
 
+        /// Reports a completed frame boundary because identity coding has no trailer.
+        @Override
+        public CodecOutcome finishFrame(ByteBuffer target) {
+            Objects.requireNonNull(target, "target");
+            return CodecOutcome.BOUNDARY_REACHED;
+        }
+
         /// Restores no mutable coding state.
         @Override
         public void reset() {
@@ -321,7 +329,7 @@ final class CompressionChannelContextTest {
 
     /// Copies compressed identity bytes directly to the decoded target.
     @NotNullByDefault
-    private static final class IdentityDecoder implements CompressionDecoder {
+    private static final class IdentityDecoder implements CompressionDecoder.Framed {
         /// Copies available source bytes and finishes at physical input end.
         @Override
         public CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) {

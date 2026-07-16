@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
@@ -39,7 +40,7 @@ public final class SevenZipArkivoFileSystemConfigTest {
     /// Verifies that explicit 7z output factories receive writable default open options.
     @Test
     public void writerEnvironmentUsesWritableDefaults() {
-        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of());
+        SevenZipArkivoFileSystemConfig config = fromWriterEnvironment(Map.of());
 
         assertEquals(true, config.archiveWritable());
         assertEquals(SevenZipCompression.copy(), config.compression());
@@ -74,14 +75,14 @@ public final class SevenZipArkivoFileSystemConfigTest {
     @Test
     public void stringValues() {
         Map<String, Object> environment = new HashMap<>();
-        ArkivoFileSystem.THREAD_SAFETY.putString(environment, "strict");
-        SevenZipArkivoFileSystem.SPLIT_SIZE.putString(environment, "1024");
-        SevenZipArkivoFileSystem.SOLID_FILE_COUNT.putString(environment, "4");
-        SevenZipArkivoFileSystem.ENCRYPT_HEADERS.putString(environment, "true");
-        SevenZipArkivoFileSystem.COMPRESSION.putString(environment, "lzma2");
-        SevenZipArkivoFileSystem.FILTER.putString(environment, "bcj-x86");
+        environment.put(ArkivoFileSystem.THREAD_SAFETY.key(), "strict");
+        environment.put(SevenZipArkivoFileSystem.SPLIT_SIZE.key(), "1024");
+        environment.put(SevenZipArkivoFileSystem.SOLID_FILE_COUNT.key(), "4");
+        environment.put(SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(), "true");
+        environment.put(SevenZipArkivoFileSystem.COMPRESSION.key(), "lzma2");
+        environment.put(SevenZipArkivoFileSystem.FILTER.key(), "bcj-x86");
 
-        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(environment);
+        SevenZipArkivoFileSystemConfig config = fromWriterEnvironment(environment);
 
         assertEquals(1024L, config.splitSize());
         assertEquals(4, config.solidFileCount());
@@ -101,7 +102,7 @@ public final class SevenZipArkivoFileSystemConfigTest {
                 passwordProvider
         );
 
-        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromEnvironment(environment);
+        SevenZipArkivoFileSystemConfig config = fromEnvironment(environment);
 
         assertSame(passwordProvider, config.passwordProvider());
     }
@@ -110,16 +111,16 @@ public final class SevenZipArkivoFileSystemConfigTest {
     /// Verifies typed compression methods and complete configurations are normalized from environment values.
     @Test
     public void compressionValues() {
-        SevenZipArkivoFileSystemConfig methodConfig = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+        SevenZipArkivoFileSystemConfig methodConfig = fromWriterEnvironment(Map.of(
                 SevenZipArkivoFileSystem.COMPRESSION.key(),
                 SevenZipCompressionMethod.BZIP2
         ));
         SevenZipCompression customCompression = SevenZipCompression.deflate(2);
-        SevenZipArkivoFileSystemConfig completeConfig = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+        SevenZipArkivoFileSystemConfig completeConfig = fromWriterEnvironment(Map.of(
                 SevenZipArkivoFileSystem.COMPRESSION.key(),
                 customCompression
         ));
-        SevenZipArkivoFileSystemConfig namedConfig = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+        SevenZipArkivoFileSystemConfig namedConfig = fromWriterEnvironment(Map.of(
                 SevenZipArkivoFileSystem.COMPRESSION.key(),
                 "zstd"
         ));
@@ -129,7 +130,7 @@ public final class SevenZipArkivoFileSystemConfigTest {
         assertEquals(SevenZipCompression.zstandard(), namedConfig.compression());
         assertThrows(
                 IllegalArgumentException.class,
-                () -> SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+                () -> fromEnvironment(Map.of(
                         SevenZipArkivoFileSystem.COMPRESSION.key(),
                         SevenZipCompression.lzma2()
                 ))
@@ -140,12 +141,12 @@ public final class SevenZipArkivoFileSystemConfigTest {
     /// Verifies typed filter methods and complete configurations are normalized from environment values.
     @Test
     public void filterValues() {
-        SevenZipArkivoFileSystemConfig methodConfig = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+        SevenZipArkivoFileSystemConfig methodConfig = fromWriterEnvironment(Map.of(
                 SevenZipArkivoFileSystem.FILTER.key(),
                 SevenZipFilterMethod.BCJ_ARM_THUMB
         ));
         SevenZipFilter customFilter = SevenZipFilter.delta(7);
-        SevenZipArkivoFileSystemConfig completeConfig = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+        SevenZipArkivoFileSystemConfig completeConfig = fromWriterEnvironment(Map.of(
                 SevenZipArkivoFileSystem.FILTER.key(),
                 customFilter
         ));
@@ -159,28 +160,28 @@ public final class SevenZipArkivoFileSystemConfigTest {
         );
         assertEquals(
                 chain,
-                SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+                fromWriterEnvironment(Map.of(
                         SevenZipArkivoFileSystem.FILTERS.key(),
                         chain.filters()
                 )).filters()
         );
         assertEquals(
                 SevenZipFilterChain.EMPTY,
-                SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+                fromWriterEnvironment(Map.of(
                         SevenZipArkivoFileSystem.FILTERS.key(),
                         List.of()
                 )).filters()
         );
         assertEquals(
                 SevenZipFilterChain.of(SevenZipFilter.bcjRiscV()),
-                SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+                fromWriterEnvironment(Map.of(
                         SevenZipArkivoFileSystem.FILTER.key(),
                         "bcj-riscv"
                 )).filters()
         );
         assertThrows(
                 IllegalArgumentException.class,
-                () -> SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+                () -> fromEnvironment(Map.of(
                         SevenZipArkivoFileSystem.FILTER.key(),
                         SevenZipFilter.bcjX86()
                 ))
@@ -188,7 +189,7 @@ public final class SevenZipArkivoFileSystemConfigTest {
 
         assertThrows(
                 IllegalArgumentException.class,
-                () -> SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+                () -> fromWriterEnvironment(Map.of(
                         SevenZipArkivoFileSystem.FILTER.key(),
                         SevenZipFilter.bcjX86(),
                         SevenZipArkivoFileSystem.FILTERS.key(),
@@ -197,7 +198,7 @@ public final class SevenZipArkivoFileSystemConfigTest {
         );
         assertThrows(
                 IllegalArgumentException.class,
-                () -> SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+                () -> fromWriterEnvironment(Map.of(
                         SevenZipArkivoFileSystem.FILTERS.key(),
                         List.of("bcj-x86")
                 ))
@@ -208,7 +209,7 @@ public final class SevenZipArkivoFileSystemConfigTest {
     /// Verifies solid file-count normalization, validation, and write-only scope.
     @Test
     public void solidFileCountValues() {
-        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+        SevenZipArkivoFileSystemConfig config = fromWriterEnvironment(Map.of(
                 SevenZipArkivoFileSystem.SOLID_FILE_COUNT.key(),
                 12L
         ));
@@ -216,21 +217,21 @@ public final class SevenZipArkivoFileSystemConfigTest {
         assertEquals(12, config.solidFileCount());
         assertThrows(
                 IllegalArgumentException.class,
-                () -> SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+                () -> fromWriterEnvironment(Map.of(
                         SevenZipArkivoFileSystem.SOLID_FILE_COUNT.key(),
                         0
                 ))
         );
         assertThrows(
                 IllegalArgumentException.class,
-                () -> SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+                () -> fromWriterEnvironment(Map.of(
                         SevenZipArkivoFileSystem.SOLID_FILE_COUNT.key(),
                         (long) Integer.MAX_VALUE + 1L
                 ))
         );
         assertThrows(
                 IllegalArgumentException.class,
-                () -> SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+                () -> fromEnvironment(Map.of(
                         SevenZipArkivoFileSystem.SOLID_FILE_COUNT.key(),
                         2
                 ))
@@ -240,7 +241,7 @@ public final class SevenZipArkivoFileSystemConfigTest {
     /// Verifies that encrypted headers are accepted only for write configurations.
     @Test
     public void encryptedHeadersRequireWriteOptions() {
-        SevenZipArkivoFileSystemConfig writerConfig = SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+        SevenZipArkivoFileSystemConfig writerConfig = fromWriterEnvironment(Map.of(
                 SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(),
                 true
         ));
@@ -248,7 +249,7 @@ public final class SevenZipArkivoFileSystemConfigTest {
         assertEquals(true, writerConfig.encryptHeaders());
         assertThrows(
                 IllegalArgumentException.class,
-                () -> SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+                () -> fromEnvironment(Map.of(
                         SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(),
                         true
                 ))
@@ -256,27 +257,11 @@ public final class SevenZipArkivoFileSystemConfigTest {
     }
 
 
-    /// Verifies that the removed fixed password option is rejected with migration guidance.
-    @Test
-    public void legacyFixedPasswordOptionIsRejected() {
-        Map<String, Object> environment = Map.of("arkivo.7z.password", new byte[]{1, 2, 3});
-
-        IllegalArgumentException exception = assertThrows(
-                IllegalArgumentException.class,
-                () -> SevenZipArkivoFileSystemConfig.fromEnvironment(environment)
-        );
-
-        assertEquals(
-                "The arkivo.7z.password option has been removed; use arkivo.7z.passwordProvider instead",
-                exception.getMessage()
-        );
-    }
-
 
     /// Verifies that 7z write mode open options are accepted for archive creation.
     @Test
     public void writeModeOpenOptions() {
-        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+        SevenZipArkivoFileSystemConfig config = fromEnvironment(Map.of(
                 ArkivoFileSystem.OPEN_OPTIONS.key(),
                 Set.of(
                         StandardOpenOption.CREATE,
@@ -300,7 +285,7 @@ public final class SevenZipArkivoFileSystemConfigTest {
     /// Verifies that 7z read/write options select complete-rewrite update mode.
     @Test
     public void updateModeOpenOptions() {
-        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+        SevenZipArkivoFileSystemConfig config = fromEnvironment(Map.of(
                 ArkivoFileSystem.OPEN_OPTIONS.key(),
                 Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
         ));
@@ -318,11 +303,11 @@ public final class SevenZipArkivoFileSystemConfigTest {
     @Test
     public void editStorageSupportsReadAndUpdateModes() {
         ArkivoEditStorage storage = ArkivoEditStorage.memory();
-        SevenZipArkivoFileSystemConfig readConfig = SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+        SevenZipArkivoFileSystemConfig readConfig = fromEnvironment(Map.of(
                 ArkivoFileSystem.EDIT_STORAGE.key(),
                 storage
         ));
-        SevenZipArkivoFileSystemConfig updateConfig = SevenZipArkivoFileSystemConfig.fromUpdateEnvironment(Map.of(
+        SevenZipArkivoFileSystemConfig updateConfig = fromUpdateEnvironment(Map.of(
                 ArkivoFileSystem.EDIT_STORAGE.key(),
                 storage
         ));
@@ -331,7 +316,7 @@ public final class SevenZipArkivoFileSystemConfigTest {
         assertSame(storage, updateConfig.editStorage());
         assertThrows(
                 IllegalArgumentException.class,
-                () -> SevenZipArkivoFileSystemConfig.fromWriterEnvironment(Map.of(
+                () -> fromWriterEnvironment(Map.of(
                         ArkivoFileSystem.EDIT_STORAGE.key(),
                         storage
                 ))
@@ -344,10 +329,24 @@ public final class SevenZipArkivoFileSystemConfigTest {
     public void writeModeRequiresCreationBoundary() {
         assertThrows(
                 UnsupportedOperationException.class,
-                () -> SevenZipArkivoFileSystemConfig.fromEnvironment(Map.of(
+                () -> fromEnvironment(Map.of(
                         ArkivoFileSystem.OPEN_OPTIONS.key(),
                         Set.of(StandardOpenOption.CREATE, StandardOpenOption.WRITE)
                 ))
         );
+    }
+    /// Parses raw NIO environment values as ordinary 7z read options.
+    private static SevenZipArkivoFileSystemConfig fromEnvironment(Map<String, ?> environment) {
+        return SevenZipArkivoFileSystemConfig.fromOptions(ArchiveOptions.fromEnvironment(environment));
+    }
+
+    /// Parses raw NIO environment values as 7z writer options.
+    private static SevenZipArkivoFileSystemConfig fromWriterEnvironment(Map<String, ?> environment) {
+        return SevenZipArkivoFileSystemConfig.fromWriterOptions(ArchiveOptions.fromEnvironment(environment));
+    }
+
+    /// Parses raw NIO environment values as 7z update options.
+    private static SevenZipArkivoFileSystemConfig fromUpdateEnvironment(Map<String, ?> environment) {
+        return SevenZipArkivoFileSystemConfig.fromUpdateOptions(ArchiveOptions.fromEnvironment(environment));
     }
 }

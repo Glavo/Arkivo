@@ -3,14 +3,14 @@
 
 package org.glavo.arkivo.archive.tar;
 
+import org.glavo.arkivo.archive.ArchiveEntryAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
-import java.nio.file.attribute.BasicFileAttributes;
 
 /// Exposes metadata parsed from one TAR archive entry header.
 @NotNullByDefault
-public interface TarArkivoEntryAttributes extends BasicFileAttributes {
+public interface TarArkivoEntryAttributes extends ArchiveEntryAttributes {
     /// The TAR type flag for hard link entries.
     byte HARD_LINK_TYPE = '1';
 

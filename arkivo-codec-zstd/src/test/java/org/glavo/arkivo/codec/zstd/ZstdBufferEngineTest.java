@@ -8,7 +8,6 @@ import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -182,17 +181,17 @@ public final class ZstdBufferEngineTest {
         byte[] frame = encoded.toByteArray();
         assertEquals(frame.length, CODEC.frameCompressedSize(ByteBuffer.wrap(frame)));
 
-        try (DecompressingReadableByteChannel decoder = CODEC.openDecoder(
+        try (DecompressingReadableByteChannel.Framed decoder = CODEC.openDecoder(
                 Channels.newChannel(new java.io.ByteArrayInputStream(frame))
         )) {
             ByteBuffer target = ByteBuffer.allocate(input.length);
-            CodecResult boundary = decoder.decode(target, Directive.STOP_AT_FRAME);
+            CodecResult boundary = decoder.decodeFrame(target);
             assertEquals(CodecResult.Status.FRAME_FINISHED, boundary.status());
             assertEquals(frame.length, decoder.inputBytes());
             assertArrayEquals(input, Arrays.copyOf(target.array(), target.position()));
             assertEquals(
                     CodecResult.Status.END_OF_INPUT,
-                    decoder.decode(ByteBuffer.allocate(1), Directive.CONTINUE).status()
+                    decoder.decode(ByteBuffer.allocate(1)).status()
             );
         }
     }

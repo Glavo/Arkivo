@@ -74,7 +74,6 @@ public final class PPMd7ChannelEncoder implements CompressingWritableByteChannel
     }
 
     /// Flushes complete range-coded bytes without ending the stream.
-    @Override
     public void flush() throws IOException {
         ensureOpen();
         rangeEncoder.flushOutput();

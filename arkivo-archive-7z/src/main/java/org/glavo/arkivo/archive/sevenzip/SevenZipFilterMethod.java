@@ -20,7 +20,7 @@ public enum SevenZipFilterMethod {
     BCJ2("bcj2"),
 
     /// Converts relative PowerPC branch addresses before compression.
-    BCJ_PPC("bcj-ppc"),
+    BCJ_POWERPC("bcj-ppc"),
 
     /// Converts relative IA-64 branch addresses before compression.
     BCJ_IA64("bcj-ia64"),

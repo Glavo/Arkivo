@@ -137,7 +137,7 @@ final class CompressionDecoderSupportTest {
                 DecompressionLimitException.class,
                 () -> nonempty.read(ByteBuffer.allocate(1))
         );
-        assertEquals(0L, exception.maximumOutputSize());
+        assertEquals(0L, exception.maximum());
         assertEquals(0L, nonempty.outputBytes());
         assertEquals(1L, nonempty.inputBytes());
     }
@@ -155,7 +155,7 @@ final class CompressionDecoderSupportTest {
                 DecompressionLimitException.class,
                 () -> decoder.read(target)
         );
-        assertEquals(3L, exception.maximumOutputSize());
+        assertEquals(3L, exception.maximum());
         assertEquals(3, target.position());
         assertEquals(3L, decoder.outputBytes());
         assertEquals(4L, decoder.inputBytes());

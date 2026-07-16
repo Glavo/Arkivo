@@ -1,0 +1,158 @@
+// Copyright (c) 2026 Glavo
+// SPDX-License-Identifier: MPL-2.0
+
+package org.glavo.arkivo.archive;
+
+import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.Unmodifiable;
+
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.ServiceLoader;
+import java.util.Set;
+
+/// Stores an immutable validated set of discoverable archive formats.
+@NotNullByDefault
+public final class ArchiveFormatRegistry {
+    /// Formats in discovery or caller-supplied order, with repeated identities included once.
+    private final @Unmodifiable List<ArkivoFormat> formats;
+
+    /// Formats indexed by normalized stable names and aliases.
+    private final @Unmodifiable Map<String, ArkivoFormat> formatsByName;
+
+    /// The largest preferred signature prefix requested by any format.
+    private final int probeSize;
+
+    /// Validates and indexes supplied format descriptors.
+    private ArchiveFormatRegistry(List<ArkivoFormat> formats) {
+        ArrayList<ArkivoFormat> copiedFormats = new ArrayList<>(formats.size());
+        Set<ArkivoFormat> seenFormats = Collections.newSetFromMap(new IdentityHashMap<>());
+        LinkedHashMap<String, ArkivoFormat> formatsByName = new LinkedHashMap<>();
+        int maximumProbeSize = 0;
+        for (ArkivoFormat format : formats) {
+            ArkivoFormat checkedFormat = Objects.requireNonNull(format, "archive format");
+            if (!seenFormats.add(checkedFormat)) {
+                continue;
+            }
+
+            registerName(formatsByName, checkedFormat.name(), checkedFormat);
+            for (String alias : checkedFormat.aliases()) {
+                registerName(formatsByName, alias, checkedFormat);
+            }
+            int formatProbeSize = checkedFormat.probeSize();
+            if (formatProbeSize < 0) {
+                throw new IllegalStateException(
+                        "Archive format probe size must not be negative: " + checkedFormat.name()
+                );
+            }
+            maximumProbeSize = Math.max(maximumProbeSize, formatProbeSize);
+            copiedFormats.add(checkedFormat);
+        }
+        this.formats = List.copyOf(copiedFormats);
+        this.formatsByName = Map.copyOf(formatsByName);
+        this.probeSize = maximumProbeSize;
+    }
+
+    /// Loads formats visible to the current thread context class loader.
+    public static ArchiveFormatRegistry load() {
+        return fromFormats(ServiceLoader.load(ArkivoFormat.class));
+    }
+
+    /// Loads formats visible to the given class loader.
+    public static ArchiveFormatRegistry load(ClassLoader loader) {
+        Objects.requireNonNull(loader, "loader");
+        return fromFormats(ServiceLoader.load(ArkivoFormat.class, loader));
+    }
+
+    /// Loads formats visible to the given module layer.
+    public static ArchiveFormatRegistry load(ModuleLayer layer) {
+        Objects.requireNonNull(layer, "layer");
+        return fromFormats(ServiceLoader.load(layer, ArkivoFormat.class));
+    }
+
+    /// Creates a registry from explicit format descriptors.
+    public static ArchiveFormatRegistry fromFormats(Iterable<? extends ArkivoFormat> formats) {
+        Objects.requireNonNull(formats, "formats");
+        ArrayList<ArkivoFormat> copiedFormats = new ArrayList<>();
+        for (ArkivoFormat format : formats) {
+            copiedFormats.add(Objects.requireNonNull(format, "archive format"));
+        }
+        return new ArchiveFormatRegistry(copiedFormats);
+    }
+
+    /// Returns formats in discovery or caller-supplied order, with repeated identities included once.
+    public @Unmodifiable List<ArkivoFormat> formats() {
+        return formats;
+    }
+
+    /// Returns the named format or null when no stable name or alias matches.
+    public @Nullable ArkivoFormat find(String name) {
+        Objects.requireNonNull(name, "name");
+        return formatsByName.get(normalizeName(name));
+    }
+
+    /// Returns the named format.
+    ///
+    /// @throws IllegalArgumentException when no stable name or alias matches
+    public ArkivoFormat require(String name) {
+        @Nullable ArkivoFormat format = find(name);
+        if (format == null) {
+            throw new IllegalArgumentException("Unknown archive format: " + name);
+        }
+        return format;
+    }
+
+    /// Returns the matching format with the largest preferred probe size.
+    ///
+    /// The supplied buffer is not modified.
+    public @Nullable ArkivoFormat detect(ByteBuffer prefix) {
+        Objects.requireNonNull(prefix, "prefix");
+        @Nullable ArkivoFormat detected = null;
+        int detectedProbeSize = -1;
+        for (ArkivoFormat format : formats) {
+            if (format.matches(prefix.asReadOnlyBuffer()) && format.probeSize() > detectedProbeSize) {
+                detected = format;
+                detectedProbeSize = format.probeSize();
+            }
+        }
+        return detected;
+    }
+
+    /// Returns the largest preferred signature prefix requested by any format.
+    public int probeSize() {
+        return probeSize;
+    }
+
+    /// Registers one stable name or alias after validating it for unambiguous lookup.
+    private static void registerName(
+            Map<String, ArkivoFormat> formatsByName,
+            String name,
+            ArkivoFormat format
+    ) {
+        Objects.requireNonNull(name, "format name");
+        if (name.isBlank()) {
+            throw new IllegalStateException("Archive format names and aliases must not be blank");
+        }
+        String normalizedName = normalizeName(name);
+        @Nullable ArkivoFormat previous = formatsByName.putIfAbsent(normalizedName, format);
+        if (previous != null && previous != format) {
+            throw new IllegalStateException(
+                    "Ambiguous archive format name or alias " + name
+                            + ": " + previous.name() + " and " + format.name()
+            );
+        }
+    }
+
+    /// Normalizes one lookup name without using the process locale.
+    private static String normalizeName(String name) {
+        return name.toLowerCase(Locale.ROOT);
+    }
+}

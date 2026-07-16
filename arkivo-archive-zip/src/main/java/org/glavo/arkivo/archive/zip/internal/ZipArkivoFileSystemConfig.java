@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
@@ -19,7 +20,6 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.nio.file.OpenOption;
 import java.nio.file.StandardOpenOption;
 import java.util.LinkedHashSet;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -170,55 +170,51 @@ public final class ZipArkivoFileSystemConfig {
         this.maximumMetadataSize = requireReadLimit(maximumMetadataSize, "maximumMetadataSize");
     }
 
-    /// Parses ZIP file system configuration from an environment map.
-    public static ZipArkivoFileSystemConfig fromEnvironment(Map<String, ?> environment) {
-        return fromEnvironment(environment, DEFAULT_READ_OPEN_OPTIONS);
+    /// Parses ZIP file system configuration from archive options.
+    public static ZipArkivoFileSystemConfig fromOptions(ArchiveOptions options) {
+        return fromOptions(options, DEFAULT_READ_OPEN_OPTIONS);
     }
 
-    /// Parses ZIP streaming writer configuration from an environment map.
-    public static ZipArkivoFileSystemConfig fromWriterEnvironment(Map<String, ?> environment) {
-        return fromEnvironment(environment, DEFAULT_WRITE_OPEN_OPTIONS);
+    /// Parses ZIP streaming writer configuration from archive options.
+    public static ZipArkivoFileSystemConfig fromWriterOptions(ArchiveOptions options) {
+        return fromOptions(options, DEFAULT_WRITE_OPEN_OPTIONS);
     }
 
-    /// Parses ZIP complete-rewrite update configuration from an environment map.
-    public static ZipArkivoFileSystemConfig fromUpdateEnvironment(Map<String, ?> environment) {
-        return fromEnvironment(environment, DEFAULT_UPDATE_OPEN_OPTIONS);
+    /// Parses ZIP complete-rewrite update configuration from archive options.
+    public static ZipArkivoFileSystemConfig fromUpdateOptions(ArchiveOptions options) {
+        return fromOptions(options, DEFAULT_UPDATE_OPEN_OPTIONS);
     }
 
-    /// Parses ZIP file system configuration from an environment map with open option defaults.
-    private static ZipArkivoFileSystemConfig fromEnvironment(
-            Map<String, ?> environment,
+    /// Parses ZIP file system configuration from archive options with open option defaults.
+    private static ZipArkivoFileSystemConfig fromOptions(
+            ArchiveOptions options,
             Set<? extends OpenOption> defaultOpenOptions
     ) {
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         Objects.requireNonNull(defaultOpenOptions, "defaultOpenOptions");
-        if (environment.containsKey("arkivo.zip.password")) {
-            throw new IllegalArgumentException(
-                    "The arkivo.zip.password option has been removed; use arkivo.zip.passwordProvider instead"
-            );
-        }
-        if (environment.isEmpty() && defaultOpenOptions.equals(DEFAULT_READ_OPEN_OPTIONS)) {
+
+        if (options.isEmpty() && defaultOpenOptions.equals(DEFAULT_READ_OPEN_OPTIONS)) {
             return DEFAULTS;
         }
 
-        ArkivoPasswordProvider passwordProvider = passwordProvider(environment);
-        Set<OpenOption> openOptions = openOptions(environment, defaultOpenOptions);
+        ArkivoPasswordProvider passwordProvider = passwordProvider(options);
+        Set<OpenOption> openOptions = openOptions(options, defaultOpenOptions);
         ZipEncryption defaultEncryption =
-                ZipArkivoFileSystem.DEFAULT_ENCRYPTION.readOrDefault(environment, ZipEncryption.none());
-        long splitSize = splitSize(environment);
+                options.getOrDefault(ZipArkivoFileSystem.DEFAULT_ENCRYPTION, ZipEncryption.none());
+        long splitSize = splitSize(options);
         ZipEntryNameEncoding entryNameEncoding =
-                ZipArkivoFileSystem.ENTRY_NAME_ENCODING.readOrDefault(
-                        environment,
+                options.getOrDefault(
+                        ZipArkivoFileSystem.ENTRY_NAME_ENCODING,
                         ZipEntryNameEncoding.standard()
                 );
         ArkivoFileSystemThreadSafety threadSafety =
-                ArkivoFileSystem.THREAD_SAFETY.readOrDefault(
-                        environment,
+                options.getOrDefault(
+                        ArkivoFileSystem.THREAD_SAFETY,
                         ArkivoFileSystemThreadSafety.CONCURRENT_READ
                 );
-        ArkivoEditStorage editStorage = ArkivoFileSystem.EDIT_STORAGE.read(environment);
-        ArkivoCommitTarget commitTarget = ArkivoFileSystem.COMMIT_TARGET.read(environment);
-        ArkivoSourceMutationPolicy sourceMutationPolicy = ArkivoFileSystem.SOURCE_MUTATION_POLICY.read(environment);
+        ArkivoEditStorage editStorage = options.get(ArkivoFileSystem.EDIT_STORAGE);
+        ArkivoCommitTarget commitTarget = options.get(ArkivoFileSystem.COMMIT_TARGET);
+        ArkivoSourceMutationPolicy sourceMutationPolicy = options.get(ArkivoFileSystem.SOURCE_MUTATION_POLICY);
 
         return new ZipArkivoFileSystemConfig(
                 openOptions,
@@ -230,10 +226,10 @@ public final class ZipArkivoFileSystemConfig {
                 editStorage,
                 commitTarget,
                 sourceMutationPolicy,
-                readLimit(ArkivoFileSystem.MAX_ENTRY_COUNT.read(environment)),
-                readLimit(ArkivoFileSystem.MAX_ENTRY_SIZE.read(environment)),
-                readLimit(ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE.read(environment)),
-                readLimit(ArkivoFileSystem.MAX_METADATA_SIZE.read(environment))
+                options.getOrDefault(ArkivoFileSystem.MAX_ENTRY_COUNT, NO_READ_LIMIT),
+                options.getOrDefault(ArkivoFileSystem.MAX_ENTRY_SIZE, NO_READ_LIMIT),
+                options.getOrDefault(ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE, NO_READ_LIMIT),
+                options.getOrDefault(ArkivoFileSystem.MAX_METADATA_SIZE, NO_READ_LIMIT)
         );
     }
 
@@ -307,20 +303,14 @@ public final class ZipArkivoFileSystemConfig {
         return maximumMetadataSize;
     }
 
-    /// Parses the password provider from an environment map.
-    private static @Nullable ArkivoPasswordProvider passwordProvider(Map<String, ?> environment) {
-        return ZipArkivoFileSystem.PASSWORD_PROVIDER.read(environment);
+    /// Parses the password provider from an archive options.
+    private static @Nullable ArkivoPasswordProvider passwordProvider(ArchiveOptions options) {
+        return options.get(ZipArkivoFileSystem.PASSWORD_PROVIDER);
     }
 
-    /// Parses the split size from an environment map.
-    private static long splitSize(Map<String, ?> environment) {
-        Long splitSize = ZipArkivoFileSystem.SPLIT_SIZE.read(environment);
-        return splitSize != null ? splitSize : NO_SPLIT_SIZE;
-    }
-
-    /// Converts an optional boxed common read limit to its primitive representation.
-    private static long readLimit(@Nullable Long value) {
-        return value != null ? value : NO_READ_LIMIT;
+    /// Parses the split size from an archive options.
+    private static long splitSize(ArchiveOptions options) {
+        return options.getOrDefault(ZipArkivoFileSystem.SPLIT_SIZE, NO_SPLIT_SIZE);
     }
 
     /// Validates one primitive common read limit.
@@ -331,13 +321,13 @@ public final class ZipArkivoFileSystemConfig {
         return value;
     }
 
-    /// Parses open options from an environment map.
+    /// Parses open options from archive options.
     private static @Unmodifiable Set<OpenOption> openOptions(
-            Map<String, ?> environment,
+            ArchiveOptions archiveOptions,
             Set<? extends OpenOption> defaultOpenOptions
     ) {
-        Set<OpenOption> options = ArkivoFileSystem.OPEN_OPTIONS.readOrDefault(
-                environment,
+        Set<OpenOption> options = archiveOptions.getOrDefault(
+                ArkivoFileSystem.OPEN_OPTIONS,
                 Set.copyOf(defaultOpenOptions)
         );
         return normalizeOpenOptions(options);

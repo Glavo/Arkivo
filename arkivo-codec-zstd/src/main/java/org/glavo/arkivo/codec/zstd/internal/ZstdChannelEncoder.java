@@ -26,7 +26,7 @@ import java.util.concurrent.Future;
 
 /// Encodes Zstandard frames directly over a writable byte channel in pure Java.
 @NotNullByDefault
-public final class ZstdChannelEncoder implements CompressingWritableByteChannel {
+public final class ZstdChannelEncoder implements CompressingWritableByteChannel.FlushableFramed {
     /// Compressed-data target.
     private final WritableByteChannel target;
 

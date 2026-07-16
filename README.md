@@ -65,7 +65,7 @@ requires a caller-selected output limit.
 byte[] input = "Arkivo buffer example".getBytes(StandardCharsets.UTF_8);
 
 CompressionFormat format = CompressionFormats.require("zstd");
-CompressionCodec codec = format.defaultCodec();
+CompressionCodec<?> codec = format.defaultCodec();
 ByteBuffer compressed = codec.compress(ByteBuffer.wrap(input));
 ByteBuffer decoded = codec.decompress(compressed, input.length);
 
@@ -85,8 +85,8 @@ Writable archive file systems use ordinary NIO operations. Closing the file syst
 
 ```java
 Path archive = Path.of("example.zip");
-Map<String, ?> writable = Map.of(
-        ArkivoFileSystem.OPEN_OPTIONS.key(),
+ArchiveOptions writable = ArchiveOptions.of(
+        ArkivoFileSystem.OPEN_OPTIONS,
         Set.of(
                 StandardOpenOption.CREATE,
                 StandardOpenOption.TRUNCATE_EXISTING,

@@ -13,5 +13,5 @@ module org.glavo.arkivo.archive.zip {
     exports org.glavo.arkivo.archive.zip;
 
     provides org.glavo.arkivo.archive.ArkivoFormat with org.glavo.arkivo.archive.zip.ZipArkivoFormat;
-    provides java.nio.file.spi.FileSystemProvider with org.glavo.arkivo.archive.zip.ZipArkivoFileSystemProvider;
+    provides java.nio.file.spi.FileSystemProvider with org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemProvider;
 }

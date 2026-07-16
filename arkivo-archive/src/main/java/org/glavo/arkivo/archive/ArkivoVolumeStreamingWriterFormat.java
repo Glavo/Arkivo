@@ -6,7 +6,6 @@ package org.glavo.arkivo.archive;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
-import java.util.Map;
 
 /// Describes an archive format that can stream entries to transactional multi-volume output.
 @NotNullByDefault
@@ -16,7 +15,7 @@ public interface ArkivoVolumeStreamingWriterFormat extends ArkivoStreamingWriter
             ArkivoVolumeTarget target,
             long splitSize
     ) throws IOException {
-        return openStreamingWriter(target, splitSize, Map.of());
+        return openStreamingWriter(target, splitSize, ArchiveOptions.EMPTY);
     }
 
     /// Opens a configured multi-volume streaming writer with the requested maximum physical volume size.
@@ -26,6 +25,6 @@ public interface ArkivoVolumeStreamingWriterFormat extends ArkivoStreamingWriter
     ArkivoStreamingWriter openStreamingWriter(
             ArkivoVolumeTarget target,
             long splitSize,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException;
 }

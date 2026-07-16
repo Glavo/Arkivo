@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.rar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -137,10 +138,10 @@ public final class Rar4CompressionTest {
         for (int index = 0; index < archives.length; index++) {
             ByteArrayInputStream source = new ByteArrayInputStream(archives[index]);
             RarArkivoStreamingReader openedReader = index == 0
-                    ? RarArkivoFormat.instance().openStreamingReader(source, passwordEnvironment(PASSWORD))
+                    ? RarArkivoFormat.instance().openStreamingReader(source, ArchiveOptions.fromEnvironment(passwordEnvironment(PASSWORD)))
                     : RarArkivoFormat.instance().openStreamingReader(
                             Channels.newChannel(source),
-                            passwordEnvironment(PASSWORD)
+                            ArchiveOptions.fromEnvironment(passwordEnvironment(PASSWORD))
                     );
             try (RarArkivoStreamingReader reader = openedReader) {
                 assertTrue(reader.next());
@@ -164,7 +165,7 @@ public final class Rar4CompressionTest {
         try {
             try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                     archive,
-                    passwordEnvironment(PASSWORD)
+                    ArchiveOptions.fromEnvironment(passwordEnvironment(PASSWORD))
             )) {
                 assertArrayEquals(
                         "file1\n".getBytes(StandardCharsets.UTF_8),
@@ -220,7 +221,7 @@ public final class Rar4CompressionTest {
         assertThrows(IOException.class, () -> {
             try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                     new ByteArrayInputStream(ENCRYPTED_BODY_ARCHIVE),
-                    passwordEnvironment("wrong".getBytes(StandardCharsets.UTF_16LE))
+                    ArchiveOptions.fromEnvironment(passwordEnvironment("wrong".getBytes(StandardCharsets.UTF_16LE)))
             )) {
                 assertTrue(reader.next());
                 try (InputStream input = reader.openInputStream()) {

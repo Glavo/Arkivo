@@ -24,7 +24,7 @@ final class DirectByteBufferCodecSupportTest {
     /// Verifies allocating and fixed operations never open channel adapters.
     @Test
     void drivesBufferEnginesWithoutChannelAdapters() throws IOException {
-        CompressionCodec<?> codec = new LengthPrefixedCodec();
+        CompressionCodec.FlushableFramed<LengthPrefixedCodec> codec = new LengthPrefixedCodec();
         byte[] content = new byte[200];
         for (int index = 0; index < content.length; index++) {
             content[index] = (byte) (index * 31);
@@ -78,13 +78,13 @@ final class DirectByteBufferCodecSupportTest {
                         content.length - 1L
                 )
         );
-        assertEquals(content.length - 1L, limit.maximumOutputSize());
+        assertEquals(content.length - 1L, limit.maximum());
     }
 
     /// Verifies concatenated decoding and one-frame decoding use distinct direct-engine loops.
     @Test
     void preservesDirectFrameBoundaries() throws IOException {
-        CompressionCodec<?> codec = new LengthPrefixedCodec();
+        CompressionCodec.FlushableFramed<LengthPrefixedCodec> codec = new LengthPrefixedCodec();
         byte[] first = new byte[]{1, 2, 3};
         byte[] second = new byte[]{4, 5};
         byte[] firstEncoded = bufferBytes(codec.compress(ByteBuffer.wrap(first)));
@@ -132,7 +132,8 @@ final class DirectByteBufferCodecSupportTest {
 
     /// Provides a length-prefixed identity format exclusively through buffer engines.
     @NotNullByDefault
-    private static final class LengthPrefixedCodec implements CompressionCodec<LengthPrefixedCodec>, CompressionFormat {
+    private static final class LengthPrefixedCodec
+            implements CompressionCodec.FlushableFramed<LengthPrefixedCodec>, CompressionFormat {
         /// Returns the test compression format name.
         @Override
         public String name() {
@@ -153,13 +154,13 @@ final class DirectByteBufferCodecSupportTest {
 
         /// Creates a length-prefixed identity encoder.
         @Override
-        public CompressionEncoder newEncoder() {
+        public CompressionEncoder.FlushableFramed newEncoder() {
             return new LengthPrefixedEncoder();
         }
 
         /// Creates a length-prefixed identity decoder.
         @Override
-        public CompressionDecoder newDecoder(DecompressionLimits limits) {
+        public CompressionDecoder.Framed newDecoder(DecompressionLimits limits) {
             return CompressionDecoderSupport.limitEngineOutput(
                     new LengthPrefixedDecoder(),
                     limits.maximumOutputSize()
@@ -168,7 +169,7 @@ final class DirectByteBufferCodecSupportTest {
 
         /// Rejects accidental use of the channel encoding path.
         @Override
-        public CompressingWritableByteChannel openEncoder(
+        public CompressingWritableByteChannel.FlushableFramed openEncoder(
                 WritableByteChannel target,
                 ChannelOwnership ownership
         ) {
@@ -177,7 +178,7 @@ final class DirectByteBufferCodecSupportTest {
 
         /// Rejects accidental use of the channel decoding path.
         @Override
-        public DecompressingReadableByteChannel openDecoder(
+        public DecompressingReadableByteChannel.Framed openDecoder(
                 ReadableByteChannel source,
                 DecompressionLimits limits,
                 ChannelOwnership ownership
@@ -188,7 +189,7 @@ final class DirectByteBufferCodecSupportTest {
 
     /// Encodes one length-prefixed identity frame.
     @NotNullByDefault
-    private static final class LengthPrefixedEncoder implements CompressionEncoder.Flushable {
+    private static final class LengthPrefixedEncoder implements CompressionEncoder.FlushableFramed {
         /// The source byte count captured from the first encode operation.
         private int sourceSize = -1;
 
@@ -252,6 +253,17 @@ final class DirectByteBufferCodecSupportTest {
             }
             finished = true;
             return CodecOutcome.FINISHED;
+        }
+
+        /// Finishes one test frame and restores the encoder for the following frame.
+        @Override
+        public CodecOutcome finishFrame(ByteBuffer target) {
+            CodecOutcome outcome = finish(target);
+            if (outcome == CodecOutcome.FINISHED) {
+                reset();
+                return CodecOutcome.BOUNDARY_REACHED;
+            }
+            return outcome;
         }
 
         /// Restores the encoder to its initial state.

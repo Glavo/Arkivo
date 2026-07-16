@@ -36,6 +36,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.SortedSet;
 import java.util.TreeSet;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -60,7 +61,6 @@ public final class PublicApiBoundaryTest {
             Map.entry("org.glavo.arkivo.archive.tar", "org.glavo.arkivo.archive.tar"),
             Map.entry("org.glavo.arkivo.archive.zip", "org.glavo.arkivo.archive.zip"),
             Map.entry("org.glavo.arkivo.codec", "org.glavo.arkivo.codec"),
-            Map.entry("org.glavo.arkivo.codec.spi", "org.glavo.arkivo.codec"),
             Map.entry("org.glavo.arkivo.codec.transform", "org.glavo.arkivo.codec"),
             Map.entry("org.glavo.arkivo.codec.bcj", "org.glavo.arkivo.codec.bcj"),
             Map.entry("org.glavo.arkivo.codec.bzip2", "org.glavo.arkivo.codec.bzip2"),
@@ -103,31 +103,46 @@ public final class PublicApiBoundaryTest {
                 "context class loader"
         );
         List<String> failures = new ArrayList<>();
-        Set<String> publicTypeNames = new TreeSet<>();
+        Set<String> apiTypeNames = new TreeSet<>();
 
         for (Map.Entry<String, String> entry : PUBLIC_PACKAGE_MODULES.entrySet()) {
             String packageName = entry.getKey();
-            Set<Class<?>> apiClasses = findPublicClasses(packageName, loader);
+            Set<Class<?>> apiClasses = findApiClasses(packageName, loader);
             if (apiClasses.isEmpty()) {
-                failures.add("Exported package contains no public classes: " + packageName);
+                failures.add("Exported package contains no accessible API classes: " + packageName);
                 continue;
             }
             for (Class<?> apiClass : apiClasses) {
-                publicTypeNames.add(apiClass.getName());
+                apiTypeNames.add(apiClass.getName());
                 validateClass(apiClass, entry.getValue(), failures);
             }
         }
 
         assertTrue(failures.isEmpty(), () -> "Public API boundary violations:\n" + String.join("\n", failures));
         assertEquals(
-                loadExpectedPublicTypes(loader),
-                publicTypeNames,
-                "Exported public types differ from the reviewed 1.0 API baseline"
+                loadExpectedApiTypes(loader),
+                apiTypeNames,
+                "Exported API types differ from the reviewed 1.0 API baseline"
         );
     }
 
-    /// Loads the reviewed public type names that define the current 1.0 API baseline.
-    private static @Unmodifiable Set<String> loadExpectedPublicTypes(ClassLoader loader) throws IOException {
+    /// Collects public and protected API classes directly contained in every exported package.
+    static @Unmodifiable SortedSet<String> collectApiTypeNames(ClassLoader loader) throws Exception {
+        SortedSet<String> apiTypeNames = new TreeSet<>();
+        for (String packageName : PUBLIC_PACKAGE_MODULES.keySet()) {
+            Set<Class<?>> apiClasses = findApiClasses(packageName, loader);
+            if (apiClasses.isEmpty()) {
+                throw new IllegalStateException("Exported package contains no accessible API classes: " + packageName);
+            }
+            for (Class<?> apiClass : apiClasses) {
+                apiTypeNames.add(apiClass.getName());
+            }
+        }
+        return Collections.unmodifiableSortedSet(apiTypeNames);
+    }
+
+    /// Loads the reviewed public and protected type names that define the current 1.0 API baseline.
+    private static @Unmodifiable Set<String> loadExpectedApiTypes(ClassLoader loader) throws IOException {
         String resourceName = "org/glavo/arkivo/all/public-api-types.txt";
         InputStream input = Objects.requireNonNull(
                 loader.getResourceAsStream(resourceName),
@@ -152,8 +167,8 @@ public final class PublicApiBoundaryTest {
         return Set.copyOf(typeNames);
     }
 
-    /// Finds accessible public classes directly contained in one exported package.
-    private static @Unmodifiable Set<Class<?>> findPublicClasses(
+    /// Finds public and protected API classes directly contained in one exported package.
+    private static @Unmodifiable Set<Class<?>> findApiClasses(
             String packageName,
             ClassLoader loader
     ) throws IOException, URISyntaxException, ClassNotFoundException {
@@ -172,7 +187,7 @@ public final class PublicApiBoundaryTest {
         Set<Class<?>> classes = new HashSet<>();
         for (String className : classNames) {
             Class<?> candidate = Class.forName(className, false, loader);
-            if (isPubliclyAccessible(candidate)) {
+            if (isApiTypeAccessible(candidate)) {
                 classes.add(candidate);
             }
         }
@@ -223,14 +238,20 @@ public final class PublicApiBoundaryTest {
         return fileName.endsWith(".class") && !fileName.equals("package-info.class");
     }
 
-    /// Returns whether a class and all enclosing classes are public.
-    private static boolean isPubliclyAccessible(Class<?> type) {
-        for (@Nullable Class<?> current = type; current != null; current = current.getEnclosingClass()) {
-            if (!Modifier.isPublic(current.getModifiers())) {
+    /// Returns whether a type is public or a protected member of an accessible API type.
+    private static boolean isApiTypeAccessible(Class<?> type) {
+        Class<?> current = type;
+        while (true) {
+            int modifiers = current.getModifiers();
+            @Nullable Class<?> enclosingClass = current.getEnclosingClass();
+            if (enclosingClass == null) {
+                return Modifier.isPublic(modifiers);
+            }
+            if (!Modifier.isPublic(modifiers) && !Modifier.isProtected(modifiers)) {
                 return false;
             }
+            current = enclosingClass;
         }
-        return true;
     }
 
     /// Validates all declared source and binary API signatures of one public class.

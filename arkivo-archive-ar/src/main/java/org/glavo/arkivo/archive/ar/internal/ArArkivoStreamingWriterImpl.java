@@ -102,7 +102,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
 
     /// Begins a pending regular file AR member for the given logical archive path.
     @Override
-    public void beginFile(String path) throws IOException {
+    protected void beginFileEntry(String path) throws IOException {
         ensureOpen();
         if (pendingMember != null) {
             throw new IllegalStateException("An AR streaming member is already pending");
@@ -115,7 +115,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
 
     /// Begins a pending directory AR member for the given logical archive path.
     @Override
-    public void beginDirectory(String path) throws IOException {
+    protected void beginDirectoryEntry(String path) throws IOException {
         ensureOpen();
         if (pendingMember != null) {
             throw new IllegalStateException("An AR streaming member is already pending");
@@ -133,7 +133,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
 
     /// Begins a pending symbolic link AR member for the given logical archive path and target path text.
     @Override
-    public void beginSymbolicLink(String path, String target) throws IOException {
+    protected void beginSymbolicLinkEntry(String path, String target) throws IOException {
         ensureOpen();
         if (pendingMember != null) {
             throw new IllegalStateException("An AR streaming member is already pending");
@@ -214,7 +214,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
 
     /// Returns an attribute view used to configure the current pending entry before it is committed.
     @Override
-    public <V extends FileAttributeView> @Nullable V attributeView(Class<V> type) {
+    protected <V extends FileAttributeView> @Nullable V currentAttributeView(Class<V> type) {
         Objects.requireNonNull(type, "type");
         PendingMember member = requirePendingMember();
         if (type == BasicFileAttributeView.class || type == ArArkivoEntryAttributeView.class) {
@@ -225,7 +225,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
 
     /// Commits the current pending member as an empty regular file member.
     @Override
-    public void endEntry() throws IOException {
+    protected void finishCurrentEntry() throws IOException {
         ensureOpen();
         PendingMember member = requirePendingMember();
         member.ensurePending();
@@ -237,13 +237,12 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
 
     /// Opens a writable channel for the current pending member and commits it when the channel is closed.
     @Override
-    public WritableByteChannel openChannel() throws IOException {
-        return StreamChannelAdapters.writableChannel(openOutputStream());
+    protected WritableByteChannel openCurrentChannel() throws IOException {
+        return StreamChannelAdapters.writableChannel(openBodyStream());
     }
 
     /// Opens an output stream for the current pending member and commits it when the stream is closed.
-    @Override
-    public OutputStream openOutputStream() throws IOException {
+    private OutputStream openBodyStream() throws IOException {
         ensureOpen();
         PendingMember member = requirePendingMember();
         member.ensurePending();
@@ -268,7 +267,7 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
 
     /// Closes this streaming writer and finishes the AR archive stream.
     @Override
-    public void close() throws IOException {
+    protected void closeWriter() throws IOException {
         if (!open && outputClosed && retiredBodies.isEmpty() && bodyStorageClosed) {
             return;
         }

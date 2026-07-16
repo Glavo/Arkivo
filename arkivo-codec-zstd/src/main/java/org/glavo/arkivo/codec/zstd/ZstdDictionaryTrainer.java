@@ -29,6 +29,16 @@ public final class ZstdDictionaryTrainer {
     /// Default compression level.
     private static final int DEFAULT_COMPRESSION_LEVEL = 3;
 
+    /// Selects how training content is chosen from accepted samples.
+    @NotNullByDefault
+    public enum TrainingMode {
+        /// Ranks reusable sample segments by frequency.
+        FREQUENCY_RANKED,
+
+        /// Selects a legacy-oriented suffix from the packed samples.
+        LEGACY_SUFFIX
+    }
+
     /// The initial number of sample-size slots.
     private static final int INITIAL_SAMPLE_COUNT = 16;
 
@@ -153,15 +163,16 @@ public final class ZstdDictionaryTrainer {
 
     /// Trains a dictionary using frequency-ranked reusable sample segments.
     public synchronized ZstdDictionary train() {
-        return train(false);
+        return train(TrainingMode.FREQUENCY_RANKED);
     }
 
     /// Trains a dictionary using either frequency-ranked or legacy-oriented content selection.
     ///
-    /// Legacy mode selects the packed sample suffix. Both modes produce standard formatted Zstandard dictionaries;
+    /// Legacy suffix mode selects the packed sample suffix. Both modes produce standard formatted Zstandard dictionaries;
     /// both derive initial Huffman and sequence FSE tables from the accepted samples. They are not intended to
     /// reproduce byte-identical output from the native training implementations.
-    public synchronized ZstdDictionary train(boolean legacy) {
+    public synchronized ZstdDictionary train(TrainingMode mode) {
+        boolean legacy = Objects.requireNonNull(mode, "mode") == TrainingMode.LEGACY_SUFFIX;
         if (sampleCount == 0) {
             throw new IllegalStateException("At least one sample is required");
         }

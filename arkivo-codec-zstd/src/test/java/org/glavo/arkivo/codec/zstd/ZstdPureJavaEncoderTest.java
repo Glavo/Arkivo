@@ -296,7 +296,7 @@ public final class ZstdPureJavaEncoderTest {
                 .build();
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         int firstFrameSize;
-        try (CompressingWritableByteChannel encoder = codec.openEncoder(
+        try (CompressingWritableByteChannel.FlushableFramed encoder = codec.openEncoder(
                 Channels.newChannel(encoded),
                 input.length,
                 ChannelOwnership.RETAIN
@@ -381,7 +381,7 @@ public final class ZstdPureJavaEncoderTest {
         byte[] second = "final block".getBytes(StandardCharsets.UTF_8);
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         ZstdCodec codec = new ZstdCodec();
-        try (CompressingWritableByteChannel encoder = codec.openEncoder(
+        try (CompressingWritableByteChannel.FlushableFramed encoder = codec.openEncoder(
                 Channels.newChannel(encoded),
                 ChannelOwnership.RETAIN
         )) {
@@ -418,7 +418,7 @@ public final class ZstdPureJavaEncoderTest {
                 .jobSize(512L * 1024L)
                 .overlapLog(9)
                 .build();
-        try (CompressingWritableByteChannel encoder = codec.openEncoder(
+        try (CompressingWritableByteChannel.FlushableFramed encoder = codec.openEncoder(
                 Channels.newChannel(encoded),
                 ChannelOwnership.RETAIN
         )) {

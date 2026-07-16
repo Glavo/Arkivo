@@ -11,6 +11,7 @@ import org.glavo.arkivo.codec.delta.DeltaTransform;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2Decoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.transform.ByteTransform;
+import org.glavo.arkivo.codec.transform.ByteTransform.Direction;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -446,14 +447,14 @@ public final class XZDecoder implements CompressionDecoder.Framed {
             if (properties.length != 1) {
                 throw new IOException("XZ Delta filter requires one property byte");
             }
-            return new DeltaTransform(false, Byte.toUnsignedInt(properties[0]) + 1);
+            return new DeltaTransform(Direction.DECODE, Byte.toUnsignedInt(properties[0]) + 1);
         }
         if (identifier >= XZSupport.FILTER_BCJ_X86 && identifier <= XZSupport.FILTER_BCJ_RISCV) {
-            int startOffset;
+            long startOffset;
             if (properties.length == 0) {
                 startOffset = 0;
             } else if (properties.length == Integer.BYTES) {
-                startOffset = (int) XZSupport.getLittleEndian(properties, 0, Integer.BYTES);
+                startOffset = XZSupport.getLittleEndian(properties, 0, Integer.BYTES);
             } else {
                 throw new IOException("XZ BCJ filter properties must contain zero or four bytes");
             }
@@ -463,16 +464,16 @@ public final class XZDecoder implements CompressionDecoder.Framed {
     }
 
     /// Creates one BCJ decoding transform.
-    private static ByteTransform bcjTransform(long identifier, int startOffset) {
+    private static ByteTransform bcjTransform(long identifier, long startOffset) {
         return switch ((int) identifier) {
-            case 0x04 -> BCJTransforms.x86(false, startOffset);
-            case 0x05 -> BCJTransforms.powerPc(false, startOffset);
-            case 0x06 -> BCJTransforms.ia64(false, startOffset);
-            case 0x07 -> BCJTransforms.arm(false, startOffset);
-            case 0x08 -> BCJTransforms.armThumb(false, startOffset);
-            case 0x09 -> BCJTransforms.sparc(false, startOffset);
-            case 0x0a -> BCJTransforms.arm64(false, startOffset);
-            case 0x0b -> BCJTransforms.riscV(false, startOffset);
+            case 0x04 -> BCJTransforms.x86(Direction.DECODE, startOffset);
+            case 0x05 -> BCJTransforms.powerPC(Direction.DECODE, startOffset);
+            case 0x06 -> BCJTransforms.ia64(Direction.DECODE, startOffset);
+            case 0x07 -> BCJTransforms.arm(Direction.DECODE, startOffset);
+            case 0x08 -> BCJTransforms.armThumb(Direction.DECODE, startOffset);
+            case 0x09 -> BCJTransforms.sparc(Direction.DECODE, startOffset);
+            case 0x0a -> BCJTransforms.arm64(Direction.DECODE, startOffset);
+            case 0x0b -> BCJTransforms.riscV(Direction.DECODE, startOffset);
             default -> throw new AssertionError(identifier);
         };
     }

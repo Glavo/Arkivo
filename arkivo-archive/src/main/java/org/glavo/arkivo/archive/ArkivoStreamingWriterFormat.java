@@ -9,7 +9,6 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.WritableByteChannel;
-import java.util.Map;
 import java.util.Objects;
 
 /// Describes an archive format that can write entries to a forward-only target.
@@ -20,27 +19,27 @@ import java.util.Objects;
 public interface ArkivoStreamingWriterFormat extends ArkivoFormat {
     /// Opens a streaming writer and takes ownership of the output stream when successful.
     default ArkivoStreamingWriter openStreamingWriter(OutputStream target) throws IOException {
-        return openStreamingWriter(target, Map.of());
+        return openStreamingWriter(target, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a streaming writer with environment options and takes ownership of the output stream when successful.
+    /// Opens a streaming writer with options and takes ownership of the output stream when successful.
     default ArkivoStreamingWriter openStreamingWriter(
             OutputStream target,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(environment, "environment");
-        return openStreamingWriter(StreamChannelAdapters.writableChannel(target), environment);
+        Objects.requireNonNull(options, "options");
+        return openStreamingWriter(StreamChannelAdapters.writableChannel(target), options);
     }
 
     /// Opens a streaming writer and takes ownership of the writable channel when successful.
     default ArkivoStreamingWriter openStreamingWriter(WritableByteChannel target) throws IOException {
-        return openStreamingWriter(target, Map.of());
+        return openStreamingWriter(target, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a streaming writer with environment options and takes ownership of the channel when successful.
+    /// Opens a streaming writer with options and takes ownership of the channel when successful.
     ArkivoStreamingWriter openStreamingWriter(
             WritableByteChannel target,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException;
 }

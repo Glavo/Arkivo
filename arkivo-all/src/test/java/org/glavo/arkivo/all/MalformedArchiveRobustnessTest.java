@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.all;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
@@ -29,7 +30,6 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.SplittableRandom;
 import java.util.TreeSet;
@@ -54,12 +54,12 @@ final class MalformedArchiveRobustnessTest {
     ).getBytes(java.nio.charset.StandardCharsets.UTF_8);
 
     /// Common limits that bound every malformed archive attempt.
-    private static final @Unmodifiable Map<String, Object> READ_ENVIRONMENT = Map.of(
-            ArkivoFileSystem.MAX_ENTRY_COUNT.key(), 16L,
-            ArkivoFileSystem.MAX_ENTRY_SIZE.key(), 1L << 20,
-            ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE.key(), 1L << 20,
-            ArkivoFileSystem.MAX_METADATA_SIZE.key(), 1L << 20
-    );
+    private static final ArchiveOptions READ_OPTIONS = ArchiveOptions.builder()
+            .set(ArkivoFileSystem.MAX_ENTRY_COUNT, 16L)
+            .set(ArkivoFileSystem.MAX_ENTRY_SIZE, 1L << 20)
+            .set(ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE, 1L << 20)
+            .set(ArkivoFileSystem.MAX_METADATA_SIZE, 1L << 20)
+            .build();
 
     /// Maximum bytes consumed defensively even when a parser accepts a mutation.
     private static final long MAX_CONSUMED_BYTES = 1L << 20;
@@ -147,7 +147,7 @@ final class MalformedArchiveRobustnessTest {
         try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(
                 format,
                 archivePath,
-                READ_ENVIRONMENT
+                READ_OPTIONS
         )) {
             consumeDirectory(fileSystem.getPath("/"), total);
         }
@@ -185,7 +185,7 @@ final class MalformedArchiveRobustnessTest {
         try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(
                 format,
                 Channels.newChannel(new ByteArrayInputStream(archive)),
-                READ_ENVIRONMENT
+                READ_OPTIONS
         )) {
             while (reader.next()) {
                 BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);

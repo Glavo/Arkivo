@@ -8,6 +8,9 @@ import org.jetbrains.annotations.NotNullByDefault;
 /// Reports a Zstandard dictionary training failure.
 @NotNullByDefault
 public final class ZstdDictionaryTrainingException extends IllegalStateException {
+    /// The serialization version for this exception type.
+    private static final long serialVersionUID = 0L;
+
     /// Error code indicating that the requested dictionary capacity is too small.
     static final long DESTINATION_TOO_SMALL = 1L;
 

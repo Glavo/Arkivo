@@ -62,6 +62,13 @@ public final class GzipEncoder implements CompressionEncoder.FlushableFramed {
     public CodecOutcome encode(ByteBuffer source, ByteBuffer target) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
+        requireOpen();
+        if (state == State.BETWEEN_FRAMES) {
+            if (!source.hasRemaining()) {
+                return CodecOutcome.NEEDS_INPUT;
+            }
+            state = State.ACTIVE;
+        }
         requireState(State.ACTIVE, "encode");
 
         copyPending(pendingHeader, target);
@@ -82,7 +89,14 @@ public final class GzipEncoder implements CompressionEncoder.FlushableFramed {
     public CodecOutcome flush(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();
-        if (state == State.FINISHING || state == State.TRAILER || state == State.FINISHED) {
+        if (state == State.BETWEEN_FRAMES) {
+            return CodecOutcome.FLUSHED;
+        }
+        if (state == State.FINISHING
+                || state == State.TRAILER
+                || state == State.FINISHING_FRAME
+                || state == State.FRAME_TRAILER
+                || state == State.FINISHED) {
             throw new IllegalStateException("Cannot flush a finishing or finished gzip member");
         }
         if (state == State.ACTIVE) {
@@ -101,27 +115,68 @@ public final class GzipEncoder implements CompressionEncoder.FlushableFramed {
         return outcome;
     }
 
-    /// Finishes the gzip member without releasing encoder-owned state.
+    /// Finishes the complete gzip encoding without releasing encoder-owned state.
     @Override
     public CodecOutcome finish(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();
         if (state == State.FLUSHING) {
-            throw new IllegalStateException("Complete the active flush before finishing the gzip member");
+            throw new IllegalStateException("Complete the active flush before finishing the gzip encoding");
+        }
+        if (state == State.FINISHING_FRAME || state == State.FRAME_TRAILER) {
+            throw new IllegalStateException("Complete the active gzip member boundary before finishing the encoding");
         }
         if (state == State.FINISHED) {
+            return CodecOutcome.FINISHED;
+        }
+        if (state == State.BETWEEN_FRAMES) {
+            state = State.FINISHED;
             return CodecOutcome.FINISHED;
         }
         if (state == State.ACTIVE) {
             state = State.FINISHING;
         }
+        return finishMember(target, State.FINISHING, State.TRAILER, CodecOutcome.FINISHED);
+    }
 
+    /// Finishes the current gzip member and prepares the encoder for another member.
+    @Override
+    public CodecOutcome finishFrame(ByteBuffer target) throws IOException {
+        Objects.requireNonNull(target, "target");
+        requireOpen();
+        if (state == State.FLUSHING) {
+            throw new IllegalStateException("Complete the active flush before finishing the gzip member");
+        }
+        if (state == State.FINISHING || state == State.TRAILER || state == State.FINISHED) {
+            throw new IllegalStateException("Cannot finish a member after terminal gzip finalization has started");
+        }
+        if (state == State.BETWEEN_FRAMES) {
+            return CodecOutcome.BOUNDARY_REACHED;
+        }
+        if (state == State.ACTIVE) {
+            state = State.FINISHING_FRAME;
+        }
+        return finishMember(
+                target,
+                State.FINISHING_FRAME,
+                State.FRAME_TRAILER,
+                CodecOutcome.BOUNDARY_REACHED
+        );
+    }
+
+    /// Drains one gzip member using either terminal or nonterminal lifecycle states.
+    private CodecOutcome finishMember(
+            ByteBuffer target,
+            State finishingState,
+            State trailerState,
+            CodecOutcome completedOutcome
+    ) throws IOException {
         copyPending(pendingHeader, target);
         if (pendingHeader.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
 
-        if (state == State.FINISHING) {
+        if (state == finishingState) {
             CodecOutcome outcome = body.finish(target);
             if (outcome == CodecOutcome.NEEDS_OUTPUT) {
                 return outcome;
@@ -130,7 +185,7 @@ public final class GzipEncoder implements CompressionEncoder.FlushableFramed {
                 throw new IOException("Unexpected gzip Deflate finish outcome: " + outcome);
             }
             pendingTrailer = createTrailer();
-            state = State.TRAILER;
+            state = trailerState;
         }
 
         copyPending(pendingTrailer, target);
@@ -138,20 +193,30 @@ public final class GzipEncoder implements CompressionEncoder.FlushableFramed {
             return CodecOutcome.NEEDS_OUTPUT;
         }
 
-        state = State.FINISHED;
-        return CodecOutcome.FINISHED;
+        if (completedOutcome == CodecOutcome.BOUNDARY_REACHED) {
+            resetMember();
+            state = State.BETWEEN_FRAMES;
+        } else {
+            state = State.FINISHED;
+        }
+        return completedOutcome;
     }
 
     /// Abandons the current member and restores the configured gzip state.
     @Override
     public void reset() {
         requireOpen();
+        resetMember();
+        state = State.ACTIVE;
+    }
+
+    /// Restores the gzip member body, checksum, header, and trailer.
+    private void resetMember() {
         body.reset();
         checksum.reset();
         memberSize = 0L;
         pendingHeader = createHeader();
         pendingTrailer = EMPTY_OUTPUT;
-        state = State.ACTIVE;
     }
 
     /// Releases encoder-owned state without finishing pending data.
@@ -236,10 +301,19 @@ public final class GzipEncoder implements CompressionEncoder.FlushableFramed {
         /// Deflate member finalization has started.
         FINISHING,
 
-        /// The member trailer must be drained.
+        /// The member trailer for terminal encoding finalization must be drained.
         TRAILER,
 
-        /// The member completed and may only be reset or closed.
+        /// Deflate member finalization for a nonterminal boundary has started.
+        FINISHING_FRAME,
+
+        /// The member trailer for a nonterminal boundary must be drained.
+        FRAME_TRAILER,
+
+        /// A member boundary completed and the next member has not started.
+        BETWEEN_FRAMES,
+
+        /// The complete encoding finished and may only be reset or closed.
         FINISHED,
 
         /// Encoder-owned state was released.

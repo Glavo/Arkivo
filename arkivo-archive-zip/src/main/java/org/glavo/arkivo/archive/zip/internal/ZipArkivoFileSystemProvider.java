@@ -1,8 +1,11 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.archive.zip;
+package org.glavo.arkivo.archive.zip.internal;
 
+import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
+import org.glavo.arkivo.archive.zip.ZipArkivoFormat;
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoFileSystemImpl;
@@ -38,7 +41,7 @@ import java.util.Set;
 @NotNullByDefault
 public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     /// The URI scheme handled by the ZIP Arkivo file system provider.
-    public static final String SCHEME = "arkivo+zip";
+    public static final String SCHEME = ZipArkivoFormat.instance().uriScheme();
 
     /// The shared provider instance used by Arkivo convenience factories.
     private static final ZipArkivoFileSystemProvider INSTANCE = new ZipArkivoFileSystemProvider();
@@ -67,7 +70,7 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     public ArkivoFileSystem newFileSystem(URI uri, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(environment, "environment");
         ArkivoFileSystemProviderSupport.ParsedUri parsedUri = parseUri(uri, false);
-        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromOptions(ArchiveOptions.fromEnvironment(environment));
         return fileSystems.open(parsedUri.archiveUri(), closeAction -> config.archiveWritable()
                 ? new StreamingZipArkivoFileSystemImpl(
                         this,
@@ -91,13 +94,13 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
         ArkivoFileSystemProviderSupport.requirePathFormat(path, ZipArkivoFormat.instance());
-        return openPath(path, environment);
+        return openPath(path, ArchiveOptions.fromEnvironment(environment));
     }
 
     /// Opens a ZIP archive path whose format has already been selected explicitly.
-    ZipArkivoFileSystem openPath(Path path, Map<String, ?> environment) throws IOException {
+    public ZipArkivoFileSystem openPath(Path path, ArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
-        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromEnvironment(environment);
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromOptions(options);
         return config.archiveWritable()
                 ? new StreamingZipArkivoFileSystemImpl(this, path, config, null, true)
                 : new ZipArkivoFileSystemImpl(this, path, null, config);

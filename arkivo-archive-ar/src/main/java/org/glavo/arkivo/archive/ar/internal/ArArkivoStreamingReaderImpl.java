@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.ar.internal;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
@@ -19,7 +20,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.util.Arrays;
-import java.util.Map;
 import java.util.Objects;
 
 /// Implements the public forward-only AR streaming reader API.
@@ -65,14 +65,14 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     private byte @Nullable @Unmodifiable [] gnuNameTable;
 
     /// Creates a streaming AR reader.
-    public ArArkivoStreamingReaderImpl(InputStream source, Map<String, ?> environment) {
+    public ArArkivoStreamingReaderImpl(InputStream source, ArchiveOptions options) {
         this.source = Objects.requireNonNull(source, "source");
-        this.readLimits = ArkivoReadLimitTracker.fromEnvironment(environment);
+        this.readLimits = ArkivoReadLimitTracker.fromOptions(options);
     }
 
     /// Advances to the next real archive member.
     @Override
-    public boolean next() throws IOException {
+    protected boolean advance() throws IOException {
         ensureOpen();
         readLimits.requireWithinLimits();
         readGlobalHeader();
@@ -138,7 +138,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
 
     /// Reads the current archive member attributes as the requested attribute type.
     @Override
-    public <A extends BasicFileAttributes> A readAttributes(Class<A> type) throws IOException {
+    protected <A extends BasicFileAttributes> A readCurrentAttributes(Class<A> type) throws IOException {
         ensureOpen();
         Objects.requireNonNull(type, "type");
         ArEntryAttributes attributes = currentAttributes;
@@ -153,7 +153,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
 
     /// Opens a readable channel for the current member body.
     @Override
-    public ReadableByteChannel openChannel() throws IOException {
+    protected ReadableByteChannel openCurrentChannel() throws IOException {
         ensureOpen();
         if (currentAttributes == null) {
             throw new IllegalStateException("No current AR entry");
@@ -167,7 +167,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
 
     /// Closes this streaming reader.
     @Override
-    public void close() throws IOException {
+    protected void closeReader() throws IOException {
         if (!open && sourceClosed) {
             return;
         }

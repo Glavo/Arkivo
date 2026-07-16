@@ -3,23 +3,25 @@
 
 package org.glavo.arkivo.codec.zstd;
 
+import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionFormat;
-import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressionFormat;
+import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.spi.CodecChannelAdapters;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.zstd.internal.ZstdCompressionFormat;
 import org.glavo.arkivo.codec.zstd.internal.ZstdDecoder;
-import org.glavo.arkivo.codec.zstd.internal.ZstdDictionarySupport;
 import org.glavo.arkivo.codec.zstd.internal.ZstdEncoder;
 import org.glavo.arkivo.codec.zstd.internal.ZstdEncoderParameters;
-import org.glavo.arkivo.codec.zstd.internal.ZstdFrameHeader;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
 /// Provides an immutable Zstandard configuration and transport-independent frame engines.
@@ -27,7 +29,8 @@ import java.util.Objects;
 public final class ZstdCodec
         implements CompressionCodec.LevelConfigurable<ZstdCodec>,
         CompressionCodec.DictionaryConfigurable<ZstdCodec, ZstdDictionary>,
-        CompressionCodec.PledgedSourceSizeEncoderFactory<ZstdCodec> {
+        CompressionCodec.PledgedSourceSizeEncoderFactory<ZstdCodec, CompressionEncoder.FlushableFramed>,
+        CompressionCodec.FlushableFramed<ZstdCodec> {
     /// The stable Zstandard compression format name.
     public static final String NAME = "zstd";
 
@@ -274,12 +277,12 @@ public final class ZstdCodec
     }
 
     /// Returns whether encoders emit frame checksums.
-    public boolean frameChecksum() {
+    public boolean emitsFrameChecksum() {
         return frameChecksum;
     }
 
     /// Returns whether decoders verify frame checksums.
-    public boolean verifyChecksums() {
+    public boolean verifiesChecksums() {
         return verifyChecksums;
     }
 
@@ -334,17 +337,17 @@ public final class ZstdCodec
     }
 
     /// Returns whether known pledged source sizes are emitted.
-    public boolean contentSize() {
+    public boolean emitsContentSize() {
         return contentSize;
     }
 
     /// Returns whether trained dictionary identifiers are emitted.
-    public boolean dictionaryId() {
+    public boolean emitsDictionaryId() {
         return dictionaryId;
     }
 
     /// Returns whether long-distance matching is enabled.
-    public boolean longDistanceMatching() {
+    public boolean usesLongDistanceMatching() {
         return longDistanceMatching;
     }
 
@@ -395,7 +398,6 @@ public final class ZstdCodec
                 : toBuilder().verifyChecksums(verifyChecksums).build();
     }
 
-
     /// Returns the maximum compressed size for an input of sourceSize bytes.
     @Override
     public long maxCompressedSize(long sourceSize) {
@@ -414,46 +416,12 @@ public final class ZstdCodec
 
     /// Parses one frame header using this codec's physical format.
     public ZstdFrameInfo frameInfo(ByteBuffer source) throws IOException {
-        Objects.requireNonNull(source, "source");
-        return ZstdFrameHeader.parse(source, frameFormat == ZstdFrameFormat.MAGICLESS);
-    }
-
-    /// Parses one frame header in the selected physical format.
-    public ZstdFrameInfo frameInfo(
-            ByteBuffer source,
-            ZstdFrameFormat frameFormat
-    ) throws IOException {
-        Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(frameFormat, "frameFormat");
-        return ZstdFrameHeader.parse(source, frameFormat == ZstdFrameFormat.MAGICLESS);
+        return frameFormat.frameInfo(source);
     }
 
     /// Returns one complete frame's compressed size using this codec's physical format.
     public long frameCompressedSize(ByteBuffer source) throws IOException {
-        Objects.requireNonNull(source, "source");
-        return ZstdFrameHeader.frameCompressedSize(
-                source,
-                frameFormat == ZstdFrameFormat.MAGICLESS
-        );
-    }
-
-    /// Returns one complete frame's compressed size in the selected physical format.
-    public long frameCompressedSize(
-            ByteBuffer source,
-            ZstdFrameFormat frameFormat
-    ) throws IOException {
-        Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(frameFormat, "frameFormat");
-        return ZstdFrameHeader.frameCompressedSize(
-                source,
-                frameFormat == ZstdFrameFormat.MAGICLESS
-        );
-    }
-
-    /// Returns the embedded identifier of a formatted dictionary.
-    public long dictionaryId(ByteBuffer dictionary) {
-        Objects.requireNonNull(dictionary, "dictionary");
-        return ZstdDictionarySupport.dictionaryId(dictionary);
+        return frameFormat.frameCompressedSize(source);
     }
 
     /// Creates a framed encoder without a known source size.
@@ -472,15 +440,40 @@ public final class ZstdCodec
         );
     }
 
+    /// Opens a frame- and flush-capable encoder with exact source-size metadata.
+    @Override
+    public CompressingWritableByteChannel.FlushableFramed openEncoder(
+            WritableByteChannel target,
+            long pledgedSourceSize,
+            ChannelOwnership ownership
+    ) throws IOException {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(ownership, "ownership");
+        return CodecChannelAdapters.openFlushableFramedEncoder(
+                target,
+                ownership,
+                () -> newEncoder(pledgedSourceSize)
+        );
+    }
+
+    /// Opens a frame- and flush-capable encoder with exact source-size metadata and retains target ownership.
+    @Override
+    public CompressingWritableByteChannel.FlushableFramed openEncoder(
+            WritableByteChannel target,
+            long pledgedSourceSize
+    ) throws IOException {
+        return openEncoder(target, pledgedSourceSize, ChannelOwnership.RETAIN);
+    }
+
     /// Creates an unrestricted dictionary-aware framed decoder.
     @Override
-    public CompressionDecoder.DictionaryAware<ZstdDictionary, ZstdDictionaryRequest> newDecoder() throws IOException {
+    public CompressionDecoder.FramedDictionaryAware<ZstdDictionary, ZstdDictionaryRequest> newDecoder() throws IOException {
         return newDecoder(DecompressionLimits.UNLIMITED);
     }
 
     /// Creates a framed decoder with operation-scoped safety limits.
     @Override
-    public CompressionDecoder.DictionaryAware<ZstdDictionary, ZstdDictionaryRequest> newDecoder(
+    public CompressionDecoder.FramedDictionaryAware<ZstdDictionary, ZstdDictionaryRequest> newDecoder(
             DecompressionLimits limits
     ) throws IOException {
         Objects.requireNonNull(limits, "limits");

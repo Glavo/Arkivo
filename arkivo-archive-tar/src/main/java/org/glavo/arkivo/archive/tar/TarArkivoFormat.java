@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.tar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStreamingReaderFormat;
@@ -19,7 +20,6 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Map;
 
 /// Describes TAR archive streaming support provided by Arkivo.
 @NotNullByDefault
@@ -122,10 +122,10 @@ public final class TarArkivoFormat implements
         return TarArkivoFileSystem.open(path);
     }
 
-    /// Opens a TAR archive as a file system with provider environment options.
+    /// Opens a TAR archive as a file system with provider options.
     @Override
-    public TarArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
-        return TarArkivoFileSystem.open(path, environment);
+    public TarArkivoFileSystem open(Path path, ArchiveOptions options) throws IOException {
+        return TarArkivoFileSystem.open(path, options);
     }
 
     /// Opens a read-only TAR archive file system directly from one owned seekable channel.
@@ -134,10 +134,10 @@ public final class TarArkivoFormat implements
         return TarArkivoFileSystem.open(source);
     }
 
-    /// Opens a TAR archive file system directly from one owned seekable channel with environment options.
+    /// Opens a TAR archive file system directly from one owned seekable channel with options.
     @Override
-    public TarArkivoFileSystem open(SeekableByteChannel source, Map<String, ?> environment) throws IOException {
-        return TarArkivoFileSystem.open(source, environment);
+    public TarArkivoFileSystem open(SeekableByteChannel source, ArchiveOptions options) throws IOException {
+        return TarArkivoFileSystem.open(source, options);
     }
 
     /// Opens a read-only TAR archive file system from a repeatable seekable channel source.
@@ -146,13 +146,13 @@ public final class TarArkivoFormat implements
         return TarArkivoFileSystem.open(source);
     }
 
-    /// Opens a TAR archive file system from a channel source with environment options.
+    /// Opens a TAR archive file system from a channel source with options.
     @Override
     public TarArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
-        return TarArkivoFileSystem.open(source, environment);
+        return TarArkivoFileSystem.open(source, options);
     }
 
     /// Opens a streaming TAR reader from an input stream.
@@ -161,13 +161,13 @@ public final class TarArkivoFormat implements
         return TarArkivoStreamingReader.open(source);
     }
 
-    /// Opens a streaming TAR reader from an input stream with environment options.
+    /// Opens a streaming TAR reader from an input stream with options.
     @Override
     public TarArkivoStreamingReader openStreamingReader(
             InputStream source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
-        return TarArkivoStreamingReader.open(source, environment);
+        return TarArkivoStreamingReader.open(source, options);
     }
 
     /// Opens a streaming TAR reader from a readable channel.
@@ -176,13 +176,13 @@ public final class TarArkivoFormat implements
         return TarArkivoStreamingReader.open(source);
     }
 
-    /// Opens a streaming TAR reader from a readable channel with environment options.
+    /// Opens a streaming TAR reader from a readable channel with options.
     @Override
     public TarArkivoStreamingReader openStreamingReader(
             ReadableByteChannel source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
-        return TarArkivoStreamingReader.open(source, environment);
+        return TarArkivoStreamingReader.open(source, options);
     }
 
     /// Opens a streaming TAR writer over an output stream.
@@ -191,13 +191,13 @@ public final class TarArkivoFormat implements
         return TarArkivoStreamingWriter.open(output);
     }
 
-    /// Opens a streaming TAR writer over an output stream with environment options.
+    /// Opens a streaming TAR writer over an output stream with options.
     @Override
     public TarArkivoStreamingWriter openStreamingWriter(
             OutputStream output,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
-        return TarArkivoStreamingWriter.open(output, environment);
+        return TarArkivoStreamingWriter.open(output, options);
     }
 
     /// Opens a streaming TAR writer over a writable channel.
@@ -206,13 +206,13 @@ public final class TarArkivoFormat implements
         return TarArkivoStreamingWriter.open(output);
     }
 
-    /// Opens a streaming TAR writer over a writable channel with environment options.
+    /// Opens a streaming TAR writer over a writable channel with options.
     @Override
     public TarArkivoStreamingWriter openStreamingWriter(
             WritableByteChannel output,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
-        return TarArkivoStreamingWriter.open(output, environment);
+        return TarArkivoStreamingWriter.open(output, options);
     }
 
     /// Returns whether the given absolute block is filled with zero bytes.

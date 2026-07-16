@@ -28,7 +28,8 @@ import java.util.Objects;
 public final class DeflateCodec
         implements CompressionCodec.LevelConfigurable<DeflateCodec>,
         CompressionCodec.StrategyConfigurable<DeflateCodec>,
-        CompressionCodec.DictionaryConfigurable<DeflateCodec, RawCompressionDictionary> {
+        CompressionCodec.DictionaryConfigurable<DeflateCodec, RawCompressionDictionary>,
+        CompressionCodec.Flushable<DeflateCodec> {
     /// The stable raw Deflate compression format name.
     public static final String NAME = "deflate";
 

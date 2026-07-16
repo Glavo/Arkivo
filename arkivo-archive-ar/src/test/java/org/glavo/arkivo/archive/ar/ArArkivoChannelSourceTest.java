@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.ar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
@@ -71,7 +72,7 @@ final class ArArkivoChannelSourceTest {
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
             );
 
-            assertThrows(IllegalArgumentException.class, () -> ArArkivoFileSystem.open(source, environment));
+            assertThrows(IllegalArgumentException.class, () -> ArArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment)));
             assertEquals(0, source.openCount());
             assertEquals(1, source.closeCount());
         } finally {
@@ -100,7 +101,7 @@ final class ArArkivoChannelSourceTest {
                     target
             );
 
-            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(source, environment)) {
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment))) {
                 assertFalse(fileSystem.isReadOnly());
                 Files.writeString(fileSystem.getPath("/value.txt"), "updated", StandardCharsets.UTF_8);
                 Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
@@ -138,7 +139,7 @@ final class ArArkivoChannelSourceTest {
                     ArkivoCommitTarget.writeTo(targetPath)
             );
 
-            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(channel, environment)) {
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(channel, ArchiveOptions.fromEnvironment(environment))) {
                 Files.delete(fileSystem.getPath("/value.txt"));
                 Files.writeString(fileSystem.getPath("/replacement.txt"), "replacement", StandardCharsets.UTF_8);
             }
@@ -180,7 +181,7 @@ final class ArArkivoChannelSourceTest {
                     failingTarget
             );
 
-            ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(source, environment);
+            ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment));
             Files.writeString(fileSystem.getPath("/value.txt"), "changed", StandardCharsets.UTF_8);
             IOException exception = assertThrows(IOException.class, fileSystem::close);
 
@@ -210,7 +211,7 @@ final class ArArkivoChannelSourceTest {
                     ArkivoCommitTarget.writeTo(targetPath)
             );
 
-            try (ArArkivoFileSystem ignored = ArArkivoFileSystem.open(source, environment)) {
+            try (ArArkivoFileSystem ignored = ArArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment))) {
             }
 
             assertFalse(Files.exists(targetPath));

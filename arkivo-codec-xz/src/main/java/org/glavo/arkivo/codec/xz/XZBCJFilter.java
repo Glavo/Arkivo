@@ -42,7 +42,7 @@ public record XZBCJFilter(Architecture architecture, long startOffset) implement
         X86(0x04L, 1L),
 
         /// The big-endian PowerPC branch transform.
-        POWER_PC(0x05L, 4L),
+        POWERPC(0x05L, 4L),
 
         /// The IA-64 branch-slot transform.
         IA64(0x06L, 16L),

@@ -5,6 +5,7 @@ package org.glavo.arkivo.codec.zstd;
 
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.RawCompressionDictionary;
+import org.glavo.arkivo.codec.zstd.internal.ZstdDictionarySupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.UnmodifiableView;
 
@@ -82,6 +83,12 @@ public final class ZstdDictionary implements CompressionDictionary {
     /// Creates a full dictionary without changing the source buffer state.
     public static ZstdDictionary fullDictionary(ByteBuffer buffer) {
         return new ZstdDictionary(RawCompressionDictionary.of(buffer), ContentType.FULL_DICTIONARY);
+    }
+
+    /// Returns the embedded identifier of a formatted dictionary without changing the buffer state.
+    public static long dictionaryId(ByteBuffer dictionary) {
+        Objects.requireNonNull(dictionary, "dictionary");
+        return ZstdDictionarySupport.dictionaryId(dictionary);
     }
 
     /// Returns a copy of the complete dictionary representation.

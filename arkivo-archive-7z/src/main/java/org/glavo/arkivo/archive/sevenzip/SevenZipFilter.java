@@ -82,13 +82,13 @@ public record SevenZipFilter(SevenZipFilterMethod method, long parameter) {
     }
 
     /// Returns a PowerPC BCJ filter.
-    public static SevenZipFilter bcjPpc() {
-        return bcjPpc(0);
+    public static SevenZipFilter bcjPowerPC() {
+        return bcjPowerPC(0);
     }
 
     /// Returns a PowerPC BCJ filter with the requested unsigned 32-bit start offset.
-    public static SevenZipFilter bcjPpc(long startOffset) {
-        return new SevenZipFilter(SevenZipFilterMethod.BCJ_PPC, startOffset);
+    public static SevenZipFilter bcjPowerPC(long startOffset) {
+        return new SevenZipFilter(SevenZipFilterMethod.BCJ_POWERPC, startOffset);
     }
 
     /// Returns an IA-64 BCJ filter.
@@ -157,7 +157,7 @@ public record SevenZipFilter(SevenZipFilterMethod method, long parameter) {
             case DELTA -> throw new IllegalArgumentException("Delta is not a BCJ filter");
             case BCJ2 -> throw new IllegalArgumentException("BCJ2 has no start offset");
             case BCJ_X86 -> 1;
-            case BCJ_PPC, BCJ_ARM, BCJ_SPARC, BCJ_ARM64 -> 4;
+            case BCJ_POWERPC, BCJ_ARM, BCJ_SPARC, BCJ_ARM64 -> 4;
             case BCJ_IA64 -> 16;
             case BCJ_ARM_THUMB, BCJ_RISCV -> 2;
         };

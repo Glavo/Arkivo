@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.rar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -129,7 +130,7 @@ public final class Rar5CompressionTest {
         for (byte[] archive : new byte[][]{ENCRYPTED_BODY_ARCHIVE, ENCRYPTED_HEADER_ARCHIVE}) {
             try (RarArkivoStreamingReader reader = RarArkivoFormat.instance().openStreamingReader(
                     new ByteArrayInputStream(archive),
-                    passwordEnvironment(PASSWORD)
+                    ArchiveOptions.fromEnvironment(passwordEnvironment(PASSWORD))
             )) {
                 assertTrue(reader.next());
                 RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
@@ -152,7 +153,7 @@ public final class Rar5CompressionTest {
         try {
             try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                     archive,
-                    passwordEnvironment(PASSWORD)
+                    ArchiveOptions.fromEnvironment(passwordEnvironment(PASSWORD))
             )) {
                 assertArrayEquals(
                         "file1\n".getBytes(StandardCharsets.UTF_8),
@@ -170,7 +171,7 @@ public final class Rar5CompressionTest {
         assertThrows(IOException.class, () -> {
             try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                     new ByteArrayInputStream(ENCRYPTED_BODY_ARCHIVE),
-                    passwordEnvironment("wrong".getBytes(StandardCharsets.UTF_8))
+                    ArchiveOptions.fromEnvironment(passwordEnvironment("wrong".getBytes(StandardCharsets.UTF_8)))
             )) {
                 assertTrue(reader.next());
                 try (InputStream input = reader.openInputStream()) {

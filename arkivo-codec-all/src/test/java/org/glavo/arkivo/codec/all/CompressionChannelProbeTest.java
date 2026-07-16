@@ -42,8 +42,12 @@ final class CompressionChannelProbeTest {
         probe.prefix().get(prefix);
         assertArrayEquals(new byte[]{0x1f, (byte) 0x8b, 0x08, 0x00, 0x11, 0x22, 0x33, 0x44}, prefix);
         assertEquals(0, probe.prefix().position());
-        assertArrayEquals(bytes, readInSmallChunks(probe.channel()));
-        probe.channel().close();
+        ReadableByteChannel replay = probe.takeChannel();
+        assertThrows(IllegalStateException.class, probe::takeChannel);
+        assertArrayEquals(bytes, readInSmallChunks(replay));
+        probe.close();
+        assertTrue(source.isOpen());
+        replay.close();
         assertTrue(source.isOpen());
         source.close();
     }
@@ -57,8 +61,11 @@ final class CompressionChannelProbeTest {
 
         assertFalse(probe.detected());
         assertNull(probe.format());
-        assertArrayEquals(bytes, readInSmallChunks(probe.channel()));
-        probe.channel().close();
+        ReadableByteChannel replay = probe.takeChannel();
+        assertArrayEquals(bytes, readInSmallChunks(replay));
+        probe.close();
+        assertTrue(source.isOpen());
+        replay.close();
         assertFalse(source.isOpen());
     }
 
@@ -68,12 +75,13 @@ final class CompressionChannelProbeTest {
         CloseFailingOnceChannel source = new CloseFailingOnceChannel(new byte[]{1, 2, 3});
         CompressionProbeResult probe = CompressionFormats.probe(source, ChannelOwnership.CLOSE);
 
-        assertThrows(IOException.class, probe.channel()::close);
+        assertThrows(IOException.class, probe::close);
         assertEquals(1, source.closeCount());
-        assertTrue(probe.channel().isOpen());
-        probe.channel().close();
+        assertTrue(source.isOpen());
+        probe.close();
         assertEquals(2, source.closeCount());
-        assertFalse(probe.channel().isOpen());
+        assertFalse(source.isOpen());
+        assertThrows(IllegalStateException.class, probe::takeChannel);
     }
 
     /// Verifies invalid arguments do not transfer ownership of the source.

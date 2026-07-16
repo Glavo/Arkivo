@@ -10,7 +10,8 @@ import org.jetbrains.annotations.Nullable;
 import java.io.IOException;
 import java.nio.file.Path;
 
-/// Controls where a archive editor writes the assembled archive before commit.
+/// Controls where an archive editor writes the assembled archive before commit.
+@FunctionalInterface
 @NotNullByDefault
 public interface ArkivoCommitTarget {
     /// Returns a target that writes directly to the original archive path.

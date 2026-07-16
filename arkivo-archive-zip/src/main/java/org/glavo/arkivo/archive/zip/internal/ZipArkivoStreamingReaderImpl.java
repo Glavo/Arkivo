@@ -7,7 +7,6 @@ import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
 
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
@@ -132,7 +131,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
     /// Closes this streaming reader, its current entry, and the source stream.
     @Override
-    public void close() throws IOException {
+    protected void closeReader() throws IOException {
         lock();
         try {
             open = false;
@@ -159,7 +158,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
     /// Advances to the next ZIP entry and returns whether an entry is available.
     @Override
-    public boolean next() throws IOException {
+    protected boolean advance() throws IOException {
         lock();
         try {
             ensureOpen();
@@ -177,7 +176,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
     /// Reads the current archive entry attributes as the requested attribute type.
     @Override
-    public <A extends BasicFileAttributes> A readAttributes(Class<A> type) throws IOException {
+    protected <A extends BasicFileAttributes> A readCurrentAttributes(Class<A> type) throws IOException {
         lock();
         try {
             ensureOpen();
@@ -186,9 +185,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             if (attributes == null) {
                 throw new IllegalStateException("ZIP streaming reader is not positioned at an entry");
             }
-            if (type == BasicFileAttributes.class
-                    || type == ZipArkivoEntryAttributes.class
-                    || type == PosixFileAttributes.class) {
+            if (type.isInstance(attributes)) {
                 return type.cast(attributes);
             }
             throw new UnsupportedOperationException("Unsupported ZIP streaming attributes type: " + type.getName());
@@ -199,7 +196,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
     /// Opens a readable channel for the current file entry.
     @Override
-    public ReadableByteChannel openChannel() throws IOException {
+    protected ReadableByteChannel openCurrentChannel() throws IOException {
         lock();
         try {
             ensureOpen();
@@ -1264,7 +1261,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         return new CodecDataDescriptorInputStream(
                 "deflate",
                 "Deflate",
-                Directive.CONTINUE,
+                false,
                 CodecResult.Status.END_OF_INPUT,
                 input,
                 compressedInput,
@@ -1292,7 +1289,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         return new CodecDataDescriptorInputStream(
                 "deflate64",
                 "Deflate64",
-                Directive.CONTINUE,
+                false,
                 CodecResult.Status.END_OF_INPUT,
                 input,
                 compressedInput,
@@ -1320,7 +1317,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         return new CodecDataDescriptorInputStream(
                 "bzip2",
                 "BZip2",
-                Directive.STOP_AT_FRAME,
+                true,
                 CodecResult.Status.FRAME_FINISHED,
                 input,
                 compressedInput,
@@ -1361,7 +1358,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             );
             return new CodecDataDescriptorInputStream(
                     "LZMA",
-                    Directive.CONTINUE,
+                    false,
                     CodecResult.Status.END_OF_INPUT,
                     input,
                     decoder,
@@ -1397,7 +1394,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         return new CodecDataDescriptorInputStream(
                 "xz",
                 "XZ",
-                Directive.STOP_AT_FRAME,
+                true,
                 CodecResult.Status.FRAME_FINISHED,
                 input,
                 compressedInput,
@@ -1914,8 +1911,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         /// The compression format display name used in diagnostics.
         private final String formatDisplayName;
 
-        /// The directive used while decoding the current compressed stream.
-        private final Directive decodeDirective;
+        /// Whether decoding stops at the current compressed frame boundary.
+        private final boolean stopAtFrame;
 
         /// The decoder status that marks the compressed stream boundary.
         private final CodecResult.Status terminalStatus;
@@ -1967,7 +1964,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             this(
                     "zstd",
                     "Zstandard",
-                    Directive.STOP_AT_FRAME,
+                    true,
                     CodecResult.Status.FRAME_FINISHED,
                     input,
                     compressedInput,
@@ -1984,7 +1981,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         private CodecDataDescriptorInputStream(
                 String formatName,
                 String formatDisplayName,
-                Directive decodeDirective,
+                boolean stopAtFrame,
                 CodecResult.Status terminalStatus,
                 PushbackInputStream input,
                 InputStream compressedInput,
@@ -1997,7 +1994,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         ) throws IOException {
             this(
                     formatDisplayName,
-                    decodeDirective,
+                    stopAtFrame,
                     terminalStatus,
                     input,
                     ZipCompressionFormats.openDecoder(
@@ -2016,7 +2013,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         /// Creates a data descriptor input stream over a configured channel-first decoder.
         private CodecDataDescriptorInputStream(
                 String formatDisplayName,
-                Directive decodeDirective,
+                boolean stopAtFrame,
                 CodecResult.Status terminalStatus,
                 PushbackInputStream input,
                 DecompressingReadableByteChannel decoder,
@@ -2030,7 +2027,10 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             this.input = Objects.requireNonNull(input, "input");
             this.decoder = Objects.requireNonNull(decoder, "decoder");
             this.formatDisplayName = Objects.requireNonNull(formatDisplayName, "formatDisplayName");
-            this.decodeDirective = Objects.requireNonNull(decodeDirective, "decodeDirective");
+            if (stopAtFrame && !(decoder instanceof DecompressingReadableByteChannel.Framed)) {
+                throw new IllegalArgumentException("Frame-stopping decode requires a framed decoder");
+            }
+            this.stopAtFrame = stopAtFrame;
             this.terminalStatus = Objects.requireNonNull(terminalStatus, "terminalStatus");
             this.compressedSizeOffset = compressedSizeOffset;
             this.aesDecryptor = aesDecryptor;
@@ -2072,7 +2072,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 }
 
                 ByteBuffer target = ByteBuffer.wrap(bytes, offset, length);
-                CodecResult result = decoder.decode(target, decodeDirective);
+                CodecResult result = stopAtFrame
+                        ? ((DecompressingReadableByteChannel.Framed) decoder).decodeFrame(target)
+                        : decoder.decode(target);
                 int decoded = Math.toIntExact(result.outputBytes());
                 if (result.status() == terminalStatus) {
                     streamFinished = true;

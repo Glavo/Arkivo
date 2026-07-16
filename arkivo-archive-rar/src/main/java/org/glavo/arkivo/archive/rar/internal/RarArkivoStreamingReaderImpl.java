@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.rar.internal;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.internal.ByteArrayAccess;
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes;
@@ -31,7 +32,6 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Arrays;
-import java.util.Map;
 import java.util.Objects;
 import java.util.zip.CRC32;
 
@@ -406,12 +406,12 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Creates a streaming RAR reader.
     public RarArkivoStreamingReaderImpl(InputStream source) {
-        this(source, null, Map.of());
+        this(source, null, ArchiveOptions.EMPTY);
     }
 
     /// Creates a streaming RAR reader that owns a multi-volume source.
     public RarArkivoStreamingReaderImpl(ArkivoVolumeSource source) {
-        this(source, null, Map.of());
+        this(source, null, ArchiveOptions.EMPTY);
     }
 
     /// Creates a streaming RAR reader that owns a multi-volume source with an optional password provider.
@@ -419,48 +419,48 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             ArkivoVolumeSource source,
             @Nullable ArkivoPasswordProvider passwordProvider
     ) {
-        this(source, passwordProvider, Map.of());
+        this(source, passwordProvider, ArchiveOptions.EMPTY);
     }
 
     /// Creates a configured streaming RAR reader that owns a multi-volume source.
     public RarArkivoStreamingReaderImpl(
             ArkivoVolumeSource source,
             @Nullable ArkivoPasswordProvider passwordProvider,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) {
-        this(new RarVolumeInputStream(source, true), passwordProvider, environment);
+        this(new RarVolumeInputStream(source, true), passwordProvider, options);
     }
 
     /// Creates a streaming RAR reader with an optional password provider.
     public RarArkivoStreamingReaderImpl(InputStream source, @Nullable ArkivoPasswordProvider passwordProvider) {
-        this(source, passwordProvider, Map.of());
+        this(source, passwordProvider, ArchiveOptions.EMPTY);
     }
 
     /// Creates a configured streaming RAR reader with an optional password provider.
     public RarArkivoStreamingReaderImpl(
             InputStream source,
             @Nullable ArkivoPasswordProvider passwordProvider,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) {
-        this(source, passwordProvider, environment, true);
+        this(source, passwordProvider, options, true);
     }
 
     /// Creates a configured reader with explicit skipped-body validation behavior.
     RarArkivoStreamingReaderImpl(
             InputStream source,
             @Nullable ArkivoPasswordProvider passwordProvider,
-            Map<String, ?> environment,
+            ArchiveOptions options,
             boolean validateSkippedBodies
     ) {
         this.source = Objects.requireNonNull(source, "source");
         this.passwordProvider = passwordProvider;
-        this.readLimits = ArkivoReadLimitTracker.fromEnvironment(environment);
+        this.readLimits = ArkivoReadLimitTracker.fromOptions(options);
         this.validateSkippedBodies = validateSkippedBodies;
     }
 
     /// Advances to the next RAR file entry and returns whether an entry is available.
     @Override
-    public boolean next() throws IOException {
+    protected boolean advance() throws IOException {
         ensureOpen();
         readLimits.requireWithinLimits();
         readSignature();
@@ -527,14 +527,14 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Reads the current archive entry attributes as the requested attribute type.
     @Override
-    public <A extends BasicFileAttributes> A readAttributes(Class<A> type) throws IOException {
+    protected <A extends BasicFileAttributes> A readCurrentAttributes(Class<A> type) throws IOException {
         ensureOpen();
         Objects.requireNonNull(type, "type");
         RarEntryAttributes attributes = currentAttributes;
         if (attributes == null) {
             throw new IllegalStateException("RAR streaming reader is not positioned at an entry");
         }
-        if (type == BasicFileAttributes.class || type == RarArkivoEntryAttributes.class || type == PosixFileAttributes.class) {
+        if (type.isInstance(attributes)) {
             return type.cast(attributes);
         }
         throw new UnsupportedOperationException("Unsupported RAR streaming attributes type: " + type.getName());
@@ -588,7 +588,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Opens a readable channel for the current supported file entry.
     @Override
-    public ReadableByteChannel openChannel() throws IOException {
+    protected ReadableByteChannel openCurrentChannel() throws IOException {
         ensureOpen();
         RarEntryAttributes attributes = currentAttributes;
         if (attributes == null) {
@@ -964,7 +964,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
 
     /// Closes this streaming reader.
     @Override
-    public void close() throws IOException {
+    protected void closeReader() throws IOException {
         if (!open && sourceClosed) {
             return;
         }
@@ -1963,7 +1963,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         }
 
         byte[] targetBytes;
-        try (InputStream input = openInputStream()) {
+        try (InputStream input = StreamChannelAdapters.inputStream(openCurrentChannel())) {
             targetBytes = input.readNBytes(Math.toIntExact(unpackedSize) + 1);
         }
         currentBodyOpened = false;

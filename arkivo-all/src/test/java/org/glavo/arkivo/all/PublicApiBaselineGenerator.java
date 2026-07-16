@@ -17,18 +17,22 @@ public final class PublicApiBaselineGenerator {
     private PublicApiBaselineGenerator() {
     }
 
-    /// Writes the current public signatures to the single requested baseline path.
+    /// Writes the current public types and signatures to the requested baseline paths.
     public static void main(String[] arguments) throws Exception {
-        if (arguments.length != 1) {
-            throw new IllegalArgumentException("Expected one public API baseline output path");
+        if (arguments.length != 2) {
+            throw new IllegalArgumentException("Expected public type and signature baseline output paths");
         }
         ClassLoader loader = Objects.requireNonNull(
                 Thread.currentThread().getContextClassLoader(),
                 "context class loader"
         );
-        @Unmodifiable SortedSet<String> signatures = PublicApiSignatures.collect(loader);
-        Path output = Path.of(arguments[0]);
-        PublicApiSignatures.write(output, signatures);
-        System.out.println("Wrote " + signatures.size() + " public API signatures to " + output);
+        @Unmodifiable SortedSet<String> apiTypeNames = PublicApiBoundaryTest.collectApiTypeNames(loader);
+        @Unmodifiable SortedSet<String> signatures = PublicApiSignatures.collect(loader, apiTypeNames);
+        Path typeOutput = Path.of(arguments[0]);
+        Path signatureOutput = Path.of(arguments[1]);
+        PublicApiSignatures.write(typeOutput, apiTypeNames);
+        PublicApiSignatures.write(signatureOutput, signatures);
+        System.out.println("Wrote " + apiTypeNames.size() + " API types to " + typeOutput);
+        System.out.println("Wrote " + signatures.size() + " API signatures to " + signatureOutput);
     }
 }

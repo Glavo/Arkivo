@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.rar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -98,7 +99,7 @@ public final class RarLowHeapStorageProbe {
                 ArkivoFileSystem.EDIT_STORAGE.key(),
                 ArkivoEditStorage.temporaryFiles(storageDirectory)
         );
-        try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archivePath, environment)) {
+        try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
             Path entry = fileSystem.getPath("/large.bin");
             BasicFileAttributes attributes = Files.readAttributes(entry, BasicFileAttributes.class);
             if (attributes.size() != ENTRY_SIZE) {

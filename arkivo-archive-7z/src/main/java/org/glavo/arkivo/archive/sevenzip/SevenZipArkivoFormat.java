@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.sevenzip;
 
-import org.glavo.arkivo.archive.ArkivoFileSystem;
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoPathVolumeFormat;
 import org.glavo.arkivo.archive.ArkivoVolumeFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
@@ -22,7 +22,6 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 
 /// Describes the 7z archive format support provided by Arkivo.
@@ -96,13 +95,13 @@ public final class SevenZipArkivoFormat implements
         return SevenZipArkivoStreamingWriter.open(output);
     }
 
-    /// Opens a streaming 7z writer over an output stream with environment options.
+    /// Opens a streaming 7z writer over an output stream with options.
     @Override
     public SevenZipArkivoStreamingWriter openStreamingWriter(
             OutputStream output,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
-        return SevenZipArkivoStreamingWriter.open(output, environment);
+        return SevenZipArkivoStreamingWriter.open(output, options);
     }
 
     /// Opens a streaming 7z writer over a writable channel.
@@ -111,13 +110,13 @@ public final class SevenZipArkivoFormat implements
         return SevenZipArkivoStreamingWriter.open(output);
     }
 
-    /// Opens a streaming 7z writer over a writable channel with environment options.
+    /// Opens a streaming 7z writer over a writable channel with options.
     @Override
     public SevenZipArkivoStreamingWriter openStreamingWriter(
             WritableByteChannel output,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
-        return SevenZipArkivoStreamingWriter.open(output, environment);
+        return SevenZipArkivoStreamingWriter.open(output, options);
     }
 
     /// Opens a split streaming 7z writer over a transactional volume target.
@@ -129,71 +128,71 @@ public final class SevenZipArkivoFormat implements
         return SevenZipArkivoStreamingWriter.open(target, splitSize);
     }
 
-    /// Opens a split streaming 7z writer over a transactional volume target with environment options.
+    /// Opens a split streaming 7z writer over a transactional volume target with options.
     @Override
     public SevenZipArkivoStreamingWriter openStreamingWriter(
             ArkivoVolumeTarget target,
             long splitSize,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
-        return SevenZipArkivoStreamingWriter.open(target, splitSize, environment);
+        return SevenZipArkivoStreamingWriter.open(target, splitSize, options);
     }
 
     /// Opens a 7z archive file system.
     @Override
-    public ArkivoFileSystem open(Path path) throws IOException {
+    public SevenZipArkivoFileSystem open(Path path) throws IOException {
         return SevenZipArkivoFileSystem.open(path);
     }
 
-    /// Opens a 7z archive file system with environment options.
+    /// Opens a 7z archive file system with options.
     @Override
-    public ArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
-        return SevenZipArkivoFileSystem.open(path, environment);
+    public SevenZipArkivoFileSystem open(Path path, ArchiveOptions options) throws IOException {
+        return SevenZipArkivoFileSystem.open(path, options);
     }
 
     /// Opens a read-only 7z archive file system directly from one owned seekable channel.
     @Override
-    public ArkivoFileSystem open(SeekableByteChannel source) throws IOException {
+    public SevenZipArkivoFileSystem open(SeekableByteChannel source) throws IOException {
         return SevenZipArkivoFileSystem.open(source);
     }
 
-    /// Opens a 7z archive file system directly from one owned seekable channel with environment options.
+    /// Opens a 7z archive file system directly from one owned seekable channel with options.
     @Override
-    public ArkivoFileSystem open(SeekableByteChannel source, Map<String, ?> environment) throws IOException {
-        return SevenZipArkivoFileSystem.open(source, environment);
+    public SevenZipArkivoFileSystem open(SeekableByteChannel source, ArchiveOptions options) throws IOException {
+        return SevenZipArkivoFileSystem.open(source, options);
     }
 
     /// Opens a read-only 7z archive file system from a repeatable seekable channel source.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
     @Override
-    public ArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
+    public SevenZipArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
         return SevenZipArkivoFileSystem.open(source);
     }
 
-    /// Opens a 7z archive file system from a repeatable seekable channel source with environment options.
+    /// Opens a 7z archive file system from a repeatable seekable channel source with options.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
     @Override
-    public ArkivoFileSystem open(ArkivoSeekableChannelSource source, Map<String, ?> environment) throws IOException {
-        return SevenZipArkivoFileSystem.open(source, environment);
+    public SevenZipArkivoFileSystem open(ArkivoSeekableChannelSource source, ArchiveOptions options) throws IOException {
+        return SevenZipArkivoFileSystem.open(source, options);
     }
 
     /// Opens a multi-volume 7z archive file system.
     @Override
-    public ArkivoFileSystem open(ArkivoVolumeSource volumes) throws IOException {
+    public SevenZipArkivoFileSystem open(ArkivoVolumeSource volumes) throws IOException {
         return SevenZipArkivoFileSystem.open(volumes);
     }
 
-    /// Opens a multi-volume 7z archive file system with environment options.
+    /// Opens a multi-volume 7z archive file system with options.
     @Override
-    public ArkivoFileSystem open(ArkivoVolumeSource volumes, Map<String, ?> environment) throws IOException {
-        return SevenZipArkivoFileSystem.open(volumes, environment);
+    public SevenZipArkivoFileSystem open(ArkivoVolumeSource volumes, ArchiveOptions options) throws IOException {
+        return SevenZipArkivoFileSystem.open(volumes, options);
     }
 
     /// Opens a complete-rewrite update over multi-volume input and transactional output.
     @Override
-    public ArkivoFileSystem update(
+    public SevenZipArkivoFileSystem update(
             ArkivoVolumeSource source,
             ArkivoVolumeTarget target,
             long splitSize
@@ -201,30 +200,30 @@ public final class SevenZipArkivoFormat implements
         return SevenZipArkivoFileSystem.update(source, target, splitSize);
     }
 
-    /// Opens a complete-rewrite multi-volume update with environment options.
+    /// Opens a complete-rewrite multi-volume update with options.
     @Override
-    public ArkivoFileSystem update(
+    public SevenZipArkivoFileSystem update(
             ArkivoVolumeSource source,
             ArkivoVolumeTarget target,
             long splitSize,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
-        return SevenZipArkivoFileSystem.update(source, target, splitSize, environment);
+        return SevenZipArkivoFileSystem.update(source, target, splitSize, options);
     }
 
     /// Creates a forward-only 7z file system that publishes split output to a transactional volume target.
     @Override
-    public ArkivoFileSystem create(ArkivoVolumeTarget target, long splitSize) throws IOException {
+    public SevenZipArkivoFileSystem create(ArkivoVolumeTarget target, long splitSize) throws IOException {
         return SevenZipArkivoFileSystem.create(target, splitSize);
     }
 
-    /// Creates a forward-only 7z file system over a transactional volume target with environment options.
+    /// Creates a forward-only 7z file system over a transactional volume target with options.
     @Override
-    public ArkivoFileSystem create(
+    public SevenZipArkivoFileSystem create(
             ArkivoVolumeTarget target,
             long splitSize,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
-        return SevenZipArkivoFileSystem.create(target, splitSize, environment);
+        return SevenZipArkivoFileSystem.create(target, splitSize, options);
     }
 }

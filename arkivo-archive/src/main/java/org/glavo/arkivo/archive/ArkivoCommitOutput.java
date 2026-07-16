@@ -26,7 +26,10 @@ public interface ArkivoCommitOutput extends AutoCloseable {
     /// Abandons the assembled archive and removes temporary output when possible.
     void rollback() throws IOException;
 
-    /// Closes this output object without committing it.
+    /// Closes this output, rolling it back when it has not been committed.
+    ///
+    /// Repeated calls after cleanup completes have no effect. A caller may retry this method when an earlier call
+    /// reports incomplete cleanup.
     @Override
     void close() throws IOException;
 }

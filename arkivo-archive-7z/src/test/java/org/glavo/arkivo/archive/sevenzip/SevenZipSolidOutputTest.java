@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.sevenzip;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
 import org.apache.commons.compress.archivers.sevenz.SevenZFile;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
@@ -53,7 +54,7 @@ public final class SevenZipSolidOutputTest {
 
         try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                 archive,
-                writerEnvironment(2)
+                ArchiveOptions.fromEnvironment(writerEnvironment(2))
         )) {
             for (Map.Entry<String, byte[]> entry : expected.entrySet()) {
                 if ("empty.bin".equals(entry.getKey())) {
@@ -149,7 +150,7 @@ public final class SevenZipSolidOutputTest {
 
         try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
                 archive,
-                writerEnvironment(10)
+                ArchiveOptions.fromEnvironment(writerEnvironment(10))
         )) {
             writeStreamingEntry(writer, "first.bin", first, null, null);
             writeStreamingEntry(writer, "second.bin", second, null, null);
@@ -192,7 +193,7 @@ public final class SevenZipSolidOutputTest {
         Map<String, Object> environment = new LinkedHashMap<>(writerEnvironment(3));
         environment.put(SevenZipArkivoFileSystem.COMPRESSION.key(), SevenZipCompression.zstandard());
 
-        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archive, environment)) {
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archive, ArchiveOptions.fromEnvironment(environment))) {
             Files.write(fileSystem.getPath("/first.bin"), first);
             Files.write(fileSystem.getPath("/second.bin"), second);
             Files.write(fileSystem.getPath("/third.bin"), third);
@@ -220,7 +221,7 @@ public final class SevenZipSolidOutputTest {
 
         try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                 archive,
-                writerEnvironment(1)
+                ArchiveOptions.fromEnvironment(writerEnvironment(1))
         )) {
             Files.write(fileSystem.getPath("/first.bin"), first);
             Files.write(fileSystem.getPath("/second.bin"), second);
@@ -236,7 +237,7 @@ public final class SevenZipSolidOutputTest {
                 SevenZipCompression.lzma2(SevenZipCompression.MIN_DICTIONARY_SIZE)
         );
         updateEnvironment.put(SevenZipArkivoFileSystem.SOLID_FILE_COUNT.key(), 2);
-        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archive, updateEnvironment)) {
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archive, ArchiveOptions.fromEnvironment(updateEnvironment))) {
             Files.write(fileSystem.getPath("/second.bin"), updatedSecond);
         }
 
@@ -265,7 +266,7 @@ public final class SevenZipSolidOutputTest {
                 ArkivoPasswordProvider.fixed(password)
         );
         environment.put(SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(), true);
-        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(firstVolume, environment)) {
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(firstVolume, ArchiveOptions.fromEnvironment(environment))) {
             Files.write(fileSystem.getPath("/first.bin"), first);
             Files.write(fileSystem.getPath("/second.bin"), second);
             Files.write(fileSystem.getPath("/third.bin"), third);
@@ -276,10 +277,10 @@ public final class SevenZipSolidOutputTest {
         }
         try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                 firstVolume,
-                Map.of(
+                ArchiveOptions.fromEnvironment(Map.of(
                         SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                         ArkivoPasswordProvider.fixed(password)
-                )
+                ))
         )) {
             assertArrayEquals(first, Files.readAllBytes(fileSystem.getPath("/first.bin")));
             assertArrayEquals(second, Files.readAllBytes(fileSystem.getPath("/second.bin")));

@@ -12,6 +12,9 @@ import java.util.Objects;
 /// Reports that archive metadata or decoded entry data exceeded a configured reading limit.
 @NotNullByDefault
 public final class ArkivoReadLimitException extends IOException {
+    /// The serialization version for this exception type.
+    private static final long serialVersionUID = 0L;
+
     /// The configured limit that was exceeded.
     private final ArkivoReadLimitKind kind;
 
@@ -32,8 +35,11 @@ public final class ArkivoReadLimitException extends IOException {
             @Nullable String entryPath
     ) {
         super(message(kind, maximum, actual, entryPath));
-        if (maximum < 0L || actual < 0L) {
-            throw new IllegalArgumentException("Archive read limit values must not be negative");
+        if (maximum < 0L) {
+            throw new IllegalArgumentException("maximum must not be negative");
+        }
+        if (actual <= maximum) {
+            throw new IllegalArgumentException("actual must exceed maximum");
         }
         this.kind = Objects.requireNonNull(kind, "kind");
         this.maximum = maximum;

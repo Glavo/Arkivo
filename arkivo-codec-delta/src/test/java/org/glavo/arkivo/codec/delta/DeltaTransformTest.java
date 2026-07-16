@@ -5,6 +5,7 @@ package org.glavo.arkivo.codec.delta;
 
 import org.glavo.arkivo.codec.transform.TransformingInputStream;
 import org.glavo.arkivo.codec.transform.TransformingOutputStream;
+import org.glavo.arkivo.codec.transform.ByteTransform.Direction;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.tukaani.xz.ArrayCache;
@@ -55,7 +56,7 @@ public final class DeltaTransformTest {
         ByteArrayOutputStream target = new ByteArrayOutputStream();
         try (TransformingOutputStream output = new TransformingOutputStream(
                 target,
-                new DeltaTransform(true, distance)
+                new DeltaTransform(Direction.ENCODE, distance)
         )) {
             for (byte value : original) {
                 output.write(value);
@@ -68,7 +69,7 @@ public final class DeltaTransformTest {
     private static byte[] decodeNatively(byte[] encoded, int distance) throws IOException {
         try (TransformingInputStream input = new TransformingInputStream(
                 new ChunkedInputStream(encoded, 3),
-                new DeltaTransform(false, distance)
+                new DeltaTransform(Direction.DECODE, distance)
         )) {
             return input.readAllBytes();
         }

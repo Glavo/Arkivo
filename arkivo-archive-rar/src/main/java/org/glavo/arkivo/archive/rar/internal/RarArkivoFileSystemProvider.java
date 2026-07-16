@@ -1,11 +1,14 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.archive.ar;
+package org.glavo.arkivo.archive.rar.internal;
 
+import org.glavo.arkivo.archive.rar.RarArkivoFileSystem;
+import org.glavo.arkivo.archive.rar.RarArkivoFormat;
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
-import org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemImpl;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
+import org.glavo.arkivo.archive.rar.internal.RarArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -23,6 +26,7 @@ import java.nio.file.LinkOption;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.ProviderMismatchException;
+import java.nio.file.ReadOnlyFileSystemException;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileAttributeView;
@@ -31,25 +35,25 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-/// Provides JDK file system provider entry points for AR archives.
+/// Provides JDK file system provider entry points for RAR archives.
 @NotNullByDefault
-public final class ArArkivoFileSystemProvider extends FileSystemProvider {
-    /// The URI scheme handled by the AR Arkivo file system provider.
-    public static final String SCHEME = "arkivo+ar";
+public final class RarArkivoFileSystemProvider extends FileSystemProvider {
+    /// The URI scheme handled by the RAR Arkivo file system provider.
+    public static final String SCHEME = RarArkivoFormat.instance().uriScheme();
 
     /// The shared provider instance used by Arkivo convenience factories.
-    private static final ArArkivoFileSystemProvider INSTANCE = new ArArkivoFileSystemProvider();
+    private static final RarArkivoFileSystemProvider INSTANCE = new RarArkivoFileSystemProvider();
 
     /// The file systems opened through URI entry points.
-    private final ArkivoFileSystemProviderSupport.Registry<ArArkivoFileSystem> fileSystems =
+    private final ArkivoFileSystemProviderSupport.Registry<RarArkivoFileSystem> fileSystems =
             new ArkivoFileSystemProviderSupport.Registry<>();
 
-    /// Creates an AR file system provider.
-    public ArArkivoFileSystemProvider() {
+    /// Creates a RAR file system provider.
+    public RarArkivoFileSystemProvider() {
     }
 
-    /// Returns the shared AR file system provider instance.
-    public static ArArkivoFileSystemProvider instance() {
+    /// Returns the shared RAR file system provider instance.
+    public static RarArkivoFileSystemProvider instance() {
         return INSTANCE;
     }
 
@@ -59,44 +63,44 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
         return SCHEME;
     }
 
-    /// Opens an AR archive file system from a provider URI.
+    /// Opens a RAR archive file system from a provider URI.
     @Override
     public ArkivoFileSystem newFileSystem(URI uri, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(environment, "environment");
         ArkivoFileSystemProviderSupport.ParsedUri parsedUri = parseUri(uri, false);
-        return fileSystems.open(parsedUri.archiveUri(), closeAction -> ArArkivoFileSystemImpl.open(
+        return fileSystems.open(parsedUri.archiveUri(), closeAction -> RarArkivoFileSystemImpl.open(
                 this,
                 parsedUri.archivePath(),
                 parsedUri.archiveUri(),
-                environment,
+                ArchiveOptions.fromEnvironment(environment),
                 closeAction
         ));
     }
 
-    /// Opens an AR archive file system from an archive path.
+    /// Opens a RAR archive file system from an archive path.
     @Override
-    public ArArkivoFileSystem newFileSystem(Path path, Map<String, ?> environment) throws IOException {
+    public RarArkivoFileSystem newFileSystem(Path path, Map<String, ?> environment) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
-        ArkivoFileSystemProviderSupport.requirePathFormat(path, ArArkivoFormat.instance());
-        return openPath(path, environment);
+        ArkivoFileSystemProviderSupport.requirePathFormat(path, RarArkivoFormat.instance());
+        return openPath(path, ArchiveOptions.fromEnvironment(environment));
     }
 
-    /// Opens an AR archive path whose format has already been selected explicitly.
-    ArArkivoFileSystem openPath(Path path, Map<String, ?> environment) throws IOException {
+    /// Opens a RAR archive path whose format has already been selected explicitly.
+    public RarArkivoFileSystem openPath(Path path, ArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
-        Objects.requireNonNull(environment, "environment");
-        return ArArkivoFileSystemImpl.open(this, path, path.toUri().normalize(), environment, () -> {
+        Objects.requireNonNull(options, "options");
+        return RarArkivoFileSystemImpl.open(this, path, path.toUri().normalize(), options, () -> {
         });
     }
 
-    /// Returns an open AR archive file system for a provider URI.
+    /// Returns an open RAR archive file system for a provider URI.
     @Override
     public FileSystem getFileSystem(URI uri) {
         return fileSystems.require(parseUri(uri, false).archiveUri());
     }
 
-    /// Returns a path inside an open AR archive file system.
+    /// Returns a path inside an open RAR archive file system.
     @Override
     public Path getPath(URI uri) {
         ArkivoFileSystemProviderSupport.ParsedUri parsedUri = parseUri(uri, true);
@@ -105,7 +109,7 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
         );
     }
 
-    /// Opens a byte channel for a path inside an AR archive file system.
+    /// Opens a byte channel for a path inside a RAR archive file system.
     @Override
     public SeekableByteChannel newByteChannel(
             Path path,
@@ -119,7 +123,7 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
         );
     }
 
-    /// Opens an input stream for a path inside an AR archive file system.
+    /// Opens an input stream for a path inside a RAR archive file system.
     @Override
     public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
         return readFileSystem(path).newInputStream(
@@ -128,13 +132,13 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
         );
     }
 
-    /// Opens an output stream for a path inside a writable AR archive file system.
+    /// RAR file systems are read-only.
     @Override
-    public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
-        return readFileSystem(path).newOutputStream(path, options);
+    public OutputStream newOutputStream(Path path, OpenOption... options) {
+        throw new ReadOnlyFileSystemException();
     }
 
-    /// Opens a directory stream for a path inside an AR archive file system.
+    /// Opens a directory stream for a path inside a RAR archive file system.
     @Override
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter)
             throws IOException {
@@ -144,66 +148,59 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
         );
     }
 
-    /// Creates a directory entry inside a writable AR archive file system.
+    /// RAR file systems are read-only.
     @Override
-    public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
-        readFileSystem(directory).createDirectory(directory, attributes);
+    public void createDirectory(Path directory, FileAttribute<?>... attributes) {
+        throw new ReadOnlyFileSystemException();
     }
 
-    /// Creates a symbolic link entry inside a writable AR archive file system.
+    /// RAR file systems are read-only.
     @Override
-    public void createSymbolicLink(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
-        readFileSystem(link).createSymbolicLink(link, target, attributes);
+    public void delete(Path path) {
+        throw new ReadOnlyFileSystemException();
     }
 
-    /// Deletes a member from an update-mode AR archive file system.
-    @Override
-    public void delete(Path path) throws IOException {
-        readFileSystem(path).delete(path);
-    }
-
-    /// Copies a path inside an AR archive file system to another file system.
+    /// Copies a path inside a RAR archive file system to another file system.
     @Override
     public void copy(Path source, Path target, CopyOption... options) throws IOException {
         readFileSystem(source);
         ArkivoFileSystemProviderSupport.copy(source, target, options);
     }
 
-    /// Moves a member inside an update-mode AR archive file system.
+    /// RAR file systems are read-only.
     @Override
-    public void move(Path source, Path target, CopyOption... options) throws IOException {
-        ArArkivoFileSystemImpl fileSystem = readFileSystem(source);
-        ArkivoFileSystemProviderSupport.requireSameFileSystemMove(source, target);
-        fileSystem.move(source, target, options);
+    public void move(Path source, Path target, CopyOption... options) {
+        readFileSystem(source);
+        throw new ReadOnlyFileSystemException();
     }
 
-    /// Returns whether two AR archive paths refer to the same file.
+    /// Returns whether two RAR archive paths refer to the same file.
     @Override
     public boolean isSameFile(Path path, Path other) throws IOException {
         readFileSystem(path);
         return ArkivoFileSystemProviderSupport.isSameFile(path, other);
     }
 
-    /// Returns whether an AR archive path is hidden.
+    /// Returns whether a RAR archive path is hidden.
     @Override
     public boolean isHidden(Path path) throws IOException {
         readFileSystem(path).checkAccess(path);
         return false;
     }
 
-    /// Returns the file store for an AR archive path.
+    /// Returns the file store for a RAR archive path.
     @Override
     public FileStore getFileStore(Path path) throws IOException {
         return readFileSystem(path).fileStore(path);
     }
 
-    /// Checks access to an AR archive path.
+    /// Checks access to a RAR archive path.
     @Override
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
         readFileSystem(path).checkAccess(path, modes);
     }
 
-    /// Returns a file attribute view for an AR archive path.
+    /// Returns a file attribute view for a RAR archive path.
     @Override
     public <V extends FileAttributeView> @Nullable V getFileAttributeView(
             Path path,
@@ -213,7 +210,7 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
         return readFileSystem(path).getFileAttributeView(path, type, options);
     }
 
-    /// Reads file attributes for an AR archive path.
+    /// Reads file attributes for a RAR archive path.
     @Override
     public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, LinkOption... options)
             throws IOException {
@@ -224,7 +221,7 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
         );
     }
 
-    /// Reads named file attributes for an AR archive path.
+    /// Reads named file attributes for a RAR archive path.
     @Override
     public Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options) throws IOException {
         return readFileSystem(path).readAttributes(
@@ -234,29 +231,28 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
         );
     }
 
-    /// Reads a symbolic link target from an AR archive path.
+    /// Reads a symbolic link target from a RAR archive path.
     @Override
     public Path readSymbolicLink(Path link) throws IOException {
         return readFileSystem(link).readSymbolicLink(link);
     }
 
-    /// Sets a supported member attribute in update mode.
+    /// RAR file systems are read-only.
     @Override
-    public void setAttribute(Path path, String attribute, @Nullable Object value, LinkOption... options)
-            throws IOException {
-        readFileSystem(path).setAttribute(path, attribute, value, options);
+    public void setAttribute(Path path, String attribute, Object value, LinkOption... options) {
+        throw new ReadOnlyFileSystemException();
     }
 
-    /// Returns the AR file system implementation that owns a path.
-    private static ArArkivoFileSystemImpl readFileSystem(Path path) {
-        if (path.getFileSystem() instanceof ArArkivoFileSystemImpl fileSystem) {
+    /// Returns the RAR file system implementation that owns a path.
+    private static RarArkivoFileSystemImpl readFileSystem(Path path) {
+        if (path.getFileSystem() instanceof RarArkivoFileSystemImpl fileSystem) {
             return fileSystem;
         }
         throw new ProviderMismatchException();
     }
 
-    /// Parses an AR provider URI through the shared archive URI grammar.
+    /// Parses a RAR provider URI through the shared archive URI grammar.
     private static ArkivoFileSystemProviderSupport.ParsedUri parseUri(URI uri, boolean requireEntryPath) {
-        return ArkivoFileSystemProviderSupport.parseUri(uri, SCHEME, "AR", requireEntryPath);
+        return ArkivoFileSystemProviderSupport.parseUri(uri, SCHEME, "RAR", requireEntryPath);
     }
 }

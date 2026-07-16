@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.tar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
@@ -45,7 +46,7 @@ final class TarArkivoCompressedStreamingTest {
         Map<String, Object> environment = Map.of(TarArkivoFileSystem.COMPRESSION.key(), "gzip");
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
         WritableByteChannel output = Channels.newChannel(archive);
-        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output, environment)) {
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output, ArchiveOptions.fromEnvironment(environment))) {
             writeEntry(writer);
         }
         assertFalse(output.isOpen());
@@ -56,7 +57,7 @@ final class TarArkivoCompressedStreamingTest {
         assertEquals("gzip", detected.name());
 
         ReadableByteChannel input = Channels.newChannel(new ByteArrayInputStream(archiveBytes));
-        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(input, environment)) {
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(input, ArchiveOptions.fromEnvironment(environment))) {
             assertEntry(reader);
         }
         assertFalse(input.isOpen());
@@ -67,7 +68,7 @@ final class TarArkivoCompressedStreamingTest {
     void detectsGzipThroughForwardOnlyChannel() throws IOException {
         Map<String, Object> environment = Map.of(TarArkivoFileSystem.COMPRESSION.key(), "gzip");
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
-        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive, environment)) {
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive, ArchiveOptions.fromEnvironment(environment))) {
             writeEntry(writer);
         }
 
@@ -83,7 +84,7 @@ final class TarArkivoCompressedStreamingTest {
     void detectsZlibThroughForwardOnlyStream() throws IOException {
         Map<String, Object> environment = Map.of(TarArkivoFileSystem.COMPRESSION.key(), "zlib");
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
-        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive, environment)) {
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive, ArchiveOptions.fromEnvironment(environment))) {
             writeEntry(writer);
         }
 
@@ -102,14 +103,14 @@ final class TarArkivoCompressedStreamingTest {
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
 
         TarArkivoFormat format = TarArkivoFormat.instance();
-        try (TarArkivoStreamingWriter writer = format.openStreamingWriter(archive, environment)) {
+        try (TarArkivoStreamingWriter writer = format.openStreamingWriter(archive, ArchiveOptions.fromEnvironment(environment))) {
             writeEntry(writer);
         }
         assertNull(CompressionFormats.detect(ByteBuffer.wrap(archive.toByteArray())));
 
         try (TarArkivoStreamingReader reader = format.openStreamingReader(
                 new ByteArrayInputStream(archive.toByteArray()),
-                environment
+                ArchiveOptions.fromEnvironment(environment)
         )) {
             assertEntry(reader);
         }
@@ -124,13 +125,13 @@ final class TarArkivoCompressedStreamingTest {
             try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(
                     archivePath,
                     ArkivoEditStorage.memory(),
-                    environment
+                    ArchiveOptions.fromEnvironment(environment)
             )) {
                 writeEntry(writer);
             }
             try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                     Files.newInputStream(archivePath),
-                    environment
+                    ArchiveOptions.fromEnvironment(environment)
             )) {
                 assertEntry(reader);
             }
@@ -143,7 +144,7 @@ final class TarArkivoCompressedStreamingTest {
     @Test
     void keepsRawTarAsTheStreamingDefault() throws IOException {
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
-        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive, Map.of())) {
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive, ArchiveOptions.fromEnvironment(Map.of()))) {
             writeEntry(writer);
         }
         byte[] archiveBytes = archive.toByteArray();
@@ -195,8 +196,8 @@ final class TarArkivoCompressedStreamingTest {
         TrackingInputStream input = new TrackingInputStream();
         TrackingOutputStream output = new TrackingOutputStream();
 
-        assertThrows(IllegalArgumentException.class, () -> TarArkivoStreamingReader.open(input, environment));
-        assertThrows(IllegalArgumentException.class, () -> TarArkivoStreamingWriter.open(output, environment));
+        assertThrows(IllegalArgumentException.class, () -> TarArkivoStreamingReader.open(input, ArchiveOptions.fromEnvironment(environment)));
+        assertThrows(IllegalArgumentException.class, () -> TarArkivoStreamingWriter.open(output, ArchiveOptions.fromEnvironment(environment)));
         assertFalse(input.closed());
         assertFalse(output.closed());
     }

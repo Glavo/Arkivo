@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
@@ -51,7 +52,7 @@ public final class SevenZipDecodedChannelScalabilityProbe {
         byte[] block = expectedBlock();
         try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
                 archive,
-                Map.of(SevenZipArkivoFileSystem.COMPRESSION.key(), SevenZipCompression.deflate(1))
+                ArchiveOptions.fromEnvironment(Map.of(SevenZipArkivoFileSystem.COMPRESSION.key(), SevenZipCompression.deflate(1)))
         )) {
             writer.beginFile(ENTRY_NAME);
             try (OutputStream output = writer.openOutputStream()) {

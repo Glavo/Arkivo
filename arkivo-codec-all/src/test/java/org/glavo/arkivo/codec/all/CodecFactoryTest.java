@@ -195,9 +195,10 @@ final class CodecFactoryTest {
             CompressionCodec<?> codec = format.defaultCodec();
 
             TrackingOutputStream compressed = new TrackingOutputStream();
-            try (OutputStream output = CompressionFormats.compressTo(
+            try (OutputStream output = CompressionFormats.openEncoder(
                     codec.format().name(),
-                    compressed
+                    compressed,
+                    ChannelOwnership.CLOSE
             )) {
                 output.write(CONTENT);
             }
@@ -206,14 +207,20 @@ final class CodecFactoryTest {
             TrackingInputStream encoded = new TrackingInputStream(compressed.bytes());
             CompressionCodec<?> decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
-            try (InputStream input = decoderCodec.decompressFrom(encoded)) {
+            try (InputStream input = decoderCodec.openDecoder(
+                    encoded,
+                    ChannelOwnership.CLOSE
+            )) {
                 assertArrayEquals(CONTENT, input.readAllBytes(), codec.format().name());
             }
             assertTrue(encoded.closed(), codec.format().name());
 
             if (codec.format().probeSize() > 0) {
                 TrackingInputStream detectedSource = new TrackingInputStream(compressed.bytes());
-                try (InputStream input = CompressionFormats.decompressFrom(detectedSource)) {
+                try (InputStream input = CompressionFormats.openDecoder(
+                        detectedSource,
+                        ChannelOwnership.CLOSE
+                )) {
                     assertArrayEquals(CONTENT, input.readAllBytes(), codec.format().name());
                 }
                 assertTrue(detectedSource.closed(), codec.format().name());
@@ -223,21 +230,32 @@ final class CodecFactoryTest {
         TrackingOutputStream unknownTarget = new TrackingOutputStream();
         assertThrows(
                 IOException.class,
-                () -> CompressionFormats.compressTo("missing", unknownTarget)
+                () -> CompressionFormats.openEncoder(
+                        "missing",
+                        unknownTarget,
+                        ChannelOwnership.CLOSE
+                )
         );
         assertTrue(unknownTarget.closed());
 
         TrackingInputStream unknownSource = new TrackingInputStream(new byte[]{1, 2, 3});
         assertThrows(
                 IOException.class,
-                () -> CompressionFormats.decompressFrom("missing", unknownSource)
+                () -> CompressionFormats.openDecoder(
+                        "missing",
+                        unknownSource,
+                        ChannelOwnership.CLOSE
+                )
         );
         assertTrue(unknownSource.closed());
 
         TrackingInputStream unrecognizedSource = new TrackingInputStream(new byte[]{1, 2, 3});
         assertThrows(
                 IOException.class,
-                () -> CompressionFormats.decompressFrom(unrecognizedSource)
+                () -> CompressionFormats.openDecoder(
+                        unrecognizedSource,
+                        ChannelOwnership.CLOSE
+                )
         );
         assertTrue(unrecognizedSource.closed());
     }

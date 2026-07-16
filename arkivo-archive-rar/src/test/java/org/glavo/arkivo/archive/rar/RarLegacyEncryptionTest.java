@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.rar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -78,7 +79,7 @@ public final class RarLegacyEncryptionTest {
         );
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(RAR20_ARCHIVE),
-                environment
+                ArchiveOptions.fromEnvironment(environment)
         )) {
             assertEquals(true, reader.next());
             RarArkivoEntryAttributes first = reader.readAttributes(RarArkivoEntryAttributes.class);
@@ -122,7 +123,7 @@ public final class RarLegacyEncryptionTest {
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                passwordEnvironment(PASSWORD)
+                ArchiveOptions.fromEnvironment(passwordEnvironment(PASSWORD))
         )) {
             assertEquals(true, reader.next());
             RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
@@ -156,7 +157,7 @@ public final class RarLegacyEncryptionTest {
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 Channels.newChannel(new ByteArrayInputStream(archive)),
-                passwordEnvironment(PASSWORD)
+                ArchiveOptions.fromEnvironment(passwordEnvironment(PASSWORD))
         )) {
             assertEquals(true, reader.next());
             try (var input = reader.openInputStream()) {
@@ -172,7 +173,7 @@ public final class RarLegacyEncryptionTest {
         byte[] wrongPassword = "incorrect".getBytes(StandardCharsets.ISO_8859_1);
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(RAR20_ARCHIVE),
-                passwordEnvironment(wrongPassword)
+                ArchiveOptions.fromEnvironment(passwordEnvironment(wrongPassword))
         )) {
             assertEquals(true, reader.next());
             var input = reader.openInputStream();
@@ -190,7 +191,7 @@ public final class RarLegacyEncryptionTest {
 
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 archivePath,
-                passwordEnvironment(PASSWORD)
+                ArchiveOptions.fromEnvironment(passwordEnvironment(PASSWORD))
         )) {
             assertArrayEquals(
                     "file1\r\n".getBytes(StandardCharsets.US_ASCII),
@@ -266,7 +267,7 @@ public final class RarLegacyEncryptionTest {
 
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 ArkivoVolumeSource.of(List.of(firstVolume, secondVolume)),
-                passwordEnvironment(PASSWORD)
+                ArchiveOptions.fromEnvironment(passwordEnvironment(PASSWORD))
         )) {
             assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/FILE1.TXT")));
             assertArrayEquals(afterContent, Files.readAllBytes(fileSystem.getPath("/after.txt")));

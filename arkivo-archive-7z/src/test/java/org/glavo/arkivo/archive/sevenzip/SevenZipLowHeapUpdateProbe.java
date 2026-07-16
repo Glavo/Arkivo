@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.sevenzip;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -63,7 +64,7 @@ public final class SevenZipLowHeapUpdateProbe {
                 )
         );
         byte[] buffer = new byte[BUFFER_SIZE];
-        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment);
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment));
              OutputStream output = Files.newOutputStream(fileSystem.getPath("/large.bin"))) {
             long remaining = ENTRY_SIZE;
             while (remaining > 0L) {
@@ -82,7 +83,7 @@ public final class SevenZipLowHeapUpdateProbe {
                 ArkivoFileSystem.EDIT_STORAGE.key(),
                 ArkivoEditStorage.temporaryFiles(storageDirectory)
         );
-        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment);
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment));
              SeekableByteChannel channel = Files.newByteChannel(
                      fileSystem.getPath("/large.bin"),
                      Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)

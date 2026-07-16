@@ -6,7 +6,6 @@ package org.glavo.arkivo.archive;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
-import java.util.Map;
 import java.util.Objects;
 
 /// Describes an archive format that can expose multiple physical volumes as one file system.
@@ -14,13 +13,13 @@ import java.util.Objects;
 public interface ArkivoVolumeFileSystemFormat extends ArkivoFileSystemFormat {
     /// Opens a read-only file system from an owned volume source.
     default ArkivoFileSystem open(ArkivoVolumeSource source) throws IOException {
-        return open(source, Map.of());
+        return open(source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a file system from an owned volume source with environment options.
+    /// Opens a file system from an owned volume source with options.
     ArkivoFileSystem open(
             ArkivoVolumeSource source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException;
 
     /// Opens a complete-rewrite update from an owned volume source to a transactional volume target.
@@ -29,10 +28,10 @@ public interface ArkivoVolumeFileSystemFormat extends ArkivoFileSystemFormat {
             ArkivoVolumeTarget target,
             long splitSize
     ) throws IOException {
-        return update(source, target, splitSize, Map.of());
+        return update(source, target, splitSize, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a complete-rewrite update with environment options.
+    /// Opens a complete-rewrite update with options.
     ///
     /// Formats without multi-volume update support reject the operation without opening the target or taking source
     /// ownership. Supporting formats own the source after successful setup and publish through the target on close.
@@ -40,11 +39,11 @@ public interface ArkivoVolumeFileSystemFormat extends ArkivoFileSystemFormat {
             ArkivoVolumeSource source,
             ArkivoVolumeTarget target,
             long splitSize,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         if (splitSize <= 0L) {
             throw new IllegalArgumentException("splitSize must be positive");
         }
@@ -53,19 +52,19 @@ public interface ArkivoVolumeFileSystemFormat extends ArkivoFileSystemFormat {
 
     /// Creates a writable file system over a transactional volume target.
     default ArkivoFileSystem create(ArkivoVolumeTarget target, long splitSize) throws IOException {
-        return create(target, splitSize, Map.of());
+        return create(target, splitSize, ArchiveOptions.EMPTY);
     }
 
-    /// Creates a writable file system over a transactional volume target with environment options.
+    /// Creates a writable file system over a transactional volume target with options.
     ///
     /// Formats without multi-volume creation support reject the operation without opening the target.
     default ArkivoFileSystem create(
             ArkivoVolumeTarget target,
             long splitSize,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         if (splitSize <= 0L) {
             throw new IllegalArgumentException("splitSize must be positive");
         }

@@ -6,6 +6,7 @@ package org.glavo.arkivo.archive.sevenzip.internal;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.transform.TransformingOutputStream;
 import org.glavo.arkivo.codec.transform.ByteTransform;
+import org.glavo.arkivo.codec.transform.ByteTransform.Direction;
 import org.glavo.arkivo.codec.delta.DeltaTransform;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
@@ -151,7 +152,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
     private static final byte @Unmodifiable [] BCJ2_METHOD_ID = new byte[]{0x03, 0x03, 0x01, 0x1b};
 
     /// The PowerPC BCJ filter method ID.
-    private static final byte @Unmodifiable [] BCJ_PPC_METHOD_ID = new byte[]{0x03, 0x03, 0x02, 0x05};
+    private static final byte @Unmodifiable [] BCJ_POWERPC_METHOD_ID = new byte[]{0x03, 0x03, 0x02, 0x05};
 
     /// The IA-64 BCJ filter method ID.
     private static final byte @Unmodifiable [] BCJ_IA64_METHOD_ID = new byte[]{0x03, 0x03, 0x04, 0x01};
@@ -522,46 +523,46 @@ final class SevenZipArchiveWriter implements AutoCloseable {
         if (filter.method() == SevenZipFilterMethod.DELTA) {
             int distance = Math.toIntExact(filter.parameter());
             return new FilterDescriptor(
-                    new DeltaTransform(true, distance),
+                    new DeltaTransform(Direction.ENCODE, distance),
                     new MethodDescriptor(DELTA_METHOD_ID, new byte[]{(byte) (distance - 1)})
             );
         }
 
-        int startOffset = (int) filter.parameter();
+        long startOffset = filter.parameter();
         byte[] properties = bcjProperties(filter.parameter());
         return switch (filter.method()) {
             case DELTA -> throw new AssertionError("Delta filter was handled before BCJ dispatch");
             case BCJ2 -> throw new AssertionError("BCJ2 is handled as a multi-stream folder graph");
             case BCJ_X86 -> new FilterDescriptor(
-                    BCJTransforms.x86(true, startOffset),
+                    BCJTransforms.x86(Direction.ENCODE, startOffset),
                     new MethodDescriptor(BCJ_X86_METHOD_ID, properties)
             );
-            case BCJ_PPC -> new FilterDescriptor(
-                    BCJTransforms.powerPc(true, startOffset),
-                    new MethodDescriptor(BCJ_PPC_METHOD_ID, properties)
+            case BCJ_POWERPC -> new FilterDescriptor(
+                    BCJTransforms.powerPC(Direction.ENCODE, startOffset),
+                    new MethodDescriptor(BCJ_POWERPC_METHOD_ID, properties)
             );
             case BCJ_IA64 -> new FilterDescriptor(
-                    BCJTransforms.ia64(true, startOffset),
+                    BCJTransforms.ia64(Direction.ENCODE, startOffset),
                     new MethodDescriptor(BCJ_IA64_METHOD_ID, properties)
             );
             case BCJ_ARM -> new FilterDescriptor(
-                    BCJTransforms.arm(true, startOffset),
+                    BCJTransforms.arm(Direction.ENCODE, startOffset),
                     new MethodDescriptor(BCJ_ARM_METHOD_ID, properties)
             );
             case BCJ_ARM_THUMB -> new FilterDescriptor(
-                    BCJTransforms.armThumb(true, startOffset),
+                    BCJTransforms.armThumb(Direction.ENCODE, startOffset),
                     new MethodDescriptor(BCJ_ARM_THUMB_METHOD_ID, properties)
             );
             case BCJ_SPARC -> new FilterDescriptor(
-                    BCJTransforms.sparc(true, startOffset),
+                    BCJTransforms.sparc(Direction.ENCODE, startOffset),
                     new MethodDescriptor(BCJ_SPARC_METHOD_ID, properties)
             );
             case BCJ_ARM64 -> new FilterDescriptor(
-                    BCJTransforms.arm64(true, startOffset),
+                    BCJTransforms.arm64(Direction.ENCODE, startOffset),
                     new MethodDescriptor(BCJ_ARM64_METHOD_ID, properties)
             );
             case BCJ_RISCV -> new FilterDescriptor(
-                    BCJTransforms.riscV(true, startOffset),
+                    BCJTransforms.riscV(Direction.ENCODE, startOffset),
                     new MethodDescriptor(BCJ_RISCV_METHOD_ID, properties)
             );
         };

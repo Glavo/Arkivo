@@ -20,7 +20,10 @@ import java.util.Objects;
 
 /// Provides an immutable gzip configuration and pure Java member engines.
 @NotNullByDefault
-public final class GzipCodec implements CompressionCodec.LevelConfigurable<GzipCodec>, CompressionCodec.StrategyConfigurable<GzipCodec> {
+public final class GzipCodec
+        implements CompressionCodec.LevelConfigurable<GzipCodec>,
+        CompressionCodec.StrategyConfigurable<GzipCodec>,
+        CompressionCodec.FlushableFramed<GzipCodec> {
     /// The stable gzip compression format name.
     public static final String NAME = "gzip";
 
@@ -126,7 +129,7 @@ public final class GzipCodec implements CompressionCodec.LevelConfigurable<GzipC
 
     /// Creates a transport-independent gzip member decoder with operation-scoped limits.
     @Override
-    public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
+    public CompressionDecoder.Framed newDecoder(DecompressionLimits limits) throws IOException {
         Objects.requireNonNull(limits, "limits");
         limits.requireWindowSize(DECODING_WINDOW_SIZE);
         return CompressionDecoderSupport.limitEngineOutput(

@@ -288,7 +288,7 @@ public final class StreamChannelAdapters {
         @Override
         public void flush() throws IOException {
             ensureOpen();
-            if (target instanceof CompressingWritableByteChannel encoder) {
+            if (target instanceof CompressingWritableByteChannel.Flushable encoder) {
                 encoder.flush();
             }
         }

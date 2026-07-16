@@ -76,7 +76,7 @@ public final class LZMACodecTest {
         assertTrue(channelFailure.getMessage().contains("Unsupported LZMA uncompressed size"));
 
         IOException streamFailure = assertThrows(IOException.class, () -> {
-            try (InputStream input = new LZMACodec().decompressFrom(new ByteArrayInputStream(header))) {
+            try (InputStream input = new LZMACodec().openDecoder(new ByteArrayInputStream(header))) {
                 input.read();
             }
         });
@@ -96,7 +96,7 @@ public final class LZMACodecTest {
             output.write(content);
         }
 
-        try (InputStream input = new LZMACodec().decompressFrom(
+        try (InputStream input = new LZMACodec().openDecoder(
                 new ByteArrayInputStream(compressed.toByteArray())
         )) {
             assertArrayEquals(content, input.readAllBytes());
@@ -116,7 +116,7 @@ public final class LZMACodecTest {
             output.write(content);
         }
 
-        try (InputStream input = new LZMACodec().decompressFrom(
+        try (InputStream input = new LZMACodec().openDecoder(
                 new ByteArrayInputStream(compressed.toByteArray())
         )) {
             assertArrayEquals(content, input.readAllBytes());
@@ -136,7 +136,7 @@ public final class LZMACodecTest {
 
         byte[] knownSizeWithEndMarker = compressed.toByteArray();
         writeLittleEndian(knownSizeWithEndMarker, 5, content.length);
-        try (InputStream input = new LZMACodec().decompressFrom(
+        try (InputStream input = new LZMACodec().openDecoder(
                 new ByteArrayInputStream(knownSizeWithEndMarker)
         )) {
             assertArrayEquals(content, input.readAllBytes());
@@ -154,7 +154,7 @@ public final class LZMACodecTest {
         assertThrows(
                 IOException.class,
                 () -> {
-                    try (InputStream input = new LZMACodec().decompressFrom(
+                    try (InputStream input = new LZMACodec().openDecoder(
                             new ByteArrayInputStream(undersized)
                     )) {
                         input.readAllBytes();
@@ -186,7 +186,7 @@ public final class LZMACodecTest {
     public void pureJavaEncoderWritesIndependentEndMarkedStream() throws IOException {
         byte[] content = patternedContent(350_000);
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-        try (OutputStream output = new LZMACodec().compressTo(compressed)) {
+        try (OutputStream output = new LZMACodec().openEncoder(compressed)) {
             for (byte value : content) {
                 output.write(value);
             }
@@ -603,11 +603,11 @@ public final class LZMACodecTest {
     /// Compresses and decompresses the given bytes.
     private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-        try (OutputStream output = codec.compressTo(compressed)) {
+        try (OutputStream output = codec.openEncoder(compressed)) {
             output.write(input);
         }
 
-        try (InputStream inputStream = codec.decompressFrom(new ByteArrayInputStream(compressed.toByteArray()))) {
+        try (InputStream inputStream = codec.openDecoder(new ByteArrayInputStream(compressed.toByteArray()))) {
             return inputStream.readAllBytes();
         }
     }

@@ -92,7 +92,7 @@ public class CodecBufferThroughputBenchmark {
         CompressionCodec<?> decompressionConfiguration = selectedCodec;
         if (selectedCodec instanceof PPMdCodec ppmdCodec) {
             PPMdCodec configured = ppmdCodec
-                    .withMaximumOrder(6L)
+                    .withMaximumOrder(6)
                     .withMemorySize(16L << 20);
             compressionConfiguration = configured;
             decompressionConfiguration = configured.withDecodedSize(SOURCE_SIZE);

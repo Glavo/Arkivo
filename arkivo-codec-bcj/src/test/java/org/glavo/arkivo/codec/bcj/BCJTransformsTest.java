@@ -6,6 +6,7 @@ package org.glavo.arkivo.codec.bcj;
 import org.glavo.arkivo.codec.transform.TransformingInputStream;
 import org.glavo.arkivo.codec.transform.TransformingOutputStream;
 import org.glavo.arkivo.codec.transform.ByteTransform;
+import org.glavo.arkivo.codec.transform.ByteTransform.Direction;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.tukaani.xz.ARMOptions;
@@ -39,7 +40,7 @@ public final class BCJTransformsTest {
     @Test
     public void bcjInteroperabilityAcrossChunks() throws IOException {
         assertBcjInteroperability(x86Sample(), x86Options(), BCJTransforms::x86);
-        assertBcjInteroperability(powerPcSample(), powerPcOptions(), BCJTransforms::powerPc);
+        assertBcjInteroperability(powerPCSample(), powerPCOptions(), BCJTransforms::powerPC);
         assertBcjInteroperability(ia64Sample(), ia64Options(), BCJTransforms::ia64);
         assertBcjInteroperability(armSample(), armOptions(), BCJTransforms::arm);
         assertBcjInteroperability(armThumbSample(), armThumbOptions(), BCJTransforms::armThumb);
@@ -50,9 +51,9 @@ public final class BCJTransformsTest {
     @Test
     public void incompleteInstructionTailPassesThrough() throws IOException {
         byte[] original = new byte[]{(byte) 0xe8, 1, 2, 3};
-        byte[] encoded = encodeNatively(original, BCJTransforms.x86(true, 0));
+        byte[] encoded = encodeNatively(original, BCJTransforms.x86(Direction.ENCODE, 0));
         assertArrayEquals(original, encoded);
-        assertArrayEquals(original, decodeNatively(encoded, BCJTransforms.x86(false, 0)));
+        assertArrayEquals(original, decodeNatively(encoded, BCJTransforms.x86(Direction.DECODE, 0)));
     }
 
     /// Verifies one BCJ encoder and decoder against XZ.
@@ -62,10 +63,10 @@ public final class BCJTransformsTest {
             TransformFactory factory
     ) throws IOException {
         byte[] expected = encodeWithXz(original, options);
-        byte[] encoded = encodeNatively(original, factory.create(true, START_OFFSET));
+        byte[] encoded = encodeNatively(original, factory.create(Direction.ENCODE, START_OFFSET));
         assertFalse(Arrays.equals(original, expected));
         assertArrayEquals(expected, encoded);
-        assertArrayEquals(original, decodeNatively(encoded, factory.create(false, START_OFFSET)));
+        assertArrayEquals(original, decodeNatively(encoded, factory.create(Direction.DECODE, START_OFFSET)));
 
         try (InputStream xzDecoder = options.getInputStream(
                 new ByteArrayInputStream(encoded),
@@ -116,7 +117,7 @@ public final class BCJTransformsTest {
     }
 
     /// Returns XZ PowerPC options configured with the shared start offset.
-    private static PowerPCOptions powerPcOptions() throws IOException {
+    private static PowerPCOptions powerPCOptions() throws IOException {
         PowerPCOptions options = new PowerPCOptions();
         options.setStartOffset(START_OFFSET);
         return options;
@@ -160,7 +161,7 @@ public final class BCJTransformsTest {
     }
 
     /// Returns big-endian PowerPC branch instructions.
-    private static byte[] powerPcSample() {
+    private static byte[] powerPCSample() {
         byte[] sample = filledSample((byte) 0);
         putIntBigEndian(sample, 0, 0x48000001);
         putIntBigEndian(sample, 8188, 0x4bfffffd);
@@ -266,8 +267,8 @@ public final class BCJTransformsTest {
     @FunctionalInterface
     @NotNullByDefault
     private interface TransformFactory {
-        /// Creates an encoder or decoder with the requested absolute start offset.
-        ByteTransform create(boolean encoder, int startOffset);
+        /// Creates a transform in the requested direction with an absolute start offset.
+        ByteTransform create(Direction direction, long startOffset);
     }
 
     /// Limits each bulk source read to a fixed number of bytes.

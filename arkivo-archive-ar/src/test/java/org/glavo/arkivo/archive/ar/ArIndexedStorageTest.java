@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.ar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
@@ -82,7 +83,7 @@ public final class ArIndexedStorageTest {
 
         try (ArArkivoStreamingWriter writer = ArArkivoFormat.instance().openStreamingWriter(
                 archive,
-                Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage)
+                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
         )) {
             writer.beginFile("file.txt");
             try (OutputStream output = writer.openOutputStream()) {
@@ -102,7 +103,7 @@ public final class ArIndexedStorageTest {
         try {
             try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(
                     archivePath,
-                    Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage)
+                    ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
             )) {
                 assertArrayEquals(
                         "stored-content".getBytes(StandardCharsets.UTF_8),
@@ -124,7 +125,7 @@ public final class ArIndexedStorageTest {
         TrackingEditStorage storage = new TrackingEditStorage(true);
         ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(
                 archivePath,
-                Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage)
+                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
         );
         try {
             IOException failure = assertThrows(IOException.class, fileSystem::close);

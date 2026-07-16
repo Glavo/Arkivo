@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.internal;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
 import org.glavo.arkivo.archive.ArkivoReadLimitKind;
@@ -12,7 +13,6 @@ import org.jetbrains.annotations.Nullable;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.Map;
 import java.util.Objects;
 
 /// Tracks archive metadata, entry counts, and logical sizes against common read options.
@@ -61,14 +61,14 @@ public final class ArkivoReadLimitTracker {
         this.maximumMetadataSize = maximumMetadataSize;
     }
 
-    /// Creates a fresh tracker from common archive environment options.
-    public static ArkivoReadLimitTracker fromEnvironment(Map<String, ?> environment) {
-        Objects.requireNonNull(environment, "environment");
+    /// Creates a fresh tracker from common archive options.
+    public static ArkivoReadLimitTracker fromOptions(ArchiveOptions options) {
+        Objects.requireNonNull(options, "options");
         return new ArkivoReadLimitTracker(
-                valueOrUnlimited(ArkivoFileSystem.MAX_ENTRY_COUNT.read(environment)),
-                valueOrUnlimited(ArkivoFileSystem.MAX_ENTRY_SIZE.read(environment)),
-                valueOrUnlimited(ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE.read(environment)),
-                valueOrUnlimited(ArkivoFileSystem.MAX_METADATA_SIZE.read(environment))
+                options.getOrDefault(ArkivoFileSystem.MAX_ENTRY_COUNT, UNLIMITED),
+                options.getOrDefault(ArkivoFileSystem.MAX_ENTRY_SIZE, UNLIMITED),
+                options.getOrDefault(ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE, UNLIMITED),
+                options.getOrDefault(ArkivoFileSystem.MAX_METADATA_SIZE, UNLIMITED)
         );
     }
 
@@ -195,11 +195,6 @@ public final class ArkivoReadLimitTracker {
         ArkivoReadLimitException exception = new ArkivoReadLimitException(kind, maximum, actual, entryPath);
         failure = exception;
         return exception;
-    }
-
-    /// Returns a primitive option value or the internal unlimited sentinel.
-    private static long valueOrUnlimited(@Nullable Long value) {
-        return value != null ? value : UNLIMITED;
     }
 
     /// Requires a primitive limit to use the unlimited sentinel or a non-negative value.

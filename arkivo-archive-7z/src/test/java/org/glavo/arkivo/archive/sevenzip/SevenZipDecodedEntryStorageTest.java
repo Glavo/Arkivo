@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.sevenzip;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
@@ -35,9 +36,9 @@ final class SevenZipDecodedEntryStorageTest {
         Path archive = directory.resolve("storage.7z");
         createCompressedArchive(archive, content);
         TrackingStorage storage = new TrackingStorage(directory.resolve("staging"), false);
-        SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archive, Map.of(
+        SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archive, ArchiveOptions.fromEnvironment(Map.of(
                 ArkivoFileSystem.EDIT_STORAGE.key(), storage
-        ));
+        )));
 
         try (SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/compressed.bin"))) {
             assertEquals(1, storage.createCount);
@@ -69,7 +70,7 @@ final class SevenZipDecodedEntryStorageTest {
                 IOException.class,
                 () -> SevenZipArkivoFileSystem.open(
                         archive,
-                        Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage)
+                        ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
                 )
         );
         assertEquals(1, storage.storageCloseCount);
@@ -82,9 +83,9 @@ final class SevenZipDecodedEntryStorageTest {
         Path archive = directory.resolve("retry.7z");
         createCompressedArchive(archive, content);
         TrackingStorage storage = new TrackingStorage(directory.resolve("retry-staging"), true);
-        SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archive, Map.of(
+        SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archive, ArchiveOptions.fromEnvironment(Map.of(
                 ArkivoFileSystem.EDIT_STORAGE.key(), storage
-        ));
+        )));
         SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/compressed.bin"));
 
         assertThrows(IOException.class, channel::close);
@@ -101,7 +102,7 @@ final class SevenZipDecodedEntryStorageTest {
     private static void createCompressedArchive(Path archive, byte[] content) throws IOException {
         try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
                 archive,
-                Map.of(SevenZipArkivoFileSystem.COMPRESSION.key(), SevenZipCompression.deflate(1))
+                ArchiveOptions.fromEnvironment(Map.of(SevenZipArkivoFileSystem.COMPRESSION.key(), SevenZipCompression.deflate(1)))
         )) {
             writer.beginFile("compressed.bin");
             try (OutputStream output = writer.openOutputStream()) {

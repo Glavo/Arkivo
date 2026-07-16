@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.rar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoPathVolumeFormat;
 import org.glavo.arkivo.archive.ArkivoVolumeFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
@@ -20,7 +21,6 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 
 /// Describes RAR4 and RAR5 archive support provided by Arkivo.
@@ -94,10 +94,10 @@ public final class RarArkivoFormat implements
         return RarArkivoFileSystem.open(path);
     }
 
-    /// Opens a RAR archive file system with environment options.
+    /// Opens a RAR archive file system with options.
     @Override
-    public RarArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
-        return RarArkivoFileSystem.open(path, environment);
+    public RarArkivoFileSystem open(Path path, ArchiveOptions options) throws IOException {
+        return RarArkivoFileSystem.open(path, options);
     }
 
     /// Opens a read-only RAR archive file system directly from one owned seekable channel.
@@ -106,10 +106,10 @@ public final class RarArkivoFormat implements
         return RarArkivoFileSystem.open(source);
     }
 
-    /// Opens a read-only RAR archive file system directly from one owned seekable channel with environment options.
+    /// Opens a read-only RAR archive file system directly from one owned seekable channel with options.
     @Override
-    public RarArkivoFileSystem open(SeekableByteChannel source, Map<String, ?> environment) throws IOException {
-        return RarArkivoFileSystem.open(source, environment);
+    public RarArkivoFileSystem open(SeekableByteChannel source, ArchiveOptions options) throws IOException {
+        return RarArkivoFileSystem.open(source, options);
     }
 
     /// Opens a read-only RAR archive file system from a repeatable seekable channel source.
@@ -120,12 +120,12 @@ public final class RarArkivoFormat implements
         return RarArkivoFileSystem.open(source);
     }
 
-    /// Opens a read-only RAR archive file system from a repeatable seekable channel source with environment options.
+    /// Opens a read-only RAR archive file system from a repeatable seekable channel source with options.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
     @Override
-    public RarArkivoFileSystem open(ArkivoSeekableChannelSource source, Map<String, ?> environment) throws IOException {
-        return RarArkivoFileSystem.open(source, environment);
+    public RarArkivoFileSystem open(ArkivoSeekableChannelSource source, ArchiveOptions options) throws IOException {
+        return RarArkivoFileSystem.open(source, options);
     }
 
     /// Opens a multi-volume RAR archive file system.
@@ -134,10 +134,10 @@ public final class RarArkivoFormat implements
         return RarArkivoFileSystem.open(volumes);
     }
 
-    /// Opens a multi-volume RAR archive file system with environment options.
+    /// Opens a multi-volume RAR archive file system with options.
     @Override
-    public RarArkivoFileSystem open(ArkivoVolumeSource volumes, Map<String, ?> environment) throws IOException {
-        return RarArkivoFileSystem.open(volumes, environment);
+    public RarArkivoFileSystem open(ArkivoVolumeSource volumes, ArchiveOptions options) throws IOException {
+        return RarArkivoFileSystem.open(volumes, options);
     }
 
     /// Opens a streaming RAR reader from a path and discovers conventional split storage.
@@ -150,9 +150,9 @@ public final class RarArkivoFormat implements
     @Override
     public RarArkivoStreamingReader openStreamingReader(
             Path path,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
-        return RarArkivoStreamingReader.open(path, environment);
+        return RarArkivoStreamingReader.open(path, options);
     }
 
     /// Opens a streaming RAR reader from a multi-volume source.
@@ -161,13 +161,13 @@ public final class RarArkivoFormat implements
         return RarArkivoStreamingReader.open(source);
     }
 
-    /// Opens a streaming RAR reader from a multi-volume source with environment options.
+    /// Opens a streaming RAR reader from a multi-volume source with options.
     @Override
     public RarArkivoStreamingReader openStreamingReader(
             ArkivoVolumeSource source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) {
-        return RarArkivoStreamingReader.open(source, environment);
+        return RarArkivoStreamingReader.open(source, options);
     }
 
     /// Opens a streaming RAR reader from an input stream.
@@ -176,14 +176,14 @@ public final class RarArkivoFormat implements
         return RarArkivoStreamingReader.open(source);
     }
 
-    /// Opens a streaming RAR reader from an input stream with environment options.
+    /// Opens a streaming RAR reader from an input stream with options.
     @Override
     public RarArkivoStreamingReader openStreamingReader(
             InputStream source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) {
-        Objects.requireNonNull(environment, "environment");
-        return RarArkivoStreamingReader.open(source, environment);
+        Objects.requireNonNull(options, "options");
+        return RarArkivoStreamingReader.open(source, options);
     }
 
     /// Opens a streaming RAR reader from a readable channel.
@@ -192,13 +192,13 @@ public final class RarArkivoFormat implements
         return RarArkivoStreamingReader.open(source);
     }
 
-    /// Opens a streaming RAR reader from a readable channel with environment options.
+    /// Opens a streaming RAR reader from a readable channel with options.
     @Override
     public RarArkivoStreamingReader openStreamingReader(
             ReadableByteChannel source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) {
-        Objects.requireNonNull(environment, "environment");
-        return RarArkivoStreamingReader.open(source, environment);
+        Objects.requireNonNull(options, "options");
+        return RarArkivoStreamingReader.open(source, options);
     }
 }

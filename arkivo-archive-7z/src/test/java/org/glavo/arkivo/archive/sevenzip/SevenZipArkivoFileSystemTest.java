@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.sevenzip;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemProvider;
 import java.io.ByteArrayOutputStream;
 import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
 import org.apache.commons.compress.archivers.sevenz.SevenZFile;
@@ -472,7 +474,7 @@ public final class SevenZipArkivoFileSystemTest {
         );
 
         try {
-            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 assertEquals(false, fileSystem.isReadOnly());
                 assertEquals(false, Files.getFileStore(fileSystem.getPath("/")).isReadOnly());
 
@@ -573,7 +575,7 @@ public final class SevenZipArkivoFileSystemTest {
                     SevenZipArkivoFileSystem.COMPRESSION.key(),
                     SevenZipCompression.deflate()
             );
-            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 assertEquals(false, fileSystem.isReadOnly());
                 Path keep = fileSystem.getPath("/keep.txt");
                 assertThrows(
@@ -681,7 +683,7 @@ public final class SevenZipArkivoFileSystemTest {
                     ArkivoFileSystem.COMMIT_TARGET.key(),
                     ArkivoCommitTarget.writeTo(derivedPath)
             );
-            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 Files.writeString(fileSystem.getPath("/keep.txt"), "derived", StandardCharsets.UTF_8);
             }
 
@@ -708,7 +710,7 @@ public final class SevenZipArkivoFileSystemTest {
 
         IllegalArgumentException exception = assertThrows(
                 IllegalArgumentException.class,
-                () -> SevenZipArkivoFileSystem.open(source, environment)
+                () -> SevenZipArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment))
         );
 
         assertEquals(
@@ -746,7 +748,7 @@ public final class SevenZipArkivoFileSystemTest {
                     SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(),
                     true
             );
-            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(source, environment)) {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment))) {
                 assertEquals("one", Files.readString(fileSystem.getPath("/one.txt"), StandardCharsets.UTF_8));
                 assertEquals("two", Files.readString(fileSystem.getPath("/two.txt"), StandardCharsets.UTF_8));
                 Files.writeString(fileSystem.getPath("/one.txt"), "updated-one", StandardCharsets.UTF_8);
@@ -760,10 +762,10 @@ public final class SevenZipArkivoFileSystemTest {
             assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(derivedPath));
             try (SevenZipArkivoFileSystem derived = SevenZipArkivoFileSystem.open(
                     derivedPath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                             ArkivoPasswordProvider.fixed(password)
-                    )
+                    ))
             )) {
                 Path one = derived.getPath("/one.txt");
                 Path added = derived.getPath("/new.txt");
@@ -812,7 +814,7 @@ public final class SevenZipArkivoFileSystemTest {
                     ArkivoFileSystem.COMMIT_TARGET.key(),
                     ArkivoCommitTarget.writeTo(derivedPath)
             );
-            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(channel, environment)) {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(channel, ArchiveOptions.fromEnvironment(environment))) {
                 Files.writeString(fileSystem.getPath("/hello.txt"), "after", StandardCharsets.UTF_8);
             }
 
@@ -841,7 +843,7 @@ public final class SevenZipArkivoFileSystemTest {
                 ArkivoFileSystem.COMMIT_TARGET.key(),
                 failingTarget
         );
-        SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(source, environment);
+        SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment));
         Files.writeString(fileSystem.getPath("/hello.txt"), "after", StandardCharsets.UTF_8);
 
         IOException exception = assertThrows(IOException.class, fileSystem::close);
@@ -875,7 +877,7 @@ public final class SevenZipArkivoFileSystemTest {
                     ArkivoFileSystem.EDIT_STORAGE.key(),
                     storage
             );
-            SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment);
+            SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment));
             Files.writeString(fileSystem.getPath("/keep.txt"), "after", StandardCharsets.UTF_8);
             IOException exception = assertThrows(IOException.class, fileSystem::close);
             assertEquals("commit target failed", exception.getMessage());
@@ -912,7 +914,7 @@ public final class SevenZipArkivoFileSystemTest {
                     storage
             );
 
-            assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath, environment));
+            assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment)));
             assertEquals(true, storage.isClosed());
             assertEquals(0, storage.openContentCount());
         } finally {
@@ -935,7 +937,7 @@ public final class SevenZipArkivoFileSystemTest {
                     ArkivoFileSystem.OPEN_OPTIONS.key(),
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
             );
-            SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment);
+            SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment));
             Files.writeString(fileSystem.getPath("/new.txt"), "new", StandardCharsets.UTF_8);
             assertThrows(IOException.class, fileSystem::close);
             assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
@@ -955,7 +957,7 @@ public final class SevenZipArkivoFileSystemTest {
                     ArkivoFileSystem.OPEN_OPTIONS.key(),
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
             );
-            try (SevenZipArkivoFileSystem ignored = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+            try (SevenZipArkivoFileSystem ignored = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
             }
             assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
         } finally {
@@ -973,7 +975,7 @@ public final class SevenZipArkivoFileSystemTest {
                     ArkivoFileSystem.OPEN_OPTIONS.key(),
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
             );
-            try (SevenZipArkivoFileSystem ignored = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+            try (SevenZipArkivoFileSystem ignored = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
             }
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath);
                  DirectoryStream<Path> entries = Files.newDirectoryStream(fileSystem.getPath("/"))) {
@@ -1000,7 +1002,7 @@ public final class SevenZipArkivoFileSystemTest {
                     ArkivoFileSystem.EDIT_STORAGE.key(),
                     storage
             );
-            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 Path keep = fileSystem.getPath("/keep.txt");
                 try (SeekableByteChannel channel = Files.newByteChannel(
                         keep,
@@ -1063,7 +1065,7 @@ public final class SevenZipArkivoFileSystemTest {
                     ArkivoFileSystem.EDIT_STORAGE.key(),
                     storage
             );
-            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 Path removed = fileSystem.getPath("/retry.txt");
                 Files.writeString(removed, "retry", StandardCharsets.UTF_8);
                 Files.delete(removed);
@@ -1103,7 +1105,7 @@ public final class SevenZipArkivoFileSystemTest {
                     ArkivoFileSystem.EDIT_STORAGE.key(),
                     storage
             );
-            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 try (SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/hello.txt"))) {
                     channel.position(11L);
                     ByteBuffer suffix = ByteBuffer.allocate(content.length - 11);
@@ -1141,7 +1143,7 @@ public final class SevenZipArkivoFileSystemTest {
                     ArkivoFileSystem.EDIT_STORAGE.key(),
                     storage
             );
-            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 Path large = fileSystem.getPath("/large.bin");
                 try (SeekableByteChannel channel = Files.newByteChannel(
                         large,
@@ -1186,7 +1188,7 @@ public final class SevenZipArkivoFileSystemTest {
                     SevenZipArkivoFileSystem.COMPRESSION.key(),
                     SevenZipCompression.lzma2(SevenZipCompression.MIN_DICTIONARY_SIZE)
             );
-            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 Files.delete(fileSystem.getPath("/one.txt"));
                 Files.writeString(fileSystem.getPath("/new.txt"), "new", StandardCharsets.UTF_8);
             }
@@ -1214,7 +1216,7 @@ public final class SevenZipArkivoFileSystemTest {
                     ArkivoFileSystem.OPEN_OPTIONS.key(),
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
             );
-            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 Path source = fileSystem.getPath("/bcj2-lzma2.bin");
                 Path moved = fileSystem.getPath("/moved-bcj2.bin");
                 Files.setLastModifiedTime(source, modifiedTime);
@@ -1254,7 +1256,7 @@ public final class SevenZipArkivoFileSystemTest {
                     true
             );
             try (SevenZipArkivoFileSystem fileSystem =
-                         SevenZipArkivoFileSystem.open(archivePath, writeEnvironment)) {
+                         SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(writeEnvironment))) {
                 Files.writeString(fileSystem.getPath("/secret.txt"), "before", StandardCharsets.UTF_8);
             }
 
@@ -1269,7 +1271,7 @@ public final class SevenZipArkivoFileSystemTest {
                     SevenZipCompression.lzma2(SevenZipCompression.MIN_DICTIONARY_SIZE)
             );
             try (SevenZipArkivoFileSystem fileSystem =
-                         SevenZipArkivoFileSystem.open(archivePath, updateEnvironment)) {
+                         SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(updateEnvironment))) {
                 assertEquals(
                         "before",
                         Files.readString(fileSystem.getPath("/secret.txt"), StandardCharsets.UTF_8)
@@ -1281,10 +1283,10 @@ public final class SevenZipArkivoFileSystemTest {
             assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                             RecordingPasswordProvider.supplying(password)
-                    )
+                    ))
             )) {
                 assertEquals(
                         "after",
@@ -1319,7 +1321,7 @@ public final class SevenZipArkivoFileSystemTest {
                     96L
             );
             try (SevenZipArkivoFileSystem fileSystem =
-                         SevenZipArkivoFileSystem.open(firstVolume, writeEnvironment)) {
+                         SevenZipArkivoFileSystem.open(firstVolume, ArchiveOptions.fromEnvironment(writeEnvironment))) {
                 Files.write(fileSystem.getPath("/value.bin"), initialContent);
             }
             assertEquals(true, Files.exists(secondVolume));
@@ -1331,7 +1333,7 @@ public final class SevenZipArkivoFileSystemTest {
             byte[] updatedContent = new byte[400];
             Arrays.fill(updatedContent, (byte) 9);
             try (SevenZipArkivoFileSystem fileSystem =
-                         SevenZipArkivoFileSystem.open(firstVolume, updateEnvironment)) {
+                         SevenZipArkivoFileSystem.open(firstVolume, ArchiveOptions.fromEnvironment(updateEnvironment))) {
                 Files.write(fileSystem.getPath("/value.bin"), updatedContent);
                 Files.writeString(fileSystem.getPath("/new.txt"), "split-new", StandardCharsets.UTF_8);
             }
@@ -1368,7 +1370,7 @@ public final class SevenZipArkivoFileSystemTest {
                     80L
             );
             try (SevenZipArkivoFileSystem fileSystem =
-                         SevenZipArkivoFileSystem.open(firstVolume, writeEnvironment)) {
+                         SevenZipArkivoFileSystem.open(firstVolume, ArchiveOptions.fromEnvironment(writeEnvironment))) {
                 Files.write(fileSystem.getPath("/value.bin"), content);
             }
             assertEquals(true, Files.exists(secondVolume));
@@ -1380,7 +1382,7 @@ public final class SevenZipArkivoFileSystemTest {
                     SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE
             );
             try (SevenZipArkivoFileSystem fileSystem =
-                         SevenZipArkivoFileSystem.open(firstVolume, updateEnvironment)) {
+                         SevenZipArkivoFileSystem.open(firstVolume, ArchiveOptions.fromEnvironment(updateEnvironment))) {
                 Files.writeString(fileSystem.getPath("/new.txt"), "merged", StandardCharsets.UTF_8);
             }
 
@@ -1613,12 +1615,12 @@ public final class SevenZipArkivoFileSystemTest {
         SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
                 target,
                 64L,
-                Map.of(
+                ArchiveOptions.fromEnvironment(Map.of(
                         SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                         ArkivoPasswordProvider.fixed("rollback-password".getBytes(StandardCharsets.UTF_16LE)),
                         SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(),
                         true
-                )
+                ))
         );
         writer.beginFile("content.bin");
         try (OutputStream output = writer.openOutputStream()) {
@@ -1657,7 +1659,7 @@ public final class SevenZipArkivoFileSystemTest {
 
         writer.beginFile("implicit-empty.txt");
         writer.close();
-        assertThrows(IllegalStateException.class, () -> writer.beginFile("closed.txt"));
+        assertThrows(ClosedChannelException.class, () -> writer.beginFile("closed.txt"));
 
         try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                 new SplitVolumeSource(new byte[][]{archiveOutput.toByteArray()})
@@ -1669,7 +1671,7 @@ public final class SevenZipArkivoFileSystemTest {
 
         assertThrows(IllegalArgumentException.class, () -> SevenZipArkivoStreamingWriter.open(
                 new TrackingOutputStream(),
-                Map.of(ArkivoFileSystem.OPEN_OPTIONS.key(), Set.of(StandardOpenOption.WRITE))
+                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.OPEN_OPTIONS.key(), Set.of(StandardOpenOption.WRITE)))
         ));
         assertThrows(IllegalArgumentException.class, () -> SevenZipArkivoStreamingWriter.open(
                 new TestVolumeTarget(-1L, false),
@@ -1678,7 +1680,7 @@ public final class SevenZipArkivoFileSystemTest {
         assertThrows(IllegalArgumentException.class, () -> SevenZipArkivoStreamingWriter.open(
                 new TestVolumeTarget(-1L, false),
                 64L,
-                Map.of(SevenZipArkivoFileSystem.SPLIT_SIZE.key(), 32L)
+                ArchiveOptions.fromEnvironment(Map.of(SevenZipArkivoFileSystem.SPLIT_SIZE.key(), 32L))
         ));
     }
 
@@ -1713,12 +1715,12 @@ public final class SevenZipArkivoFileSystemTest {
         try {
             try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(), writePasswordProvider,
                             SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(), true,
                             SevenZipArkivoFileSystem.COMPRESSION.key(), SevenZipCompression.lzma2(64 * 1024),
                             SevenZipArkivoFileSystem.FILTER.key(), SevenZipFilter.delta(3)
-                    )
+                    ))
             )) {
                 assertEquals(1, writePasswordProvider.archiveRequestCount());
                 writer.beginFile(entryName);
@@ -1744,19 +1746,19 @@ public final class SevenZipArkivoFileSystemTest {
                     IOException.class,
                     () -> SevenZipArkivoFileSystem.open(
                             archivePath,
-                            Map.of(
+                            ArchiveOptions.fromEnvironment(Map.of(
                                     SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                                     ArkivoPasswordProvider.fixed("wrong".getBytes(StandardCharsets.UTF_16LE))
-                            )
+                            ))
                     )
             );
 
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                             ArkivoPasswordProvider.fixed(password)
-                    )
+                    ))
             )) {
                 assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/" + entryName)));
                 assertEquals(
@@ -1806,7 +1808,7 @@ public final class SevenZipArkivoFileSystemTest {
         try {
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                     archivePath,
-                    writeEnvironment
+                    ArchiveOptions.fromEnvironment(writeEnvironment)
             )) {
                 Files.write(fileSystem.getPath("/content.bin"), content);
             }
@@ -1814,10 +1816,10 @@ public final class SevenZipArkivoFileSystemTest {
             assertThrows(IOException.class, () -> SevenZipArkivoFileSystem.open(archivePath));
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                             ArkivoPasswordProvider.fixed(new byte[0])
-                    )
+                    ))
             )) {
                 assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/content.bin")));
             }
@@ -1842,7 +1844,7 @@ public final class SevenZipArkivoFileSystemTest {
         TrackingOutputStream streamOutput = new TrackingOutputStream();
         try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
                 streamOutput,
-                environment
+                ArchiveOptions.fromEnvironment(environment)
         )) {
             writeStreamingContent(writer, content);
         }
@@ -1851,7 +1853,7 @@ public final class SevenZipArkivoFileSystemTest {
 
         TrackingOutputStream channelOutput = new TrackingOutputStream();
         WritableByteChannel channel = Channels.newChannel(channelOutput);
-        try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(channel, environment)) {
+        try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(channel, ArchiveOptions.fromEnvironment(environment))) {
             writeStreamingContent(writer, content);
         }
         assertEquals(false, channel.isOpen());
@@ -1861,7 +1863,7 @@ public final class SevenZipArkivoFileSystemTest {
         try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
                 target,
                 64L,
-                environment
+                ArchiveOptions.fromEnvironment(environment)
         )) {
             writeStreamingContent(writer, content);
             assertEquals(0, target.openOutputCount());
@@ -1894,7 +1896,7 @@ public final class SevenZipArkivoFileSystemTest {
         TrackingOutputStream streamOutput = new TrackingOutputStream();
         try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
                 streamOutput,
-                environment
+                ArchiveOptions.fromEnvironment(environment)
         )) {
             writeStreamingContent(writer, content);
         }
@@ -1908,7 +1910,7 @@ public final class SevenZipArkivoFileSystemTest {
 
         TrackingOutputStream channelOutput = new TrackingOutputStream();
         WritableByteChannel channel = Channels.newChannel(channelOutput);
-        try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(channel, environment)) {
+        try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(channel, ArchiveOptions.fromEnvironment(environment))) {
             writeStreamingContent(writer, content);
         }
         assertEquals(false, channel.isOpen());
@@ -1923,7 +1925,7 @@ public final class SevenZipArkivoFileSystemTest {
         try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
                 target,
                 64L,
-                environment
+                ArchiveOptions.fromEnvironment(environment)
         )) {
             writeStreamingContent(writer, content);
             assertEquals(0, target.openOutputCount());
@@ -1941,10 +1943,10 @@ public final class SevenZipArkivoFileSystemTest {
                 IOException.class,
                 () -> SevenZipArkivoStreamingWriter.open(
                         missingPasswordOutput,
-                        Map.of(
+                        ArchiveOptions.fromEnvironment(Map.of(
                                 SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                                 RecordingPasswordProvider.missing()
-                        )
+                        ))
                 )
         );
         assertEquals("7z encrypted archive write requires a password", missingPasswordException.getMessage());
@@ -1956,10 +1958,10 @@ public final class SevenZipArkivoFileSystemTest {
                 IOException.class,
                 () -> SevenZipArkivoStreamingWriter.open(
                         failingProviderOutput,
-                        Map.of(
+                        ArchiveOptions.fromEnvironment(Map.of(
                                 SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                                 RecordingPasswordProvider.failing()
-                        )
+                        ))
                 )
         );
         assertEquals("password provider failed", providerException.getMessage());
@@ -1971,10 +1973,10 @@ public final class SevenZipArkivoFileSystemTest {
                 IOException.class,
                 () -> SevenZipArkivoStreamingWriter.open(
                         invalidEncodingOutput,
-                        Map.of(
+                        ArchiveOptions.fromEnvironment(Map.of(
                                 SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                                 RecordingPasswordProvider.supplying(new byte[]{1})
-                        )
+                        ))
                 )
         );
         assertEquals("7z write password must contain valid UTF-16LE bytes", encodingException.getMessage());
@@ -1987,10 +1989,10 @@ public final class SevenZipArkivoFileSystemTest {
                     IOException.class,
                     () -> SevenZipArkivoStreamingWriter.create(
                             invalidPasswordPath,
-                            Map.of(
+                            ArchiveOptions.fromEnvironment(Map.of(
                                     SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                                     RecordingPasswordProvider.missing()
-                            )
+                            ))
                     )
             );
             assertEquals(false, Files.exists(invalidPasswordPath));
@@ -2004,10 +2006,10 @@ public final class SevenZipArkivoFileSystemTest {
                 () -> SevenZipArkivoStreamingWriter.open(
                         target,
                         64L,
-                        Map.of(
+                        ArchiveOptions.fromEnvironment(Map.of(
                                 SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                                 RecordingPasswordProvider.missing()
-                        )
+                        ))
                 )
         );
         assertEquals(0, target.openOutputCount());
@@ -2017,9 +2019,9 @@ public final class SevenZipArkivoFileSystemTest {
                 IOException.class,
                 () -> SevenZipArkivoStreamingWriter.open(
                         encryptedHeaderOutput,
-                        Map.of(
+                        ArchiveOptions.fromEnvironment(Map.of(
                                 SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(), true
-                        )
+                        ))
                 )
         );
         assertEquals("7z encrypted header write requires a password", headerException.getMessage());
@@ -2067,7 +2069,7 @@ public final class SevenZipArkivoFileSystemTest {
             try {
                 try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
                         archivePath,
-                        Map.of(SevenZipArkivoFileSystem.COMPRESSION.key(), compression)
+                        ArchiveOptions.fromEnvironment(Map.of(SevenZipArkivoFileSystem.COMPRESSION.key(), compression))
                 )) {
                     writeStreamingContent(writer, content);
                 }
@@ -2124,12 +2126,12 @@ public final class SevenZipArkivoFileSystemTest {
         try {
             try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             SevenZipArkivoFileSystem.COMPRESSION.key(),
                             SevenZipCompression.lzma2(64 * 1024),
                             SevenZipArkivoFileSystem.FILTER.key(),
                             SevenZipFilter.bcj2()
-                    )
+                    ))
             )) {
                 writeStreamingContent(writer, content);
             }
@@ -2206,12 +2208,12 @@ public final class SevenZipArkivoFileSystemTest {
             try {
                 try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
                         archivePath,
-                        Map.of(
+                        ArchiveOptions.fromEnvironment(Map.of(
                                 SevenZipArkivoFileSystem.COMPRESSION.key(),
                                 compressions.get(index),
                                 SevenZipArkivoFileSystem.FILTER.key(),
                                 SevenZipFilter.bcj2()
-                        )
+                        ))
                 )) {
                     writeStreamingContent(writer, content);
                 }
@@ -2262,7 +2264,7 @@ public final class SevenZipArkivoFileSystemTest {
         try {
             try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             SevenZipArkivoFileSystem.COMPRESSION.key(),
                             SevenZipCompression.lzma2(64 * 1024),
                             SevenZipArkivoFileSystem.FILTER.key(),
@@ -2271,7 +2273,7 @@ public final class SevenZipArkivoFileSystemTest {
                             ArkivoPasswordProvider.fixed(password),
                             SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(),
                             true
-                    )
+                    ))
             )) {
                 writeStreamingContent(writer, content);
             }
@@ -2306,7 +2308,7 @@ public final class SevenZipArkivoFileSystemTest {
         List<SevenZipFilter> filters = List.of(
                 SevenZipFilter.delta(7),
                 SevenZipFilter.bcjX86(),
-                SevenZipFilter.bcjPpc(),
+                SevenZipFilter.bcjPowerPC(),
                 SevenZipFilter.bcjIa64(),
                 SevenZipFilter.bcjArm(),
                 SevenZipFilter.bcjArmThumb(),
@@ -2334,12 +2336,12 @@ public final class SevenZipArkivoFileSystemTest {
             try {
                 try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
                         archivePath,
-                        Map.of(
+                        ArchiveOptions.fromEnvironment(Map.of(
                                 SevenZipArkivoFileSystem.COMPRESSION.key(),
                                 SevenZipCompression.lzma2(64 * 1024),
                                 SevenZipArkivoFileSystem.FILTER.key(),
                                 filter
-                        )
+                        ))
                 )) {
                     writeStreamingContent(writer, content);
                 }
@@ -2400,12 +2402,12 @@ public final class SevenZipArkivoFileSystemTest {
             try {
                 try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
                         archivePath,
-                        Map.of(
+                        ArchiveOptions.fromEnvironment(Map.of(
                                 SevenZipArkivoFileSystem.COMPRESSION.key(),
                                 SevenZipCompression.lzma2(64 * 1024),
                                 SevenZipArkivoFileSystem.FILTER.key(),
                                 filter
-                        )
+                        ))
                 )) {
                     writeStreamingContent(writer, content);
                 }
@@ -2439,12 +2441,12 @@ public final class SevenZipArkivoFileSystemTest {
 
         try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
                 archiveOutput,
-                Map.of(
+                ArchiveOptions.fromEnvironment(Map.of(
                         SevenZipArkivoFileSystem.COMPRESSION.key(),
                         SevenZipCompression.bzip2(2),
                         SevenZipArkivoFileSystem.FILTER.key(),
                         SevenZipFilter.delta(5)
-                )
+                ))
         )) {
             writeStreamingContent(writer, content);
         }
@@ -2474,10 +2476,10 @@ public final class SevenZipArkivoFileSystemTest {
 
         try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
                 archiveChannel,
-                Map.of(
+                ArchiveOptions.fromEnvironment(Map.of(
                         SevenZipArkivoFileSystem.COMPRESSION.key(),
                         SevenZipCompression.lzma2(64 * 1024)
-                )
+                ))
         )) {
             writer.beginFile("copy.bin");
             Objects.requireNonNull(writer.attributeView(SevenZipArkivoEntryAttributeView.class))
@@ -2535,15 +2537,15 @@ public final class SevenZipArkivoFileSystemTest {
 
         try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
                 archiveChannel,
-                Map.of(
+                ArchiveOptions.fromEnvironment(Map.of(
                         SevenZipArkivoFileSystem.COMPRESSION.key(),
                         SevenZipCompression.lzma2(64 * 1024),
                         SevenZipArkivoFileSystem.FILTERS.key(),
                         SevenZipFilterChain.of(
                                 SevenZipFilter.delta(3),
-                                SevenZipFilter.bcjX86(0x1000)
+                                SevenZipFilter.bcjX86(0xffff_ffffL)
                         )
-                )
+                ))
         )) {
             writer.beginFile("inherited.bin");
             try (OutputStream output = writer.openOutputStream()) {
@@ -2672,7 +2674,7 @@ public final class SevenZipArkivoFileSystemTest {
             try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
                     target,
                     128L,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             SevenZipArkivoFileSystem.COMPRESSION.key(),
                             SevenZipCompression.lzma2(64 * 1024),
                             SevenZipArkivoFileSystem.FILTERS.key(),
@@ -2682,7 +2684,7 @@ public final class SevenZipArkivoFileSystemTest {
                             ),
                             SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                             ArkivoPasswordProvider.fixed(password)
-                    )
+                    ))
             )) {
                 writeStreamingContent(writer, content);
             }
@@ -2692,10 +2694,10 @@ public final class SevenZipArkivoFileSystemTest {
             assertEncryptedContent(volumes, password, content);
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                     new SplitVolumeSource(volumes),
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                             ArkivoPasswordProvider.fixed(password)
-                    )
+                    ))
             )) {
                 SevenZipCoderGraph graph = Objects.requireNonNull(
                         Files.readAttributes(
@@ -2754,7 +2756,7 @@ public final class SevenZipArkivoFileSystemTest {
         try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
                 target,
                 256L,
-                Map.of(
+                ArchiveOptions.fromEnvironment(Map.of(
                         SevenZipArkivoFileSystem.COMPRESSION.key(),
                         SevenZipCompression.lzma2(64 * 1024),
                         SevenZipArkivoFileSystem.FILTER.key(),
@@ -2765,7 +2767,7 @@ public final class SevenZipArkivoFileSystemTest {
                         ArkivoPasswordProvider.fixed(password),
                         SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(),
                         true
-                )
+                ))
         )) {
             for (int index = 0; index < contents.length; index++) {
                 writer.beginFile("file-" + index + ".bin");
@@ -2779,10 +2781,10 @@ public final class SevenZipArkivoFileSystemTest {
         assertEquals(true, volumes.length > 1);
         try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                 new SplitVolumeSource(volumes),
-                Map.of(
+                ArchiveOptions.fromEnvironment(Map.of(
                         SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                         ArkivoPasswordProvider.fixed(password)
-                )
+                ))
         )) {
             for (int index = 0; index < contents.length; index++) {
                 Path path = fileSystem.getPath("/file-" + index + ".bin");
@@ -2823,7 +2825,7 @@ public final class SevenZipArkivoFileSystemTest {
         Map<String, Object> environment = splitWriteEnvironment(splitSize, false);
 
         try {
-            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(firstVolume, environment)) {
+            try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(firstVolume, ArchiveOptions.fromEnvironment(environment))) {
                 Files.write(fileSystem.getPath("/content.bin"), content);
                 assertEquals(false, Files.exists(firstVolume));
             }
@@ -2862,7 +2864,7 @@ public final class SevenZipArkivoFileSystemTest {
         try {
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                     firstVolume,
-                    splitWriteEnvironment(splitSize, false)
+                    ArchiveOptions.fromEnvironment(splitWriteEnvironment(splitSize, false))
             )) {
                 Files.write(fileSystem.getPath("/replacement.txt"), content);
                 assertArrayEquals(new byte[]{1}, Files.readAllBytes(firstVolume));
@@ -2890,7 +2892,7 @@ public final class SevenZipArkivoFileSystemTest {
         try {
             SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                     firstVolume,
-                    splitWriteEnvironment(64L, true)
+                    ArchiveOptions.fromEnvironment(splitWriteEnvironment(64L, true))
             );
             Files.write(fileSystem.getPath("/content.bin"), new byte[512]);
             Files.write(secondVolume, existingContent);
@@ -2917,7 +2919,7 @@ public final class SevenZipArkivoFileSystemTest {
         try {
             assertThrows(
                     FileAlreadyExistsException.class,
-                    () -> SevenZipArkivoFileSystem.open(firstVolume, splitWriteEnvironment(64L, true))
+                    () -> SevenZipArkivoFileSystem.open(firstVolume, ArchiveOptions.fromEnvironment(splitWriteEnvironment(64L, true)))
             );
             assertEquals(false, Files.exists(firstVolume));
             assertArrayEquals(existingContent, Files.readAllBytes(secondVolume));
@@ -2939,7 +2941,7 @@ public final class SevenZipArkivoFileSystemTest {
         try (ArkivoFileSystem fileSystem = SevenZipArkivoFormat.instance().create(
                 target,
                 splitSize,
-                Map.of(ArkivoFileSystem.THREAD_SAFETY.key(), ArkivoFileSystemThreadSafety.STRICT)
+                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.THREAD_SAFETY.key(), ArkivoFileSystemThreadSafety.STRICT))
         )) {
             assertEquals(false, fileSystem.isReadOnly());
             Files.write(fileSystem.getPath("/content.bin"), content);
@@ -3039,19 +3041,19 @@ public final class SevenZipArkivoFileSystemTest {
         assertThrows(IllegalArgumentException.class, () -> SevenZipArkivoFileSystem.create(
                 target,
                 64L,
-                Map.of(SevenZipArkivoFileSystem.SPLIT_SIZE.key(), 32L)
+                ArchiveOptions.fromEnvironment(Map.of(SevenZipArkivoFileSystem.SPLIT_SIZE.key(), 32L))
         ));
         assertThrows(IllegalArgumentException.class, () -> SevenZipArkivoFileSystem.create(
                 target,
                 64L,
-                Map.of(ArkivoFileSystem.OPEN_OPTIONS.key(), Set.of(StandardOpenOption.WRITE))
+                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.OPEN_OPTIONS.key(), Set.of(StandardOpenOption.WRITE)))
         ));
 
         Path archivePath = createTemporaryArchivePath("invalid-split-name-");
         try {
             assertThrows(
                     IllegalArgumentException.class,
-                    () -> SevenZipArkivoFileSystem.open(archivePath, splitWriteEnvironment(64L, false))
+                    () -> SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(splitWriteEnvironment(64L, false)))
             );
             assertEquals(false, Files.exists(archivePath));
         } finally {
@@ -3509,7 +3511,7 @@ public final class SevenZipArkivoFileSystemTest {
 
         IOException exception = assertThrows(
                 IOException.class,
-                () -> SevenZipArkivoFileSystem.open(source, Map.of())
+                () -> SevenZipArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(Map.of()))
         );
 
         assertEquals(true, exception.getMessage().contains("pack sizes are missing"));
@@ -4296,10 +4298,10 @@ public final class SevenZipArkivoFileSystemTest {
 
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                             ArkivoPasswordProvider.fixed(password)
-                    )
+                    ))
             )) {
                 Path file = fileSystem.getPath("/hello.txt");
                 BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
@@ -4316,10 +4318,10 @@ public final class SevenZipArkivoFileSystemTest {
 
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                             ArkivoPasswordProvider.fixed("wrong".getBytes(StandardCharsets.UTF_16LE))
-                    )
+                    ))
             )) {
                 Path file = fileSystem.getPath("/hello.txt");
 
@@ -4508,10 +4510,10 @@ public final class SevenZipArkivoFileSystemTest {
 
             try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                     archivePath,
-                    Map.of(
+                    ArchiveOptions.fromEnvironment(Map.of(
                             SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                             ArkivoPasswordProvider.fixed(password)
-                    )
+                    ))
             )) {
                 Path file = fileSystem.getPath("/hello.txt");
                 BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
@@ -4681,7 +4683,7 @@ public final class SevenZipArkivoFileSystemTest {
                         StandardOpenOption.WRITE
                 )
         );
-        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, environment)) {
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
             Files.writeString(fileSystem.getPath("/keep.txt"), "abcdef", StandardCharsets.UTF_8);
             Files.writeString(fileSystem.getPath("/remove.txt"), "remove", StandardCharsets.UTF_8);
             Files.createDirectory(fileSystem.getPath("/dir"));
@@ -6972,10 +6974,10 @@ public final class SevenZipArkivoFileSystemTest {
     ) throws IOException {
         try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                 new SplitVolumeSource(volumes),
-                Map.of(
+                ArchiveOptions.fromEnvironment(Map.of(
                         SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
                         ArkivoPasswordProvider.fixed(password)
-                )
+                ))
         )) {
             assertArrayEquals(expectedContent, Files.readAllBytes(fileSystem.getPath("/content.bin")));
         }

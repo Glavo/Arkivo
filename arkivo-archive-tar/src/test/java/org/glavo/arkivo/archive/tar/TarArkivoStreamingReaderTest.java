@@ -3,6 +3,8 @@
 
 package org.glavo.arkivo.archive.tar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
@@ -488,7 +490,7 @@ public final class TarArkivoStreamingReaderTest {
         );
 
         try {
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, environment)) {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 assertEquals(false, fileSystem.isReadOnly());
 
                 Path directory = fileSystem.getPath("/dir");
@@ -614,7 +616,7 @@ public final class TarArkivoStreamingReaderTest {
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
             );
             FileTime modifiedTime = FileTime.from(Instant.parse("2032-03-04T05:06:07.125Z"));
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, environment)) {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 assertEquals(false, fileSystem.isReadOnly());
                 Path keep = fileSystem.getPath("/keep.txt");
                 assertArrayEquals(keepContent, Files.readAllBytes(keep));
@@ -753,7 +755,7 @@ public final class TarArkivoStreamingReaderTest {
                     ArkivoFileSystem.COMMIT_TARGET.key(),
                     ArkivoCommitTarget.writeTo(derivedPath)
             );
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, environment)) {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 Files.writeString(fileSystem.getPath("/value.txt"), "after", StandardCharsets.UTF_8);
             }
 
@@ -793,7 +795,7 @@ public final class TarArkivoStreamingReaderTest {
                     failingTarget
             );
 
-            TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, environment);
+            TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment));
             Files.writeString(fileSystem.getPath("/value.txt"), "after", StandardCharsets.UTF_8);
             IOException exception = assertThrows(IOException.class, fileSystem::close);
             assertEquals("commit target failed", exception.getMessage());
@@ -816,7 +818,7 @@ public final class TarArkivoStreamingReaderTest {
                     ArkivoFileSystem.OPEN_OPTIONS.key(),
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
             );
-            try (TarArkivoFileSystem ignored = TarArkivoFileSystem.open(archivePath, environment)) {
+            try (TarArkivoFileSystem ignored = TarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
             }
             assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
         } finally {
@@ -834,7 +836,7 @@ public final class TarArkivoStreamingReaderTest {
                     ArkivoFileSystem.OPEN_OPTIONS.key(),
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
             );
-            try (TarArkivoFileSystem ignored = TarArkivoFileSystem.open(archivePath, environment)) {
+            try (TarArkivoFileSystem ignored = TarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
             }
             assertEquals(true, Files.exists(archivePath));
             try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath);
@@ -862,7 +864,7 @@ public final class TarArkivoStreamingReaderTest {
                     ArkivoFileSystem.OPEN_OPTIONS.key(),
                     Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
             );
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, environment)) {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
                 Files.writeString(fileSystem.getPath("/new.txt"), "new", StandardCharsets.UTF_8);
             }
 
@@ -1037,15 +1039,12 @@ public final class TarArkivoStreamingReaderTest {
 
         reader.close();
 
-        IOException nextException = assertThrows(IOException.class, reader::next);
-        assertEquals(true, nextException.getMessage().contains("closed"));
-        IOException attributesException = assertThrows(
-                IOException.class,
+        assertThrows(ClosedChannelException.class, reader::next);
+        assertThrows(
+                ClosedChannelException.class,
                 () -> reader.readAttributes(TarArkivoEntryAttributes.class)
         );
-        assertEquals(true, attributesException.getMessage().contains("closed"));
-        IOException openException = assertThrows(IOException.class, reader::openChannel);
-        assertEquals(true, openException.getMessage().contains("closed"));
+        assertThrows(ClosedChannelException.class, reader::openChannel);
     }
 
     /// Verifies that source cleanup can be retried after a close failure.
@@ -1057,8 +1056,7 @@ public final class TarArkivoStreamingReaderTest {
 
         IOException exception = assertThrows(IOException.class, reader::close);
         assertEquals("close failed", exception.getMessage());
-        IOException nextException = assertThrows(IOException.class, reader::next);
-        assertEquals(true, nextException.getMessage().contains("closed"));
+        assertThrows(ClosedChannelException.class, reader::next);
         assertEquals(1, source.closeCount());
 
         reader.close();
@@ -1129,7 +1127,7 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                 new ByteArrayInputStream(output.toByteArray()),
-                Map.of(ArkivoFileSystem.MAX_METADATA_SIZE.key(), maximum)
+                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.MAX_METADATA_SIZE.key(), maximum))
         )) {
             ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
             assertEquals(ArkivoReadLimitKind.METADATA_SIZE, exception.kind());

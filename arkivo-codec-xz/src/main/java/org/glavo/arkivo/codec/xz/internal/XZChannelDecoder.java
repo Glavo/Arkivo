@@ -7,7 +7,6 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
@@ -15,6 +14,7 @@ import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.delta.DeltaTransform;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2ChannelDecoder;
 import org.glavo.arkivo.codec.transform.ByteTransform;
+import org.glavo.arkivo.codec.transform.ByteTransform.Direction;
 import org.glavo.arkivo.codec.transform.TransformingReadableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -34,7 +34,7 @@ import java.util.zip.CRC32;
 
 /// Decodes XZ streams and their filter chains directly from a channel.
 @NotNullByDefault
-public final class XZChannelDecoder implements DecompressingReadableByteChannel {
+public final class XZChannelDecoder implements DecompressingReadableByteChannel.Framed {
     /// The compressed-data source.
     private final ReadableByteChannel source;
 
@@ -129,20 +129,28 @@ public final class XZChannelDecoder implements DecompressingReadableByteChannel 
         return readDecoded(target, false);
     }
 
-    /// Decodes one increment while optionally stopping after the current XZ stream.
+    /// Decodes one increment and continues across XZ stream boundaries.
     @Override
-    public CodecResult decode(ByteBuffer target, Directive directive) throws IOException {
-        Objects.requireNonNull(directive, "directive");
+    public CodecResult decode(ByteBuffer target) throws IOException {
+        return decodeInternal(target, false);
+    }
+
+    /// Decodes one increment without beginning a following XZ stream.
+    @Override
+    public CodecResult decodeFrame(ByteBuffer target) throws IOException {
+        return decodeInternal(target, true);
+    }
+
+    /// Performs one decode operation with explicit stream-boundary behavior.
+    private CodecResult decodeInternal(ByteBuffer target, boolean stopAtFrame) throws IOException {
         long inputBefore = input.byteCount();
         long outputBefore = outputBytes;
-        boolean stopAtFrame = directive == Directive.STOP_AT_FRAME;
         int read = readDecoded(target, stopAtFrame);
         CodecResult.Status status = stopAtFrame && lastStreamFinished
                 ? CodecResult.Status.FRAME_FINISHED
                 : read < 0 ? CodecResult.Status.END_OF_INPUT : CodecResult.Status.ACTIVE;
         return new CodecResult(input.byteCount() - inputBefore, outputBytes - outputBefore, status);
     }
-
     /// Performs one decoded read with explicit stream-boundary behavior.
     private int readDecoded(ByteBuffer target, boolean stopAtFrame) throws IOException {
         Objects.requireNonNull(target, "target");
@@ -575,15 +583,15 @@ public final class XZChannelDecoder implements DecompressingReadableByteChannel 
                 }
                 return new TransformingReadableByteChannel(
                         downstream,
-                        new DeltaTransform(false, Byte.toUnsignedInt(properties[0]) + 1)
+                        new DeltaTransform(Direction.DECODE, Byte.toUnsignedInt(properties[0]) + 1)
                 );
             }
             if (identifier >= XZSupport.FILTER_BCJ_X86 && identifier <= XZSupport.FILTER_BCJ_RISCV) {
-                int startOffset;
+                long startOffset;
                 if (properties.length == 0) {
                     startOffset = 0;
                 } else if (properties.length == Integer.BYTES) {
-                    startOffset = (int) XZSupport.getLittleEndian(properties, 0, Integer.BYTES);
+                    startOffset = XZSupport.getLittleEndian(properties, 0, Integer.BYTES);
                 } else {
                     throw new IOException("XZ BCJ filter properties must contain zero or four bytes");
                 }
@@ -593,16 +601,16 @@ public final class XZChannelDecoder implements DecompressingReadableByteChannel 
         }
 
         /// Creates one BCJ decoding transform.
-        private ByteTransform bcjTransform(long identifier, int startOffset) {
+        private ByteTransform bcjTransform(long identifier, long startOffset) {
             return switch ((int) identifier) {
-                case 0x04 -> BCJTransforms.x86(false, startOffset);
-                case 0x05 -> BCJTransforms.powerPc(false, startOffset);
-                case 0x06 -> BCJTransforms.ia64(false, startOffset);
-                case 0x07 -> BCJTransforms.arm(false, startOffset);
-                case 0x08 -> BCJTransforms.armThumb(false, startOffset);
-                case 0x09 -> BCJTransforms.sparc(false, startOffset);
-                case 0x0a -> BCJTransforms.arm64(false, startOffset);
-                case 0x0b -> BCJTransforms.riscV(false, startOffset);
+                case 0x04 -> BCJTransforms.x86(Direction.DECODE, startOffset);
+                case 0x05 -> BCJTransforms.powerPC(Direction.DECODE, startOffset);
+                case 0x06 -> BCJTransforms.ia64(Direction.DECODE, startOffset);
+                case 0x07 -> BCJTransforms.arm(Direction.DECODE, startOffset);
+                case 0x08 -> BCJTransforms.armThumb(Direction.DECODE, startOffset);
+                case 0x09 -> BCJTransforms.sparc(Direction.DECODE, startOffset);
+                case 0x0a -> BCJTransforms.arm64(Direction.DECODE, startOffset);
+                case 0x0b -> BCJTransforms.riscV(Direction.DECODE, startOffset);
                 default -> throw new AssertionError(identifier);
             };
         }

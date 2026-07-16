@@ -12,7 +12,6 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.Map;
 import java.util.Objects;
 
 /// Describes an archive format that can read entries from a forward-only source.
@@ -23,7 +22,7 @@ import java.util.Objects;
 public interface ArkivoStreamingReaderFormat extends ArkivoFormat {
     /// Opens a streaming reader from a path and takes ownership of the opened channel when successful.
     default ArkivoStreamingReader openStreamingReader(Path path) throws IOException {
-        return openStreamingReader(path, Map.of());
+        return openStreamingReader(path, ArchiveOptions.EMPTY);
     }
 
     /// Opens a configured streaming reader from a path and takes ownership of the opened channel when successful.
@@ -32,13 +31,13 @@ public interface ArkivoStreamingReaderFormat extends ArkivoFormat {
     /// volume associated with the path.
     default ArkivoStreamingReader openStreamingReader(
             Path path,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(path, "path");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         ReadableByteChannel source = Files.newByteChannel(path, StandardOpenOption.READ);
         try {
-            return openStreamingReader(source, environment);
+            return openStreamingReader(source, options);
         } catch (IOException | RuntimeException | Error exception) {
             try {
                 source.close();
@@ -53,27 +52,27 @@ public interface ArkivoStreamingReaderFormat extends ArkivoFormat {
 
     /// Opens a streaming reader and takes ownership of the input stream when successful.
     default ArkivoStreamingReader openStreamingReader(InputStream source) throws IOException {
-        return openStreamingReader(source, Map.of());
+        return openStreamingReader(source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a streaming reader with environment options and takes ownership of the input stream when successful.
+    /// Opens a streaming reader with options and takes ownership of the input stream when successful.
     default ArkivoStreamingReader openStreamingReader(
             InputStream source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
-        return openStreamingReader(StreamChannelAdapters.readableChannel(source), environment);
+        Objects.requireNonNull(options, "options");
+        return openStreamingReader(StreamChannelAdapters.readableChannel(source), options);
     }
 
     /// Opens a streaming reader and takes ownership of the readable channel when successful.
     default ArkivoStreamingReader openStreamingReader(ReadableByteChannel source) throws IOException {
-        return openStreamingReader(source, Map.of());
+        return openStreamingReader(source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a streaming reader with environment options and takes ownership of the channel when successful.
+    /// Opens a streaming reader with options and takes ownership of the channel when successful.
     ArkivoStreamingReader openStreamingReader(
             ReadableByteChannel source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException;
 }

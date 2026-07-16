@@ -24,7 +24,7 @@ import java.util.PriorityQueue;
 /// The encoder performs the two BZip2 run-length stages, a cyclic Burrows-Wheeler transform, move-to-front coding,
 /// and canonical length-limited Huffman coding without delegating any format stage to an external library.
 @NotNullByDefault
-public final class BZip2ChannelEncoder implements CompressingWritableByteChannel {
+public final class BZip2ChannelEncoder implements CompressingWritableByteChannel.Framed {
     /// The BZip2 block marker.
     private static final long BLOCK_MAGIC = 0x314159265359L;
 
@@ -128,7 +128,6 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
     }
 
     /// Flushes complete compressed bytes already emitted to the wrapped target.
-    @Override
     public void flush() throws IOException {
         ensureOpen();
         bits.flush();

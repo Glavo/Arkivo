@@ -23,9 +23,7 @@ import java.nio.channels.WritableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.ServiceLoader;
 
@@ -44,37 +42,28 @@ public final class ArkivoFormats {
     private ArkivoFormats() {
     }
 
-    /// Returns all archive formats visible to the current class loader.
+    /// Returns all archive formats visible to the current thread context class loader.
     public static @Unmodifiable List<ArkivoFormat> installed() {
-        ArrayList<ArkivoFormat> formats = new ArrayList<>();
-        for (ArkivoFormat format : ServiceLoader.load(ArkivoFormat.class)) {
-            formats.add(format);
-        }
-        return List.copyOf(formats);
+        return ArchiveFormatRegistry.load().formats();
     }
 
-    /// Returns the first archive format with the given stable name or alias, ignoring ASCII case.
+    /// Returns the archive format with the given stable name or alias, ignoring case.
     public static @Nullable ArkivoFormat find(String name) {
-        Objects.requireNonNull(name, "name");
-        for (ArkivoFormat format : ServiceLoader.load(ArkivoFormat.class)) {
-            if (format.name().equalsIgnoreCase(name)) {
-                return format;
-            }
-            for (String alias : format.aliases()) {
-                if (alias.equalsIgnoreCase(name)) {
-                    return format;
-                }
-            }
-        }
-        return null;
+        return ArchiveFormatRegistry.load().find(name);
+    }
+
+    /// Returns the archive format with the given stable name or alias, ignoring case.
+    ///
+    /// @throws IllegalArgumentException when no matching format is installed
+    public static ArkivoFormat require(String name) {
+        return ArchiveFormatRegistry.load().require(name);
     }
 
     /// Returns the matching installed archive format with the largest requested probe size.
     ///
     /// The supplied buffer is not modified.
     public static @Nullable ArkivoFormat detect(ByteBuffer prefix) {
-        Objects.requireNonNull(prefix, "prefix");
-        return detect(prefix, installed());
+        return ArchiveFormatRegistry.load().detect(prefix);
     }
 
     /// Detects an installed archive format from bytes at the channel's current position.
@@ -140,18 +129,18 @@ public final class ArkivoFormats {
     /// Detection starts at and restores the channel's current position. That position then becomes logical archive offset
     /// zero for the opened file system.
     public static ArkivoFileSystem openFileSystem(SeekableByteChannel source) throws IOException {
-        return openFileSystem(source, Map.of());
+        return openFileSystem(source, ArchiveOptions.EMPTY);
     }
 
-    /// Detects and opens an archive file system from one owned seekable channel with environment options.
+    /// Detects and opens an archive file system from one owned seekable channel with options.
     ///
     /// After argument validation, this method takes ownership of the channel and closes it when detection or setup fails.
     public static ArkivoFileSystem openFileSystem(
             SeekableByteChannel source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         try {
             @Nullable ArkivoFormat format = detect(source);
             if (format == null) {
@@ -162,7 +151,7 @@ public final class ArkivoFormats {
                         "Archive format does not support file-system access: " + format.name()
                 );
             }
-            return fileSystemFormat.open(source, environment);
+            return fileSystemFormat.open(source, options);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterFailedOpen(source, exception);
             throw exception;
@@ -171,16 +160,16 @@ public final class ArkivoFormats {
 
     /// Detects and opens an archive file system from a path.
     public static ArkivoFileSystem openFileSystem(Path path) throws IOException {
-        return openFileSystem(path, Map.of());
+        return openFileSystem(path, ArchiveOptions.EMPTY);
     }
 
-    /// Detects and opens an archive file system from a path with environment options.
+    /// Detects and opens an archive file system from a path with options.
     public static ArkivoFileSystem openFileSystem(
             Path path,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(path, "path");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         @Nullable ArkivoFormat format = detect(path);
         if (format == null) {
             format = detectDiscoveredPathVolumeFormat(path);
@@ -193,7 +182,7 @@ public final class ArkivoFormats {
                     "Archive format does not support file-system access: " + format.name()
             );
         }
-        return fileSystemFormat.open(path, environment);
+        return fileSystemFormat.open(path, options);
     }
 
     /// Opens an owning archive file system for the named installed format from one seekable channel.
@@ -201,23 +190,23 @@ public final class ArkivoFormats {
             String formatName,
             SeekableByteChannel source
     ) throws IOException {
-        return openFileSystem(formatName, source, Map.of());
+        return openFileSystem(formatName, source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens an owning archive file system with environment options for the named installed format.
+    /// Opens an owning archive file system with options for the named installed format.
     ///
     /// After argument validation, this method owns the source and closes it when format lookup or setup fails.
     public static ArkivoFileSystem openFileSystem(
             String formatName,
             SeekableByteChannel source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         try {
             ArkivoFileSystemFormat format = requireFileSystemFormat(formatName);
-            return format.open(source, environment);
+            return format.open(source, options);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterFailedOpen(source, exception);
             throw exception;
@@ -226,26 +215,26 @@ public final class ArkivoFormats {
 
     /// Opens an archive file system for the named installed format from a path.
     public static ArkivoFileSystem openFileSystem(String formatName, Path path) throws IOException {
-        return openFileSystem(formatName, path, Map.of());
+        return openFileSystem(formatName, path, ArchiveOptions.EMPTY);
     }
 
-    /// Opens an archive file system with environment options for the named installed format from a path.
+    /// Opens an archive file system with options for the named installed format from a path.
     ///
     /// This method bypasses signature detection and delegates path storage handling to the selected format.
     public static ArkivoFileSystem openFileSystem(
             String formatName,
             Path path,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(path, "path");
-        Objects.requireNonNull(environment, "environment");
-        return requireFileSystemFormat(formatName).open(path, environment);
+        Objects.requireNonNull(options, "options");
+        return requireFileSystemFormat(formatName).open(path, options);
     }
 
     /// Detects and opens a read-only archive file system from an owned repeatable seekable source.
     public static ArkivoFileSystem openFileSystem(ArkivoSeekableChannelSource source) throws IOException {
-        return openFileSystem(source, Map.of());
+        return openFileSystem(source, ArchiveOptions.EMPTY);
     }
 
     /// Detects and opens an archive file system from an owned repeatable seekable source with options.
@@ -253,10 +242,10 @@ public final class ArkivoFormats {
     /// After argument validation, this method owns the source and closes it when detection or setup fails.
     public static ArkivoFileSystem openFileSystem(
             ArkivoSeekableChannelSource source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         OwnedArchiveSources.OwnedSeekableSource owned = OwnedArchiveSources.own(source);
         try {
             @Nullable ArkivoFormat format = detect(owned);
@@ -268,7 +257,7 @@ public final class ArkivoFormats {
                         "Archive format does not support file-system access: " + format.name()
                 );
             }
-            return fileSystemFormat.open(owned, environment);
+            return fileSystemFormat.open(owned, options);
         } catch (IOException | RuntimeException | Error exception) {
             closeOwnedSourceAfterFailedOpen(owned, exception);
             throw exception;
@@ -277,19 +266,19 @@ public final class ArkivoFormats {
 
     /// Detects and opens a read-only archive file system from an owned volume source.
     public static ArkivoFileSystem openFileSystem(ArkivoVolumeSource source) throws IOException {
-        return openFileSystem(source, Map.of());
+        return openFileSystem(source, ArchiveOptions.EMPTY);
     }
 
-    /// Detects and opens an archive file system from an owned volume source with environment options.
+    /// Detects and opens an archive file system from an owned volume source with options.
     ///
     /// Detection uses volume zero. After argument validation, this method owns the source and closes it when detection,
     /// capability validation, or setup fails.
     public static ArkivoFileSystem openFileSystem(
             ArkivoVolumeSource source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         OwnedArchiveSources.OwnedVolumeSource owned = OwnedArchiveSources.own(source);
         try {
             @Nullable ArkivoFormat format = detect(owned);
@@ -301,7 +290,7 @@ public final class ArkivoFormats {
                         "Archive format does not support multi-volume file-system access: " + format.name()
                 );
             }
-            return volumeFormat.open(owned, environment);
+            return volumeFormat.open(owned, options);
         } catch (IOException | RuntimeException | Error exception) {
             closeOwnedSourceAfterFailedOpen(owned, exception);
             throw exception;
@@ -313,21 +302,21 @@ public final class ArkivoFormats {
             String formatName,
             ArkivoSeekableChannelSource source
     ) throws IOException {
-        return openFileSystem(formatName, source, Map.of());
+        return openFileSystem(formatName, source, ArchiveOptions.EMPTY);
     }
 
     /// Opens an archive file system with options for the named format from a repeatable seekable source.
     public static ArkivoFileSystem openFileSystem(
             String formatName,
             ArkivoSeekableChannelSource source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         OwnedArchiveSources.OwnedSeekableSource owned = OwnedArchiveSources.own(source);
         try {
-            return requireFileSystemFormat(formatName).open(owned, environment);
+            return requireFileSystemFormat(formatName).open(owned, options);
         } catch (IOException | RuntimeException | Error exception) {
             closeOwnedSourceAfterFailedOpen(owned, exception);
             throw exception;
@@ -339,21 +328,21 @@ public final class ArkivoFormats {
             String formatName,
             ArkivoVolumeSource source
     ) throws IOException {
-        return openFileSystem(formatName, source, Map.of());
+        return openFileSystem(formatName, source, ArchiveOptions.EMPTY);
     }
 
     /// Opens a multi-volume file system with options for the named format from an owned volume source.
     public static ArkivoFileSystem openFileSystem(
             String formatName,
             ArkivoVolumeSource source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         OwnedArchiveSources.OwnedVolumeSource owned = OwnedArchiveSources.own(source);
         try {
-            return requireVolumeFileSystemFormat(formatName).open(owned, environment);
+            return requireVolumeFileSystemFormat(formatName).open(owned, options);
         } catch (IOException | RuntimeException | Error exception) {
             closeOwnedSourceAfterFailedOpen(owned, exception);
             throw exception;
@@ -366,10 +355,10 @@ public final class ArkivoFormats {
             ArkivoVolumeTarget target,
             long splitSize
     ) throws IOException {
-        return updateFileSystem(source, target, splitSize, Map.of());
+        return updateFileSystem(source, target, splitSize, ArchiveOptions.EMPTY);
     }
 
-    /// Detects and opens a complete-rewrite multi-volume update with environment options.
+    /// Detects and opens a complete-rewrite multi-volume update with options.
     ///
     /// Detection uses volume zero. After argument validation, this method owns the source and closes it when detection,
     /// capability validation, or setup fails. The selected format controls target transaction publication.
@@ -377,11 +366,11 @@ public final class ArkivoFormats {
             ArkivoVolumeSource source,
             ArkivoVolumeTarget target,
             long splitSize,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         requirePositiveSplitSize(splitSize);
         OwnedArchiveSources.OwnedVolumeSource owned = OwnedArchiveSources.own(source);
         try {
@@ -394,7 +383,7 @@ public final class ArkivoFormats {
                         "Archive format does not support multi-volume file-system updates: " + format.name()
                 );
             }
-            return volumeFormat.update(owned, target, splitSize, environment);
+            return volumeFormat.update(owned, target, splitSize, options);
         } catch (IOException | RuntimeException | Error exception) {
             closeOwnedSourceAfterFailedOpen(owned, exception);
             throw exception;
@@ -408,10 +397,10 @@ public final class ArkivoFormats {
             ArkivoVolumeTarget target,
             long splitSize
     ) throws IOException {
-        return updateFileSystem(formatName, source, target, splitSize, Map.of());
+        return updateFileSystem(formatName, source, target, splitSize, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a complete-rewrite multi-volume update for the named format with environment options.
+    /// Opens a complete-rewrite multi-volume update for the named format with options.
     ///
     /// After argument validation, this method owns the source and closes it when lookup or setup fails. Signature
     /// detection is bypassed.
@@ -420,16 +409,16 @@ public final class ArkivoFormats {
             ArkivoVolumeSource source,
             ArkivoVolumeTarget target,
             long splitSize,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         requirePositiveSplitSize(splitSize);
         OwnedArchiveSources.OwnedVolumeSource owned = OwnedArchiveSources.own(source);
         try {
-            return requireVolumeFileSystemFormat(formatName).update(owned, target, splitSize, environment);
+            return requireVolumeFileSystemFormat(formatName).update(owned, target, splitSize, options);
         } catch (IOException | RuntimeException | Error exception) {
             closeOwnedSourceAfterFailedOpen(owned, exception);
             throw exception;
@@ -442,45 +431,45 @@ public final class ArkivoFormats {
             ArkivoVolumeTarget target,
             long splitSize
     ) throws IOException {
-        return createFileSystem(formatName, target, splitSize, Map.of());
+        return createFileSystem(formatName, target, splitSize, ArchiveOptions.EMPTY);
     }
 
-    /// Creates a writable multi-volume file system for the named format with environment options.
+    /// Creates a writable multi-volume file system for the named format with options.
     ///
     /// The selected format opens and owns any output transaction created from the target.
     public static ArkivoFileSystem createFileSystem(
             String formatName,
             ArkivoVolumeTarget target,
             long splitSize,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         requirePositiveSplitSize(splitSize);
-        return requireVolumeFileSystemFormat(formatName).create(target, splitSize, environment);
+        return requireVolumeFileSystemFormat(formatName).create(target, splitSize, options);
     }
 
     /// Detects and opens a streaming reader from a path.
     public static ArkivoStreamingReader openStreamingReader(Path path) throws IOException {
-        return openStreamingReader(path, Map.of());
+        return openStreamingReader(path, ArchiveOptions.EMPTY);
     }
 
-    /// Detects and opens a streaming reader from a path with environment options.
+    /// Detects and opens a streaming reader from a path with options.
     ///
     /// Conventional multi-volume layouts are discovered before the path is treated as one forward-only file. The
     /// single-file fallback retains archive detection and installed outer source transformations.
     public static ArkivoStreamingReader openStreamingReader(
             Path path,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(path, "path");
-        Objects.requireNonNull(environment, "environment");
-        @Nullable ArkivoStreamingReader volumeReader = openDiscoveredPathVolumeReader(path, environment);
+        Objects.requireNonNull(options, "options");
+        @Nullable ArkivoStreamingReader volumeReader = openDiscoveredPathVolumeReader(path, options);
         if (volumeReader != null) {
             return volumeReader;
         }
-        return openStreamingReader(Files.newByteChannel(path, StandardOpenOption.READ), environment);
+        return openStreamingReader(Files.newByteChannel(path, StandardOpenOption.READ), options);
     }
 
     /// Opens a streaming reader for the named format from a path.
@@ -488,7 +477,7 @@ public final class ArkivoFormats {
             String formatName,
             Path path
     ) throws IOException {
-        return openStreamingReader(formatName, path, Map.of());
+        return openStreamingReader(formatName, path, ArchiveOptions.EMPTY);
     }
 
     /// Opens a configured streaming reader for the named format from a path.
@@ -498,29 +487,29 @@ public final class ArkivoFormats {
     public static ArkivoStreamingReader openStreamingReader(
             String formatName,
             Path path,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(path, "path");
-        Objects.requireNonNull(environment, "environment");
-        return requireStreamingReaderFormat(formatName).openStreamingReader(path, environment);
+        Objects.requireNonNull(options, "options");
+        return requireStreamingReaderFormat(formatName).openStreamingReader(path, options);
     }
 
     /// Detects and opens a streaming reader from an owned multi-volume source.
     public static ArkivoStreamingReader openStreamingReader(ArkivoVolumeSource source) throws IOException {
-        return openStreamingReader(source, Map.of());
+        return openStreamingReader(source, ArchiveOptions.EMPTY);
     }
 
-    /// Detects and opens a streaming reader from an owned multi-volume source with environment options.
+    /// Detects and opens a streaming reader from an owned multi-volume source with options.
     ///
     /// Detection uses volume zero. After argument validation, this method owns the source and closes it when detection,
     /// capability validation, or reader setup fails.
     public static ArkivoStreamingReader openStreamingReader(
             ArkivoVolumeSource source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         OwnedArchiveSources.OwnedVolumeSource owned = OwnedArchiveSources.own(source);
         try {
             @Nullable ArkivoFormat format = detect(owned);
@@ -532,7 +521,7 @@ public final class ArkivoFormats {
                         "Archive format does not support multi-volume forward-only reading: " + format.name()
                 );
             }
-            return readerFormat.openStreamingReader(owned, environment);
+            return readerFormat.openStreamingReader(owned, options);
         } catch (IOException | RuntimeException | Error exception) {
             closeOwnedSourceAfterFailedOpen(owned, exception);
             throw exception;
@@ -544,7 +533,7 @@ public final class ArkivoFormats {
             String formatName,
             ArkivoVolumeSource source
     ) throws IOException {
-        return openStreamingReader(formatName, source, Map.of());
+        return openStreamingReader(formatName, source, ArchiveOptions.EMPTY);
     }
 
     /// Opens a configured streaming reader for the named format from an owned multi-volume source.
@@ -554,15 +543,15 @@ public final class ArkivoFormats {
     public static ArkivoStreamingReader openStreamingReader(
             String formatName,
             ArkivoVolumeSource source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         OwnedArchiveSources.OwnedVolumeSource owned = OwnedArchiveSources.own(source);
         try {
             return requireVolumeStreamingReaderFormat(formatName)
-                    .openStreamingReader(owned, environment);
+                    .openStreamingReader(owned, options);
         } catch (IOException | RuntimeException | Error exception) {
             closeOwnedSourceAfterFailedOpen(owned, exception);
             throw exception;
@@ -574,34 +563,34 @@ public final class ArkivoFormats {
     /// After argument validation, this method takes ownership of the source. The returned reader receives every logical
     /// archive byte after optional outer source transformation.
     public static ArkivoStreamingReader openStreamingReader(InputStream source) throws IOException {
-        return openStreamingReader(source, Map.of());
+        return openStreamingReader(source, ArchiveOptions.EMPTY);
     }
 
-    /// Detects and opens an archive from a forward-only input stream with environment options.
+    /// Detects and opens an archive from a forward-only input stream with options.
     public static ArkivoStreamingReader openStreamingReader(
             InputStream source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
-        return openStreamingReader(StreamChannelAdapters.readableChannel(source), environment);
+        Objects.requireNonNull(options, "options");
+        return openStreamingReader(StreamChannelAdapters.readableChannel(source), options);
     }
 
     /// Detects and opens an archive from a forward-only readable channel.
     public static ArkivoStreamingReader openStreamingReader(ReadableByteChannel source) throws IOException {
-        return openStreamingReader(source, Map.of());
+        return openStreamingReader(source, ArchiveOptions.EMPTY);
     }
 
-    /// Detects and opens an archive from a forward-only readable channel with environment options.
+    /// Detects and opens an archive from a forward-only readable channel with options.
     ///
     /// Raw archive recognition runs before optional source providers, so a valid archive always wins over a coincidental
     /// outer-wrapper signature. After argument validation, this method owns and closes the source on setup failure.
     public static ArkivoStreamingReader openStreamingReader(
             ReadableByteChannel source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         ReadableByteChannel current = source;
         try {
             @Unmodifiable List<ArkivoFormat> formats = installed();
@@ -609,14 +598,14 @@ public final class ArkivoFormats {
             current = rawProbe.channel();
             @Nullable ArkivoFormat format = rawProbe.format();
             if (format != null) {
-                return openDetectedArchive(format, current, environment);
+                return openDetectedArchive(format, current, options);
             }
 
             for (ArkivoStreamingSourceProvider provider : ServiceLoader.load(
                     ArkivoStreamingSourceProvider.class
             )) {
-                ArkivoStreamingSource transformed = provider.probe(current, environment);
-                current = transformed.channel();
+                ArkivoStreamingSource transformed = provider.probe(current, options);
+                current = transformed.takeChannel();
                 if (!transformed.transformed()) {
                     continue;
                 }
@@ -625,7 +614,7 @@ public final class ArkivoFormats {
                 current = transformedProbe.channel();
                 format = transformedProbe.format();
                 if (format != null) {
-                    return openDetectedArchive(format, current, environment);
+                    return openDetectedArchive(format, current, options);
                 }
             }
             throw new IOException("Unrecognized archive format");
@@ -640,23 +629,23 @@ public final class ArkivoFormats {
             String formatName,
             ReadableByteChannel source
     ) throws IOException {
-        return openStreamingReader(formatName, source, Map.of());
+        return openStreamingReader(formatName, source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens an owning streaming reader with environment options for the named installed archive format.
+    /// Opens an owning streaming reader with options for the named installed archive format.
     ///
     /// This method bypasses signature detection and outer source providers. After argument validation, it owns the
     /// source and closes it when format lookup or reader setup fails.
     public static ArkivoStreamingReader openStreamingReader(
             String formatName,
             ReadableByteChannel source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         try {
-            return requireStreamingReaderFormat(formatName).openStreamingReader(source, environment);
+            return requireStreamingReaderFormat(formatName).openStreamingReader(source, options);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterFailedOpen(source, exception);
             throw exception;
@@ -668,24 +657,24 @@ public final class ArkivoFormats {
             String formatName,
             InputStream source
     ) throws IOException {
-        return openStreamingReader(formatName, source, Map.of());
+        return openStreamingReader(formatName, source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens an owning streaming reader over an input stream with environment options.
+    /// Opens an owning streaming reader over an input stream with options.
     ///
     /// After argument validation, the stream is adapted to the channel-first named reader factory.
     public static ArkivoStreamingReader openStreamingReader(
             String formatName,
             InputStream source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         return openStreamingReader(
                 formatName,
                 StreamChannelAdapters.readableChannel(source),
-                environment
+                options
         );
     }
 
@@ -694,22 +683,22 @@ public final class ArkivoFormats {
             String formatName,
             WritableByteChannel target
     ) throws IOException {
-        return openStreamingWriter(formatName, target, Map.of());
+        return openStreamingWriter(formatName, target, ArchiveOptions.EMPTY);
     }
 
-    /// Opens an owning streaming writer with environment options for the named installed archive format.
+    /// Opens an owning streaming writer with options for the named installed archive format.
     ///
     /// After argument validation, this method owns the target and closes it when format lookup or writer setup fails.
     public static ArkivoStreamingWriter openStreamingWriter(
             String formatName,
             WritableByteChannel target,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         try {
-            return requireStreamingWriterFormat(formatName).openStreamingWriter(target, environment);
+            return requireStreamingWriterFormat(formatName).openStreamingWriter(target, options);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterFailedOpen(target, exception);
             throw exception;
@@ -721,20 +710,20 @@ public final class ArkivoFormats {
             String formatName,
             OutputStream target
     ) throws IOException {
-        return openStreamingWriter(formatName, target, Map.of());
+        return openStreamingWriter(formatName, target, ArchiveOptions.EMPTY);
     }
 
-    /// Opens an owning streaming writer over an output stream with environment options.
+    /// Opens an owning streaming writer over an output stream with options.
     public static ArkivoStreamingWriter openStreamingWriter(
             String formatName,
             OutputStream target,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(target, "target");
         return openStreamingWriter(
                 formatName,
                 StreamChannelAdapters.writableChannel(target),
-                environment
+                options
         );
     }
 
@@ -744,10 +733,10 @@ public final class ArkivoFormats {
             ArkivoVolumeTarget target,
             long splitSize
     ) throws IOException {
-        return openStreamingWriter(formatName, target, splitSize, Map.of());
+        return openStreamingWriter(formatName, target, splitSize, ArchiveOptions.EMPTY);
     }
 
-    /// Opens a transactional multi-volume streaming writer with environment options.
+    /// Opens a transactional multi-volume streaming writer with options.
     ///
     /// Argument and capability validation occur before the selected format can open a target transaction. The writer
     /// controls transaction commit and rollback after setup succeeds.
@@ -755,34 +744,34 @@ public final class ArkivoFormats {
             String formatName,
             ArkivoVolumeTarget target,
             long splitSize,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         requirePositiveSplitSize(splitSize);
         return requireVolumeStreamingWriterFormat(formatName)
-                .openStreamingWriter(target, splitSize, environment);
+                .openStreamingWriter(target, splitSize, options);
     }
 
     /// Opens a detected forward-only format over the logical source.
     private static ArkivoStreamingReader openDetectedArchive(
             ArkivoFormat format,
             ReadableByteChannel source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         if (!(format instanceof ArkivoStreamingReaderFormat readerFormat)) {
             throw new UnsupportedOperationException(
                     "Archive format does not support forward-only reading: " + format.name()
             );
         }
-        return readerFormat.openStreamingReader(source, environment);
+        return readerFormat.openStreamingReader(source, options);
     }
 
     /// Discovers and opens a conventional path-backed multi-volume reader, or returns `null` when none match.
     private static @Nullable ArkivoStreamingReader openDiscoveredPathVolumeReader(
             Path path,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         for (ArkivoFormat candidate : installed()) {
             if (!(candidate instanceof ArkivoPathVolumeFormat pathFormat)) {
@@ -811,7 +800,7 @@ public final class ArkivoFormats {
                             "Archive format does not support multi-volume forward-only reading: " + candidate.name()
                     );
                 }
-                return readerFormat.openStreamingReader(source, environment);
+                return readerFormat.openStreamingReader(source, options);
             } catch (IOException | RuntimeException | Error exception) {
                 closeOwnedSourceAfterFailedOpen(source, exception);
                 throw exception;

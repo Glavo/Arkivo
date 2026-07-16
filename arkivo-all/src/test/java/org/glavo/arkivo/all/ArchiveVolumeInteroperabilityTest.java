@@ -12,6 +12,7 @@ import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
 import org.apache.commons.compress.archivers.zip.ZipFile;
 import org.apache.commons.compress.archivers.zip.ZipSplitReadOnlySeekableByteChannel;
 import org.apache.commons.compress.utils.MultiReadOnlySeekableByteChannel;
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
@@ -43,7 +44,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
@@ -99,7 +99,7 @@ final class ArchiveVolumeInteroperabilityTest {
             try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archivePath)) {
                 assertArrayEquals(CONTENT, Files.readAllBytes(fileSystem.getPath("/" + ENTRY_PATH)));
             }
-            assertArrayEquals(CONTENT, readStreamingBody(archivePath, Map.of()));
+            assertArrayEquals(CONTENT, readStreamingBody(archivePath, ArchiveOptions.EMPTY));
         } finally {
             deleteTemporaryDirectory(directory);
         }
@@ -114,7 +114,7 @@ final class ArchiveVolumeInteroperabilityTest {
         try {
             try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
                     archivePath,
-                    Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), SPLIT_SIZE)
+                    ArchiveOptions.of(ZipArkivoFileSystem.SPLIT_SIZE, SPLIT_SIZE)
             )) {
                 writer.beginFile(ENTRY_PATH);
                 ZipArkivoEntryAttributeView attributes = Objects.requireNonNull(
@@ -174,11 +174,11 @@ final class ArchiveVolumeInteroperabilityTest {
             @Unmodifiable List<Path> volumes = writeSevenZipVolumes(firstVolume, archive);
             assertBoundedVolumes(volumes);
 
-            @Unmodifiable Map<String, Object> environment = Map.of(
-                    SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+            ArchiveOptions options = ArchiveOptions.of(
+                    SevenZipArkivoFileSystem.PASSWORD_PROVIDER,
                     ArkivoPasswordProvider.fixed(PASSWORD_BYTES)
             );
-            try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(firstVolume, environment)) {
+            try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(firstVolume, options)) {
                 assertArrayEquals(CONTENT, Files.readAllBytes(fileSystem.getPath("/" + ENTRY_PATH)));
             }
         } finally {
@@ -197,16 +197,18 @@ final class ArchiveVolumeInteroperabilityTest {
         try {
             try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
                     firstVolume,
-                    Map.of(
-                            SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
-                            ArkivoPasswordProvider.fixed(PASSWORD_BYTES),
-                            SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(),
-                            true,
-                            SevenZipArkivoFileSystem.COMPRESSION.key(),
-                            SevenZipCompression.lzma2(1 << 20),
-                            SevenZipArkivoFileSystem.SPLIT_SIZE.key(),
-                            SPLIT_SIZE
-                    )
+                    ArchiveOptions.builder()
+                            .set(
+                                    SevenZipArkivoFileSystem.PASSWORD_PROVIDER,
+                                    ArkivoPasswordProvider.fixed(PASSWORD_BYTES)
+                            )
+                            .set(SevenZipArkivoFileSystem.ENCRYPT_HEADERS, true)
+                            .set(
+                                    SevenZipArkivoFileSystem.COMPRESSION,
+                                    SevenZipCompression.lzma2(1 << 20)
+                            )
+                            .set(SevenZipArkivoFileSystem.SPLIT_SIZE, SPLIT_SIZE)
+                            .build()
             )) {
                 writer.beginFile(ENTRY_PATH);
                 try (OutputStream body = writer.openOutputStream()) {
@@ -240,11 +242,11 @@ final class ArchiveVolumeInteroperabilityTest {
     /// Reads the only regular body from a path-backed streaming archive reader.
     private static byte[] readStreamingBody(
             Path archivePath,
-            @Unmodifiable Map<String, Object> environment
+            ArchiveOptions options
     ) throws IOException {
         ByteArrayOutputStream body = new ByteArrayOutputStream();
         int regularEntryCount = 0;
-        try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(archivePath, environment)) {
+        try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(archivePath, options)) {
             while (reader.next()) {
                 BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);
                 if (attributes.isRegularFile()) {

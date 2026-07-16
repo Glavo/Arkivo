@@ -32,73 +32,73 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 /// Provides shared behavior for archive-backed file systems.
 @NotNullByDefault
 public abstract class ArkivoFileSystem extends FileSystem {
-    /// The common environment option that controls the requested file system thread-safety strategy.
-    public static final ArkivoFileSystemOption<ArkivoFileSystemThreadSafety> THREAD_SAFETY =
-            ArkivoFileSystemOption.of(
+    /// The common option that controls the requested file system thread-safety strategy.
+    public static final ArchiveOption<ArkivoFileSystemThreadSafety> THREAD_SAFETY =
+            ArchiveOption.of(
                     "arkivo",
                     "threadSafety",
                     ArkivoFileSystemThreadSafety.class,
                     ArkivoFileSystem::threadSafetyOptionValue
             );
 
-    /// The common environment option that controls how the backing archive path is opened.
+    /// The common option that controls how the backing archive path is opened.
     ///
-    /// The typed option value is a `Set<OpenOption>`. Raw environment maps may also provide an `OpenOption[]`,
+    /// The typed option value is a `Set<OpenOption>`. Raw options maps may also provide an `OpenOption[]`,
     /// a single `OpenOption`, or a `Collection` of `OpenOption` values.
-    public static final ArkivoFileSystemOption<Set<OpenOption>> OPEN_OPTIONS =
-            ArkivoFileSystemOption.of(
+    public static final ArchiveOption<Set<OpenOption>> OPEN_OPTIONS =
+            ArchiveOption.of(
                     "arkivo",
                     "openOptions",
                     openOptionsType(),
                     ArkivoFileSystem::openOptionsValue
             );
 
-    /// The common environment option for staging decoded, new, and replacement archive entry content.
-    public static final ArkivoFileSystemOption<ArkivoEditStorage> EDIT_STORAGE =
-            ArkivoFileSystemOption.of("arkivo", "editStorage", ArkivoEditStorage.class);
+    /// The common option for staging decoded, new, and replacement archive entry content.
+    public static final ArchiveOption<ArkivoEditStorage> EDIT_STORAGE =
+            ArchiveOption.of("arkivo", "editStorage", ArkivoEditStorage.class);
 
-    /// The common environment option for choosing where assembled archive bytes are committed.
-    public static final ArkivoFileSystemOption<ArkivoCommitTarget> COMMIT_TARGET =
-            ArkivoFileSystemOption.of("arkivo", "commitTarget", ArkivoCommitTarget.class);
+    /// The common option for choosing where assembled archive bytes are committed.
+    public static final ArchiveOption<ArkivoCommitTarget> COMMIT_TARGET =
+            ArchiveOption.of("arkivo", "commitTarget", ArkivoCommitTarget.class);
 
-    /// The common environment option for deciding whether direct source-file mutation may be used.
-    public static final ArkivoFileSystemOption<ArkivoSourceMutationPolicy> SOURCE_MUTATION_POLICY =
-            ArkivoFileSystemOption.of(
+    /// The common option for deciding whether direct source-file mutation may be used.
+    public static final ArchiveOption<ArkivoSourceMutationPolicy> SOURCE_MUTATION_POLICY =
+            ArchiveOption.of(
                     "arkivo",
                     "sourceMutationPolicy",
                     ArkivoSourceMutationPolicy.class
             );
 
-    /// The common environment option limiting the number of logical entries accepted while reading an archive.
-    public static final ArkivoFileSystemOption<Long> MAX_ENTRY_COUNT =
-            ArkivoFileSystemOption.of(
+    /// The common option limiting the number of logical entries accepted while reading an archive.
+    public static final ArchiveOption<Long> MAX_ENTRY_COUNT =
+            ArchiveOption.of(
                     "arkivo",
                     "maxEntryCount",
                     Long.class,
                     value -> nonNegativeLongOptionValue(value, "arkivo.maxEntryCount")
             );
 
-    /// The common environment option limiting the logical size of each archive entry in bytes.
-    public static final ArkivoFileSystemOption<Long> MAX_ENTRY_SIZE =
-            ArkivoFileSystemOption.of(
+    /// The common option limiting the logical size of each archive entry in bytes.
+    public static final ArchiveOption<Long> MAX_ENTRY_SIZE =
+            ArchiveOption.of(
                     "arkivo",
                     "maxEntrySize",
                     Long.class,
                     value -> nonNegativeLongOptionValue(value, "arkivo.maxEntrySize")
             );
 
-    /// The common environment option limiting the sum of logical archive entry sizes in bytes.
-    public static final ArkivoFileSystemOption<Long> MAX_TOTAL_ENTRY_SIZE =
-            ArkivoFileSystemOption.of(
+    /// The common option limiting the sum of logical archive entry sizes in bytes.
+    public static final ArchiveOption<Long> MAX_TOTAL_ENTRY_SIZE =
+            ArchiveOption.of(
                     "arkivo",
                     "maxTotalEntrySize",
                     Long.class,
                     value -> nonNegativeLongOptionValue(value, "arkivo.maxTotalEntrySize")
             );
 
-    /// The common environment option limiting cumulative archive metadata bytes processed while reading.
-    public static final ArkivoFileSystemOption<Long> MAX_METADATA_SIZE =
-            ArkivoFileSystemOption.of(
+    /// The common option limiting cumulative archive metadata bytes processed while reading.
+    public static final ArchiveOption<Long> MAX_METADATA_SIZE =
+            ArchiveOption.of(
                     "arkivo",
                     "maxMetadataSize",
                     Long.class,
@@ -884,7 +884,7 @@ public abstract class ArkivoFileSystem extends FileSystem {
         );
     }
 
-    /// Converts and validates a non-negative long environment option.
+    /// Converts and validates a non-negative long option.
     private static Long nonNegativeLongOptionValue(Object value, String key) {
         long result;
         if (value instanceof Long longValue) {
@@ -937,7 +937,7 @@ public abstract class ArkivoFileSystem extends FileSystem {
         );
     }
 
-    /// Returns the erased runtime class used by the typed open options environment option.
+    /// Returns the erased runtime class used by the typed open options option.
     @SuppressWarnings({"rawtypes", "unchecked"})
     private static Class<Set<OpenOption>> openOptionsType() {
         return (Class) Set.class;

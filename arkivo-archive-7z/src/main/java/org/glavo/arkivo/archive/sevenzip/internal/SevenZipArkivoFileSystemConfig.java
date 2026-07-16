@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
@@ -19,7 +20,6 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.nio.file.OpenOption;
 import java.nio.file.StandardOpenOption;
 import java.util.LinkedHashSet;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -180,82 +180,74 @@ public final class SevenZipArkivoFileSystemConfig {
     }
 
 
-    /// Parses 7z file system configuration from an environment map.
-    public static SevenZipArkivoFileSystemConfig fromEnvironment(Map<String, ?> environment) {
-        return fromEnvironment(environment, DEFAULT_READ_OPEN_OPTIONS);
+    /// Parses 7z file system configuration from archive options.
+    public static SevenZipArkivoFileSystemConfig fromOptions(ArchiveOptions options) {
+        return fromOptions(options, DEFAULT_READ_OPEN_OPTIONS);
     }
 
 
-    /// Parses 7z output configuration from an environment map.
-    public static SevenZipArkivoFileSystemConfig fromWriterEnvironment(Map<String, ?> environment) {
-        return fromEnvironment(environment, DEFAULT_WRITE_OPEN_OPTIONS);
+    /// Parses 7z output configuration from archive options.
+    public static SevenZipArkivoFileSystemConfig fromWriterOptions(ArchiveOptions options) {
+        return fromOptions(options, DEFAULT_WRITE_OPEN_OPTIONS);
     }
 
 
-    /// Parses 7z complete-rewrite update configuration from an environment map.
-    public static SevenZipArkivoFileSystemConfig fromUpdateEnvironment(Map<String, ?> environment) {
-        return fromEnvironment(
-                environment,
+    /// Parses 7z complete-rewrite update configuration from archive options.
+    public static SevenZipArkivoFileSystemConfig fromUpdateOptions(ArchiveOptions options) {
+        return fromOptions(
+                options,
                 Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
         );
     }
 
 
     /// Parses 7z configuration using the requested default archive open options.
-    private static SevenZipArkivoFileSystemConfig fromEnvironment(
-            Map<String, ?> environment,
+    private static SevenZipArkivoFileSystemConfig fromOptions(
+            ArchiveOptions options,
             Set<? extends OpenOption> defaultOpenOptions
     ) {
-        Objects.requireNonNull(environment, "environment");
+        Objects.requireNonNull(options, "options");
         Objects.requireNonNull(defaultOpenOptions, "defaultOpenOptions");
-        if (environment.containsKey("arkivo.7z.password")) {
-            throw new IllegalArgumentException(
-                    "The arkivo.7z.password option has been removed; use arkivo.7z.passwordProvider instead"
-            );
-        }
-        if (environment.isEmpty() && defaultOpenOptions.equals(DEFAULT_READ_OPEN_OPTIONS)) {
+
+        if (options.isEmpty() && defaultOpenOptions.equals(DEFAULT_READ_OPEN_OPTIONS)) {
             return DEFAULTS;
         }
 
-        if (SevenZipArkivoFileSystem.FILTER.isPresent(environment)
-                && SevenZipArkivoFileSystem.FILTERS.isPresent(environment)) {
+        if (options.contains(SevenZipArkivoFileSystem.FILTER)
+                && options.contains(SevenZipArkivoFileSystem.FILTERS)) {
             throw new IllegalArgumentException("7z filter and filters options are mutually exclusive");
         }
         SevenZipArkivoFileSystemConfig config = new SevenZipArkivoFileSystemConfig(
-                ArkivoFileSystem.OPEN_OPTIONS.readOrDefault(environment, Set.copyOf(defaultOpenOptions)),
-                passwordProvider(environment),
-                SevenZipArkivoFileSystem.COMPRESSION.readOrDefault(environment, SevenZipCompression.copy()),
-                filters(environment),
-                SevenZipArkivoFileSystem.SOLID_FILE_COUNT.readOrDefault(
-                        environment,
-                        DEFAULT_SOLID_FILE_COUNT
+                options.getOrDefault(ArkivoFileSystem.OPEN_OPTIONS, Set.copyOf(defaultOpenOptions)),
+                passwordProvider(options),
+                options.getOrDefault(SevenZipArkivoFileSystem.COMPRESSION, SevenZipCompression.copy()),
+                filters(options),
+                options.getOrDefault(SevenZipArkivoFileSystem.SOLID_FILE_COUNT, DEFAULT_SOLID_FILE_COUNT
                 ),
-                splitSize(environment),
-                SevenZipArkivoFileSystem.SPLIT_SIZE.isPresent(environment),
-                SevenZipArkivoFileSystem.ENCRYPT_HEADERS.readOrDefault(environment, false),
-                ArkivoFileSystem.THREAD_SAFETY.readOrDefault(
-                        environment,
-                        ArkivoFileSystemThreadSafety.CONCURRENT_READ
+                splitSize(options),
+                options.contains(SevenZipArkivoFileSystem.SPLIT_SIZE),
+                options.getOrDefault(SevenZipArkivoFileSystem.ENCRYPT_HEADERS, false),
+                options.getOrDefault(ArkivoFileSystem.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
                 ),
-                ArkivoFileSystem.EDIT_STORAGE.read(environment),
-                ArkivoFileSystem.COMMIT_TARGET.read(environment),
-                readLimit(ArkivoFileSystem.MAX_ENTRY_COUNT.read(environment)),
-                readLimit(ArkivoFileSystem.MAX_ENTRY_SIZE.read(environment)),
-                readLimit(ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE.read(environment)),
-                readLimit(ArkivoFileSystem.MAX_METADATA_SIZE.read(environment))
+                options.get(ArkivoFileSystem.EDIT_STORAGE),
+                options.get(ArkivoFileSystem.COMMIT_TARGET),
+                options.getOrDefault(ArkivoFileSystem.MAX_ENTRY_COUNT, NO_READ_LIMIT),
+                options.getOrDefault(ArkivoFileSystem.MAX_ENTRY_SIZE, NO_READ_LIMIT),
+                options.getOrDefault(ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE, NO_READ_LIMIT),
+                options.getOrDefault(ArkivoFileSystem.MAX_METADATA_SIZE, NO_READ_LIMIT)
         );
-        if (!config.archiveWritable() && SevenZipArkivoFileSystem.COMPRESSION.isPresent(environment)) {
+        if (!config.archiveWritable() && options.contains(SevenZipArkivoFileSystem.COMPRESSION)) {
             throw new IllegalArgumentException("7z compression requires write archive options");
         }
         if (!config.archiveWritable()
-                && (SevenZipArkivoFileSystem.FILTER.isPresent(environment)
-                || SevenZipArkivoFileSystem.FILTERS.isPresent(environment))) {
+                && (options.contains(SevenZipArkivoFileSystem.FILTER)
+                || options.contains(SevenZipArkivoFileSystem.FILTERS))) {
             throw new IllegalArgumentException("7z filters require write archive options");
         }
-        if (!config.archiveWritable() && SevenZipArkivoFileSystem.SOLID_FILE_COUNT.isPresent(environment)) {
+        if (!config.archiveWritable() && options.contains(SevenZipArkivoFileSystem.SOLID_FILE_COUNT)) {
             throw new IllegalArgumentException("7z solid output requires write archive options");
         }
-        if (!config.archiveWritable() && SevenZipArkivoFileSystem.ENCRYPT_HEADERS.isPresent(environment)) {
+        if (!config.archiveWritable() && options.contains(SevenZipArkivoFileSystem.ENCRYPT_HEADERS)) {
             throw new IllegalArgumentException("7z encrypted headers require write archive options");
         }
         if (!config.archiveUpdate() && config.commitTarget() != null) {
@@ -264,7 +256,7 @@ public final class SevenZipArkivoFileSystemConfig {
         if (config.archiveWritable() && !config.archiveUpdate() && config.editStorage() != null) {
             throw new IllegalArgumentException("7z edit storage is unavailable in forward-only write mode");
         }
-        if (config.archiveUpdate() && ArkivoFileSystem.SOURCE_MUTATION_POLICY.isPresent(environment)) {
+        if (config.archiveUpdate() && options.contains(ArkivoFileSystem.SOURCE_MUTATION_POLICY)) {
             throw new UnsupportedOperationException("7z update mode always performs a complete archive rewrite");
         }
         if (config.archiveUpdate()
@@ -377,16 +369,11 @@ public final class SevenZipArkivoFileSystemConfig {
         return maximumMetadataSize;
     }
 
-    /// Parses the password provider from an environment map.
-    private static @Nullable ArkivoPasswordProvider passwordProvider(Map<String, ?> environment) {
-        return SevenZipArkivoFileSystem.PASSWORD_PROVIDER.read(environment);
+    /// Parses the password provider from archive options.
+    private static @Nullable ArkivoPasswordProvider passwordProvider(ArchiveOptions options) {
+        return options.get(SevenZipArkivoFileSystem.PASSWORD_PROVIDER);
     }
 
-
-    /// Converts an optional boxed common read limit to its primitive representation.
-    private static long readLimit(@Nullable Long value) {
-        return value != null ? value : NO_READ_LIMIT;
-    }
 
 
     /// Validates one primitive common read limit.
@@ -398,20 +385,19 @@ public final class SevenZipArkivoFileSystemConfig {
     }
 
     /// Parses the configured default filter chain.
-    private static SevenZipFilterChain filters(Map<String, ?> environment) {
-        SevenZipFilterChain chain = SevenZipArkivoFileSystem.FILTERS.read(environment);
+    private static SevenZipFilterChain filters(ArchiveOptions options) {
+        SevenZipFilterChain chain = options.get(SevenZipArkivoFileSystem.FILTERS);
         if (chain != null) {
             return chain;
         }
-        SevenZipFilter filter = SevenZipArkivoFileSystem.FILTER.read(environment);
+        SevenZipFilter filter = options.get(SevenZipArkivoFileSystem.FILTER);
         return filter != null ? SevenZipFilterChain.of(filter) : SevenZipFilterChain.EMPTY;
     }
 
 
-    /// Parses the split size from an environment map.
-    private static long splitSize(Map<String, ?> environment) {
-        Long splitSize = SevenZipArkivoFileSystem.SPLIT_SIZE.read(environment);
-        return splitSize != null ? splitSize : NO_SPLIT_SIZE;
+    /// Parses the split size from archive options.
+    private static long splitSize(ArchiveOptions options) {
+        return options.getOrDefault(SevenZipArkivoFileSystem.SPLIT_SIZE, NO_SPLIT_SIZE);
     }
 
 

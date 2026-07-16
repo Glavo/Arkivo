@@ -207,19 +207,23 @@ val benchmark by tasks.registering(JavaExec::class) {
     }
 }
 
+val publicApiTypeBaseline = layout.projectDirectory.file(
+    "src/test/resources/org/glavo/arkivo/all/public-api-types.txt"
+)
+
 val publicApiSignatureBaseline = layout.projectDirectory.file(
     "src/test/resources/org/glavo/arkivo/all/public-api-signatures.txt"
 )
 
-val updatePublicApiSignatures by tasks.registering(JavaExec::class) {
+val updatePublicApiBaselines by tasks.registering(JavaExec::class) {
     group = "verification"
-    description = "Updates the reviewed text baseline for exported public JVM signatures."
+    description = "Updates the reviewed text baselines for exported public types and JVM signatures."
     dependsOn(tasks.named("testClasses"))
     classpath = sourceSets.test.get().runtimeClasspath
     mainClass.set("org.glavo.arkivo.all.PublicApiBaselineGenerator")
-    args(publicApiSignatureBaseline.asFile.absolutePath)
+    args(publicApiTypeBaseline.asFile.absolutePath, publicApiSignatureBaseline.asFile.absolutePath)
     inputs.files(sourceSets.test.get().output.classesDirs)
-    outputs.file(publicApiSignatureBaseline)
+    outputs.files(publicApiTypeBaseline, publicApiSignatureBaseline)
 }
 
 val moduleProjectPaths = listOf(
@@ -476,13 +480,13 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.archive.ar" to mapOf(
                 archiveFormatService to setOf("org.glavo.arkivo.archive.ar.ArArkivoFormat"),
                 fileSystemProviderService to setOf(
-                    "org.glavo.arkivo.archive.ar.ArArkivoFileSystemProvider"
+                    "org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemProvider"
                 )
             ),
             "org.glavo.arkivo.archive.rar" to mapOf(
                 archiveFormatService to setOf("org.glavo.arkivo.archive.rar.RarArkivoFormat"),
                 fileSystemProviderService to setOf(
-                    "org.glavo.arkivo.archive.rar.RarArkivoFileSystemProvider"
+                    "org.glavo.arkivo.archive.rar.internal.RarArkivoFileSystemProvider"
                 )
             ),
             "org.glavo.arkivo.archive.sevenzip" to mapOf(
@@ -490,19 +494,19 @@ val verifyModuleDescriptors by tasks.registering {
                     "org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFormat"
                 ),
                 fileSystemProviderService to setOf(
-                    "org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystemProvider"
+                    "org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemProvider"
                 )
             ),
             "org.glavo.arkivo.archive.tar" to mapOf(
                 archiveFormatService to setOf("org.glavo.arkivo.archive.tar.TarArkivoFormat"),
                 fileSystemProviderService to setOf(
-                    "org.glavo.arkivo.archive.tar.TarArkivoFileSystemProvider"
+                    "org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemProvider"
                 )
             ),
             "org.glavo.arkivo.archive.zip" to mapOf(
                 archiveFormatService to setOf("org.glavo.arkivo.archive.zip.ZipArkivoFormat"),
                 fileSystemProviderService to setOf(
-                    "org.glavo.arkivo.archive.zip.ZipArkivoFileSystemProvider"
+                    "org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemProvider"
                 )
             ),
             "org.glavo.arkivo.codec.bzip2" to mapOf(

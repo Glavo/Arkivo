@@ -3,16 +3,16 @@
 
 package org.glavo.arkivo.archive.sevenzip;
 
+import org.glavo.arkivo.archive.ArchiveEntryAttributes;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
-import java.nio.file.attribute.BasicFileAttributes;
 import java.util.List;
 
 /// Exposes parsed 7z entry attributes.
 @NotNullByDefault
-public interface SevenZipArkivoEntryAttributes extends BasicFileAttributes {
+public interface SevenZipArkivoEntryAttributes extends ArchiveEntryAttributes {
     /// The Windows attributes value used when the archive entry has no Windows attributes property.
     int UNKNOWN_WINDOWS_ATTRIBUTES = -1;
 

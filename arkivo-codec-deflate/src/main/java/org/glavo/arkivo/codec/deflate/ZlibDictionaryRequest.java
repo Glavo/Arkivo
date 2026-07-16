@@ -12,7 +12,7 @@ import java.util.Objects;
 ///
 /// @param adler32 unsigned 32-bit Adler-32 identifier from the zlib stream header
 @NotNullByDefault
-public record ZlibDictionaryRequest(long adler32) implements DictionaryRequest {
+public record ZlibDictionaryRequest(long adler32) implements DictionaryRequest<ZlibDictionary> {
     /// Validates the unsigned 32-bit identifier.
     public ZlibDictionaryRequest {
         if (adler32 < 0L || adler32 > 0xffff_ffffL) {
@@ -21,6 +21,7 @@ public record ZlibDictionaryRequest(long adler32) implements DictionaryRequest {
     }
 
     /// Returns whether the supplied dictionary satisfies this request.
+    @Override
     public boolean matches(ZlibDictionary dictionary) {
         return Objects.requireNonNull(dictionary, "dictionary").adler32() == adler32;
     }

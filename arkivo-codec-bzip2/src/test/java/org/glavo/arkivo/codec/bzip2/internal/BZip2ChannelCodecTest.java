@@ -6,7 +6,6 @@ package org.glavo.arkivo.codec.bzip2.internal;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -124,7 +123,7 @@ public final class BZip2ChannelCodecTest {
             assertArrayEquals(first, readFrame(decoder));
             assertArrayEquals(second, readFrame(decoder));
             ByteBuffer end = ByteBuffer.allocate(1);
-            CodecResult result = decoder.decode(end, Directive.CONTINUE);
+            CodecResult result = decoder.decode(end);
             assertEquals(CodecResult.Status.END_OF_INPUT, result.status());
         }
     }
@@ -283,7 +282,7 @@ public final class BZip2ChannelCodecTest {
         ByteBuffer target = ByteBuffer.allocateDirect(31);
         while (true) {
             target.clear();
-            CodecResult result = decoder.decode(target, Directive.STOP_AT_FRAME);
+            CodecResult result = decoder.decodeFrame(target);
             target.flip();
             byte[] chunk = new byte[target.remaining()];
             target.get(chunk);

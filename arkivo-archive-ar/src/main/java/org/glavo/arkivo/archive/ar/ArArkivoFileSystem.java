@@ -3,17 +3,18 @@
 
 package org.glavo.arkivo.archive.ar;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.SeekableChannelSources;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
+import org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Path;
-import java.util.Map;
 import java.util.Objects;
 
 /// Opens AR archives as NIO file systems.
@@ -37,17 +38,17 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
 
     /// Opens an AR archive file system.
     public static ArArkivoFileSystem open(Path path) throws IOException {
-        return open(path, Map.of());
+        return open(path, ArchiveOptions.EMPTY);
     }
 
-    /// Opens an AR archive file system with environment options.
+    /// Opens an AR archive file system with options.
     ///
     /// `READ` and `WRITE` select update mode. `CREATE` additionally allows a missing source archive.
     /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for indexed member bodies in read and update modes.
-    public static ArArkivoFileSystem open(Path path, Map<String, ?> environment) throws IOException {
+    public static ArArkivoFileSystem open(Path path, ArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
-        Objects.requireNonNull(environment, "environment");
-        return ArArkivoFileSystemProvider.instance().openPath(path, environment);
+        Objects.requireNonNull(options, "options");
+        return ArArkivoFileSystemProvider.instance().openPath(path, options);
     }
 
     /// Opens a read-only AR archive file system directly from one owned seekable channel.
@@ -55,39 +56,39 @@ public abstract sealed class ArArkivoFileSystem extends ArkivoFileSystem permits
     /// The channel's current position is the logical archive start. The returned file system owns and closes the
     /// channel.
     public static ArArkivoFileSystem open(SeekableByteChannel source) throws IOException {
-        return open(source, Map.of());
+        return open(source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens an AR archive file system directly from one owned seekable channel with environment options.
+    /// Opens an AR archive file system directly from one owned seekable channel with options.
     ///
     /// `READ` and `WRITE` select complete-rewrite update mode and require an explicit
     /// `ArkivoFileSystem.COMMIT_TARGET`. The returned file system owns and closes the channel in all modes.
     public static ArArkivoFileSystem open(
             SeekableByteChannel source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
-        return SeekableChannelSources.open(source, channelSource -> open(channelSource, environment));
+        Objects.requireNonNull(options, "options");
+        return SeekableChannelSources.open(source, channelSource -> open(channelSource, options));
     }
     /// Opens a read-only AR archive file system from a repeatable seekable channel source.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
     public static ArArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
-        return open(source, Map.of());
+        return open(source, ArchiveOptions.EMPTY);
     }
 
-    /// Opens an AR archive file system from a repeatable seekable channel source with environment options.
+    /// Opens an AR archive file system from a repeatable seekable channel source with options.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
     /// `ArkivoFileSystem.EDIT_STORAGE` selects storage for indexed member bodies. `READ` and `WRITE` select
     /// complete-rewrite update mode and require an explicit `ArkivoFileSystem.COMMIT_TARGET`.
     public static ArArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
-            Map<String, ?> environment
+            ArchiveOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(environment, "environment");
-        return ArArkivoFileSystemImpl.open(ArArkivoFileSystemProvider.instance(), source, environment);
+        Objects.requireNonNull(options, "options");
+        return ArArkivoFileSystemImpl.open(ArArkivoFileSystemProvider.instance(), source, options);
     }
 }

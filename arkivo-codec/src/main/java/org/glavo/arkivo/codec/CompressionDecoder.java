@@ -47,7 +47,7 @@ public interface CompressionDecoder extends AutoCloseable {
     @NotNullByDefault
     interface DictionaryAware<
             D extends CompressionDictionary,
-            R extends DictionaryRequest
+            R extends DictionaryRequest<D>
     > extends CompressionDecoder {
         /// Returns the dictionary request produced by the most recent decode operation.
         ///
@@ -56,5 +56,16 @@ public interface CompressionDecoder extends AutoCloseable {
 
         /// Supplies a dictionary in response to the most recent request.
         void provideDictionary(D dictionary) throws IOException;
+    }
+
+    /// Decodes concatenated frames and supports late binding of format-specific dictionaries.
+    ///
+    /// @param <D> the format-specific dictionary type accepted by this decoder
+    /// @param <R> the format-specific request type exposed by this decoder
+    @NotNullByDefault
+    interface FramedDictionaryAware<
+            D extends CompressionDictionary,
+            R extends DictionaryRequest<D>
+    > extends Framed, DictionaryAware<D, R> {
     }
 }

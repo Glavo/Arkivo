@@ -48,9 +48,9 @@ final class ZstdDictionaryTrainerTest {
         assertTrue(dictionary.size() > 0);
         assertTrue(dictionary.size() <= DICTIONARY_CAPACITY);
         assertTrue(dictionary.dictionaryId() > ZstdDictionary.NO_DICTIONARY_ID);
-        assertEquals(dictionary.dictionaryId(), codec.dictionaryId(dictionary.buffer()));
+        assertEquals(dictionary.dictionaryId(), ZstdDictionary.dictionaryId(dictionary.buffer()));
 
-        ZstdDictionary legacyDictionary = trainer.train(true);
+        ZstdDictionary legacyDictionary = trainer.train(ZstdDictionaryTrainer.TrainingMode.LEGACY_SUFFIX);
         assertTrue(legacyDictionary.size() > 0);
         assertTrue(legacyDictionary.dictionaryId() > ZstdDictionary.NO_DICTIONARY_ID);
         assertArrayEquals(dictionary.bytes(), trainer.train().bytes());
@@ -187,7 +187,7 @@ final class ZstdDictionaryTrainerTest {
         int position = raw.position();
         int limit = raw.limit();
 
-        assertEquals(ZstdDictionary.NO_DICTIONARY_ID, codec.dictionaryId(raw));
+        assertEquals(ZstdDictionary.NO_DICTIONARY_ID, ZstdDictionary.dictionaryId(raw));
         assertEquals(position, raw.position());
         assertEquals(limit, raw.limit());
     }

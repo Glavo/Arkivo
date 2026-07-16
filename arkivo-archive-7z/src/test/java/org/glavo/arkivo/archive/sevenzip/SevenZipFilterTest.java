@@ -18,7 +18,7 @@ public final class SevenZipFilterTest {
         assertEquals(new SevenZipFilter(SevenZipFilterMethod.DELTA, 1), SevenZipFilter.delta());
         assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_X86, 0), SevenZipFilter.bcjX86());
         assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ2, 0), SevenZipFilter.bcj2());
-        assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_PPC, 0), SevenZipFilter.bcjPpc());
+        assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_POWERPC, 0), SevenZipFilter.bcjPowerPC());
         assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_IA64, 0), SevenZipFilter.bcjIa64());
         assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_ARM, 0), SevenZipFilter.bcjArm());
         assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_ARM_THUMB, 0), SevenZipFilter.bcjArmThumb());
@@ -34,7 +34,7 @@ public final class SevenZipFilterTest {
         assertEquals(SevenZipFilter.bcjX86(), SevenZipFilter.of(SevenZipFilterMethod.BCJ_X86));
         assertEquals(SevenZipFilter.bcj2(), SevenZipFilter.of(SevenZipFilterMethod.BCJ2));
         assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_X86, 0xffff_ffffL), SevenZipFilter.bcjX86(0xffff_ffffL));
-        assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_PPC, 4), SevenZipFilter.bcjPpc(4));
+        assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_POWERPC, 4), SevenZipFilter.bcjPowerPC(4));
         assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_IA64, 16), SevenZipFilter.bcjIa64(16));
         assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_ARM, 8), SevenZipFilter.bcjArm(8));
         assertEquals(new SevenZipFilter(SevenZipFilterMethod.BCJ_ARM_THUMB, 2), SevenZipFilter.bcjArmThumb(2));
@@ -57,7 +57,7 @@ public final class SevenZipFilterTest {
                 IllegalArgumentException.class,
                 () -> SevenZipFilter.bcjX86(SevenZipFilter.MAX_BCJ_START_OFFSET + 1)
         );
-        assertThrows(IllegalArgumentException.class, () -> SevenZipFilter.bcjPpc(2));
+        assertThrows(IllegalArgumentException.class, () -> SevenZipFilter.bcjPowerPC(2));
         assertThrows(IllegalArgumentException.class, () -> SevenZipFilter.bcjIa64(4));
         assertThrows(IllegalArgumentException.class, () -> SevenZipFilter.bcjArm(2));
         assertThrows(IllegalArgumentException.class, () -> SevenZipFilter.bcjArmThumb(1));
@@ -72,7 +72,7 @@ public final class SevenZipFilterTest {
         assertEquals(SevenZipFilterMethod.DELTA, SevenZipFilterMethod.parse("delta"));
         assertEquals(SevenZipFilterMethod.BCJ_X86, SevenZipFilterMethod.parse("BCJ_X86"));
         assertEquals(SevenZipFilterMethod.BCJ2, SevenZipFilterMethod.parse("BCJ2"));
-        assertEquals(SevenZipFilterMethod.BCJ_PPC, SevenZipFilterMethod.parse("bcj-ppc"));
+        assertEquals(SevenZipFilterMethod.BCJ_POWERPC, SevenZipFilterMethod.parse("bcj-ppc"));
         assertEquals(SevenZipFilterMethod.BCJ_IA64, SevenZipFilterMethod.parse("bcj-ia64"));
         assertEquals(SevenZipFilterMethod.BCJ_ARM, SevenZipFilterMethod.parse("bcj-arm"));
         assertEquals(SevenZipFilterMethod.BCJ_ARM_THUMB, SevenZipFilterMethod.parse("bcj-arm-thumb"));

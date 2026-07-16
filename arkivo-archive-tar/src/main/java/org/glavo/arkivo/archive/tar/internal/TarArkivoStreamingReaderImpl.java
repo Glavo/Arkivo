@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.tar.internal;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
@@ -101,14 +102,14 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     private boolean sourceClosed;
 
     /// Creates a streaming TAR reader.
-    public TarArkivoStreamingReaderImpl(InputStream source, Map<String, ?> environment) {
+    public TarArkivoStreamingReaderImpl(InputStream source, ArchiveOptions options) {
         this.source = Objects.requireNonNull(source, "source");
-        this.readLimits = ArkivoReadLimitTracker.fromEnvironment(environment);
+        this.readLimits = ArkivoReadLimitTracker.fromOptions(options);
     }
 
     /// Advances to the next TAR entry and returns whether an entry is available.
     @Override
-    public boolean next() throws IOException {
+    protected boolean advance() throws IOException {
         ensureOpen();
         readLimits.requireWithinLimits();
         if (finished) {
@@ -192,14 +193,14 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
 
     /// Reads the current archive entry attributes as the requested attribute type.
     @Override
-    public <A extends BasicFileAttributes> A readAttributes(Class<A> type) throws IOException {
+    protected <A extends BasicFileAttributes> A readCurrentAttributes(Class<A> type) throws IOException {
         ensureOpen();
         Objects.requireNonNull(type, "type");
         TarEntryAttributes attributes = currentAttributes;
         if (attributes == null) {
             throw new IllegalStateException("TAR streaming reader is not positioned at an entry");
         }
-        if (type == BasicFileAttributes.class || type == TarArkivoEntryAttributes.class || type == PosixFileAttributes.class) {
+        if (type.isInstance(attributes)) {
             return type.cast(attributes);
         }
         throw new UnsupportedOperationException("Unsupported TAR streaming attributes type: " + type.getName());
@@ -207,7 +208,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
 
     /// Opens a readable channel for the current entry body.
     @Override
-    public ReadableByteChannel openChannel() throws IOException {
+    protected ReadableByteChannel openCurrentChannel() throws IOException {
         ensureOpen();
         TarEntryAttributes attributes = currentAttributes;
         if (attributes == null) {
@@ -228,7 +229,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
 
     /// Closes this streaming reader.
     @Override
-    public void close() throws IOException {
+    protected void closeReader() throws IOException {
         if (!open && sourceClosed) {
             return;
         }

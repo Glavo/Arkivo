@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.all;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
@@ -19,7 +20,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -47,8 +47,8 @@ final class ReadmeExamplesTest {
     @Test
     void createsAndReadsZipFileSystem(@TempDir Path temporaryDirectory) throws IOException {
         Path archive = temporaryDirectory.resolve("example.zip");
-        Map<String, ?> writable = Map.of(
-                ArkivoFileSystem.OPEN_OPTIONS.key(),
+        ArchiveOptions writable = ArchiveOptions.of(
+                ArkivoFileSystem.OPEN_OPTIONS,
                 Set.of(
                         StandardOpenOption.CREATE,
                         StandardOpenOption.TRUNCATE_EXISTING,

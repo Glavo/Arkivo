@@ -49,7 +49,8 @@ public interface CompressionEncoder extends AutoCloseable {
     /// Incrementally encodes a sequence of independently terminated compression frames.
     ///
     /// Completing a frame preserves immutable encoder configuration and leaves the encoder ready to accept source bytes
-    /// for a following frame. The following frame may be initialized lazily.
+    /// for a following frame. The following frame may be initialized lazily. Calling terminal `finish` before accepting
+    /// more source bytes must end the complete encoding without emitting an additional empty frame.
     @NotNullByDefault
     interface Framed extends CompressionEncoder {
         /// Finishes the current frame without finishing the complete encoding session.
@@ -58,14 +59,7 @@ public interface CompressionEncoder extends AutoCloseable {
         ///
         /// @return `CodecOutcome.BOUNDARY_REACHED` when the frame boundary completed, or
         /// `CodecOutcome.NEEDS_OUTPUT` otherwise
-        default CodecOutcome finishFrame(ByteBuffer target) throws IOException {
-            CodecOutcome outcome = finish(target);
-            if (outcome == CodecOutcome.FINISHED) {
-                reset();
-                return CodecOutcome.BOUNDARY_REACHED;
-            }
-            return outcome;
-        }
+        CodecOutcome finishFrame(ByteBuffer target) throws IOException;
     }
 
     /// Encodes independently terminated frames and supports nonterminal flushing within each active frame.

@@ -13,6 +13,7 @@ import java.nio.charset.Charset;
 import java.util.Objects;
 
 /// Supplies passwords for encrypted archive data.
+@FunctionalInterface
 @NotNullByDefault
 public interface ArkivoPasswordProvider {
     /// Returns a provider that never supplies a password.
@@ -22,7 +23,7 @@ public interface ArkivoPasswordProvider {
 
     /// Returns a provider that supplies a defensive copy of the given password bytes.
     static ArkivoPasswordProvider fixed(byte[] password) {
-        byte[] storedPassword = password.clone();
+        byte[] storedPassword = Objects.requireNonNull(password, "password").clone();
         return () -> storedPassword.clone();
     }
 

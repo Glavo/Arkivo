@@ -4,43 +4,89 @@
 package org.glavo.arkivo.archive.sevenzip;
 
 import org.jetbrains.annotations.NotNullByDefault;
+import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.util.Arrays;
 import java.util.Objects;
 
-/// Describes one coder in a 7z folder graph.
-///
-/// @param method the supported coder method
-/// @param properties the raw coder properties
-/// @param inputStreamCount the number of graph input streams consumed by the coder
-/// @param outputStreamCount the number of graph output streams produced by the coder
-/// @param firstInputStreamIndex the first graph input stream owned by the coder
-/// @param firstOutputStreamIndex the first graph output stream owned by the coder
+/// Describes one immutable coder in a 7z folder graph.
 @NotNullByDefault
-public record SevenZipCoder(
-        SevenZipCoderMethod method,
-        byte @Unmodifiable [] properties,
-        int inputStreamCount,
-        int outputStreamCount,
-        int firstInputStreamIndex,
-        int firstOutputStreamIndex
-) {
+public final class SevenZipCoder {
+    /// The supported coder method.
+    private final SevenZipCoderMethod method;
+
+    /// The immutable raw coder properties.
+    private final byte @Unmodifiable [] properties;
+
+    /// The number of graph input streams consumed by the coder.
+    private final int inputStreamCount;
+
+    /// The number of graph output streams produced by the coder.
+    private final int outputStreamCount;
+
+    /// The first graph input stream owned by the coder.
+    private final int firstInputStreamIndex;
+
+    /// The first graph output stream owned by the coder.
+    private final int firstOutputStreamIndex;
+
     /// Validates and snapshots coder metadata.
-    public SevenZipCoder {
-        Objects.requireNonNull(method, "method");
-        properties = Objects.requireNonNull(properties, "properties").clone();
+    public SevenZipCoder(
+            SevenZipCoderMethod method,
+            byte[] properties,
+            int inputStreamCount,
+            int outputStreamCount,
+            int firstInputStreamIndex,
+            int firstOutputStreamIndex
+    ) {
+        this.method = Objects.requireNonNull(method, "method");
+        this.properties = Objects.requireNonNull(properties, "properties").clone();
         if (inputStreamCount <= 0 || outputStreamCount <= 0) {
             throw new IllegalArgumentException("Coder stream counts must be positive");
         }
         if (firstInputStreamIndex < 0 || firstOutputStreamIndex < 0) {
             throw new IllegalArgumentException("Coder stream indexes must be non-negative");
         }
+        this.inputStreamCount = inputStreamCount;
+        this.outputStreamCount = outputStreamCount;
+        this.firstInputStreamIndex = firstInputStreamIndex;
+        this.firstOutputStreamIndex = firstOutputStreamIndex;
+    }
+
+    /// Returns the supported coder method.
+    public SevenZipCoderMethod method() {
+        return method;
+    }
+
+    /// Returns a copy of the raw coder properties.
+    public byte[] properties() {
+        return properties.clone();
+    }
+
+    /// Returns the number of graph input streams consumed by the coder.
+    public int inputStreamCount() {
+        return inputStreamCount;
+    }
+
+    /// Returns the number of graph output streams produced by the coder.
+    public int outputStreamCount() {
+        return outputStreamCount;
+    }
+
+    /// Returns the first graph input stream owned by the coder.
+    public int firstInputStreamIndex() {
+        return firstInputStreamIndex;
+    }
+
+    /// Returns the first graph output stream owned by the coder.
+    public int firstOutputStreamIndex() {
+        return firstOutputStreamIndex;
     }
 
     /// Returns whether another coder has the same method, properties, and stream range.
     @Override
-    public boolean equals(Object object) {
+    public boolean equals(@Nullable Object object) {
         return object instanceof SevenZipCoder other
                 && method == other.method
                 && Arrays.equals(properties, other.properties)
@@ -73,11 +119,5 @@ public record SevenZipCoder(
                 + ", firstInputStreamIndex=" + firstInputStreamIndex
                 + ", firstOutputStreamIndex=" + firstOutputStreamIndex
                 + "]";
-    }
-
-    /// Returns a copy of the raw coder properties.
-    @Override
-    public byte[] properties() {
-        return properties.clone();
     }
 }

@@ -7,8 +7,9 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecompressionLimitException;
+import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DictionaryRequiredException;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -98,7 +99,7 @@ final class DirectByteBufferCodecSupport {
 
     /// Creates an encoder and supplies the exact one-shot source size when the codec supports it.
     private static CompressionEncoder newEncoder(CompressionCodec<?> codec, long sourceSize) throws IOException {
-        if (codec instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?> pledgedSourceSizeCodec) {
+        if (codec instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?, ?> pledgedSourceSizeCodec) {
             return pledgedSourceSizeCodec.newEncoder(sourceSize);
         }
         return codec.newEncoder();
@@ -233,7 +234,7 @@ final class DirectByteBufferCodecSupport {
                 CodecOutcome outcome = decoder.decode(source, target, true);
                 int produced = target.position() - targetPosition;
                 if (probing && produced != 0) {
-                    throw new DecompressionLimitException(maximumOutputSize);
+                    throw new DecompressionOutputLimitException(maximumOutputSize);
                 }
 
                 if (outcome == CodecOutcome.FINISHED) {
@@ -301,7 +302,7 @@ final class DirectByteBufferCodecSupport {
                 int produced = operationTarget.position() - targetPosition;
                 if (probing && produced != 0) {
                     if (limitReached) {
-                        throw new DecompressionLimitException(maximumOutputSize);
+                        throw new DecompressionOutputLimitException(maximumOutputSize);
                     }
                     throw new BufferOverflowException();
                 }
@@ -342,10 +343,10 @@ final class DirectByteBufferCodecSupport {
             int targetPosition
     ) throws IOException {
         if (outcome == CodecOutcome.NEEDS_DICTIONARY) {
-            String request = decoder instanceof CompressionDecoder.DictionaryAware<?, ?> dictionaryDecoder
-                    ? dictionaryDecoder.dictionaryRequest().toString()
-                    : "unspecified";
-            throw new IOException("Compression decoder requires dictionary: " + request);
+            if (decoder instanceof CompressionDecoder.DictionaryAware<?, ?> dictionaryDecoder) {
+                throw new DictionaryRequiredException(dictionaryDecoder.dictionaryRequest());
+            }
+            throw new IOException("Compression decoder requested a dictionary without exposing its request");
         }
         if (outcome == CodecOutcome.NEEDS_INPUT) {
             if (source.hasRemaining()) {

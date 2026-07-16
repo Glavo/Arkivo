@@ -6,6 +6,8 @@ package org.glavo.arkivo.codec.delta;
 import org.glavo.arkivo.codec.transform.ByteTransform;
 import org.jetbrains.annotations.NotNullByDefault;
 
+import java.util.Objects;
+
 /// Applies the byte-wise Delta filter used by XZ and 7z with a history distance from 1 through 256.
 @NotNullByDefault
 public final class DeltaTransform implements ByteTransform {
@@ -18,12 +20,13 @@ public final class DeltaTransform implements ByteTransform {
     /// The next history position to replace.
     private int historyPosition;
 
-    /// Creates a Delta encoder or decoder with the requested distance.
-    public DeltaTransform(boolean encoder, int distance) {
+    /// Creates a Delta transform with the requested direction and history distance.
+    public DeltaTransform(ByteTransform.Direction direction, int distance) {
+        Objects.requireNonNull(direction, "direction");
         if (distance < 1 || distance > 256) {
             throw new IllegalArgumentException("Delta distance must be between 1 and 256");
         }
-        this.encoder = encoder;
+        this.encoder = direction == ByteTransform.Direction.ENCODE;
         this.history = new byte[distance];
     }
 

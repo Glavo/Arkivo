@@ -8,8 +8,7 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.DictionaryRequest;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
-import org.glavo.arkivo.codec.DecompressionLimitException;
+import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.UnmodifiableView;
 
@@ -56,13 +55,27 @@ public final class CompressionDecoderSupport {
         return OutputLimitingCompressionDecoder.create(decoder, maximumOutputSize);
     }
 
+    /// Applies a maximum decoded-output size while preserving frame support.
+    ///
+    /// A negative value leaves the decoder unchanged.
+    public static CompressionDecoder.Framed limitEngineOutput(
+            CompressionDecoder.Framed decoder,
+            long maximumOutputSize
+    ) {
+        Objects.requireNonNull(decoder, "decoder");
+        if (maximumOutputSize < 0L) {
+            return decoder;
+        }
+        return OutputLimitingCompressionDecoder.createFramed(decoder, maximumOutputSize);
+    }
+
     /// Applies a maximum decoded-output size while preserving typed late dictionary binding.
     ///
     /// A negative value leaves the decoder unchanged.
     ///
     /// @param <D> the format-specific dictionary type
     /// @param <R> the format-specific dictionary request type
-    public static <D extends CompressionDictionary, R extends DictionaryRequest>
+    public static <D extends CompressionDictionary, R extends DictionaryRequest<D>>
             CompressionDecoder.DictionaryAware<D, R> limitEngineOutput(
             CompressionDecoder.DictionaryAware<D, R> decoder,
             long maximumOutputSize
@@ -72,6 +85,24 @@ public final class CompressionDecoderSupport {
             return decoder;
         }
         return OutputLimitingCompressionDecoder.createDictionaryAware(decoder, maximumOutputSize);
+    }
+
+    /// Applies a maximum decoded-output size while preserving frame and late-dictionary support.
+    ///
+    /// A negative value leaves the decoder unchanged.
+    ///
+    /// @param <D> the format-specific dictionary type
+    /// @param <R> the format-specific dictionary request type
+    public static <D extends CompressionDictionary, R extends DictionaryRequest<D>>
+            CompressionDecoder.FramedDictionaryAware<D, R> limitEngineOutput(
+            CompressionDecoder.FramedDictionaryAware<D, R> decoder,
+            long maximumOutputSize
+    ) {
+        Objects.requireNonNull(decoder, "decoder");
+        if (maximumOutputSize < 0L) {
+            return decoder;
+        }
+        return OutputLimitingCompressionDecoder.createFramedDictionaryAware(decoder, maximumOutputSize);
     }
 
     /// Applies a maximum decoded-output size across a complete channel decoding session.
@@ -85,12 +116,28 @@ public final class CompressionDecoderSupport {
         if (maximumOutputSize < 0L) {
             return decoder;
         }
+        if (decoder instanceof DecompressingReadableByteChannel.Framed framedDecoder) {
+            return new FramedOutputLimitingChannel(framedDecoder, maximumOutputSize);
+        }
         return new OutputLimitingChannel(decoder, maximumOutputSize);
     }
 
+    /// Applies a maximum decoded-output size while preserving channel frame support.
+    ///
+    /// A negative value leaves the channel unchanged.
+    public static DecompressingReadableByteChannel.Framed limitChannelOutput(
+            DecompressingReadableByteChannel.Framed decoder,
+            long maximumOutputSize
+    ) {
+        Objects.requireNonNull(decoder, "decoder");
+        if (maximumOutputSize < 0L) {
+            return decoder;
+        }
+        return new FramedOutputLimitingChannel(decoder, maximumOutputSize);
+    }
     /// Enforces a total maximum output size over a channel decoding session.
     @NotNullByDefault
-    private static final class OutputLimitingChannel
+    private static class OutputLimitingChannel
             implements DecompressingReadableByteChannel {
         /// The algorithm-specific decoder channel.
         private final DecompressingReadableByteChannel decoder;
@@ -108,7 +155,7 @@ public final class CompressionDecoderSupport {
         private boolean exceeded;
 
         /// Creates an output-limiting channel.
-        private OutputLimitingChannel(
+        protected OutputLimitingChannel(
                 DecompressingReadableByteChannel decoder,
                 long maximumOutputSize
         ) {
@@ -129,7 +176,7 @@ public final class CompressionDecoderSupport {
 
             long remaining = maximumOutputSize - outputBytes;
             if (remaining == 0L) {
-                return probeForExcess();
+                return probeForExcessRead();
             }
 
             int originalLimit = target.limit();
@@ -148,24 +195,28 @@ public final class CompressionDecoderSupport {
             return read;
         }
 
-        /// Decodes with frame control while enforcing the total output limit.
+        /// Decodes without returning more than the configured maximum.
         @Override
-        public CodecResult decode(
+        public CodecResult decode(ByteBuffer target) throws IOException {
+            return decodeLimited(target, false);
+        }
+
+        /// Decodes with optional frame-boundary reporting while enforcing the output limit.
+        protected final CodecResult decodeLimited(
                 ByteBuffer target,
-                Directive directive
+                boolean stopAtFrame
         ) throws IOException {
             Objects.requireNonNull(target, "target");
-            Objects.requireNonNull(directive, "directive");
             if (exceeded) {
                 throw limitException();
             }
             if (!target.hasRemaining()) {
-                return decoder.decode(target, directive);
+                return decodeDelegate(target, stopAtFrame);
             }
 
             long remaining = maximumOutputSize - outputBytes;
             if (remaining == 0L) {
-                return probeForExcess(directive);
+                return probeForExcessDecode(stopAtFrame);
             }
 
             int start = target.position();
@@ -175,7 +226,7 @@ public final class CompressionDecoderSupport {
             }
             CodecResult result;
             try {
-                result = decoder.decode(target, directive);
+                result = decodeDelegate(target, stopAtFrame);
             } finally {
                 target.limit(originalLimit);
             }
@@ -220,8 +271,19 @@ public final class CompressionDecoderSupport {
             decoder.close();
         }
 
-        /// Probes for one excess byte after the output limit is reached.
-        private int probeForExcess() throws IOException {
+        /// Invokes the ordinary or frame-stopping decode operation.
+        private CodecResult decodeDelegate(ByteBuffer target, boolean stopAtFrame) throws IOException {
+            if (stopAtFrame) {
+                if (decoder instanceof DecompressingReadableByteChannel.Framed framedDecoder) {
+                    return framedDecoder.decodeFrame(target);
+                }
+                throw new AssertionError("Frame decoding requires a framed channel");
+            }
+            return decoder.decode(target);
+        }
+
+        /// Probes for one excess byte through the ordinary channel read contract.
+        private int probeForExcessRead() throws IOException {
             probe.clear();
             int read = decoder.read(probe);
             if (read <= 0) {
@@ -231,10 +293,10 @@ public final class CompressionDecoderSupport {
             throw limitException();
         }
 
-        /// Probes one frame-aware operation after the output limit is reached.
-        private CodecResult probeForExcess(Directive directive) throws IOException {
+        /// Probes one decode operation after the output limit is reached.
+        private CodecResult probeForExcessDecode(boolean stopAtFrame) throws IOException {
             probe.clear();
-            CodecResult result = decoder.decode(probe, directive);
+            CodecResult result = decodeDelegate(probe, stopAtFrame);
             if (result.outputBytes() == 0L) {
                 return result;
             }
@@ -243,8 +305,28 @@ public final class CompressionDecoderSupport {
         }
 
         /// Creates the stable configured decompression-limit failure.
-        private DecompressionLimitException limitException() {
-            return new DecompressionLimitException(maximumOutputSize);
+        private DecompressionOutputLimitException limitException() {
+            return new DecompressionOutputLimitException(maximumOutputSize);
+        }
+    }
+
+    /// Preserves frame-boundary control through a channel output limiter.
+    @NotNullByDefault
+    private static final class FramedOutputLimitingChannel
+            extends OutputLimitingChannel
+            implements DecompressingReadableByteChannel.Framed {
+        /// Creates a frame-capable output-limiting channel.
+        private FramedOutputLimitingChannel(
+                DecompressingReadableByteChannel.Framed decoder,
+                long maximumOutputSize
+        ) {
+            super(decoder, maximumOutputSize);
+        }
+
+        /// Decodes through the current frame while enforcing the session output limit.
+        @Override
+        public CodecResult decodeFrame(ByteBuffer target) throws IOException {
+            return decodeLimited(target, true);
         }
     }
 }

@@ -7,7 +7,6 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.CompressingWritableByteChannel.Directive;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -70,7 +69,7 @@ public final class GzipCodecTest {
         GzipCodec codec = new GzipCodec();
 
         ByteArrayOutputStream encodedByCodec = new ByteArrayOutputStream();
-        try (OutputStream output = codec.compressTo(encodedByCodec)) {
+        try (OutputStream output = codec.openEncoder(encodedByCodec)) {
             output.write(input);
         }
         try (InputStream inputStream = new GZIPInputStream(
@@ -80,7 +79,7 @@ public final class GzipCodecTest {
         }
 
         byte[] encodedByJdk = gzip(input);
-        try (InputStream inputStream = codec.decompressFrom(new ByteArrayInputStream(encodedByJdk))) {
+        try (InputStream inputStream = codec.openDecoder(new ByteArrayInputStream(encodedByJdk))) {
             assertArrayEquals(input, inputStream.readAllBytes());
         }
     }
@@ -94,7 +93,7 @@ public final class GzipCodecTest {
         concatenated.writeBytes(gzip(first));
         concatenated.writeBytes(gzip(second));
 
-        try (InputStream input = new GzipCodec().decompressFrom(
+        try (InputStream input = new GzipCodec().openDecoder(
                 new ByteArrayInputStream(concatenated.toByteArray())
         )) {
             assertArrayEquals(
@@ -113,17 +112,17 @@ public final class GzipCodecTest {
                 .withCompressionStrategy(CompressionStrategy.HUFFMAN_ONLY);
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
 
-        CompressingWritableByteChannel encoder = codec.openEncoder(
+        CompressingWritableByteChannel.FlushableFramed encoder = codec.openEncoder(
                 Channels.newChannel(compressed),
                 ChannelOwnership.RETAIN
         );
-        encoder.encode(ByteBuffer.wrap(first), Directive.END_FRAME);
+        encoder.finishFrame(ByteBuffer.wrap(first));
         int firstMemberSize = compressed.size();
         assertTrue(encoder.isOpen());
         encoder.flush();
         assertEquals(firstMemberSize, compressed.size());
 
-        encoder.encode(ByteBuffer.wrap(second), Directive.END_FRAME);
+        encoder.finishFrame(ByteBuffer.wrap(second));
         int completeSize = compressed.size();
         assertTrue(completeSize > firstMemberSize);
         encoder.finish();
@@ -146,13 +145,13 @@ public final class GzipCodecTest {
         byte[] content = "optional gzip header".getBytes(StandardCharsets.UTF_8);
         byte[] member = gzipWithOptionalHeader(content);
 
-        try (InputStream input = new GzipCodec().decompressFrom(new ByteArrayInputStream(member))) {
+        try (InputStream input = new GzipCodec().openDecoder(new ByteArrayInputStream(member))) {
             assertArrayEquals(content, input.readAllBytes());
         }
 
         member[12] ^= 1;
         assertThrows(IOException.class, () -> {
-            try (InputStream input = new GzipCodec().decompressFrom(new ByteArrayInputStream(member))) {
+            try (InputStream input = new GzipCodec().openDecoder(new ByteArrayInputStream(member))) {
                 input.readAllBytes();
             }
         });
@@ -165,7 +164,7 @@ public final class GzipCodecTest {
         member[member.length - 8] ^= 1;
 
         assertThrows(IOException.class, () -> {
-            try (InputStream input = new GzipCodec().decompressFrom(new ByteArrayInputStream(member))) {
+            try (InputStream input = new GzipCodec().openDecoder(new ByteArrayInputStream(member))) {
                 input.readAllBytes();
             }
         });
@@ -207,11 +206,11 @@ public final class GzipCodecTest {
     /// Compresses and decompresses the given bytes.
     private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-        try (OutputStream output = codec.compressTo(compressed)) {
+        try (OutputStream output = codec.openEncoder(compressed)) {
             output.write(input);
         }
 
-        try (InputStream inputStream = codec.decompressFrom(new ByteArrayInputStream(compressed.toByteArray()))) {
+        try (InputStream inputStream = codec.openDecoder(new ByteArrayInputStream(compressed.toByteArray()))) {
             return inputStream.readAllBytes();
         }
     }

@@ -162,7 +162,6 @@ public final class StreamCodecAdapters {
         }
 
         /// Flushes codec and transport buffers.
-        @Override
         public void flush() throws IOException {
             ensureOpen();
             output.flush();

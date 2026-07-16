@@ -4,6 +4,7 @@
 package org.glavo.arkivo.all;
 
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFormat;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
@@ -368,7 +369,7 @@ final class StreamingAggregationTest {
                 () -> ArkivoFormats.openStreamingReader(
                         "zip",
                         (ArkivoVolumeSource) source,
-                        Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), "invalid")
+                        ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), "invalid"))
                 )
         );
 
@@ -415,7 +416,7 @@ final class StreamingAggregationTest {
                         "zip",
                         conflictingOptionTarget,
                         ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE,
-                        Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE)
+                        ArchiveOptions.of(ZipArkivoFileSystem.SPLIT_SIZE, ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE)
                 )
         );
         assertEquals(0, conflictingOptionTarget.openOutputCount());
@@ -510,7 +511,7 @@ final class StreamingAggregationTest {
                 IllegalArgumentException.class,
                 () -> ArkivoFormats.openFileSystem(
                         channel,
-                        Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), "invalid")
+                        ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), "invalid"))
                 )
         );
         assertFalse(channel.isOpen());
@@ -588,7 +589,7 @@ final class StreamingAggregationTest {
                 () -> ArkivoFormats.openFileSystem(
                         "zip",
                         invalidEnvironment,
-                        Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), "invalid")
+                        ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), "invalid"))
                 )
         );
         assertFalse(invalidEnvironment.isOpen());
@@ -673,8 +674,8 @@ final class StreamingAggregationTest {
     /// Verifies unified channel-source updates require explicit publication and release ownership once on rejection.
     @Test
     void rejectsChannelSourceUpdatesWithoutCommitTargets() throws IOException {
-        Map<String, Object> environment = Map.of(
-                ArkivoFileSystem.OPEN_OPTIONS.key(),
+        ArchiveOptions options = ArchiveOptions.of(
+                ArkivoFileSystem.OPEN_OPTIONS,
                 Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
         );
         for (Map.Entry<String, byte[]> archive : Map.of(
@@ -687,7 +688,7 @@ final class StreamingAggregationTest {
 
             assertThrows(
                     IllegalArgumentException.class,
-                    () -> ArkivoFormats.openFileSystem(source, environment),
+                    () -> ArkivoFormats.openFileSystem(source, options),
                     archive.getKey()
             );
 
@@ -792,7 +793,7 @@ final class StreamingAggregationTest {
                         invalidEnvironmentSource,
                         invalidEnvironmentTarget,
                         ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE,
-                        Map.of(ArkivoFileSystem.OPEN_OPTIONS.key(), Set.of(StandardOpenOption.WRITE))
+                        ArchiveOptions.of(ArkivoFileSystem.OPEN_OPTIONS, Set.of(StandardOpenOption.WRITE))
                 )
         );
         assertEquals(1, invalidEnvironmentSource.closeCount());
@@ -805,8 +806,8 @@ final class StreamingAggregationTest {
                         "zip",
                         invalidCreateTarget,
                         ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE,
-                        Map.of(
-                                ZipArkivoFileSystem.SPLIT_SIZE.key(),
+                        ArchiveOptions.of(
+                                ZipArkivoFileSystem.SPLIT_SIZE,
                                 ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE + 1L
                         )
                 )
@@ -839,7 +840,7 @@ final class StreamingAggregationTest {
                 () -> ArkivoFormats.openFileSystem(
                         "zip",
                         (ArkivoVolumeSource) invalidZip,
-                        Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), "invalid")
+                        ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), "invalid"))
                 )
         );
         assertEquals(1, invalidZip.closeCount());
@@ -853,7 +854,7 @@ final class StreamingAggregationTest {
                 () -> ArkivoFormats.openFileSystem(
                         "rar",
                         (ArkivoVolumeSource) invalidRar,
-                        Map.of(ArkivoFileSystem.OPEN_OPTIONS.key(), Set.of(java.nio.file.StandardOpenOption.WRITE))
+                        ArchiveOptions.of(ArkivoFileSystem.OPEN_OPTIONS, Set.of(java.nio.file.StandardOpenOption.WRITE))
                 )
         );
         assertEquals(1, invalidRar.closeCount());
@@ -874,12 +875,12 @@ final class StreamingAggregationTest {
     void opensCompressedTarStreamsWithInstalledFormats() throws IOException {
         for (String formatName : Set.of("bzip2", "gzip", "xz", "zlib", "zstd")) {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
-            Map<String, Object> environment = Map.of(
-                    TarArkivoFileSystem.COMPRESSION.key(),
+            ArchiveOptions options = ArchiveOptions.EMPTY.withString(
+                    TarArkivoFileSystem.COMPRESSION,
                     formatName
             );
             WritableByteChannel target = Channels.newChannel(output);
-            try (ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter("tar", target, environment)) {
+            try (ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter("tar", target, options)) {
                 writeEntry(writer);
             }
             assertFalse(target.isOpen(), formatName);
@@ -946,7 +947,7 @@ final class StreamingAggregationTest {
                 UnsupportedOperationException.class,
                 () -> ZipArkivoStreamingWriter.open(
                         directTarget,
-                        Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE)
+                        ArchiveOptions.of(ZipArkivoFileSystem.SPLIT_SIZE, ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE)
                 )
         );
 
@@ -961,7 +962,7 @@ final class StreamingAggregationTest {
                 () -> ArkivoFormats.openStreamingWriter(
                         "zip",
                         unifiedTarget,
-                        Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE)
+                        ArchiveOptions.of(ZipArkivoFileSystem.SPLIT_SIZE, ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE)
                 )
         );
 
@@ -1079,7 +1080,7 @@ final class StreamingAggregationTest {
                 IllegalArgumentException.class,
                 () -> ArkivoFormats.openStreamingReader(
                         source,
-                        Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), "invalid")
+                        ArchiveOptions.fromEnvironment(Map.of(ZipArkivoFileSystem.PASSWORD_PROVIDER.key(), "invalid"))
                 )
         );
         assertTrue(source.closed());
@@ -1133,7 +1134,7 @@ final class StreamingAggregationTest {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(
                 output,
-                Map.of(TarArkivoFileSystem.COMPRESSION.key(), "gzip")
+                ArchiveOptions.EMPTY.withString(TarArkivoFileSystem.COMPRESSION, "gzip")
         )) {
             writeEntry(writer);
         }
@@ -1221,8 +1222,8 @@ final class StreamingAggregationTest {
     /// Opens and verifies one archive path through detection or an explicit format name.
     private static void assertPathFileSystem(Path path, @Nullable String format) throws IOException {
         try (ArkivoFileSystem fileSystem = format == null
-                ? ArkivoFormats.openFileSystem(path, Map.of())
-                : ArkivoFormats.openFileSystem(format, path, Map.of())) {
+                ? ArkivoFormats.openFileSystem(path, ArchiveOptions.EMPTY)
+                : ArkivoFormats.openFileSystem(format, path, ArchiveOptions.EMPTY)) {
             assertSingleEntryFileSystem(fileSystem, format == null ? path.toString() : format);
         }
     }
@@ -1253,10 +1254,10 @@ final class StreamingAggregationTest {
         Files.delete(target);
         byte[] updatedContent = ("updated-" + archiveFormat).getBytes(StandardCharsets.UTF_8);
         try {
-            Map<String, Object> environment = updateEnvironment(target);
+            ArchiveOptions options = updateOptions(target);
             try (ArkivoFileSystem fileSystem = selectedFormat == null
-                    ? ArkivoFormats.openFileSystem(source, environment)
-                    : ArkivoFormats.openFileSystem(selectedFormat, source, environment)) {
+                    ? ArkivoFormats.openFileSystem(source, options)
+                    : ArkivoFormats.openFileSystem(selectedFormat, source, options)) {
                 assertFalse(fileSystem.isReadOnly(), archiveFormat);
                 assertArrayEquals(
                         CONTENT,
@@ -1299,10 +1300,10 @@ final class StreamingAggregationTest {
         Files.delete(target);
         byte[] updatedContent = ("owned-" + archiveFormat).getBytes(StandardCharsets.UTF_8);
         try {
-            Map<String, Object> environment = updateEnvironment(target);
+            ArchiveOptions options = updateOptions(target);
             try (ArkivoFileSystem fileSystem = selectedFormat == null
-                    ? ArkivoFormats.openFileSystem(source, environment)
-                    : ArkivoFormats.openFileSystem(selectedFormat, source, environment)) {
+                    ? ArkivoFormats.openFileSystem(source, options)
+                    : ArkivoFormats.openFileSystem(selectedFormat, source, options)) {
                 assertFalse(fileSystem.isReadOnly(), archiveFormat);
                 assertArrayEquals(
                         CONTENT,
@@ -1334,14 +1335,12 @@ final class StreamingAggregationTest {
         }
     }
 
-    /// Returns the common complete-rewrite environment for a derived archive target.
-    private static Map<String, Object> updateEnvironment(Path target) {
-        return Map.of(
-                ArkivoFileSystem.OPEN_OPTIONS.key(),
-                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
-                ArkivoFileSystem.COMMIT_TARGET.key(),
-                ArkivoCommitTarget.writeTo(target)
-        );
+    /// Returns the common complete-rewrite options for a derived archive target.
+    private static ArchiveOptions updateOptions(Path target) {
+        return ArchiveOptions.builder()
+                .set(ArkivoFileSystem.OPEN_OPTIONS, Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE))
+                .set(ArkivoFileSystem.COMMIT_TARGET, ArkivoCommitTarget.writeTo(target))
+                .build();
     }
 
     /// Verifies the updated and added entries in one derived archive through automatic format detection.
@@ -1373,7 +1372,7 @@ final class StreamingAggregationTest {
         TrackingSeekableSource source = new TrackingSeekableSource(archive);
         try (ArkivoFileSystem fileSystem = format == null
                 ? ArkivoFormats.openFileSystem(source)
-                : ArkivoFormats.openFileSystem(format, source, Map.of())) {
+                : ArkivoFormats.openFileSystem(format, source, ArchiveOptions.EMPTY)) {
             if (empty) {
                 assertTrue(fileSystem.isOpen());
             } else {
@@ -1392,7 +1391,7 @@ final class StreamingAggregationTest {
         TrackingVolumeSource source = new TrackingVolumeSource(volumes);
         try (ArkivoFileSystem fileSystem = format == null
                 ? ArkivoFormats.openFileSystem((ArkivoVolumeSource) source)
-                : ArkivoFormats.openFileSystem(format, (ArkivoVolumeSource) source, Map.of())) {
+                : ArkivoFormats.openFileSystem(format, (ArkivoVolumeSource) source, ArchiveOptions.EMPTY)) {
             if (empty) {
                 assertTrue(fileSystem.isOpen());
             } else {

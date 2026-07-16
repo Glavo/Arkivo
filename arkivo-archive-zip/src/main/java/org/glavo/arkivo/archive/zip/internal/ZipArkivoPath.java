@@ -5,7 +5,7 @@ package org.glavo.arkivo.archive.zip.internal;
 
 import org.glavo.arkivo.archive.internal.AbstractArkivoPath;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
-import org.glavo.arkivo.archive.zip.ZipArkivoFileSystemProvider;
+import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemProvider;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 

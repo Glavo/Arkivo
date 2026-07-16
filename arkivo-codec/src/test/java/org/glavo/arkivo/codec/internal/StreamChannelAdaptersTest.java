@@ -174,7 +174,7 @@ final class StreamChannelAdaptersTest {
 
     /// Records calls made through a stream view of a compression encoder.
     @NotNullByDefault
-    private static final class TrackingCompressingWritableByteChannel implements CompressingWritableByteChannel {
+    private static final class TrackingCompressingWritableByteChannel implements CompressingWritableByteChannel.Flushable {
         /// The number of accepted source bytes.
         private long inputBytes;
 

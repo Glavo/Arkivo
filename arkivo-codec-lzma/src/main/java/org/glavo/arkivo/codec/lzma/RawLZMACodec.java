@@ -19,7 +19,8 @@ import java.util.Objects;
 
 /// Provides an immutable headerless LZMA configuration for containers that carry model properties separately.
 @NotNullByDefault
-public final class RawLZMACodec implements CompressionCodec.PledgedSourceSizeEncoderFactory<RawLZMACodec> {
+public final class RawLZMACodec
+        implements CompressionCodec.PledgedSourceSizeEncoderFactory<RawLZMACodec, CompressionEncoder> {
     /// The stable raw LZMA compression format name.
     public static final String NAME = "lzma-raw";
 
@@ -76,7 +77,7 @@ public final class RawLZMACodec implements CompressionCodec.PledgedSourceSizeEnc
     }
 
     /// Returns whether encoders emit an end marker.
-    public boolean endMarker() {
+    public boolean emitsEndMarker() {
         return endMarker;
     }
 
