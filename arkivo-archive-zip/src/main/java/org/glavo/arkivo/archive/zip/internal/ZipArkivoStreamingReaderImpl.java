@@ -1163,17 +1163,17 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
     /// Opens a Deflate64 decoding stream and owns the compressed stream.
     private static InputStream openDeflate64InputStream(InputStream input) throws IOException {
-        return ZipCompressionCodecs.openInputStream("deflate64", input);
+        return ZipCompressionFormats.openInputStream("deflate64", input);
     }
 
     /// Opens a BZip2 decoding stream and owns the compressed stream.
     private static InputStream openBzip2InputStream(InputStream input) throws IOException {
-        return ZipCompressionCodecs.openInputStream("bzip2", input);
+        return ZipCompressionFormats.openInputStream("bzip2", input);
     }
 
     /// Opens a Zstandard decoding stream and owns the compressed stream.
     private static InputStream openZstandardInputStream(InputStream input) throws IOException {
-        return ZipCompressionCodecs.openInputStream("zstd", input);
+        return ZipCompressionFormats.openInputStream("zstd", input);
     }
 
     /// Opens a ZIP LZMA decoding stream and closes the compressed stream if setup fails.
@@ -1184,7 +1184,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     ) throws IOException {
         try {
             LzmaDecoderParameters parameters = readLzmaDecoderParameters(input, uncompressedSize, flags);
-            return ZipCompressionCodecs.openRawLZMADecoder(
+            return ZipCompressionFormats.openRawLZMADecoder(
                     input,
                     parameters.property(),
                     parameters.dictionarySize(),
@@ -1230,7 +1230,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
     /// Opens an XZ decoding stream and owns the compressed stream.
     private static InputStream openXzInputStream(InputStream input) throws IOException {
-        return ZipCompressionCodecs.openInputStream("xz", input);
+        return ZipCompressionFormats.openInputStream("xz", input);
     }
 
     /// Opens a raw Deflate decoder for an entry with known metadata.
@@ -1241,7 +1241,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             long expectedCrc32,
             long expectedUncompressedSize
     ) throws IOException {
-        DecompressingReadableByteChannel decoder = ZipCompressionCodecs.openDecoder("deflate", compressedInput);
+        DecompressingReadableByteChannel decoder = ZipCompressionFormats.openDecoder("deflate", compressedInput);
         return new KnownSizeEntryInputStream(
                 decoder,
                 compressedSizeOffset,
@@ -1354,7 +1354,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                     ZipArkivoEntryAttributes.UNKNOWN_SIZE,
                     flags
             );
-            DecompressingReadableByteChannel decoder = ZipCompressionCodecs.openRawLZMADecoderContext(
+            DecompressingReadableByteChannel decoder = ZipCompressionFormats.openRawLZMADecoderContext(
                     dataDescriptorDecoderSource(compressedInput, pushbackSourceRemainder),
                     parameters.property(),
                     parameters.dictionarySize(),
@@ -2001,7 +2001,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                     decodeDirective,
                     terminalStatus,
                     input,
-                    ZipCompressionCodecs.openDecoder(
+                    ZipCompressionFormats.openDecoder(
                             codecName,
                             dataDescriptorDecoderSource(compressedInput, pushbackSourceRemainder)
                     ),

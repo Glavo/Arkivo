@@ -30,22 +30,22 @@ public final class ZipOptionalCodecProbe {
     public static void main(String @Unmodifiable [] arguments) throws Exception {
         requireDeflateFamilyCodecs();
         for (String codecName : OPTIONAL_CODEC_NAMES) {
-            requireMissingCodec(codecName, () -> ZipCompressionCodecs.openDecoder(
+            requireMissingCodec(codecName, () -> ZipCompressionFormats.openDecoder(
                     codecName,
                     new ByteArrayInputStream(new byte[0])
             ));
-            requireMissingCodec(codecName, () -> ZipCompressionCodecs.openEncoder(
+            requireMissingCodec(codecName, () -> ZipCompressionFormats.openEncoder(
                     codecName,
                     new ByteArrayOutputStream()
             ));
         }
-        requireMissingCodec("lzma-raw", () -> ZipCompressionCodecs.openRawLZMADecoder(
+        requireMissingCodec("lzma-raw", () -> ZipCompressionFormats.openRawLZMADecoder(
                 new ByteArrayInputStream(new byte[0]),
                 0x5d,
                 1L << 20,
                 0L
         ));
-        requireMissingCodec("lzma-raw", () -> ZipCompressionCodecs.openRawLZMAEncoder(
+        requireMissingCodec("lzma-raw", () -> ZipCompressionFormats.openRawLZMAEncoder(
                 1L << 20,
                 true,
                 new ByteArrayOutputStream()
@@ -60,10 +60,10 @@ public final class ZipOptionalCodecProbe {
 
     /// Requires one bundled codec to open both directions.
     private static void requireBundledCodec(String codecName) throws IOException {
-        try (DecompressingReadableByteChannel ignoredDecoder = ZipCompressionCodecs.openDecoder(
+        try (DecompressingReadableByteChannel ignoredDecoder = ZipCompressionFormats.openDecoder(
                 codecName,
                 new ByteArrayInputStream(new byte[0])
-        ); CompressingWritableByteChannel ignoredEncoder = ZipCompressionCodecs.openEncoder(
+        ); CompressingWritableByteChannel ignoredEncoder = ZipCompressionFormats.openEncoder(
                 codecName,
                 new ByteArrayOutputStream()
         )) {
@@ -71,15 +71,15 @@ public final class ZipOptionalCodecProbe {
         }
     }
 
-    /// Requires one optional-codec operation to fail with the stable missing-codec diagnostic.
+    /// Requires one optional-codec operation to fail with the stable missing-format diagnostic.
     private static void requireMissingCodec(String codecName, CheckedOperation operation) throws Exception {
         try {
             operation.run();
         } catch (IOException exception) {
-            if (("Unknown compression codec: " + codecName).equals(exception.getMessage())) {
+            if (("Unknown compression format: " + codecName).equals(exception.getMessage())) {
                 return;
             }
-            throw new AssertionError("Unexpected missing-codec diagnostic for " + codecName, exception);
+            throw new AssertionError("Unexpected missing-format diagnostic for " + codecName, exception);
         }
         throw new AssertionError("ZIP unexpectedly found the optional " + codecName + " codec");
     }

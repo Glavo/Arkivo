@@ -4,17 +4,17 @@
 package org.glavo.arkivo.codec.lzma;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.PledgedSourceSizeCodec;
 import org.glavo.arkivo.codec.lzma.internal.LZMARawDecoder;
+import org.glavo.arkivo.codec.lzma.internal.RawLZMACompressionFormat;
 import org.glavo.arkivo.codec.lzma.internal.LZMARawEncoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
-import java.util.List;
 import java.util.Objects;
 
 /// Provides an immutable headerless LZMA configuration for containers that carry model properties separately.
@@ -63,23 +63,12 @@ public final class RawLZMACodec implements PledgedSourceSizeCodec {
         this.decodedSize = decodedSize;
     }
 
-    /// Returns the stable raw LZMA codec name.
+    /// Returns the canonical raw LZMA format.
     @Override
-    public String name() {
-        return NAME;
+    public CompressionFormat format() {
+        return RawLZMACompressionFormat.instance();
     }
 
-    /// Returns the alternate raw LZMA name.
-    @Override
-    public @Unmodifiable List<String> aliases() {
-        return List.of("raw-lzma");
-    }
-
-    /// Returns no file extensions because raw LZMA has no self-describing container.
-    @Override
-    public @Unmodifiable List<String> fileExtensions() {
-        return List.of();
-    }
 
     /// Returns the configured externally declared LZMA properties.
     public LZMAProperties properties() {

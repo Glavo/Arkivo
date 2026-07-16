@@ -24,31 +24,31 @@ import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Objects;
 
-/// Discovers default immutable compression codec configurations provided by Arkivo codec modules.
+/// Discovers compression formats and uses their default immutable codecs for convenience operations.
 @NotNullByDefault
-public final class CompressionCodecs {
+public final class CompressionFormats {
     /// Creates no instances.
-    private CompressionCodecs() {
+    private CompressionFormats() {
     }
 
-    /// Returns all default compression codecs visible to the current class loader.
-    public static @Unmodifiable List<CompressionCodec> installed() {
-        return CompressionCodecRegistry.load().codecs();
+    /// Returns all compression formats visible to the current thread's context class loader.
+    public static @Unmodifiable List<CompressionFormat> installed() {
+        return CompressionFormatRegistry.load().formats();
     }
 
-    /// Returns the first default codec with the given stable name or alias, ignoring ASCII case.
-    public static @Nullable CompressionCodec find(String name) {
-        return CompressionCodecRegistry.load().find(name);
+    /// Returns the first format with the given stable name or alias, ignoring case.
+    public static @Nullable CompressionFormat find(String name) {
+        return CompressionFormatRegistry.load().find(name);
     }
 
-    /// Returns the first installed codec matching the remaining prefix bytes.
+    /// Returns the first installed format matching the remaining prefix bytes.
     ///
     /// The supplied buffer is not modified.
-    public static @Nullable CompressionCodec detect(ByteBuffer prefix) {
-        return CompressionCodecRegistry.load().detect(prefix);
+    public static @Nullable CompressionFormat detect(ByteBuffer prefix) {
+        return CompressionFormatRegistry.load().detect(prefix);
     }
 
-    /// Detects an installed codec from a forward-only channel while preserving every source byte for later reads.
+    /// Detects an installed format from a forward-only channel while preserving every source byte for later reads.
     ///
     /// The returned channel must replace the original channel in the caller's read pipeline. Closing it leaves the
     /// original channel open.
@@ -56,7 +56,7 @@ public final class CompressionCodecs {
         return probe(source, 0L, ChannelOwnership.RETAIN);
     }
 
-    /// Detects an installed codec from a forward-only channel with explicit source ownership.
+    /// Detects an installed format from a forward-only channel with explicit source ownership.
     public static CompressionProbeResult probe(
             ReadableByteChannel source,
             ChannelOwnership ownership
@@ -64,7 +64,7 @@ public final class CompressionCodecs {
         return probe(source, 0L, ownership);
     }
 
-    /// Detects an installed codec while retaining at least the requested prefix and applying source ownership.
+    /// Detects an installed format while retaining at least the requested prefix and applying source ownership.
     ///
     /// The returned channel replays all retained bytes before continuing from the source. A larger prefix allows a
     /// container parser to reject signature collisions without reading the original channel twice. With CLOSE, the
@@ -82,7 +82,7 @@ public final class CompressionCodecs {
             );
         }
         try {
-            CompressionCodecRegistry registry = CompressionCodecRegistry.load();
+            CompressionFormatRegistry registry = CompressionFormatRegistry.load();
             int probeSize = Math.max(Math.toIntExact(minimumPrefixSize), registry.probeSize());
             ByteBuffer prefix = ByteBuffer.allocate(probeSize);
             while (prefix.hasRemaining()) {
@@ -91,13 +91,13 @@ public final class CompressionCodecs {
                     break;
                 }
                 if (read == 0) {
-                    throw new IOException("Compression codec probe made no progress");
+                    throw new IOException("Compression format probe made no progress");
                 }
             }
             prefix.flip();
-            @Nullable CompressionCodec codec = registry.detect(prefix);
+            @Nullable CompressionFormat format = registry.detect(prefix);
             return new CompressionProbeResult(
-                    codec,
+                    format,
                     prefix.asReadOnlyBuffer(),
                     new PrefixReplayReadableByteChannel(prefix, source, ownership)
             );
@@ -109,12 +109,12 @@ public final class CompressionCodecs {
         }
     }
 
-    /// Detects an installed codec from bytes at the channel's current position.
+    /// Detects an installed format from bytes at the channel's current position.
     ///
     /// The channel position is restored before this method returns or throws.
-    public static @Nullable CompressionCodec detect(SeekableByteChannel channel) throws IOException {
+    public static @Nullable CompressionFormat detect(SeekableByteChannel channel) throws IOException {
         Objects.requireNonNull(channel, "channel");
-        CompressionCodecRegistry registry = CompressionCodecRegistry.load();
+        CompressionFormatRegistry registry = CompressionFormatRegistry.load();
         int probeSize = registry.probeSize();
         long originalPosition = channel.position();
         @Nullable Throwable failure = null;
@@ -126,7 +126,7 @@ public final class CompressionCodecs {
                     break;
                 }
                 if (read == 0) {
-                    throw new IOException("Compression codec probe made no progress");
+                    throw new IOException("Compression format probe made no progress");
                 }
             }
             prefix.flip();
@@ -139,35 +139,35 @@ public final class CompressionCodecs {
         }
     }
 
-    /// Detects an installed codec from the beginning of the given path.
-    public static @Nullable CompressionCodec detect(Path path) throws IOException {
+    /// Detects an installed format from the beginning of the given path.
+    public static @Nullable CompressionFormat detect(Path path) throws IOException {
         Objects.requireNonNull(path, "path");
         try (SeekableByteChannel channel = Files.newByteChannel(path, StandardOpenOption.READ)) {
             return detect(channel);
         }
     }
 
-    /// Opens an encoder for the named default codec while retaining the target channel.
+    /// Opens an encoder for the named format while retaining the target channel.
     public static CompressingWritableByteChannel openEncoder(
-            String codecName,
+            String formatName,
             WritableByteChannel target
     ) throws IOException {
-        return openEncoder(codecName, target, ChannelOwnership.RETAIN);
+        return openEncoder(formatName, target, ChannelOwnership.RETAIN);
     }
 
-    /// Opens an encoder for the named default codec with explicit target ownership.
+    /// Opens an encoder for the named format with explicit target ownership.
     ///
     /// After argument validation, CLOSE transfers ownership before codec lookup and setup.
     public static CompressingWritableByteChannel openEncoder(
-            String codecName,
+            String formatName,
             WritableByteChannel target,
             ChannelOwnership ownership
     ) throws IOException {
-        Objects.requireNonNull(codecName, "codecName");
+        Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(ownership, "ownership");
         try {
-            return requireCodec(codecName).openEncoder(target, ownership);
+            return requireDefaultCodec(formatName).openEncoder(target, ownership);
         } catch (IOException | RuntimeException | Error exception) {
             if (ownership == ChannelOwnership.CLOSE) {
                 closeAfterOpenFailure(target, exception);
@@ -176,53 +176,53 @@ public final class CompressionCodecs {
         }
     }
 
-    /// Opens a decoder for the named default codec while retaining the source channel.
+    /// Opens a decoder for the named format while retaining the source channel.
     public static DecompressingReadableByteChannel openDecoder(
-            String codecName,
+            String formatName,
             ReadableByteChannel source
     ) throws IOException {
         return openDecoder(
-                codecName,
+                formatName,
                 source,
                 DecompressionLimits.UNLIMITED,
                 ChannelOwnership.RETAIN
         );
     }
 
-    /// Opens a decoder for the named default codec with explicit source ownership.
+    /// Opens a decoder for the named format with explicit source ownership.
     public static DecompressingReadableByteChannel openDecoder(
-            String codecName,
+            String formatName,
             ReadableByteChannel source,
             ChannelOwnership ownership
     ) throws IOException {
-        return openDecoder(codecName, source, DecompressionLimits.UNLIMITED, ownership);
+        return openDecoder(formatName, source, DecompressionLimits.UNLIMITED, ownership);
     }
 
-    /// Opens a limited decoder for the named default codec while retaining the source channel.
+    /// Opens a limited decoder for the named format while retaining the source channel.
     public static DecompressingReadableByteChannel openDecoder(
-            String codecName,
+            String formatName,
             ReadableByteChannel source,
             DecompressionLimits limits
     ) throws IOException {
-        return openDecoder(codecName, source, limits, ChannelOwnership.RETAIN);
+        return openDecoder(formatName, source, limits, ChannelOwnership.RETAIN);
     }
 
-    /// Opens a limited decoder for the named default codec with explicit source ownership.
+    /// Opens a limited decoder for the named format with explicit source ownership.
     ///
     /// This method bypasses signature detection. After argument validation, CLOSE transfers ownership before codec
     /// lookup and setup.
     public static DecompressingReadableByteChannel openDecoder(
-            String codecName,
+            String formatName,
             ReadableByteChannel source,
             DecompressionLimits limits,
             ChannelOwnership ownership
     ) throws IOException {
-        Objects.requireNonNull(codecName, "codecName");
+        Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(limits, "limits");
         Objects.requireNonNull(ownership, "ownership");
         try {
-            return requireCodec(codecName).openDecoder(source, limits, ownership);
+            return requireDefaultCodec(formatName).openDecoder(source, limits, ownership);
         } catch (IOException | RuntimeException | Error exception) {
             if (ownership == ChannelOwnership.CLOSE) {
                 closeAfterOpenFailure(source, exception);
@@ -254,7 +254,7 @@ public final class CompressionCodecs {
 
     /// Detects a signed stream and opens a limited decoder with explicit source ownership.
     ///
-    /// The decoder receives every byte consumed by detection. Codecs without a reliable signature must be opened by
+    /// The decoder receives every byte consumed by detection. Formats without a reliable signature must be opened by
     /// name. Closing the decoder closes its replay channel; that channel applies the requested ownership to the original
     /// source.
     public static DecompressingReadableByteChannel openDecoder(
@@ -269,50 +269,50 @@ public final class CompressionCodecs {
         CompressionProbeResult probe = probe(source, ownership);
         ReadableByteChannel replay = probe.channel();
         try {
-            @Nullable CompressionCodec codec = probe.codec();
-            if (codec == null) {
-                throw new IOException("Unrecognized compression codec");
+            @Nullable CompressionFormat format = probe.format();
+            if (format == null) {
+                throw new IOException("Unrecognized compression format");
             }
-            return codec.openDecoder(replay, limits, ChannelOwnership.CLOSE);
+            return format.defaultCodec().openDecoder(replay, limits, ChannelOwnership.CLOSE);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterOpenFailure(replay, exception);
             throw exception;
         }
     }
 
-    /// Compresses all source bytes with the named default codec while retaining both channels.
+    /// Compresses all source bytes with the named format while retaining both channels.
     public static CodecTransferResult compress(
-            String codecName,
+            String formatName,
             ReadableByteChannel source,
             WritableByteChannel target
     ) throws IOException {
-        Objects.requireNonNull(codecName, "codecName");
+        Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
-        return requireCodec(codecName).compress(source, target);
+        return requireDefaultCodec(formatName).compress(source, target);
     }
 
-    /// Decompresses all source bytes with the named default codec while retaining both channels.
+    /// Decompresses all source bytes with the named format while retaining both channels.
     public static CodecTransferResult decompress(
-            String codecName,
+            String formatName,
             ReadableByteChannel source,
             WritableByteChannel target
     ) throws IOException {
-        return decompress(codecName, source, target, DecompressionLimits.UNLIMITED);
+        return decompress(formatName, source, target, DecompressionLimits.UNLIMITED);
     }
 
-    /// Decompresses all source bytes with the named default codec and operation-scoped limits.
+    /// Decompresses all source bytes with the named format and operation-scoped limits.
     public static CodecTransferResult decompress(
-            String codecName,
+            String formatName,
             ReadableByteChannel source,
             WritableByteChannel target,
             DecompressionLimits limits
     ) throws IOException {
-        Objects.requireNonNull(codecName, "codecName");
+        Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(limits, "limits");
-        return requireCodec(codecName).decompress(source, target, limits);
+        return requireDefaultCodec(formatName).decompress(source, target, limits);
     }
 
     /// Detects a signed stream and decompresses all bytes while retaining both channels.
@@ -338,36 +338,36 @@ public final class CompressionCodecs {
         }
     }
 
-    /// Opens an owning compression output stream for the named default codec.
-    public static OutputStream compressTo(String codecName, OutputStream target) throws IOException {
-        Objects.requireNonNull(codecName, "codecName");
+    /// Opens an owning compression output stream for the named format.
+    public static OutputStream compressTo(String formatName, OutputStream target) throws IOException {
+        Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(target, "target");
         return StreamChannelAdapters.outputStream(
                 openEncoder(
-                        codecName,
+                        formatName,
                         StreamChannelAdapters.writableChannel(target),
                         ChannelOwnership.CLOSE
                 )
         );
     }
 
-    /// Opens an owning unlimited decompression input stream for the named default codec.
-    public static InputStream decompressFrom(String codecName, InputStream source) throws IOException {
-        return decompressFrom(codecName, source, DecompressionLimits.UNLIMITED);
+    /// Opens an owning unlimited decompression input stream for the named format.
+    public static InputStream decompressFrom(String formatName, InputStream source) throws IOException {
+        return decompressFrom(formatName, source, DecompressionLimits.UNLIMITED);
     }
 
-    /// Opens an owning limited decompression input stream for the named default codec.
+    /// Opens an owning limited decompression input stream for the named format.
     public static InputStream decompressFrom(
-            String codecName,
+            String formatName,
             InputStream source,
             DecompressionLimits limits
     ) throws IOException {
-        Objects.requireNonNull(codecName, "codecName");
+        Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(limits, "limits");
         return StreamChannelAdapters.inputStream(
                 openDecoder(
-                        codecName,
+                        formatName,
                         StreamChannelAdapters.readableChannel(source),
                         limits,
                         ChannelOwnership.CLOSE
@@ -396,13 +396,13 @@ public final class CompressionCodecs {
         );
     }
 
-    /// Returns the named installed default codec.
-    private static CompressionCodec requireCodec(String codecName) throws IOException {
-        @Nullable CompressionCodec codec = find(codecName);
-        if (codec == null) {
-            throw new IOException("Unknown compression codec: " + codecName);
+    /// Returns the named format's installed default codec.
+    private static CompressionCodec requireDefaultCodec(String formatName) throws IOException {
+        @Nullable CompressionFormat format = find(formatName);
+        if (format == null) {
+            throw new IOException("Unknown compression format: " + formatName);
         }
-        return codec;
+        return format.defaultCodec();
     }
 
     /// Closes one still-open channel after context setup fails without hiding the primary failure.

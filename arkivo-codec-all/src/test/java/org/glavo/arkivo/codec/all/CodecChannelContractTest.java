@@ -8,7 +8,8 @@ import org.glavo.arkivo.codec.CodecTransferResult;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormat;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionEncoder;
@@ -57,17 +58,18 @@ final class CodecChannelContractTest {
         byte[] input = ("Arkivo channel codec contract: " + "0123456789".repeat(64))
                 .getBytes(StandardCharsets.UTF_8);
 
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
 
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
             ReadableByteChannel uncompressedSource = Channels.newChannel(new ByteArrayInputStream(input));
             WritableByteChannel compressedTarget = Channels.newChannel(compressedBytes);
             CodecTransferResult compression = codec.compress(uncompressedSource, compressedTarget);
 
-            assertEquals(input.length, compression.inputBytes(), codec.name());
-            assertEquals(compressedBytes.size(), compression.outputBytes(), codec.name());
-            assertTrue(uncompressedSource.isOpen(), codec.name());
-            assertTrue(compressedTarget.isOpen(), codec.name());
+            assertEquals(input.length, compression.inputBytes(), codec.format().name());
+            assertEquals(compressedBytes.size(), compression.outputBytes(), codec.format().name());
+            assertTrue(uncompressedSource.isOpen(), codec.format().name());
+            assertTrue(compressedTarget.isOpen(), codec.format().name());
 
             ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
             ReadableByteChannel compressedSource = Channels.newChannel(
@@ -81,10 +83,10 @@ final class CodecChannelContractTest {
                     decodedTarget
             );
 
-            assertEquals(input.length, decompression.outputBytes(), codec.name());
-            assertTrue(compressedSource.isOpen(), codec.name());
-            assertTrue(decodedTarget.isOpen(), codec.name());
-            assertArrayEquals(input, decodedBytes.toByteArray(), codec.name());
+            assertEquals(input.length, decompression.outputBytes(), codec.format().name());
+            assertTrue(compressedSource.isOpen(), codec.format().name());
+            assertTrue(decodedTarget.isOpen(), codec.format().name());
+            assertArrayEquals(input, decodedBytes.toByteArray(), codec.format().name());
         }
     }
 
@@ -95,7 +97,8 @@ final class CodecChannelContractTest {
                 "logical compressed input counters 0123456789abcdef;"
         ).repeat(256).getBytes(StandardCharsets.UTF_8);
 
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
             byte[] compressed = compressFrame(codec, content);
             CompressionCodec decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, content.length);
@@ -103,25 +106,25 @@ final class CodecChannelContractTest {
                     Channels.newChannel(new ByteArrayInputStream(compressed)),
                     ChannelOwnership.RETAIN
             )) {
-                assertUnconsumedInput(decoder, compressed, codec.name());
+                assertUnconsumedInput(decoder, compressed, codec.format().name());
                 ByteBuffer target = ByteBuffer.allocate(7);
                 while (true) {
                     target.clear();
                     int read = decoder.read(target);
-                    assertUnconsumedInput(decoder, compressed, codec.name());
+                    assertUnconsumedInput(decoder, compressed, codec.format().name());
                     if (read < 0) {
                         break;
                     }
-                    assertTrue(read > 0, codec.name());
+                    assertTrue(read > 0, codec.format().name());
                 }
 
                 if (CodecContractConfigurations.requiresDecoderConfiguration(codec)) {
-                    assertTrue(decoder.inputBytes() <= compressed.length, codec.name());
+                    assertTrue(decoder.inputBytes() <= compressed.length, codec.format().name());
                 } else {
-                    assertEquals(compressed.length, decoder.inputBytes(), codec.name());
+                    assertEquals(compressed.length, decoder.inputBytes(), codec.format().name());
                 }
-                assertEquals(compressed.length, decoder.sourceBytes(), codec.name());
-                assertEquals(content.length, decoder.outputBytes(), codec.name());
+                assertEquals(compressed.length, decoder.sourceBytes(), codec.format().name());
+                assertEquals(content.length, decoder.outputBytes(), codec.format().name());
             }
         }
     }
@@ -134,9 +137,10 @@ final class CodecChannelContractTest {
                 .getBytes(StandardCharsets.UTF_8);
         byte[] second = " and final segment".getBytes(StandardCharsets.UTF_8);
 
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
             boolean flushable = hasFlushableEncoder(codec);
-            assertEquals(flushCodecs.contains(codec.name()), flushable, codec.name());
+            assertEquals(flushCodecs.contains(codec.format().name()), flushable, codec.format().name());
             if (!flushable) {
                 continue;
             }
@@ -151,54 +155,54 @@ final class CodecChannelContractTest {
                 CodecResult flushed = encoder.encode(firstSource, EncodeDirective.FLUSH);
                 int flushedSize = compressedBytes.size();
 
-                assertFalse(firstSource.hasRemaining(), codec.name());
-                assertEquals(CodecStatus.FLUSHED, flushed.status(), codec.name());
-                assertEquals(first.length, flushed.inputBytes(), codec.name());
-                assertEquals(flushedSize - beforeFlush, flushed.outputBytes(), codec.name());
-                assertEquals(outputBeforeFlush + flushed.outputBytes(), encoder.outputBytes(), codec.name());
-                assertEquals(first.length, encoder.inputBytes(), codec.name());
-                assertEquals(flushedSize, encoder.outputBytes(), codec.name());
-                assertTrue(flushedSize > 0, codec.name());
-                assertTrue(encoder.isOpen(), codec.name());
-                assertTrue(target.isOpen(), codec.name());
+                assertFalse(firstSource.hasRemaining(), codec.format().name());
+                assertEquals(CodecStatus.FLUSHED, flushed.status(), codec.format().name());
+                assertEquals(first.length, flushed.inputBytes(), codec.format().name());
+                assertEquals(flushedSize - beforeFlush, flushed.outputBytes(), codec.format().name());
+                assertEquals(outputBeforeFlush + flushed.outputBytes(), encoder.outputBytes(), codec.format().name());
+                assertEquals(first.length, encoder.inputBytes(), codec.format().name());
+                assertEquals(flushedSize, encoder.outputBytes(), codec.format().name());
+                assertTrue(flushedSize > 0, codec.format().name());
+                assertTrue(encoder.isOpen(), codec.format().name());
+                assertTrue(target.isOpen(), codec.format().name());
                 assertArrayEquals(
                         first,
                         decodeAvailablePrefix(codec, compressedBytes.toByteArray(), first.length),
-                        codec.name()
+                        codec.format().name()
                 );
 
                 int beforeRepeatedFlush = compressedBytes.size();
                 CodecResult repeatedFlush = encoder.encode(ByteBuffer.allocateDirect(0), EncodeDirective.FLUSH);
-                assertEquals(CodecStatus.FLUSHED, repeatedFlush.status(), codec.name());
-                assertEquals(0L, repeatedFlush.inputBytes(), codec.name());
+                assertEquals(CodecStatus.FLUSHED, repeatedFlush.status(), codec.format().name());
+                assertEquals(0L, repeatedFlush.inputBytes(), codec.format().name());
                 assertEquals(
                         compressedBytes.size() - beforeRepeatedFlush,
                         repeatedFlush.outputBytes(),
-                        codec.name()
+                        codec.format().name()
                 );
-                assertTrue(encoder.isOpen(), codec.name());
+                assertTrue(encoder.isOpen(), codec.format().name());
 
                 int beforeContinue = compressedBytes.size();
                 CodecResult continued = encoder.encode(ByteBuffer.wrap(second), EncodeDirective.CONTINUE);
-                assertEquals(CodecStatus.ACTIVE, continued.status(), codec.name());
-                assertEquals(second.length, continued.inputBytes(), codec.name());
-                assertEquals(compressedBytes.size() - beforeContinue, continued.outputBytes(), codec.name());
+                assertEquals(CodecStatus.ACTIVE, continued.status(), codec.format().name());
+                assertEquals(second.length, continued.inputBytes(), codec.format().name());
+                assertEquals(compressedBytes.size() - beforeContinue, continued.outputBytes(), codec.format().name());
 
                 int beforeFinish = compressedBytes.size();
                 CodecResult finished = encoder.encode(ByteBuffer.allocate(0), EncodeDirective.END_FRAME);
-                assertEquals(CodecStatus.FRAME_FINISHED, finished.status(), codec.name());
-                assertEquals(0L, finished.inputBytes(), codec.name());
-                assertEquals(compressedBytes.size() - beforeFinish, finished.outputBytes(), codec.name());
-                assertEquals(first.length + second.length, encoder.inputBytes(), codec.name());
-                assertEquals(compressedBytes.size(), encoder.outputBytes(), codec.name());
+                assertEquals(CodecStatus.FRAME_FINISHED, finished.status(), codec.format().name());
+                assertEquals(0L, finished.inputBytes(), codec.format().name());
+                assertEquals(compressedBytes.size() - beforeFinish, finished.outputBytes(), codec.format().name());
+                assertEquals(first.length + second.length, encoder.inputBytes(), codec.format().name());
+                assertEquals(compressedBytes.size(), encoder.outputBytes(), codec.format().name());
 
                 boolean multiFrame = hasFramedEncoder(codec);
-                assertEquals(multiFrame, encoder.isOpen(), codec.name());
+                assertEquals(multiFrame, encoder.isOpen(), codec.format().name());
                 int completeSize = compressedBytes.size();
                 encoder.finish();
-                assertFalse(encoder.isOpen(), codec.name());
-                assertEquals(completeSize, compressedBytes.size(), codec.name());
-                assertTrue(target.isOpen(), codec.name());
+                assertFalse(encoder.isOpen(), codec.format().name());
+                assertEquals(completeSize, compressedBytes.size(), codec.format().name());
+                assertTrue(target.isOpen(), codec.format().name());
 
                 ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
                 codec.decompress(
@@ -208,7 +212,7 @@ final class CodecChannelContractTest {
                 ByteArrayOutputStream expected = new ByteArrayOutputStream();
                 expected.writeBytes(first);
                 expected.writeBytes(second);
-                assertArrayEquals(expected.toByteArray(), decodedBytes.toByteArray(), codec.name());
+                assertArrayEquals(expected.toByteArray(), decodedBytes.toByteArray(), codec.format().name());
             } finally {
                 encoder.close();
             }
@@ -223,13 +227,14 @@ final class CodecChannelContractTest {
         byte[] first = "first independent frame".getBytes(StandardCharsets.UTF_8);
         byte[] second = "second independent frame".getBytes(StandardCharsets.UTF_8);
 
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
-            boolean expected = multiFrameCodecs.contains(codec.name());
-            assertEquals(expected, hasFramedEncoder(codec), codec.name());
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
+            boolean expected = multiFrameCodecs.contains(codec.format().name());
+            assertEquals(expected, hasFramedEncoder(codec), codec.format().name());
             assertEquals(
-                    concatenatedFrameCodecs.contains(codec.name()),
+                    concatenatedFrameCodecs.contains(codec.format().name()),
                     hasFramedDecoder(codec),
-                    codec.name()
+                    codec.format().name()
             );
             if (!expected) {
                 continue;
@@ -241,23 +246,23 @@ final class CodecChannelContractTest {
             CodecResult firstResult = encoder.encode(ByteBuffer.wrap(first), EncodeDirective.END_FRAME);
             int firstFrameSize = compressedBytes.size();
 
-            assertEquals(CodecStatus.FRAME_FINISHED, firstResult.status(), codec.name());
-            assertTrue(encoder.isOpen(), codec.name());
-            assertEquals(first.length, encoder.inputBytes(), codec.name());
+            assertEquals(CodecStatus.FRAME_FINISHED, firstResult.status(), codec.format().name());
+            assertTrue(encoder.isOpen(), codec.format().name());
+            assertEquals(first.length, encoder.inputBytes(), codec.format().name());
             encoder.flush();
-            assertEquals(firstFrameSize, compressedBytes.size(), codec.name());
+            assertEquals(firstFrameSize, compressedBytes.size(), codec.format().name());
 
             CodecResult secondResult = encoder.encode(ByteBuffer.wrap(second), EncodeDirective.END_FRAME);
             int completeSize = compressedBytes.size();
-            assertEquals(CodecStatus.FRAME_FINISHED, secondResult.status(), codec.name());
-            assertTrue(encoder.isOpen(), codec.name());
-            assertEquals(first.length + second.length, encoder.inputBytes(), codec.name());
-            assertEquals(completeSize, encoder.outputBytes(), codec.name());
+            assertEquals(CodecStatus.FRAME_FINISHED, secondResult.status(), codec.format().name());
+            assertTrue(encoder.isOpen(), codec.format().name());
+            assertEquals(first.length + second.length, encoder.inputBytes(), codec.format().name());
+            assertEquals(completeSize, encoder.outputBytes(), codec.format().name());
 
             encoder.finish();
-            assertFalse(encoder.isOpen(), codec.name());
-            assertEquals(completeSize, compressedBytes.size(), codec.name());
-            assertTrue(target.isOpen(), codec.name());
+            assertFalse(encoder.isOpen(), codec.format().name());
+            assertEquals(completeSize, compressedBytes.size(), codec.format().name());
+            assertTrue(target.isOpen(), codec.format().name());
 
             ByteArrayOutputStream decodedBytes = new ByteArrayOutputStream();
             codec.decompress(
@@ -267,7 +272,7 @@ final class CodecChannelContractTest {
             ByteArrayOutputStream expectedBytes = new ByteArrayOutputStream();
             expectedBytes.writeBytes(first);
             expectedBytes.writeBytes(second);
-            assertArrayEquals(expectedBytes.toByteArray(), decodedBytes.toByteArray(), codec.name());
+            assertArrayEquals(expectedBytes.toByteArray(), decodedBytes.toByteArray(), codec.format().name());
         }
     }
 
@@ -276,7 +281,8 @@ final class CodecChannelContractTest {
     void preservesExplicitEmptyFramesWithoutAddingTrailingFrames() throws IOException {
         byte[] content = "content after an explicit empty frame".getBytes(StandardCharsets.UTF_8);
 
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
             if (!hasFramedEncoder(codec)) {
                 continue;
             }
@@ -288,21 +294,21 @@ final class CodecChannelContractTest {
             )) {
                 encoder.finishFrame();
                 int emptyFrameSize = compressed.size();
-                assertTrue(emptyFrameSize > 0, codec.name());
-                assertTrue(encoder.isOpen(), codec.name());
+                assertTrue(emptyFrameSize > 0, codec.format().name());
+                assertTrue(encoder.isOpen(), codec.format().name());
 
-                assertEquals(0, encoder.write(ByteBuffer.allocate(0)), codec.name());
+                assertEquals(0, encoder.write(ByteBuffer.allocate(0)), codec.format().name());
                 encoder.flush();
-                assertEquals(emptyFrameSize, compressed.size(), codec.name());
+                assertEquals(emptyFrameSize, compressed.size(), codec.format().name());
 
                 CodecResult finished = encoder.encode(
                         ByteBuffer.wrap(content),
                         EncodeDirective.END_FRAME
                 );
-                assertEquals(CodecStatus.FRAME_FINISHED, finished.status(), codec.name());
+                assertEquals(CodecStatus.FRAME_FINISHED, finished.status(), codec.format().name());
                 int completeSize = compressed.size();
                 encoder.finish();
-                assertEquals(completeSize, compressed.size(), codec.name());
+                assertEquals(completeSize, compressed.size(), codec.format().name());
             }
 
             try (DecompressingReadableByteChannel decoder = codec.openDecoder(
@@ -312,8 +318,8 @@ final class CodecChannelContractTest {
                         ByteBuffer.allocate(3),
                         DecodeDirective.STOP_AT_FRAME
                 );
-                assertEquals(CodecStatus.FRAME_FINISHED, empty.status(), codec.name());
-                assertEquals(0L, empty.outputBytes(), codec.name());
+                assertEquals(CodecStatus.FRAME_FINISHED, empty.status(), codec.format().name());
+                assertEquals(0L, empty.outputBytes(), codec.format().name());
 
                 ByteArrayOutputStream decoded = new ByteArrayOutputStream();
                 while (true) {
@@ -326,16 +332,16 @@ final class CodecChannelContractTest {
                     if (result.status() == CodecStatus.FRAME_FINISHED) {
                         break;
                     }
-                    assertEquals(CodecStatus.ACTIVE, result.status(), codec.name());
+                    assertEquals(CodecStatus.ACTIVE, result.status(), codec.format().name());
                 }
-                assertArrayEquals(content, decoded.toByteArray(), codec.name());
+                assertArrayEquals(content, decoded.toByteArray(), codec.format().name());
 
                 CodecResult ended = decoder.decode(
                         ByteBuffer.allocate(1),
                         DecodeDirective.STOP_AT_FRAME
                 );
-                assertEquals(CodecStatus.END_OF_INPUT, ended.status(), codec.name());
-                assertEquals(compressed.size(), decoder.inputBytes(), codec.name());
+                assertEquals(CodecStatus.END_OF_INPUT, ended.status(), codec.format().name());
+                assertEquals(compressed.size(), decoder.inputBytes(), codec.format().name());
             }
         }
     }
@@ -350,7 +356,8 @@ final class CodecChannelContractTest {
         };
         int totalOutputSize = frames[1].length + frames[2].length;
 
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
             if (!hasFramedDecoder(codec)) {
                 continue;
             }
@@ -382,21 +389,21 @@ final class CodecChannelContractTest {
                         byte[] chunk = new byte[target.remaining()];
                         target.get(chunk);
                         decodedFrame.writeBytes(chunk);
-                        assertEquals(chunk.length, result.outputBytes(), codec.name());
-                        assertUnconsumedInput(decoder, compressedStream, codec.name());
-                        assertTrue(++operations < 100, codec.name());
+                        assertEquals(chunk.length, result.outputBytes(), codec.format().name());
+                        assertUnconsumedInput(decoder, compressedStream, codec.format().name());
+                        assertTrue(++operations < 100, codec.format().name());
 
                         if (result.status() == CodecStatus.FRAME_FINISHED) {
                             break;
                         }
-                        assertEquals(CodecStatus.ACTIVE, result.status(), codec.name());
-                        assertTrue(result.inputBytes() > 0L || result.outputBytes() > 0L, codec.name());
+                        assertEquals(CodecStatus.ACTIVE, result.status(), codec.format().name());
+                        assertTrue(result.inputBytes() > 0L || result.outputBytes() > 0L, codec.format().name());
                     }
-                    assertArrayEquals(expectedFrame, decodedFrame.toByteArray(), codec.name());
+                    assertArrayEquals(expectedFrame, decodedFrame.toByteArray(), codec.format().name());
                     completedInputBytes += encodedFrames[frameIndex].length;
-                    assertEquals(completedInputBytes, decoder.inputBytes(), codec.name());
+                    assertEquals(completedInputBytes, decoder.inputBytes(), codec.format().name());
                     if (frameIndex == 0) {
-                        assertTrue(decoder.sourceBytes() > decoder.inputBytes(), codec.name());
+                        assertTrue(decoder.sourceBytes() > decoder.inputBytes(), codec.format().name());
                     }
                 }
 
@@ -404,10 +411,10 @@ final class CodecChannelContractTest {
                         ByteBuffer.allocate(5),
                         DecodeDirective.STOP_AT_FRAME
                 );
-                assertEquals(CodecStatus.END_OF_INPUT, ended.status(), codec.name());
-                assertEquals(totalOutputSize, decoder.outputBytes(), codec.name());
-                assertEquals(compressed.size(), decoder.inputBytes(), codec.name());
-                assertEquals(compressed.size(), decoder.sourceBytes(), codec.name());
+                assertEquals(CodecStatus.END_OF_INPUT, ended.status(), codec.format().name());
+                assertEquals(totalOutputSize, decoder.outputBytes(), codec.format().name());
+                assertEquals(compressed.size(), decoder.inputBytes(), codec.format().name());
+                assertEquals(compressed.size(), decoder.sourceBytes(), codec.format().name());
             }
         }
     }
@@ -419,42 +426,43 @@ final class CodecChannelContractTest {
                 "allocating ByteBuffer codec contract 0123456789abcdef;"
         ).repeat(1_024).getBytes(StandardCharsets.UTF_8);
 
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
             ByteBuffer source = ByteBuffer.allocateDirect(input.length + 4);
             source.position(2);
             source.put(input);
             source.flip();
             source.position(2);
             ByteBuffer compressed = codec.compress(source);
-            assertEquals(source.limit(), source.position(), codec.name());
-            assertEquals(0, compressed.position(), codec.name());
-            assertTrue(compressed.hasRemaining(), codec.name());
+            assertEquals(source.limit(), source.position(), codec.format().name());
+            assertEquals(0, compressed.position(), codec.format().name());
+            assertTrue(compressed.hasRemaining(), codec.format().name());
 
             CompressionCodec decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, input.length);
             ByteBuffer decoded = decoderCodec.decompress(compressed, input.length);
             if (CodecContractConfigurations.requiresDecoderConfiguration(codec)) {
-                assertTrue(compressed.position() <= compressed.limit(), codec.name());
+                assertTrue(compressed.position() <= compressed.limit(), codec.format().name());
             } else {
-                assertEquals(compressed.limit(), compressed.position(), codec.name());
+                assertEquals(compressed.limit(), compressed.position(), codec.format().name());
             }
-            assertEquals(0, decoded.position(), codec.name());
+            assertEquals(0, decoded.position(), codec.format().name());
             byte[] actual = new byte[decoded.remaining()];
             decoded.get(actual);
-            assertArrayEquals(input, actual, codec.name());
+            assertArrayEquals(input, actual, codec.format().name());
 
             ByteBuffer overflowSource = codec.compress(ByteBuffer.wrap(input));
             assertThrows(
                     DecompressionLimitException.class,
                     () -> decoderCodec.decompress(overflowSource, input.length - 1L),
-                    codec.name()
+                    codec.format().name()
             );
 
             ByteBuffer emptyCompressed = codec.compress(ByteBuffer.allocate(0));
             CompressionCodec emptyDecoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, 0L);
             ByteBuffer emptyDecoded = emptyDecoderCodec.decompress(emptyCompressed, 0L);
-            assertEquals(0, emptyDecoded.remaining(), codec.name());
+            assertEquals(0, emptyDecoded.remaining(), codec.format().name());
         }
     }
 
@@ -468,7 +476,8 @@ final class CodecChannelContractTest {
                 "second one-shot frame fed from the same ByteBuffer;"
         ).repeat(32).getBytes(StandardCharsets.UTF_8);
 
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
             if (CodecContractConfigurations.requiresDecoderConfiguration(codec)) {
                 continue;
             }
@@ -480,13 +489,13 @@ final class CodecChannelContractTest {
             ByteBuffer emptySource = ByteBuffer.allocate(emptyEncoded.length + firstEncoded.length);
             emptySource.put(emptyEncoded).put(firstEncoded).flip();
             ByteBuffer emptyDecoded = codec.decompressFrame(emptySource, 0L);
-            assertEquals(0, emptyDecoded.remaining(), codec.name());
-            assertEquals(emptyEncoded.length, emptySource.position(), codec.name());
+            assertEquals(0, emptyDecoded.remaining(), codec.format().name());
+            assertEquals(emptyEncoded.length, emptySource.position(), codec.format().name());
 
             ByteBuffer emptyFixedSource = ByteBuffer.allocate(emptyEncoded.length + firstEncoded.length);
             emptyFixedSource.put(emptyEncoded).put(firstEncoded).flip();
             codec.decompressFrame(emptyFixedSource, ByteBuffer.allocate(0));
-            assertEquals(emptyEncoded.length, emptyFixedSource.position(), codec.name());
+            assertEquals(emptyEncoded.length, emptyFixedSource.position(), codec.format().name());
 
             ByteBuffer source = ByteBuffer.allocate(2 + firstEncoded.length + secondEncoded.length + 3);
             source.position(2);
@@ -499,20 +508,20 @@ final class CodecChannelContractTest {
                     DecompressionLimits.ofMaximumOutputSize(first.length);
 
             ByteBuffer firstDecoded = codec.decompressFrame(source, firstLimits);
-            assertArrayEquals(first, bufferBytes(firstDecoded), codec.name());
-            assertEquals(2 + firstEncoded.length, source.position(), codec.name());
+            assertArrayEquals(first, bufferBytes(firstDecoded), codec.format().name());
+            assertEquals(2 + firstEncoded.length, source.position(), codec.format().name());
 
             ByteBuffer secondTarget = ByteBuffer.allocate(second.length);
             codec.decompressFrame(source, secondTarget);
             secondTarget.flip();
-            assertArrayEquals(second, bufferBytes(secondTarget), codec.name());
-            assertEquals(source.limit(), source.position(), codec.name());
+            assertArrayEquals(second, bufferBytes(secondTarget), codec.format().name());
+            assertEquals(source.limit(), source.position(), codec.format().name());
 
             ByteBuffer limitedSource = ByteBuffer.wrap(firstEncoded);
             assertThrows(
                     DecompressionLimitException.class,
                     () -> codec.decompressFrame(limitedSource, first.length - 1L),
-                    codec.name()
+                    codec.format().name()
             );
 
             ByteBuffer overflowSource = ByteBuffer.wrap(firstEncoded);
@@ -522,7 +531,7 @@ final class CodecChannelContractTest {
                             overflowSource,
                             ByteBuffer.allocate(first.length - 1)
                     ),
-                    codec.name()
+                    codec.format().name()
             );
         }
     }
@@ -532,7 +541,8 @@ final class CodecChannelContractTest {
     void roundTripsHeapAndDirectFixedBuffersAcrossEveryCodec() throws IOException {
         byte[] input = ("fixed codec buffers " + "abcdef".repeat(256)).getBytes(StandardCharsets.UTF_8);
 
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
 
             assertFixedBufferRoundTrip(codec, input, false, false, false, false);
             assertFixedBufferRoundTrip(codec, input, false, true, true, true);
@@ -545,9 +555,9 @@ final class CodecChannelContractTest {
             assertThrows(
                     ReadOnlyBufferException.class,
                     () -> codec.compress(compressionSource, readOnlyCompressionTarget),
-                    codec.name()
+                    codec.format().name()
             );
-            assertEquals(0, compressionSource.position(), codec.name());
+            assertEquals(0, compressionSource.position(), codec.format().name());
 
             ByteBuffer compressed = codec.compress(ByteBuffer.wrap(input));
             int compressedPosition = compressed.position();
@@ -555,21 +565,21 @@ final class CodecChannelContractTest {
             assertThrows(
                     ReadOnlyBufferException.class,
                     () -> decompressFixed(codec, compressed, readOnlyDecompressionTarget, input.length),
-                    codec.name()
+                    codec.format().name()
             );
-            assertEquals(compressedPosition, compressed.position(), codec.name());
+            assertEquals(compressedPosition, compressed.position(), codec.format().name());
 
             ByteBuffer sameCompressionBuffer = ByteBuffer.allocate(input.length + 8_192);
             assertThrows(
                     IllegalArgumentException.class,
                     () -> codec.compress(sameCompressionBuffer, sameCompressionBuffer),
-                    codec.name()
+                    codec.format().name()
             );
             ByteBuffer sameDecompressionBuffer = codec.compress(ByteBuffer.wrap(input));
             assertThrows(
                     IllegalArgumentException.class,
                     () -> decompressFixed(codec, sameDecompressionBuffer, sameDecompressionBuffer, input.length),
-                    codec.name()
+                    codec.format().name()
             );
         }
     }
@@ -600,7 +610,7 @@ final class CodecChannelContractTest {
         compressed.position(compressedOffset);
         compressed.limit(compressedOffset + compressedCapacity);
         codec.compress(source, compressed);
-        assertEquals(source.limit(), source.position(), codec.name());
+        assertEquals(source.limit(), source.position(), codec.format().name());
 
         int compressedEnd = compressed.position();
         ByteBuffer compressedSource = compressed.duplicate();
@@ -615,14 +625,14 @@ final class CodecChannelContractTest {
         decoded.position(decodedOffset);
         decoded.limit(decodedOffset + input.length);
         decompressFixed(codec, compressedSource, decoded, input.length);
-        assertEquals(decoded.limit(), decoded.position(), codec.name());
+        assertEquals(decoded.limit(), decoded.position(), codec.format().name());
 
         ByteBuffer output = decoded.duplicate();
         output.position(decodedOffset);
         output.limit(decodedOffset + input.length);
         byte[] outputBytes = new byte[output.remaining()];
         output.get(outputBytes);
-        assertArrayEquals(input, outputBytes, codec.name());
+        assertArrayEquals(input, outputBytes, codec.format().name());
     }
 
     /// Decompresses through a codec carrying any externally required stream metadata.
@@ -648,8 +658,9 @@ final class CodecChannelContractTest {
         Set<String> levelCodecs = Set.of("bzip2", "deflate", "deflate64", "gzip", "zlib", "zstd");
         byte[] input = "configured compression level".getBytes(StandardCharsets.UTF_8);
 
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
-            assertEquals(levelCodecs.contains(codec.name()), codec instanceof CompressionLevelCodec, codec.name());
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
+            assertEquals(levelCodecs.contains(codec.format().name()), codec instanceof CompressionLevelCodec, codec.format().name());
             if (!(codec instanceof CompressionLevelCodec levelCodec)) {
                 continue;
             }
@@ -674,7 +685,7 @@ final class CodecChannelContractTest {
                     }
                 }
             }
-            assertArrayEquals(input, decoded.array(), codec.name());
+            assertArrayEquals(input, decoded.array(), codec.format().name());
         }
     }
 
@@ -686,9 +697,10 @@ final class CodecChannelContractTest {
                 "Arkivo compression strategy repeated payload 0123456789abcdef;"
         ).repeat(4_096).getBytes(StandardCharsets.UTF_8);
 
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
-            boolean expected = strategyCodecs.contains(codec.name());
-            assertEquals(expected, codec instanceof CompressionStrategyCodec, codec.name());
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
+            boolean expected = strategyCodecs.contains(codec.format().name());
+            assertEquals(expected, codec instanceof CompressionStrategyCodec, codec.format().name());
             if (!(codec instanceof CompressionStrategyCodec strategyCodec)) {
                 continue;
             }
@@ -709,15 +721,15 @@ final class CodecChannelContractTest {
                         Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
                         Channels.newChannel(decodedBytes)
                 );
-                assertArrayEquals(input, decodedBytes.toByteArray(), codec.name() + ": " + strategy);
+                assertArrayEquals(input, decodedBytes.toByteArray(), codec.format().name() + ": " + strategy);
                 if (strategy == CompressionStrategy.DEFAULT) {
                     defaultSize = compressedBytes.size();
                 } else if (strategy == CompressionStrategy.HUFFMAN_ONLY) {
                     huffmanOnlySize = compressedBytes.size();
                 }
             }
-            assertTrue(defaultSize > 0L, codec.name());
-            assertTrue(huffmanOnlySize > defaultSize, codec.name());
+            assertTrue(defaultSize > 0L, codec.format().name());
+            assertTrue(huffmanOnlySize > defaultSize, codec.format().name());
 
             for (CompressionStrategy strategy : Set.of(
                     CompressionStrategy.FILTERED,
@@ -740,7 +752,7 @@ final class CodecChannelContractTest {
                         Channels.newChannel(new ByteArrayInputStream(emptyCompressed.toByteArray())),
                         Channels.newChannel(emptyDecoded)
                 );
-                assertEquals(0, emptyDecoded.size(), codec.name() + ": " + strategy);
+                assertEquals(0, emptyDecoded.size(), codec.format().name() + ": " + strategy);
             }
         }
     }
@@ -759,11 +771,12 @@ final class CodecChannelContractTest {
         ).getBytes(StandardCharsets.UTF_8);
         CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes);
 
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
             assertEquals(
-                    dictionaryCodecs.contains(codec.name()),
+                    dictionaryCodecs.contains(codec.format().name()),
                     codec instanceof DictionaryCompressionCodec,
-                    codec.name()
+                    codec.format().name()
             );
             if (!(codec instanceof DictionaryCompressionCodec dictionaryCodec)) {
                 continue;
@@ -783,7 +796,7 @@ final class CodecChannelContractTest {
                     Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
                     Channels.newChannel(decodedBytes)
             );
-            assertArrayEquals(input, decodedBytes.toByteArray(), codec.name());
+            assertArrayEquals(input, decodedBytes.toByteArray(), codec.format().name());
         }
     }
 
@@ -795,9 +808,10 @@ final class CodecChannelContractTest {
                 "pledged source size contract 0123456789abcdef;"
         ).repeat(512).getBytes(StandardCharsets.UTF_8);
 
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
-            boolean expected = pledgedSizeCodecs.contains(codec.name());
-            assertEquals(expected, codec instanceof PledgedSourceSizeCodec, codec.name());
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
+            boolean expected = pledgedSizeCodecs.contains(codec.format().name());
+            assertEquals(expected, codec instanceof PledgedSourceSizeCodec, codec.format().name());
             if (!(codec instanceof PledgedSourceSizeCodec pledgedCodec)) {
                 continue;
             }
@@ -818,7 +832,7 @@ final class CodecChannelContractTest {
                     Channels.newChannel(new ByteArrayInputStream(compressed.toByteArray())),
                     Channels.newChannel(decoded)
             );
-            assertArrayEquals(input, decoded.toByteArray(), codec.name());
+            assertArrayEquals(input, decoded.toByteArray(), codec.format().name());
 
             assertThrows(
                     Exception.class,
@@ -832,7 +846,7 @@ final class CodecChannelContractTest {
                             encoder.finish();
                         }
                     },
-                    codec.name()
+                    codec.format().name()
             );
         }
     }
@@ -844,7 +858,8 @@ final class CodecChannelContractTest {
                 .getBytes(StandardCharsets.UTF_8);
         long smallerLimit = input.length - 1L;
 
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
             DecompressionLimits exactLimits =
                     DecompressionLimits.ofMaximumOutputSize(input.length);
             DecompressionLimits smallerLimits =
@@ -864,8 +879,8 @@ final class CodecChannelContractTest {
                     Channels.newChannel(exactBytes),
                     exactLimits
             );
-            assertEquals(input.length, exactResult.outputBytes(), codec.name());
-            assertArrayEquals(input, exactBytes.toByteArray(), codec.name());
+            assertEquals(input.length, exactResult.outputBytes(), codec.format().name());
+            assertArrayEquals(input, exactBytes.toByteArray(), codec.format().name());
 
             ReadableByteChannel limitedSource = Channels.newChannel(
                     new ByteArrayInputStream(compressedBytes.toByteArray())
@@ -875,13 +890,13 @@ final class CodecChannelContractTest {
             DecompressionLimitException exception = assertThrows(
                     DecompressionLimitException.class,
                     () -> decoderCodec.decompress(limitedSource, limitedTarget, smallerLimits),
-                    codec.name()
+                    codec.format().name()
             );
-            assertEquals(smallerLimit, exception.maximumOutputSize(), codec.name());
-            assertEquals(smallerLimit, limitedBytes.size(), codec.name());
+            assertEquals(smallerLimit, exception.maximumOutputSize(), codec.format().name());
+            assertEquals(smallerLimit, limitedBytes.size(), codec.format().name());
 
-            assertTrue(limitedSource.isOpen(), codec.name());
-            assertTrue(limitedTarget.isOpen(), codec.name());
+            assertTrue(limitedSource.isOpen(), codec.format().name());
+            assertTrue(limitedTarget.isOpen(), codec.format().name());
 
             ReadableByteChannel invalidSource = Channels.newChannel(
                     new ByteArrayInputStream(compressedBytes.toByteArray())
@@ -893,9 +908,9 @@ final class CodecChannelContractTest {
                             DecompressionLimits.ofMaximumOutputSize(-2L),
                             ChannelOwnership.RETAIN
                     ),
-                    codec.name()
+                    codec.format().name()
             );
-            assertTrue(invalidSource.isOpen(), codec.name());
+            assertTrue(invalidSource.isOpen(), codec.format().name());
         }
     }
     /// Returns all remaining bytes from a buffer without changing the original buffer state.
@@ -941,9 +956,9 @@ final class CodecChannelContractTest {
         )) {
             while (decoded.hasRemaining()) {
                 int read = decoder.read(decoded);
-                assertTrue(read > 0, codec.name());
+                assertTrue(read > 0, codec.format().name());
             }
-            assertEquals(expectedSize, decoder.outputBytes(), codec.name());
+            assertEquals(expectedSize, decoder.outputBytes(), codec.format().name());
         }
         decoded.flip();
         byte[] bytes = new byte[decoded.remaining()];
@@ -1009,8 +1024,9 @@ final class CodecChannelContractTest {
         );
         byte[] input = ("bounded decoding window " + "abcdefghijklmnop".repeat(256))
                 .getBytes(StandardCharsets.UTF_8);
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
-            boolean expected = windowCodecs.contains(codec.name());
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
+            boolean expected = windowCodecs.contains(codec.format().name());
             CompressionCodec decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, input.length);
 
@@ -1030,7 +1046,7 @@ final class CodecChannelContractTest {
                         Channels.newChannel(decodedBytes),
                         zeroLimits
                 );
-                assertArrayEquals(input, decodedBytes.toByteArray(), codec.name());
+                assertArrayEquals(input, decodedBytes.toByteArray(), codec.format().name());
                 continue;
             }
 
@@ -1040,7 +1056,7 @@ final class CodecChannelContractTest {
                     Channels.newChannel(decodedBytes),
                     unlimitedLimits
             );
-            assertArrayEquals(input, decodedBytes.toByteArray(), codec.name());
+            assertArrayEquals(input, decodedBytes.toByteArray(), codec.format().name());
 
             ReadableByteChannel limitedSource = Channels.newChannel(
                     new ByteArrayInputStream(compressedBytes.toByteArray())
@@ -1053,12 +1069,12 @@ final class CodecChannelContractTest {
                             Channels.newChannel(limitedBytes),
                             zeroLimits
                     ),
-                    codec.name()
+                    codec.format().name()
             );
-            assertEquals(0L, exception.maximumWindowSize(), codec.name());
-            assertTrue(exception.requiredWindowSize() > 0L, codec.name());
-            assertEquals(0, limitedBytes.size(), codec.name());
-            assertTrue(limitedSource.isOpen(), codec.name());
+            assertEquals(0L, exception.maximumWindowSize(), codec.format().name());
+            assertTrue(exception.requiredWindowSize() > 0L, codec.format().name());
+            assertEquals(0, limitedBytes.size(), codec.format().name());
+            assertTrue(limitedSource.isOpen(), codec.format().name());
 
             ReadableByteChannel invalidSource = Channels.newChannel(
                     new ByteArrayInputStream(compressedBytes.toByteArray())
@@ -1070,8 +1086,8 @@ final class CodecChannelContractTest {
                             DecompressionLimits.ofMaximumWindowSize(-2L),
                             ChannelOwnership.RETAIN
                     ),
-                    codec.name()
+                    codec.format().name()
             );
-            assertTrue(invalidSource.isOpen(), codec.name());
+            assertTrue(invalidSource.isOpen(), codec.format().name());
         }
     }}

@@ -6,15 +6,15 @@ package org.glavo.arkivo.codec.ppmd;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7Decoder;
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7Encoder;
+import org.glavo.arkivo.codec.ppmd.internal.PPMdCompressionFormat;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
-import java.util.List;
 import java.util.Objects;
 
 /// Provides an immutable raw PPMd7 configuration with externally declared model parameters and decoded size.
@@ -61,22 +61,10 @@ public final class PPMdCodec implements CompressionCodec {
         this.decodedSize = decodedSize;
     }
 
-    /// Returns the stable PPMd codec name.
+    /// Returns the canonical raw PPMd7 format.
     @Override
-    public String name() {
-        return NAME;
-    }
-
-    /// Returns the PPMd7 alias used by 7z containers.
-    @Override
-    public @Unmodifiable List<String> aliases() {
-        return List.of("ppmd7");
-    }
-
-    /// Returns no standalone extension because PPMd7 is an embedded raw stream format.
-    @Override
-    public @Unmodifiable List<String> fileExtensions() {
-        return List.of();
+    public CompressionFormat format() {
+        return PPMdCompressionFormat.instance();
     }
 
     /// Returns the configured maximum context order.

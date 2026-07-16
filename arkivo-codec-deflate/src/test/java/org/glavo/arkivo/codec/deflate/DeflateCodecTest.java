@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -37,14 +37,14 @@ public final class DeflateCodecTest {
         byte[] input = "hello deflate".getBytes(StandardCharsets.UTF_8);
 
         assertEquals(true, codec instanceof CompressionCodec);
-        assertEquals(DeflateCodec.NAME, codec.name());
+        assertEquals(DeflateCodec.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
     /// Verifies that the raw deflate codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(DeflateCodec.class, Objects.requireNonNull(CompressionCodecs.find(DeflateCodec.NAME)).getClass());
+        assertEquals(DeflateCodec.class, Objects.requireNonNull(CompressionFormats.find(DeflateCodec.NAME)).defaultCodec().getClass());
     }
 
     /// Verifies large channel operations interoperate with the JDK raw deflate streams.

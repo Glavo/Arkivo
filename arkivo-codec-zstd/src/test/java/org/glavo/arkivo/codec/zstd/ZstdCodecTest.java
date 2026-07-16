@@ -6,7 +6,7 @@ package org.glavo.arkivo.codec.zstd;
 import com.github.luben.zstd.Zstd;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.EncodeDirective;
@@ -43,7 +43,7 @@ public final class ZstdCodecTest {
         byte[] input = "hello zstd".getBytes(StandardCharsets.UTF_8);
 
         assertEquals(true, codec instanceof CompressionCodec);
-        assertEquals(ZstdCodec.NAME, codec.name());
+        assertEquals(ZstdCodec.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
@@ -70,7 +70,7 @@ public final class ZstdCodecTest {
     /// Verifies that the Zstandard codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(ZstdCodec.class, Objects.requireNonNull(CompressionCodecs.find(ZstdCodec.NAME)).getClass());
+        assertEquals(ZstdCodec.class, Objects.requireNonNull(CompressionFormats.find(ZstdCodec.NAME)).defaultCodec().getClass());
     }
 
     /// Verifies Zstandard metadata and ByteBuffer one-shot compression.
@@ -84,7 +84,7 @@ public final class ZstdCodecTest {
 
         codec.compress(source, compressed);
         compressed.flip();
-        assertEquals(true, codec.matches(compressed.duplicate()));
+        assertEquals(true, codec.format().matches(compressed.duplicate()));
 
         ByteBuffer decompressed = ByteBuffer.allocateDirect(input.length);
         codec.decompress(compressed, decompressed);
@@ -290,7 +290,7 @@ public final class ZstdCodecTest {
         ByteBuffer standard = ByteBuffer.wrap(new byte[]{
                 0x28, (byte) 0xb5, 0x2f, (byte) 0xfd
         }).asReadOnlyBuffer();
-        assertTrue(codec.matches(standard));
+        assertTrue(codec.format().matches(standard));
         assertEquals(0, standard.position());
 
         for (int id = 0; id < 16; id++) {
@@ -301,20 +301,20 @@ public final class ZstdCodecTest {
             prefix.limit(5);
             prefix.mark();
 
-            assertTrue(codec.matches(prefix), Integer.toString(id));
+            assertTrue(codec.format().matches(prefix), Integer.toString(id));
             assertEquals(1, prefix.position(), Integer.toString(id));
             assertEquals(5, prefix.limit(), Integer.toString(id));
             prefix.reset();
             assertEquals(
                     ZstdCodec.class,
-                    Objects.requireNonNull(CompressionCodecs.detect(prefix)).getClass(),
+                    Objects.requireNonNull(CompressionFormats.detect(prefix)).defaultCodec().getClass(),
                     Integer.toString(id)
             );
         }
 
-        assertEquals(false, codec.matches(ByteBuffer.wrap(new byte[]{0x50, 0x2a, 0x4d})));
-        assertEquals(false, codec.matches(ByteBuffer.wrap(new byte[]{0x4f, 0x2a, 0x4d, 0x18})));
-        assertEquals(false, codec.matches(ByteBuffer.wrap(new byte[]{0x60, 0x2a, 0x4d, 0x18})));
+        assertEquals(false, codec.format().matches(ByteBuffer.wrap(new byte[]{0x50, 0x2a, 0x4d})));
+        assertEquals(false, codec.format().matches(ByteBuffer.wrap(new byte[]{0x4f, 0x2a, 0x4d, 0x18})));
+        assertEquals(false, codec.format().matches(ByteBuffer.wrap(new byte[]{0x60, 0x2a, 0x4d, 0x18})));
     }
 
     /// Verifies standard and skippable frame inspection without changing buffer state.
@@ -410,9 +410,9 @@ public final class ZstdCodecTest {
         byte[] prefixedFrame = skippableAndFrame.toByteArray();
         assertEquals(
                 ZstdCodec.class,
-                Objects.requireNonNull(CompressionCodecs.detect(ByteBuffer.wrap(prefixedFrame))).getClass()
+                Objects.requireNonNull(CompressionFormats.detect(ByteBuffer.wrap(prefixedFrame))).defaultCodec().getClass()
         );
-        try (InputStream decodedAfterSkippable = CompressionCodecs.decompressFrom(
+        try (InputStream decodedAfterSkippable = CompressionFormats.decompressFrom(
                 new ByteArrayInputStream(prefixedFrame)
         )) {
             assertArrayEquals(content, decodedAfterSkippable.readAllBytes());
@@ -466,7 +466,7 @@ public final class ZstdCodecTest {
         }
 
         byte[] frames = encoded.toByteArray();
-        assertEquals(false, standardCodec.matches(ByteBuffer.wrap(frames)));
+        assertEquals(false, standardCodec.format().matches(ByteBuffer.wrap(frames)));
         assertThrows(IOException.class, () -> standardCodec.frameInfo(ByteBuffer.wrap(frames)));
 
         ByteBuffer inspection = ByteBuffer.wrap(frames);

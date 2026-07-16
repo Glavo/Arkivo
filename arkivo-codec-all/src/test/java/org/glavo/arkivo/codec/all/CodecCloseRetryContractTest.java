@@ -5,7 +5,8 @@ package org.glavo.arkivo.codec.all;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormat;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -40,7 +41,8 @@ final class CodecCloseRetryContractTest {
     /// Verifies encoder closure retries only the endpoint and does not duplicate stream finalization.
     @Test
     void retriesEncoderTargetClosure() throws IOException {
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
 
             FailingCloseWritableChannel target = new FailingCloseWritableChannel();
             CompressingWritableByteChannel encoder = codec.openEncoder(
@@ -49,24 +51,25 @@ final class CodecCloseRetryContractTest {
             );
             encoder.write(ByteBuffer.wrap(CONTENT));
 
-            IOException failure = assertThrows(IOException.class, encoder::finish, codec.name());
-            assertEquals("close failed", failure.getMessage(), codec.name());
-            assertFalse(encoder.isOpen(), codec.name());
-            assertEquals(1, target.closeCount(), codec.name());
+            IOException failure = assertThrows(IOException.class, encoder::finish, codec.format().name());
+            assertEquals("close failed", failure.getMessage(), codec.format().name());
+            assertFalse(encoder.isOpen(), codec.format().name());
+            assertEquals(1, target.closeCount(), codec.format().name());
             int finalizedSize = target.size();
 
             encoder.close();
             encoder.close();
-            assertEquals(2, target.closeCount(), codec.name());
-            assertEquals(finalizedSize, target.size(), codec.name());
-            assertArrayEquals(CONTENT, decompress(codec, target.bytes()), codec.name());
+            assertEquals(2, target.closeCount(), codec.format().name());
+            assertEquals(finalizedSize, target.size(), codec.format().name());
+            assertArrayEquals(CONTENT, decompress(codec, target.bytes()), codec.format().name());
         }
     }
 
     /// Verifies decoder closure releases codec state once and retries the owned source.
     @Test
     void retriesDecoderSourceClosure() throws IOException {
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
 
             FailingCloseReadableChannel source = new FailingCloseReadableChannel(compress(codec, CONTENT));
             CompressionCodec decoderCodec =
@@ -76,38 +79,39 @@ final class CodecCloseRetryContractTest {
                     ChannelOwnership.CLOSE
             );
 
-            IOException failure = assertThrows(IOException.class, decoder::close, codec.name());
-            assertEquals("close failed", failure.getMessage(), codec.name());
-            assertFalse(decoder.isOpen(), codec.name());
-            assertEquals(1, source.closeCount(), codec.name());
+            IOException failure = assertThrows(IOException.class, decoder::close, codec.format().name());
+            assertEquals("close failed", failure.getMessage(), codec.format().name());
+            assertFalse(decoder.isOpen(), codec.format().name());
+            assertEquals(1, source.closeCount(), codec.format().name());
 
             decoder.close();
             decoder.close();
-            assertEquals(2, source.closeCount(), codec.name());
-            assertFalse(source.isOpen(), codec.name());
+            assertEquals(2, source.closeCount(), codec.format().name());
+            assertFalse(source.isOpen(), codec.format().name());
         }
     }
 
     /// Verifies context setup and first-finalization failures honor endpoint ownership.
     @Test
     void closesOwnedEndpointsAfterSetupFailures() throws IOException {
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
             {
                 WriteFailingWritableChannel target = new WriteFailingWritableChannel();
                 @Nullable CompressingWritableByteChannel encoder = null;
                 try {
                     encoder = codec.openEncoder(target, ChannelOwnership.CLOSE);
-                    assertThrows(IOException.class, encoder::finish, codec.name());
+                    assertThrows(IOException.class, encoder::finish, codec.format().name());
                 } catch (IOException exception) {
-                    assertEquals("write failed", exception.getMessage(), codec.name());
+                    assertEquals("write failed", exception.getMessage(), codec.format().name());
                 } finally {
                     if (encoder != null) {
                         encoder.close();
                     }
                 }
-                assertTrue(target.writeCount() > 0, codec.name());
-                assertFalse(target.isOpen(), codec.name());
-                assertEquals(1, target.closeCount(), codec.name());
+                assertTrue(target.writeCount() > 0, codec.format().name());
+                assertFalse(target.isOpen(), codec.format().name());
+                assertEquals(1, target.closeCount(), codec.format().name());
             }
 
             {
@@ -116,14 +120,14 @@ final class CodecCloseRetryContractTest {
                 try {
                     decoder = decoderCodec(codec, 0L).openDecoder(source, ChannelOwnership.CLOSE);
                 } catch (IOException exception) {
-                    assertEquals("read failed", exception.getMessage(), codec.name());
+                    assertEquals("read failed", exception.getMessage(), codec.format().name());
                 } finally {
                     if (decoder != null) {
                         decoder.close();
                     }
                 }
-                assertFalse(source.isOpen(), codec.name());
-                assertEquals(1, source.closeCount(), codec.name());
+                assertFalse(source.isOpen(), codec.format().name());
+                assertEquals(1, source.closeCount(), codec.format().name());
             }
         }
     }
@@ -131,23 +135,24 @@ final class CodecCloseRetryContractTest {
     /// Verifies setup and finalization failures retain caller-owned endpoints.
     @Test
     void retainsEndpointsAfterSetupFailures() throws IOException {
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
             {
                 WriteFailingWritableChannel target = new WriteFailingWritableChannel();
                 @Nullable CompressingWritableByteChannel encoder = null;
                 try {
                     encoder = codec.openEncoder(target, ChannelOwnership.RETAIN);
-                    assertThrows(IOException.class, encoder::finish, codec.name());
+                    assertThrows(IOException.class, encoder::finish, codec.format().name());
                 } catch (IOException exception) {
-                    assertEquals("write failed", exception.getMessage(), codec.name());
+                    assertEquals("write failed", exception.getMessage(), codec.format().name());
                 } finally {
                     if (encoder != null) {
                         encoder.close();
                     }
                 }
-                assertTrue(target.writeCount() > 0, codec.name());
-                assertTrue(target.isOpen(), codec.name());
-                assertEquals(0, target.closeCount(), codec.name());
+                assertTrue(target.writeCount() > 0, codec.format().name());
+                assertTrue(target.isOpen(), codec.format().name());
+                assertEquals(0, target.closeCount(), codec.format().name());
             }
 
             {
@@ -156,14 +161,14 @@ final class CodecCloseRetryContractTest {
                 try {
                     decoder = decoderCodec(codec, 0L).openDecoder(source, ChannelOwnership.RETAIN);
                 } catch (IOException exception) {
-                    assertEquals("read failed", exception.getMessage(), codec.name());
+                    assertEquals("read failed", exception.getMessage(), codec.format().name());
                 } finally {
                     if (decoder != null) {
                         decoder.close();
                     }
                 }
-                assertTrue(source.isOpen(), codec.name());
-                assertEquals(0, source.closeCount(), codec.name());
+                assertTrue(source.isOpen(), codec.format().name());
+                assertEquals(0, source.closeCount(), codec.format().name());
             }
         }
     }
@@ -176,37 +181,39 @@ final class CodecCloseRetryContractTest {
     /// Verifies OutputStream convenience adapters retry caller-stream closure without re-finalizing frames.
     @Test
     void retriesConvenienceOutputStreamClosure() throws IOException {
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
 
             FailingCloseOutputStream target = new FailingCloseOutputStream();
             OutputStream output = codec.compressTo(target);
             output.write(CONTENT);
-            IOException failure = assertThrows(IOException.class, output::close, codec.name());
-            assertEquals("close failed", failure.getMessage(), codec.name());
+            IOException failure = assertThrows(IOException.class, output::close, codec.format().name());
+            assertEquals("close failed", failure.getMessage(), codec.format().name());
             int finalizedSize = target.size();
 
             output.close();
             output.close();
-            assertEquals(2, target.closeCount(), codec.name());
-            assertEquals(finalizedSize, target.size(), codec.name());
-            assertArrayEquals(CONTENT, decompress(codec, target.bytes()), codec.name());
+            assertEquals(2, target.closeCount(), codec.format().name());
+            assertEquals(finalizedSize, target.size(), codec.format().name());
+            assertArrayEquals(CONTENT, decompress(codec, target.bytes()), codec.format().name());
         }
     }
 
     /// Verifies InputStream convenience adapters retry caller-stream closure after decoder release.
     @Test
     void retriesConvenienceInputStreamClosure() throws IOException {
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
 
             FailingCloseInputStream source = new FailingCloseInputStream(compress(codec, CONTENT));
             InputStream input = decoderCodec(codec, CONTENT.length).decompressFrom(source);
-            assertArrayEquals(CONTENT, input.readAllBytes(), codec.name());
-            IOException failure = assertThrows(IOException.class, input::close, codec.name());
-            assertEquals("close failed", failure.getMessage(), codec.name());
+            assertArrayEquals(CONTENT, input.readAllBytes(), codec.format().name());
+            IOException failure = assertThrows(IOException.class, input::close, codec.format().name());
+            assertEquals("close failed", failure.getMessage(), codec.format().name());
 
             input.close();
             input.close();
-            assertEquals(2, source.closeCount(), codec.name());
+            assertEquals(2, source.closeCount(), codec.format().name());
         }
     }
 

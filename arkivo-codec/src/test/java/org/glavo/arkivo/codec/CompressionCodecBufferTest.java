@@ -162,7 +162,7 @@ final class CompressionCodecBufferTest {
 
     /// Provides identity encoding and decoding of one logical source prefix.
     @NotNullByDefault
-    private static final class ReadAheadCodec implements CompressionCodec {
+    private static final class ReadAheadCodec implements CompressionCodec, CompressionFormat {
         /// The logical decoded prefix length.
         private final int decodedSize;
 
@@ -179,6 +179,18 @@ final class CompressionCodecBufferTest {
         @Override
         public String name() {
             return "read-ahead";
+        }
+
+        /// Returns this test object as its format identity.
+        @Override
+        public CompressionFormat format() {
+            return this;
+        }
+
+        /// Returns this test object as the default codec configuration.
+        @Override
+        public CompressionCodec defaultCodec() {
+            return this;
         }
 
         /// Creates a fresh identity encoder.
@@ -202,7 +214,7 @@ final class CompressionCodecBufferTest {
 
     /// Implements an identity transformation through buffer engines.
     @NotNullByDefault
-    private static final class IdentityCodec implements CompressionCodec {
+    private static final class IdentityCodec implements CompressionCodec, CompressionFormat {
         /// Creates an identity codec.
         private IdentityCodec() {
         }
@@ -211,6 +223,18 @@ final class CompressionCodecBufferTest {
         @Override
         public String name() {
             return "identity";
+        }
+
+        /// Returns this test object as its format identity.
+        @Override
+        public CompressionFormat format() {
+            return this;
+        }
+
+        /// Returns this test object as the default codec configuration.
+        @Override
+        public CompressionCodec defaultCodec() {
+            return this;
         }
 
         /// Creates a fresh identity encoder.

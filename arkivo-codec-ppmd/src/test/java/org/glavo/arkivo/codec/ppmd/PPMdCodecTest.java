@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.ppmd;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecTransferResult;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
@@ -45,8 +45,8 @@ final class PPMdCodecTest {
         assertEquals(4, configured.maximumOrder());
         assertEquals(1L << 20, configured.memorySize());
         assertEquals(PPMdCodec.DEFAULT_MAXIMUM_ORDER, codec.maximumOrder());
-        assertNotNull(CompressionCodecs.find(PPMdCodec.NAME));
-        assertNotNull(CompressionCodecs.find("ppmd7"));
+        assertNotNull(CompressionFormats.find(PPMdCodec.NAME));
+        assertNotNull(CompressionFormats.find("ppmd7"));
     }
 
     /// Round-trips empty, repetitive, full-alphabet, and randomized data through channel contexts.

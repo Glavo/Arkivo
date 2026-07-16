@@ -1,0 +1,4 @@
+org.glavo.arkivo.codec.deflate.internal.DeflateCompressionFormat
+org.glavo.arkivo.codec.deflate.internal.Deflate64CompressionFormat
+org.glavo.arkivo.codec.deflate.internal.GzipCompressionFormat
+org.glavo.arkivo.codec.deflate.internal.ZlibCompressionFormat

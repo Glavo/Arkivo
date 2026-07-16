@@ -13,12 +13,12 @@ import java.util.Objects;
 
 /// Stores a forward-only compression probe result and its prefix-replaying channel.
 ///
-/// @param codec detected codec, or `null` when no installed codec matched
+/// @param format detected format, or `null` when no installed format matched
 /// @param prefix bytes consumed from the source during detection
 /// @param channel channel that returns every byte from the original probe position
 @NotNullByDefault
 public record CompressionProbeResult(
-        @Nullable CompressionCodec codec,
+        @Nullable CompressionFormat format,
         @UnmodifiableView ByteBuffer prefix,
         ReadableByteChannel channel
 ) {
@@ -34,8 +34,8 @@ public record CompressionProbeResult(
         return prefix.asReadOnlyBuffer();
     }
 
-    /// Returns whether an installed codec matched the probed prefix.
+    /// Returns whether an installed format matched the probed prefix.
     public boolean detected() {
-        return codec != null;
+        return format != null;
     }
 }

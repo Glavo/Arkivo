@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CodecStatus;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.DecodeDirective;
@@ -61,24 +61,24 @@ public final class XZCodecTest {
         byte[] input = "hello xz".getBytes(StandardCharsets.UTF_8);
 
         assertEquals(true, codec instanceof CompressionCodec);
-        assertEquals(XZCodec.NAME, codec.name());
+        assertEquals(XZCodec.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
     /// Verifies that the XZ codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(XZCodec.class, Objects.requireNonNull(CompressionCodecs.find(XZCodec.NAME)).getClass());
+        assertEquals(XZCodec.class, Objects.requireNonNull(CompressionFormats.find(XZCodec.NAME)).defaultCodec().getClass());
     }
 
     /// Verifies XZ signature matching.
     @Test
     public void metadata() {
         XZCodec codec = new XZCodec();
-        assertEquals(true, codec.matches(ByteBuffer.wrap(new byte[]{
+        assertEquals(true, codec.format().matches(ByteBuffer.wrap(new byte[]{
                 (byte) 0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00
         })));
-        assertEquals(false, codec.matches(ByteBuffer.wrap(new byte[]{(byte) 0xfd, 0x37})));
+        assertEquals(false, codec.format().matches(ByteBuffer.wrap(new byte[]{(byte) 0xfd, 0x37})));
     }
 
     /// Verifies Arkivo's pure Java XZ writer through XZ for Java's independent reader.

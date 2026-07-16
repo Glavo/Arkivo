@@ -9,7 +9,7 @@ import org.glavo.arkivo.codec.internal.StreamChannelAdapters;
 import org.glavo.arkivo.codec.spi.CodecChannelAdapters;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Unmodifiable;
+
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -17,7 +17,6 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
-import java.util.List;
 import java.util.Objects;
 
 /// Describes an immutable compression-format configuration and creates transport-independent engines.
@@ -29,33 +28,8 @@ public interface CompressionCodec {
     /// The sentinel returned when a size cannot be calculated or is not known.
     long UNKNOWN_SIZE = -1L;
 
-    /// Returns the stable codec name.
-    String name();
-
-    /// Returns alternative stable names accepted for this codec.
-    default @Unmodifiable List<String> aliases() {
-        return List.of();
-    }
-
-    /// Returns common file extensions for streams encoded by this codec, without leading dots.
-    default @Unmodifiable List<String> fileExtensions() {
-        return List.of(name());
-    }
-
-    /// Returns the preferred number of leading bytes requested by generic codec detection.
-    ///
-    /// A codec may recognize a prefix containing fewer bytes. The returned value must not be negative.
-    default int probeSize() {
-        return 0;
-    }
-
-    /// Returns whether the given byte prefix matches this codec's stream signature.
-    ///
-    /// The returned value is false when the codec has no reliable fixed signature or the prefix is too short.
-    default boolean matches(ByteBuffer prefix) {
-        Objects.requireNonNull(prefix, "prefix");
-        return false;
-    }
+    /// Returns the discoverable compression format configured by this codec.
+    CompressionFormat format();
 
     /// Returns the maximum compressed size for an input of sourceSize bytes, or UNKNOWN_SIZE when unknown.
     default long maxCompressedSize(long sourceSize) {

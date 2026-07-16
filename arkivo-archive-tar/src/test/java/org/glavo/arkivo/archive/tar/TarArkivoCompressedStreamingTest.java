@@ -5,7 +5,8 @@ package org.glavo.arkivo.archive.tar;
 
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormat;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -50,7 +51,7 @@ final class TarArkivoCompressedStreamingTest {
         assertFalse(output.isOpen());
 
         byte[] archiveBytes = archive.toByteArray();
-        @Nullable CompressionCodec detected = CompressionCodecs.detect(ByteBuffer.wrap(archiveBytes));
+        @Nullable CompressionFormat detected = CompressionFormats.detect(ByteBuffer.wrap(archiveBytes));
         assertNotNull(detected);
         assertEquals("gzip", detected.name());
 
@@ -96,8 +97,9 @@ final class TarArkivoCompressedStreamingTest {
     /// Verifies codec-object configuration through the TAR format facade.
     @Test
     void roundTripsRawDeflateThroughFormatFacade() throws IOException {
-        @Nullable CompressionCodec codec = CompressionCodecs.find("deflate");
-        assertNotNull(codec);
+        @Nullable CompressionFormat compressionFormat = CompressionFormats.find("deflate");
+        assertNotNull(compressionFormat);
+        CompressionCodec codec = compressionFormat.defaultCodec();
         Map<String, Object> environment = Map.of(TarArkivoFileSystem.COMPRESSION.key(), codec);
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
 
@@ -105,7 +107,7 @@ final class TarArkivoCompressedStreamingTest {
         try (TarArkivoStreamingWriter writer = format.openStreamingWriter(archive, environment)) {
             writeEntry(writer);
         }
-        assertNull(CompressionCodecs.detect(ByteBuffer.wrap(archive.toByteArray())));
+        assertNull(CompressionFormats.detect(ByteBuffer.wrap(archive.toByteArray())));
 
         try (TarArkivoStreamingReader reader = format.openStreamingReader(
                 new ByteArrayInputStream(archive.toByteArray()),
@@ -147,7 +149,7 @@ final class TarArkivoCompressedStreamingTest {
             writeEntry(writer);
         }
         byte[] archiveBytes = archive.toByteArray();
-        assertNull(CompressionCodecs.detect(ByteBuffer.wrap(archiveBytes)));
+        assertNull(CompressionFormats.detect(ByteBuffer.wrap(archiveBytes)));
         assertTrue(TarArkivoFormat.instance().matches(ByteBuffer.wrap(archiveBytes)));
 
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
@@ -169,7 +171,7 @@ final class TarArkivoCompressedStreamingTest {
             }
         }
         byte[] archiveBytes = archive.toByteArray();
-        @Nullable CompressionCodec detected = CompressionCodecs.detect(ByteBuffer.wrap(archiveBytes));
+        @Nullable CompressionFormat detected = CompressionFormats.detect(ByteBuffer.wrap(archiveBytes));
         assertNotNull(detected);
         assertEquals("zlib", detected.name());
 

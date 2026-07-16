@@ -28,59 +28,59 @@ public final class SevenZipOptionalCodecProbe {
     /// Checks both coder directions without optional codec implementations on the runtime class path.
     public static void main(String @Unmodifiable [] arguments) throws Exception {
         for (String codecName : OPTIONAL_CODEC_NAMES) {
-            requireMissingCodec(codecName, () -> SevenZipCompressionCodecs.openDecoder(
+            requireMissingCodec(codecName, () -> SevenZipCompressionFormats.openDecoder(
                     codecName,
                     new ByteArrayInputStream(new byte[0]),
                     0L
             ));
-            requireMissingCodec(codecName, () -> SevenZipCompressionCodecs.openEncoder(
+            requireMissingCodec(codecName, () -> SevenZipCompressionFormats.openEncoder(
                     codecName,
                     1,
                 new ByteArrayOutputStream()
             ));
         }
-        requireMissingCodec("ppmd", () -> SevenZipCompressionCodecs.openPpmdDecoder(
+        requireMissingCodec("ppmd", () -> SevenZipCompressionFormats.openPpmdDecoder(
                 new ByteArrayInputStream(new byte[0]),
                 4,
                 1L << 20,
                 0L
         ));
-        requireMissingCodec("ppmd", () -> SevenZipCompressionCodecs.openPpmdEncoder(
+        requireMissingCodec("ppmd", () -> SevenZipCompressionFormats.openPpmdEncoder(
                 4,
                 1L << 20,
                 new ByteArrayOutputStream()
         ));
-        requireMissingCodec("lzma-raw", () -> SevenZipCompressionCodecs.openRawLZMADecoder(
+        requireMissingCodec("lzma-raw", () -> SevenZipCompressionFormats.openRawLZMADecoder(
                 new ByteArrayInputStream(new byte[0]),
                 0x5d,
                 1L << 20,
                 0L
         ));
-        requireMissingCodec("lzma-raw", () -> SevenZipCompressionCodecs.openRawLZMAEncoder(
+        requireMissingCodec("lzma-raw", () -> SevenZipCompressionFormats.openRawLZMAEncoder(
                 1L << 20,
                 false,
                 new ByteArrayOutputStream()
         ));
-        requireMissingCodec("lzma2", () -> SevenZipCompressionCodecs.openLZMA2Decoder(
+        requireMissingCodec("lzma2", () -> SevenZipCompressionFormats.openLZMA2Decoder(
                 new ByteArrayInputStream(new byte[0]),
                 1L << 20,
                 0L
         ));
-        requireMissingCodec("lzma2", () -> SevenZipCompressionCodecs.openLZMA2Encoder(
+        requireMissingCodec("lzma2", () -> SevenZipCompressionFormats.openLZMA2Encoder(
                 1L << 20,
                 new ByteArrayOutputStream()
         ));
     }
 
-    /// Requires one optional-codec operation to fail with the stable missing-codec diagnostic.
+    /// Requires one optional-codec operation to fail with the stable missing-format diagnostic.
     private static void requireMissingCodec(String codecName, CheckedOperation operation) throws Exception {
         try {
             operation.run();
         } catch (IOException exception) {
-            if (("Unknown compression codec: " + codecName).equals(exception.getMessage())) {
+            if (("Unknown compression format: " + codecName).equals(exception.getMessage())) {
                 return;
             }
-            throw new AssertionError("Unexpected missing-codec diagnostic for " + codecName, exception);
+            throw new AssertionError("Unexpected missing-format diagnostic for " + codecName, exception);
         }
         throw new AssertionError("7z unexpectedly found the optional " + codecName + " codec");
     }

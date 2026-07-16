@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.benchmark;
 
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.openjdk.jmh.annotations.Benchmark;
@@ -81,7 +81,7 @@ public class CodecThroughputBenchmark {
     /// Compresses the requested source and returns the resulting frame.
     private static byte[] compress(String codecName, byte[] source) throws IOException {
         ByteArrayOutputStream target = new ByteArrayOutputStream(source.length);
-        CompressionCodecs.compress(
+        CompressionFormats.compress(
                 codecName,
                 Channels.newChannel(new ByteArrayInputStream(source)),
                 Channels.newChannel(target)
@@ -92,7 +92,7 @@ public class CodecThroughputBenchmark {
     /// Decompresses one frame into an output buffer sized for the expected content.
     private static byte[] decompress(String codecName, byte[] compressed, int expectedSize) throws IOException {
         ByteArrayOutputStream target = new ByteArrayOutputStream(expectedSize);
-        CompressionCodecs.decompress(
+        CompressionFormats.decompress(
                 codecName,
                 Channels.newChannel(new ByteArrayInputStream(compressed)),
                 Channels.newChannel(target)

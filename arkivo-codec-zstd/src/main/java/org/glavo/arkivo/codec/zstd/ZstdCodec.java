@@ -5,12 +5,14 @@ package org.glavo.arkivo.codec.zstd;
 
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionLevelCodec;
+import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DictionaryCompressionCodec;
 import org.glavo.arkivo.codec.DictionaryCompressionDecoder;
 import org.glavo.arkivo.codec.FlushableFramedCompressionEncoder;
 import org.glavo.arkivo.codec.PledgedSourceSizeCodec;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.zstd.internal.ZstdCompressionFormat;
 import org.glavo.arkivo.codec.zstd.internal.ZstdDecoder;
 import org.glavo.arkivo.codec.zstd.internal.ZstdDictionarySupport;
 import org.glavo.arkivo.codec.zstd.internal.ZstdEncoder;
@@ -18,11 +20,9 @@ import org.glavo.arkivo.codec.zstd.internal.ZstdEncoderParameters;
 import org.glavo.arkivo.codec.zstd.internal.ZstdFrameHeader;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
-import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.List;
 import java.util.Objects;
 
 /// Provides an immutable Zstandard configuration and transport-independent frame engines.
@@ -209,16 +209,10 @@ public final class ZstdCodec
         return new Builder(this);
     }
 
-    /// Returns the stable Zstandard codec name.
+    /// Returns the canonical Zstandard format.
     @Override
-    public String name() {
-        return NAME;
-    }
-
-    /// Returns common Zstandard file extensions.
-    @Override
-    public @Unmodifiable List<String> fileExtensions() {
-        return List.of("zst", "zstd");
+    public CompressionFormat format() {
+        return ZstdCompressionFormat.instance();
     }
 
     /// Returns the configured compression level.
@@ -402,19 +396,6 @@ public final class ZstdCodec
                 : toBuilder().verifyChecksums(verifyChecksums).build();
     }
 
-    /// Returns the number of leading bytes used to identify configured streams.
-    @Override
-    public int probeSize() {
-        return frameFormat == ZstdFrameFormat.STANDARD ? 4 : 0;
-    }
-
-    /// Returns whether the prefix starts with a standard Zstandard frame signature.
-    @Override
-    public boolean matches(ByteBuffer prefix) {
-        Objects.requireNonNull(prefix, "prefix");
-        return frameFormat == ZstdFrameFormat.STANDARD
-                && ZstdFrameHeader.hasFrameMagic(prefix);
-    }
 
     /// Returns the maximum compressed size for an input of sourceSize bytes.
     @Override

@@ -11,6 +11,6 @@ module org.glavo.arkivo.codec.xz {
 
     exports org.glavo.arkivo.codec.xz;
 
-    provides org.glavo.arkivo.codec.spi.CompressionCodecProvider with
-            org.glavo.arkivo.codec.xz.internal.XZCodecProvider;
+    provides org.glavo.arkivo.codec.CompressionFormat with
+            org.glavo.arkivo.codec.xz.internal.XZCompressionFormat;
 }

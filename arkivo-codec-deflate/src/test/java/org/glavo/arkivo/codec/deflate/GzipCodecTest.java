@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.EncodeDirective;
@@ -41,23 +41,23 @@ public final class GzipCodecTest {
         byte[] input = "hello gzip".getBytes(StandardCharsets.UTF_8);
 
         assertEquals(true, codec instanceof CompressionCodec);
-        assertEquals(GzipCodec.NAME, codec.name());
+        assertEquals(GzipCodec.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
     /// Verifies that the gzip codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(GzipCodec.class, Objects.requireNonNull(CompressionCodecs.find(GzipCodec.NAME)).getClass());
+        assertEquals(GzipCodec.class, Objects.requireNonNull(CompressionFormats.find(GzipCodec.NAME)).defaultCodec().getClass());
     }
 
     /// Verifies gzip metadata and signature matching.
     @Test
     public void metadata() {
         GzipCodec codec = new GzipCodec();
-        assertEquals(java.util.List.of("gz", "gzip"), codec.fileExtensions());
-        assertEquals(true, codec.matches(ByteBuffer.wrap(new byte[]{0x1f, (byte) 0x8b, 0x08})));
-        assertEquals(false, codec.matches(ByteBuffer.wrap(new byte[]{0x1f})));
+        assertEquals(java.util.List.of("gz", "gzip"), codec.format().fileExtensions());
+        assertEquals(true, codec.format().matches(ByteBuffer.wrap(new byte[]{0x1f, (byte) 0x8b, 0x08})));
+        assertEquals(false, codec.format().matches(ByteBuffer.wrap(new byte[]{0x1f})));
         assertEquals(0L, codec.minimumCompressionLevel());
         assertEquals(9L, codec.maximumCompressionLevel());
         assertEquals(6L, codec.defaultCompressionLevel());

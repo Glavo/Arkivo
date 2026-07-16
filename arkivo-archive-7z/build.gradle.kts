@@ -43,7 +43,7 @@ val verifyPublishedSevenZipWriter by tasks.registering {
     }
 }
 
-val verifyOptionalCompressionCodecs by tasks.registering(JavaExec::class) {
+val verifyOptionalCompressionFormats by tasks.registering(JavaExec::class) {
     group = "verification"
     description = "Verifies 7z loads and diagnoses operations without optional compression codecs."
     dependsOn(tasks.named("testClasses"))
@@ -59,7 +59,7 @@ val verifyOptionalCompressionCodecs by tasks.registering(JavaExec::class) {
 }
 
 tasks.named("check") {
-    dependsOn(verifyPublishedSevenZipWriter, verifyOptionalCompressionCodecs)
+    dependsOn(verifyPublishedSevenZipWriter, verifyOptionalCompressionFormats)
 }
 
 val lowHeapUpdateProbe by tasks.registering(JavaExec::class) {

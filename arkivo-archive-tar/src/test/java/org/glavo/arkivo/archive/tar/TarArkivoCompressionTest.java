@@ -6,8 +6,8 @@ package org.glavo.arkivo.archive.tar;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
-import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormat;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -37,7 +37,7 @@ final class TarArkivoCompressionTest {
         try {
             createCompressedArchive(archivePath, "gzip");
 
-            @Nullable CompressionCodec detected = CompressionCodecs.detect(archivePath);
+            @Nullable CompressionFormat detected = CompressionFormats.detect(archivePath);
             assertNotNull(detected);
             assertEquals("gzip", detected.name());
             assertArchiveContent(archivePath);
@@ -56,9 +56,9 @@ final class TarArkivoCompressionTest {
                 Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
             }
 
-            @Nullable CompressionCodec updatedCodec = CompressionCodecs.detect(archivePath);
-            assertNotNull(updatedCodec);
-            assertEquals("gzip", updatedCodec.name());
+            @Nullable CompressionFormat updatedFormat = CompressionFormats.detect(archivePath);
+            assertNotNull(updatedFormat);
+            assertEquals("gzip", updatedFormat.name());
             try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath)) {
                 assertEquals("updated", Files.readString(fileSystem.getPath("/value.txt")));
                 assertEquals("added", Files.readString(fileSystem.getPath("/added.txt")));
@@ -109,7 +109,7 @@ final class TarArkivoCompressionTest {
             assertArrayEquals(original, Files.readAllBytes(sourcePath));
             assertEquals(2, source.openCount());
             assertTrue(source.closed());
-            @Nullable CompressionCodec detected = CompressionCodecs.detect(targetPath);
+            @Nullable CompressionFormat detected = CompressionFormats.detect(targetPath);
             assertNotNull(detected);
             assertEquals("gzip", detected.name());
             try (TarArkivoFileSystem derived = TarArkivoFileSystem.open(targetPath)) {
@@ -215,7 +215,7 @@ final class TarArkivoCompressionTest {
                 Files.writeString(fileSystem.getPath("/" + entryName), "raw", StandardCharsets.UTF_8);
             }
 
-            @Nullable CompressionCodec detected = CompressionCodecs.detect(archivePath);
+            @Nullable CompressionFormat detected = CompressionFormats.detect(archivePath);
             assertNotNull(detected);
             assertEquals("zlib", detected.name());
             try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath)) {

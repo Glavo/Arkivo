@@ -156,12 +156,15 @@ ArkivoCommitTarget
 ArkivoCommitOutput
 ArkivoSourceMutationPolicy
 CompressionCodec
-CompressionCodecs
+CompressionFormat
+CompressionFormatRegistry
+CompressionFormats
 ```
 
 The base module should define the contracts and support code as a format-independent foundation.
 
-Format detection and implementation lookup should use a service registration model, such as `ServiceLoader`, with concrete providers supplied by format modules.
+Format detection and implementation lookup should use direct `ServiceLoader<CompressionFormat>` registration, with
+concrete format identities supplied by implementation modules.
 
 ## Compression API
 
@@ -181,7 +184,10 @@ buffers in any source and target combination, including read-only sources and no
 writable, and one buffer instance cannot serve as both source and target. Immutable codec configurations and
 operation-scoped `DecompressionLimits` follow the same validation and exception contract across adapters.
 
-`CompressionCodecs` should open encoder and decoder contexts by stable codec name and should automatically open decoders for streams with reliable signatures. Context factories should apply explicit channel ownership consistently during lookup, detection, setup, and close. Named channel transfers should retain caller endpoints, while stream adapters should own their input or output stream.
+`CompressionFormats` should find format identities and open their default encoder and decoder contexts by stable format
+name. It should automatically open decoders for streams with reliable signatures. Context factories should apply explicit
+channel ownership consistently during lookup, detection, setup, and close. Named channel transfers should retain caller
+endpoints, while stream adapters should own their input or output stream.
 
 Zstandard signature detection recognizes the standard frame magic and all sixteen skippable-frame identifiers without
 changing the probe buffer. Generic decoder factories accept streams beginning with skippable frames, and incremental

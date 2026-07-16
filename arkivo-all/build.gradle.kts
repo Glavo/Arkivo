@@ -453,12 +453,12 @@ val verifyModuleDescriptors by tasks.registering {
         }
 
         val archiveFormatService = "org.glavo.arkivo.archive.ArkivoFormat"
-        val compressionCodecProviderService = "org.glavo.arkivo.codec.spi.CompressionCodecProvider"
+        val compressionFormatService = "org.glavo.arkivo.codec.CompressionFormat"
         val streamingSourceService = "org.glavo.arkivo.archive.spi.ArkivoStreamingSourceProvider"
         val fileSystemProviderService = "java.nio.file.spi.FileSystemProvider"
         val expectedUses = mapOf(
             archiveModule to setOf(archiveFormatService, streamingSourceService),
-            codecModule to setOf(compressionCodecProviderService)
+            codecModule to setOf(compressionFormatService)
         )
         descriptors.forEach { (moduleName, descriptor) ->
             val expected = expectedUses[moduleName].orEmpty()
@@ -506,33 +506,33 @@ val verifyModuleDescriptors by tasks.registering {
                 )
             ),
             "org.glavo.arkivo.codec.bzip2" to mapOf(
-                compressionCodecProviderService to setOf("org.glavo.arkivo.codec.bzip2.internal.BZip2CodecProvider")
+                compressionFormatService to setOf("org.glavo.arkivo.codec.bzip2.internal.BZip2CompressionFormat")
             ),
             "org.glavo.arkivo.codec.deflate" to mapOf(
-                compressionCodecProviderService to setOf(
-                    "org.glavo.arkivo.codec.deflate.internal.DeflateCodecProvider",
-                    "org.glavo.arkivo.codec.deflate.internal.Deflate64CodecProvider",
-                    "org.glavo.arkivo.codec.deflate.internal.GzipCodecProvider",
-                    "org.glavo.arkivo.codec.deflate.internal.ZlibCodecProvider"
+                compressionFormatService to setOf(
+                    "org.glavo.arkivo.codec.deflate.internal.DeflateCompressionFormat",
+                    "org.glavo.arkivo.codec.deflate.internal.Deflate64CompressionFormat",
+                    "org.glavo.arkivo.codec.deflate.internal.GzipCompressionFormat",
+                    "org.glavo.arkivo.codec.deflate.internal.ZlibCompressionFormat"
                 )
             ),
 
             "org.glavo.arkivo.codec.lzma" to mapOf(
-                compressionCodecProviderService to setOf(
-                    "org.glavo.arkivo.codec.lzma.internal.LZMACodecProvider",
-                    "org.glavo.arkivo.codec.lzma.internal.RawLZMACodecProvider",
-                    "org.glavo.arkivo.codec.lzma.internal.LZMA2CodecProvider"
+                compressionFormatService to setOf(
+                    "org.glavo.arkivo.codec.lzma.internal.LZMACompressionFormat",
+                    "org.glavo.arkivo.codec.lzma.internal.RawLZMACompressionFormat",
+                    "org.glavo.arkivo.codec.lzma.internal.LZMA2CompressionFormat"
                 )
             ),
             "org.glavo.arkivo.codec.ppmd" to mapOf(
-                compressionCodecProviderService to setOf("org.glavo.arkivo.codec.ppmd.internal.PPMdCodecProvider")
+                compressionFormatService to setOf("org.glavo.arkivo.codec.ppmd.internal.PPMdCompressionFormat")
             ),
             "org.glavo.arkivo.codec.xz" to mapOf(
-                compressionCodecProviderService to setOf("org.glavo.arkivo.codec.xz.internal.XZCodecProvider")
+                compressionFormatService to setOf("org.glavo.arkivo.codec.xz.internal.XZCompressionFormat")
             ),
 
             "org.glavo.arkivo.codec.zstd" to mapOf(
-                compressionCodecProviderService to setOf("org.glavo.arkivo.codec.zstd.internal.ZstdCodecProvider")
+                compressionFormatService to setOf("org.glavo.arkivo.codec.zstd.internal.ZstdCompressionFormat")
             )
         )
         descriptors.forEach { (moduleName, descriptor) ->

@@ -4,18 +4,17 @@
 package org.glavo.arkivo.codec.bzip2;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionLevelCodec;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.FramedCompressionEncoder;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2ChannelEncoder;
+import org.glavo.arkivo.codec.bzip2.internal.BZip2CompressionFormat;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2Decoder;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2Encoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Unmodifiable;
 
-import java.nio.ByteBuffer;
-import java.util.List;
 
 /// Provides an immutable BZip2 compression configuration and creates transport-independent engines.
 @NotNullByDefault
@@ -54,22 +53,10 @@ public final class BZip2Codec implements CompressionLevelCodec {
         this.compressionLevel = Math.toIntExact(compressionLevel);
     }
 
-    /// Returns the stable BZip2 codec name.
+    /// Returns the canonical BZip2 format.
     @Override
-    public String name() {
-        return NAME;
-    }
-
-    /// Returns alternative stable names accepted for BZip2.
-    @Override
-    public @Unmodifiable List<String> aliases() {
-        return List.of("bz2");
-    }
-
-    /// Returns common BZip2 file extensions.
-    @Override
-    public @Unmodifiable List<String> fileExtensions() {
-        return List.of("bz2", "bzip2");
+    public CompressionFormat format() {
+        return BZip2CompressionFormat.instance();
     }
 
     /// Returns the configured BZip2 block-size level.
@@ -104,27 +91,6 @@ public final class BZip2Codec implements CompressionLevelCodec {
                 : new BZip2Codec(compressionLevel);
     }
 
-    /// Returns the number of leading bytes used to identify BZip2 streams.
-    @Override
-    public int probeSize() {
-        return 4;
-    }
-
-    /// Returns whether the given prefix starts with the BZip2 stream signature.
-    @Override
-    public boolean matches(ByteBuffer prefix) {
-        int position = prefix.position();
-        if (prefix.remaining() < 4) {
-            return false;
-        }
-
-        int blockSize = Byte.toUnsignedInt(prefix.get(position + 3));
-        return prefix.get(position) == 'B'
-                && prefix.get(position + 1) == 'Z'
-                && prefix.get(position + 2) == 'h'
-                && blockSize >= '1'
-                && blockSize <= '9';
-    }
 
     /// Creates a transport-independent BZip2 framed encoder.
     @Override

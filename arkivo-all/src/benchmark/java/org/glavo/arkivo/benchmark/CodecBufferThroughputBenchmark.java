@@ -5,7 +5,8 @@ package org.glavo.arkivo.benchmark;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormat;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.lzma.LZMA2Codec;
@@ -87,11 +88,12 @@ public class CodecBufferThroughputBenchmark {
     /// Creates reusable engines and buffers and verifies one complete round trip.
     @Setup
     public void setUp() throws IOException {
-        CompressionCodec selectedCodec = CompressionCodecs.find(codecName);
-        if (selectedCodec == null) {
+        CompressionFormat selectedFormat = CompressionFormats.find(codecName);
+        if (selectedFormat == null) {
             throw new IllegalArgumentException("Compression codec is not installed: " + codecName);
         }
 
+        CompressionCodec selectedCodec = selectedFormat.defaultCodec();
         CompressionCodec compressionConfiguration = selectedCodec;
         CompressionCodec decompressionConfiguration = selectedCodec;
         if (selectedCodec instanceof PPMdCodec ppmdCodec) {

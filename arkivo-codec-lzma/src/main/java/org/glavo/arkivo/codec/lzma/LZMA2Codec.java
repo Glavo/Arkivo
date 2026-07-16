@@ -4,10 +4,12 @@
 package org.glavo.arkivo.codec.lzma;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2Decoder;
+import org.glavo.arkivo.codec.lzma.internal.LZMA2CompressionFormat;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2Encoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -41,11 +43,12 @@ public final class LZMA2Codec implements CompressionCodec {
         this.properties = Objects.requireNonNull(properties, "properties");
     }
 
-    /// Returns the stable LZMA2 codec name.
+    /// Returns the canonical raw LZMA2 format.
     @Override
-    public String name() {
-        return NAME;
+    public CompressionFormat format() {
+        return LZMA2CompressionFormat.instance();
     }
+
 
     /// Returns the configured externally declared LZMA properties.
     public LZMAProperties properties() {

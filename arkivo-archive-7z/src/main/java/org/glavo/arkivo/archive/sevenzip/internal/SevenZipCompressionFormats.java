@@ -7,7 +7,8 @@ import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormat;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.CompressionLevelCodec;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimits;
@@ -26,7 +27,7 @@ import java.util.Objects;
 
 /// Connects optional immutable compression codecs to 7z coder streams.
 @NotNullByDefault
-final class SevenZipCompressionCodecs {
+final class SevenZipCompressionFormats {
     /// The stable optional raw LZMA codec name.
     private static final String RAW_LZMA_NAME = "lzma-raw";
 
@@ -36,7 +37,7 @@ final class SevenZipCompressionCodecs {
     /// The stable optional PPMd codec name.
     private static final String PPMD_NAME = "ppmd";
     /// Creates no instances.
-    private SevenZipCompressionCodecs() {
+    private SevenZipCompressionFormats() {
     }
 
     /// Opens a compression-level-configured encoder that owns the downstream coder stream.
@@ -48,7 +49,7 @@ final class SevenZipCompressionCodecs {
         CompressionCodec codec = requireCodec(codecName);
         if (!(codec instanceof CompressionLevelCodec configurableCodec)) {
             throw new UnsupportedOperationException(
-                    "Compression codec does not support compression levels: " + codec.name()
+                    "Compression codec does not support compression levels: " + codec.format().name()
             );
         }
         return openOwningEncoder(
@@ -109,7 +110,7 @@ final class SevenZipCompressionCodecs {
             InputStream source,
             long maximumOutputSize
     ) throws IOException {
-        DecompressingReadableByteChannel decoder = CompressionCodecs.openDecoder(
+        DecompressingReadableByteChannel decoder = CompressionFormats.openDecoder(
                 codecName,
                 StreamChannelAdapters.readableChannel(source),
                 DecompressionLimits.ofMaximumOutputSize(maximumOutputSize),
@@ -118,7 +119,7 @@ final class SevenZipCompressionCodecs {
         return StreamChannelAdapters.inputStream(decoder);
     }
 
-    /// Opens an exactly sized PPMd7 decoder through the optional codec provider.
+    /// Opens an exactly sized PPMd7 decoder through the optional compression format.
     static InputStream openPpmdDecoder(
             InputStream source,
             int maximumOrder,
@@ -214,15 +215,15 @@ final class SevenZipCompressionCodecs {
 
     /// Returns an installed optional codec or reports the stable missing-codec diagnostic.
     private static CompressionCodec requireCodec(String codecName) throws IOException {
-        @Nullable CompressionCodec codec = CompressionCodecs.find(codecName);
-        if (codec == null) {
-            throw new IOException("Unknown compression codec: " + codecName);
+        @Nullable CompressionFormat format = CompressionFormats.find(codecName);
+        if (format == null) {
+            throw new IOException("Unknown compression format: " + codecName);
         }
-        return codec;
+        return format.defaultCodec();
     }
 
-    /// Creates a failure for an installed provider with an unexpected implementation type.
+    /// Creates a failure for an installed format with an unexpected implementation type.
     private static IOException incompatibleCodec(String codecName) {
-        return new IOException("Incompatible compression codec provider: " + codecName);
+        return new IOException("Incompatible default codec for compression format: " + codecName);
     }
 }

@@ -1,8 +1,6 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-import org.glavo.arkivo.codec.ppmd.PPMdCodec;
-
 /// Provides PPMd compression-model support for Arkivo.
 @SuppressWarnings("module")
 module org.glavo.arkivo.codec.ppmd {
@@ -12,6 +10,6 @@ module org.glavo.arkivo.codec.ppmd {
     exports org.glavo.arkivo.codec.ppmd;
     exports org.glavo.arkivo.codec.ppmd.internal to org.glavo.arkivo.archive.rar;
 
-    provides org.glavo.arkivo.codec.spi.CompressionCodecProvider with
-            org.glavo.arkivo.codec.ppmd.internal.PPMdCodecProvider;
+    provides org.glavo.arkivo.codec.CompressionFormat with
+            org.glavo.arkivo.codec.ppmd.internal.PPMdCompressionFormat;
 }

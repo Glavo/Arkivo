@@ -5,18 +5,18 @@ package org.glavo.arkivo.codec.xz;
 
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.FlushableFramedCompressionEncoder;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
+import org.glavo.arkivo.codec.xz.internal.XZCompressionFormat;
 import org.glavo.arkivo.codec.xz.internal.XzChannelEncoder;
 import org.glavo.arkivo.codec.xz.internal.XzDecoder;
 import org.glavo.arkivo.codec.xz.internal.XzEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.util.Objects;
 
 /// Provides an immutable XZ configuration and pure Java transport-independent engines.
@@ -31,10 +31,6 @@ public final class XZCodec implements CompressionCodec {
     /// The default immutable XZ codec configuration.
     public static final XZCodec DEFAULT = builder().build();
 
-    /// The XZ stream header magic bytes.
-    private static final byte @Unmodifiable [] HEADER_MAGIC = {
-            (byte) 0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00
-    };
 
     /// The configured LZMA2 model properties.
     private final LZMAProperties properties;
@@ -75,10 +71,10 @@ public final class XZCodec implements CompressionCodec {
         return new Builder(this);
     }
 
-    /// Returns the stable XZ codec name.
+    /// Returns the canonical XZ format.
     @Override
-    public String name() {
-        return NAME;
+    public CompressionFormat format() {
+        return XZCompressionFormat.instance();
     }
 
     /// Returns the configured LZMA2 model properties.
@@ -149,27 +145,6 @@ public final class XZCodec implements CompressionCodec {
                 : toBuilder().verifyChecksums(verifyChecksums).build();
     }
 
-    /// Returns the number of leading bytes used to identify XZ streams.
-    @Override
-    public int probeSize() {
-        return HEADER_MAGIC.length;
-    }
-
-    /// Returns whether the given prefix starts with the XZ stream signature.
-    @Override
-    public boolean matches(ByteBuffer prefix) {
-        int position = prefix.position();
-        if (prefix.remaining() < HEADER_MAGIC.length) {
-            return false;
-        }
-
-        for (int index = 0; index < HEADER_MAGIC.length; index++) {
-            if (prefix.get(position + index) != HEADER_MAGIC[index]) {
-                return false;
-            }
-        }
-        return true;
-    }
 
     /// Creates a flushable transport-independent XZ stream encoder.
     @Override

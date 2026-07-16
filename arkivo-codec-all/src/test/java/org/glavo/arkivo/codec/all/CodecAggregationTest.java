@@ -3,8 +3,8 @@
 
 package org.glavo.arkivo.codec.all;
 
-import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormat;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -19,9 +19,9 @@ final class CodecAggregationTest {
     /// Verifies that every aggregated compression codec provider is visible.
     @Test
     void discoversAggregatedCodecs() {
-        Set<String> names = CompressionCodecs.installed()
+        Set<String> names = CompressionFormats.installed()
                 .stream()
-                .map(CompressionCodec::name)
+                .map(CompressionFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
 
         assertEquals(

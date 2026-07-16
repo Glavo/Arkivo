@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionLevelCodec;
 import org.glavo.arkivo.codec.CompressionStrategy;
@@ -11,13 +12,13 @@ import org.glavo.arkivo.codec.CompressionStrategyCodec;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DictionaryCompressionCodec;
 import org.glavo.arkivo.codec.FlushableCompressionEncoder;
+import org.glavo.arkivo.codec.deflate.internal.ZlibCompressionFormat;
 import org.glavo.arkivo.codec.deflate.internal.ZlibDecoder;
 import org.glavo.arkivo.codec.deflate.internal.ZlibEncoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
-import java.nio.ByteBuffer;
 import java.util.Objects;
 
 /// Provides an immutable zlib configuration and pure Java stream engines.
@@ -71,11 +72,12 @@ public final class ZlibCodec
         this.dictionary = dictionary;
     }
 
-    /// Returns the stable zlib codec name.
+    /// Returns the canonical zlib format.
     @Override
-    public String name() {
-        return NAME;
+    public CompressionFormat format() {
+        return ZlibCompressionFormat.instance();
     }
+
 
     /// Returns the configured zlib Deflate match-search level.
     @Override
@@ -147,26 +149,6 @@ public final class ZlibCodec
                 : new ZlibCodec(compressionLevel, compressionStrategy, null);
     }
 
-    /// Returns the number of leading bytes used to identify zlib streams.
-    @Override
-    public int probeSize() {
-        return 2;
-    }
-
-    /// Returns whether the given prefix starts with a valid zlib header.
-    @Override
-    public boolean matches(ByteBuffer prefix) {
-        int position = prefix.position();
-        if (prefix.remaining() < 2) {
-            return false;
-        }
-
-        int compressionMethodAndFlags = Byte.toUnsignedInt(prefix.get(position));
-        int flags = Byte.toUnsignedInt(prefix.get(position + 1));
-        return (compressionMethodAndFlags & 0x0f) == 8
-                && (compressionMethodAndFlags >> 4) <= 7
-                && ((compressionMethodAndFlags << 8) + flags) % 31 == 0;
-    }
 
     /// Creates a transport-independent zlib stream encoder.
     @Override

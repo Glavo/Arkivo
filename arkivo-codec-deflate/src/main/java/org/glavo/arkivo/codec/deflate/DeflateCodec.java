@@ -4,6 +4,7 @@
 package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionLevelCodec;
 import org.glavo.arkivo.codec.CompressionStrategy;
@@ -12,6 +13,7 @@ import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DictionaryCompressionCodec;
 import org.glavo.arkivo.codec.FlushableCompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.DeflateDecoder;
+import org.glavo.arkivo.codec.deflate.internal.DeflateCompressionFormat;
 import org.glavo.arkivo.codec.deflate.internal.DeflateEncoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -77,11 +79,12 @@ public final class DeflateCodec
         this.dictionary = dictionary;
     }
 
-    /// Returns the stable raw Deflate codec name.
+    /// Returns the canonical raw Deflate format.
     @Override
-    public String name() {
-        return NAME;
+    public CompressionFormat format() {
+        return DeflateCompressionFormat.instance();
     }
+
 
     /// Returns the configured match-search level.
     @Override

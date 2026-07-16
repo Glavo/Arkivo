@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.lzma;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
@@ -52,15 +52,15 @@ public final class RawLZMACodecTest {
     public void discoversRawProviders() {
         assertInstanceOf(
                 RawLZMACodec.class,
-                Objects.requireNonNull(CompressionCodecs.find(RawLZMACodec.NAME))
+                Objects.requireNonNull(CompressionFormats.find(RawLZMACodec.NAME)).defaultCodec()
         );
         assertInstanceOf(
                 RawLZMACodec.class,
-                Objects.requireNonNull(CompressionCodecs.find("raw-lzma"))
+                Objects.requireNonNull(CompressionFormats.find("raw-lzma")).defaultCodec()
         );
         assertInstanceOf(
                 LZMA2Codec.class,
-                Objects.requireNonNull(CompressionCodecs.find(LZMA2Codec.NAME))
+                Objects.requireNonNull(CompressionFormats.find(LZMA2Codec.NAME)).defaultCodec()
         );
     }
 

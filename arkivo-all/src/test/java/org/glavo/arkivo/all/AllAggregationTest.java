@@ -15,7 +15,8 @@ import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.tar.TarArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormat;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.ppmd.PPMdCodec;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystemProvider;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -56,6 +57,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -69,9 +71,9 @@ final class AllAggregationTest {
                 .stream()
                 .map(ArkivoFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
-        Set<String> codecNames = CompressionCodecs.installed()
+        Set<String> codecNames = CompressionFormats.installed()
                 .stream()
-                .map(CompressionCodec::name)
+                .map(CompressionFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
 
         assertEquals(Set.of("7z", "ar", "rar", "tar", "zip"), archiveNames);
@@ -256,8 +258,8 @@ final class AllAggregationTest {
             assertEquals("Archive format probe made no progress", exception.getMessage());
             assertEquals(7L, channel.position());
 
-            IOException codecException = assertThrows(IOException.class, () -> CompressionCodecs.detect(channel));
-            assertEquals("Compression codec probe made no progress", codecException.getMessage());
+            IOException codecException = assertThrows(IOException.class, () -> CompressionFormats.detect(channel));
+            assertEquals("Compression format probe made no progress", codecException.getMessage());
             assertEquals(7L, channel.position());
         }
     }
@@ -269,7 +271,8 @@ final class AllAggregationTest {
                 .repeat(256)
                 .getBytes(StandardCharsets.UTF_8);
 
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
 
             ByteBuffer source = ByteBuffer.allocateDirect(expected.length + 4);
             source.position(2);
@@ -281,7 +284,7 @@ final class AllAggregationTest {
             int compressedStart = 3;
             compressed.position(compressedStart);
             codec.compress(source, compressed);
-            assertFalse(source.hasRemaining(), codec.name());
+            assertFalse(source.hasRemaining(), codec.format().name());
 
             compressed.limit(compressed.position());
             compressed.position(compressedStart);
@@ -294,28 +297,29 @@ final class AllAggregationTest {
                     : codec;
             decoderCodec.decompress(compressed, decoded);
 
-            if (!"ppmd".equals(codec.name())) {
-                assertFalse(compressed.hasRemaining(), codec.name());
+            if (!"ppmd".equals(codec.format().name())) {
+                assertFalse(compressed.hasRemaining(), codec.format().name());
             }
-            assertEquals(decoded.limit(), decoded.position(), codec.name());
-            assertArrayEquals(expected, bufferBytes(decoded, decodedStart, decoded.position()), codec.name());
+            assertEquals(decoded.limit(), decoded.position(), codec.format().name());
+            assertArrayEquals(expected, bufferBytes(decoded, decodedStart, decoded.position()), codec.format().name());
         }
     }
 
     /// Verifies unified detection for every codec with a reliable stream signature.
     @Test
-    void detectsAllSignatureBearingCompressionCodecs() throws IOException {
+    void detectsAllSignatureBearingCompressionFormats() throws IOException {
         Set<String> expectedNames = Set.of("bzip2", "gzip", "xz", "zlib", "zstd");
-        Set<String> detectedNames = CompressionCodecs.installed()
+        Set<String> detectedNames = CompressionFormats.installed()
                 .stream()
-                .filter(codec -> codec.probeSize() > 0)
-                .map(CompressionCodec::name)
+                .filter(format -> format.probeSize() > 0)
+                .map(CompressionFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
         assertEquals(expectedNames, detectedNames);
 
         byte[] content = "Arkivo compression probe".getBytes(StandardCharsets.UTF_8);
-        for (CompressionCodec codec : CompressionCodecs.installed()) {
-            if (codec.probeSize() == 0) {
+        for (CompressionFormat format : CompressionFormats.installed()) {
+            CompressionCodec codec = format.defaultCodec();
+            if (format.probeSize() == 0) {
                 continue;
             }
             ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -329,9 +333,9 @@ final class AllAggregationTest {
             prefix.flip();
             prefix.position(1);
 
-            @Nullable CompressionCodec detected = CompressionCodecs.detect(prefix);
-            assertNotNull(detected, codec.name());
-            assertEquals(codec.name(), detected.name());
+            @Nullable CompressionFormat detected = CompressionFormats.detect(prefix);
+            assertNotNull(detected, codec.format().name());
+            assertSame(format, detected);
             assertEquals(1, prefix.position());
         }
     }

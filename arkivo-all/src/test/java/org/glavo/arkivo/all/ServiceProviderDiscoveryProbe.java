@@ -3,12 +3,13 @@
 
 package org.glavo.arkivo.all;
 
-import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormat;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.file.spi.FileSystemProvider;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -19,8 +20,8 @@ public final class ServiceProviderDiscoveryProbe {
     private static final @Unmodifiable Set<String> EXPECTED_SCHEMES =
             Set.of("arkivo+7z", "arkivo+ar", "arkivo+rar", "arkivo+tar", "arkivo+zip");
 
-    /// Expected default compression codec names.
-    private static final @Unmodifiable Set<String> EXPECTED_CODEC_NAMES = Set.of(
+    /// Expected compression format names.
+    private static final @Unmodifiable Set<String> EXPECTED_FORMAT_NAMES = Set.of(
             "bzip2",
             "deflate",
             "deflate64",
@@ -52,14 +53,21 @@ public final class ServiceProviderDiscoveryProbe {
             );
         }
 
-        Set<String> actualCodecNames = CompressionCodecs.installed()
-                .stream()
-                .map(CompressionCodec::name)
+        @Unmodifiable List<CompressionFormat> formats = CompressionFormats.installed();
+        for (CompressionFormat format : formats) {
+            if (format.defaultCodec().format() != format) {
+                throw new AssertionError(
+                        "Compression format " + format.name() + " is not its default codec identity"
+                );
+            }
+        }
+        Set<String> actualFormatNames = formats.stream()
+                .map(CompressionFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
-        if (!EXPECTED_CODEC_NAMES.equals(actualCodecNames)) {
+        if (!EXPECTED_FORMAT_NAMES.equals(actualFormatNames)) {
             throw new AssertionError(
-                    "Installed Arkivo compression codecs " + actualCodecNames
-                            + " differ from " + EXPECTED_CODEC_NAMES
+                    "Installed Arkivo compression formats " + actualFormatNames
+                            + " differ from " + EXPECTED_FORMAT_NAMES
             );
         }
     }

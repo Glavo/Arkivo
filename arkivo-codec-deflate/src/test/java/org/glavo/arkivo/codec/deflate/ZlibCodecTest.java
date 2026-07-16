@@ -6,7 +6,7 @@ package org.glavo.arkivo.codec.deflate;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDictionary;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -43,22 +43,22 @@ public final class ZlibCodecTest {
         byte[] input = "hello zlib".getBytes(StandardCharsets.UTF_8);
 
         assertEquals(true, codec instanceof CompressionCodec);
-        assertEquals(ZlibCodec.NAME, codec.name());
+        assertEquals(ZlibCodec.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
     /// Verifies that the zlib codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(ZlibCodec.class, Objects.requireNonNull(CompressionCodecs.find(ZlibCodec.NAME)).getClass());
+        assertEquals(ZlibCodec.class, Objects.requireNonNull(CompressionFormats.find(ZlibCodec.NAME)).defaultCodec().getClass());
     }
 
     /// Verifies zlib header matching.
     @Test
     public void metadata() {
         ZlibCodec codec = new ZlibCodec();
-        assertEquals(true, codec.matches(ByteBuffer.wrap(new byte[]{0x78, (byte) 0x9c})));
-        assertEquals(false, codec.matches(ByteBuffer.wrap(new byte[]{0x78, 0x00})));
+        assertEquals(true, codec.format().matches(ByteBuffer.wrap(new byte[]{0x78, (byte) 0x9c})));
+        assertEquals(false, codec.format().matches(ByteBuffer.wrap(new byte[]{0x78, 0x00})));
         assertEquals(0L, codec.minimumCompressionLevel());
         assertEquals(9L, codec.maximumCompressionLevel());
         assertEquals(6L, codec.defaultCompressionLevel());

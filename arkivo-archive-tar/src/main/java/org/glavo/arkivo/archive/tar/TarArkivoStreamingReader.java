@@ -9,7 +9,7 @@ import org.glavo.arkivo.archive.tar.internal.TarArkivoStreamingReaderImpl;
 import org.glavo.arkivo.archive.tar.internal.TarCompressionStreams;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.CompressionProbeResult;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -69,14 +69,14 @@ public abstract sealed class TarArkivoStreamingReader extends ArkivoStreamingRea
         @Nullable CompressionCodec compressionCodec = TarArkivoFileSystem.COMPRESSION.read(environment);
         ReadableByteChannel archiveSource = source;
         if (compressionCodec == null) {
-            CompressionProbeResult probe = CompressionCodecs.probe(
+            CompressionProbeResult probe = CompressionFormats.probe(
                     source,
                     TarArkivoFormat.instance().probeSize(),
                     ChannelOwnership.CLOSE
             );
             compressionCodec = TarArkivoFormat.instance().matches(probe.prefix())
                     ? null
-                    : probe.codec();
+                    : probe.format() == null ? null : probe.format().defaultCodec();
             archiveSource = probe.channel();
         }
         return new TarArkivoStreamingReaderImpl(

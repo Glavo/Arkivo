@@ -13,7 +13,7 @@ dependencies {
     testImplementation("org.apache.commons:commons-compress:1.28.0")
 }
 
-val verifyOptionalCompressionCodecs by tasks.registering(JavaExec::class) {
+val verifyOptionalCompressionFormats by tasks.registering(JavaExec::class) {
     group = "verification"
     description = "Verifies ZIP loads and diagnoses operations without optional compression codecs."
     dependsOn(tasks.named("testClasses"))
@@ -29,7 +29,7 @@ val verifyOptionalCompressionCodecs by tasks.registering(JavaExec::class) {
 }
 
 tasks.named("check") {
-    dependsOn(verifyOptionalCompressionCodecs)
+    dependsOn(verifyOptionalCompressionFormats)
 }
 
 val metadataScalabilityFixture =

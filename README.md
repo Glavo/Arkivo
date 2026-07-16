@@ -9,7 +9,7 @@ The project is currently developed as version `1.0-SNAPSHOT`. Published artifact
 ## Highlights
 
 - Access archive entries with the standard `java.nio.file.Files` API.
-- Detect installed archive formats and compression codecs without coupling callers to implementations.
+- Detect installed archive and compression formats without coupling callers to implementations.
 - Drive compression incrementally through `CompressionEncoder` and `CompressionDecoder`; implementations do not retain
   caller buffers after an operation returns.
 - Use blocking `ReadableByteChannel`, `WritableByteChannel`, `InputStream`, and `OutputStream` adapters over the same
@@ -44,7 +44,7 @@ The main module choices are:
 | `arkivo-archive-all` | Every archive format implementation |
 | `arkivo-codec-all` | Every compression codec and byte transform implementation |
 | `arkivo-archive` | Archive contracts, discovery, storage, and NIO support |
-| `arkivo-codec` | Codec contracts, options, discovery, and adapters |
+| `arkivo-codec` | Codec contracts, compression format discovery, and adapters |
 | `arkivo-archive-<format>` | One archive implementation, such as `zip`, `tar`, or `7z` |
 | `arkivo-codec-<family>` | One codec family, such as `zstd`, `xz`, or `deflate` |
 
@@ -64,7 +64,7 @@ requires a caller-selected output limit.
 ```java
 byte[] input = "Arkivo buffer example".getBytes(StandardCharsets.UTF_8);
 
-CompressionCodec codec = Objects.requireNonNull(CompressionCodecs.find("zstd"));
+CompressionCodec codec = Objects.requireNonNull(CompressionFormats.find("zstd")).defaultCodec();
 ByteBuffer compressed = codec.compress(ByteBuffer.wrap(input));
 ByteBuffer decoded = codec.decompress(compressed, input.length);
 

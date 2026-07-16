@@ -11,7 +11,8 @@ import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormat;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.internal.FixedDirectoryStream;
@@ -2115,15 +2116,16 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Detects a compression codec whose decoded channel prefix is a valid TAR archive.
     private static @Nullable CompressionCodec detectCompression(SeekableByteChannel channel) throws IOException {
-        @Nullable CompressionCodec candidate = CompressionCodecs.detect(channel);
+        @Nullable CompressionFormat candidate = CompressionFormats.detect(channel);
         if (candidate == null) {
             return null;
         }
+        CompressionCodec codec = candidate.defaultCodec();
         channel.position(0L);
-        try (InputStream input = openArchiveInput(Channels.newInputStream(channel), candidate)) {
+        try (InputStream input = openArchiveInput(Channels.newInputStream(channel), codec)) {
             byte[] probe = new byte[TarArkivoFormat.instance().probeSize()];
             int size = readPrefix(input, probe);
-            return TarArkivoFormat.instance().matches(ByteBuffer.wrap(probe, 0, size)) ? candidate : null;
+            return TarArkivoFormat.instance().matches(ByteBuffer.wrap(probe, 0, size)) ? codec : null;
         } catch (IOException exception) {
             return null;
         }

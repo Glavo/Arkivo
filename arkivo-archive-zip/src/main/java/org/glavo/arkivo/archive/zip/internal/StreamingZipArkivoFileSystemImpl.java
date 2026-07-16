@@ -3799,21 +3799,21 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             this.aesOutput = entryAesOutput;
             CompressingWritableByteChannel entryCompressingWritableByteChannel = null;
             if (metadata.method == DEFLATED_METHOD) {
-                entryCompressingWritableByteChannel = ZipCompressionCodecs.openEncoder("deflate", dataOutput);
+                entryCompressingWritableByteChannel = ZipCompressionFormats.openEncoder("deflate", dataOutput);
                 this.entryOutput = StreamChannelAdapters.outputStream(entryCompressingWritableByteChannel);
             } else if (metadata.method == DEFLATE64_METHOD) {
-                entryCompressingWritableByteChannel = ZipCompressionCodecs.openEncoder("deflate64", dataOutput);
+                entryCompressingWritableByteChannel = ZipCompressionFormats.openEncoder("deflate64", dataOutput);
                 this.entryOutput = StreamChannelAdapters.outputStream(entryCompressingWritableByteChannel);
             } else if (metadata.method == BZIP2_METHOD) {
-                entryCompressingWritableByteChannel = ZipCompressionCodecs.openEncoder("bzip2", dataOutput);
+                entryCompressingWritableByteChannel = ZipCompressionFormats.openEncoder("bzip2", dataOutput);
                 this.entryOutput = StreamChannelAdapters.outputStream(entryCompressingWritableByteChannel);
             } else if (isZstandardMethod(metadata.method)) {
-                entryCompressingWritableByteChannel = ZipCompressionCodecs.openEncoder("zstd", dataOutput);
+                entryCompressingWritableByteChannel = ZipCompressionFormats.openEncoder("zstd", dataOutput);
                 this.entryOutput = StreamChannelAdapters.outputStream(entryCompressingWritableByteChannel);
             } else if (metadata.method == LZMA_METHOD) {
                 this.entryOutput = new ZipLZMAOutputStream(dataOutput);
             } else if (metadata.method == XZ_METHOD) {
-                entryCompressingWritableByteChannel = ZipCompressionCodecs.openEncoder("xz", dataOutput);
+                entryCompressingWritableByteChannel = ZipCompressionFormats.openEncoder("xz", dataOutput);
                 this.entryOutput = StreamChannelAdapters.outputStream(entryCompressingWritableByteChannel);
             } else {
                 this.entryOutput = dataOutput;
@@ -4393,7 +4393,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
         /// Creates a ZIP LZMA output stream and writes the ZIP LZMA property header.
         private ZipLZMAOutputStream(OutputStream output) throws IOException {
-            OutputStream lzmaOutput = ZipCompressionCodecs.openRawLZMAEncoder(
+            OutputStream lzmaOutput = ZipCompressionFormats.openRawLZMAEncoder(
                     LZMA_DICTIONARY_SIZE,
                     true,
                     new NonClosingOutputStream(output)

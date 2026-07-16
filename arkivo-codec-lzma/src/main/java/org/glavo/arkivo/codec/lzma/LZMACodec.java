@@ -4,10 +4,12 @@
 package org.glavo.arkivo.codec.lzma;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.PledgedSourceSizeCodec;
 import org.glavo.arkivo.codec.lzma.internal.LZMADecoder;
+import org.glavo.arkivo.codec.lzma.internal.LZMACompressionFormat;
 import org.glavo.arkivo.codec.lzma.internal.LZMAEncoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -41,11 +43,12 @@ public final class LZMACodec implements PledgedSourceSizeCodec {
         this.properties = Objects.requireNonNull(properties, "properties");
     }
 
-    /// Returns the stable LZMA codec name.
+    /// Returns the canonical LZMA-alone format.
     @Override
-    public String name() {
-        return NAME;
+    public CompressionFormat format() {
+        return LZMACompressionFormat.instance();
     }
+
 
     /// Returns the configured LZMA model properties used for encoding.
     public LZMAProperties properties() {

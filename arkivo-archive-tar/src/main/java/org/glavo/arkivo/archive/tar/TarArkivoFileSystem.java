@@ -9,7 +9,8 @@ import org.glavo.arkivo.archive.ArkivoFileSystemOption;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormat;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -30,14 +31,15 @@ import java.util.Objects;
 /// An entry being replaced through an open writable channel is hidden from new reads until that channel closes;
 /// channels and attribute snapshots opened before the replacement retain the preceding entry state.
 /// Channel-source update sessions require an explicit `ArkivoFileSystem.COMMIT_TARGET` because they have no source
-/// path to replace. The detected or explicitly selected compression codec is preserved when publishing the derivative.
+/// path to replace. The detected format or explicitly selected compression codec is preserved when publishing the
+/// derivative.
 /// GNU sparse entries are staged as expanded logical files; an update commit normalizes old GNU `S` entries to regular
 /// TAR entries while preserving their expanded content and metadata.
 @NotNullByDefault
 public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permits TarArkivoFileSystemImpl {
     /// The environment option for a compression codec wrapping the TAR byte stream.
     ///
-    /// Values may be a CompressionCodec or stable codec name. Existing seekable archives auto-detect installed codecs
+    /// Values may be a CompressionCodec or stable codec name. Existing seekable archives auto-detect installed formats
     /// when this option is absent, while forward-only streaming readers treat an absent option as uncompressed because
     /// they cannot reliably undo a false compression match. New archives remain uncompressed when it is absent.
     public static final ArkivoFileSystemOption<CompressionCodec> COMPRESSION =
@@ -115,11 +117,11 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
             return codec;
         }
         if (value instanceof String name) {
-            @Nullable CompressionCodec codec = CompressionCodecs.find(name);
-            if (codec != null) {
-                return codec;
+            @Nullable CompressionFormat format = CompressionFormats.find(name);
+            if (format != null) {
+                return format.defaultCodec();
             }
-            throw new IllegalArgumentException("Compression codec is not installed: " + name);
+            throw new IllegalArgumentException("Compression format is not installed: " + name);
         }
         throw new IllegalArgumentException(
                 "Expected CompressionCodec or String for key: " + COMPRESSION.key()

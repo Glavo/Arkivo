@@ -1461,22 +1461,22 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
 
     /// Opens a raw Deflate decoding stream and owns the compressed stream.
     private static InputStream openDeflateInputStream(InputStream input) throws IOException {
-        return ZipCompressionCodecs.openInputStream("deflate", input);
+        return ZipCompressionFormats.openInputStream("deflate", input);
     }
 
     /// Opens a Deflate64 decoding stream and owns the compressed stream.
     private static InputStream openDeflate64InputStream(InputStream input) throws IOException {
-        return ZipCompressionCodecs.openInputStream("deflate64", input);
+        return ZipCompressionFormats.openInputStream("deflate64", input);
     }
 
     /// Opens a BZip2 decoding stream and owns the compressed stream.
     private static InputStream openBzip2InputStream(InputStream input) throws IOException {
-        return ZipCompressionCodecs.openInputStream("bzip2", input);
+        return ZipCompressionFormats.openInputStream("bzip2", input);
     }
 
     /// Opens a Zstandard decoding stream and owns the compressed stream.
     private static InputStream openZstandardInputStream(InputStream input) throws IOException {
-        return ZipCompressionCodecs.openInputStream("zstd", input);
+        return ZipCompressionFormats.openInputStream("zstd", input);
     }
 
     /// Opens a ZIP LZMA decoding stream and closes the compressed stream if setup fails.
@@ -1502,7 +1502,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 throw new IOException("ZIP LZMA entry without EOS marker requires an uncompressed size");
             }
             long expectedUncompressedSize = usesEndMarker ? -1L : uncompressedSize;
-            return ZipCompressionCodecs.openRawLZMADecoder(
+            return ZipCompressionFormats.openRawLZMADecoder(
                     input,
                     properties,
                     Integer.toUnsignedLong(dictionarySize),
@@ -1520,7 +1520,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
 
     /// Opens an XZ decoding stream and owns the compressed stream.
     private static InputStream openXzInputStream(InputStream input) throws IOException {
-        return ZipCompressionCodecs.openInputStream("xz", input);
+        return ZipCompressionFormats.openInputStream("xz", input);
     }
 
     /// Opens a WinZip AES decrypting stream for an entry.

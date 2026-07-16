@@ -6,8 +6,8 @@ package org.glavo.arkivo.all.internal;
 import org.glavo.arkivo.archive.spi.ArkivoStreamingSource;
 import org.glavo.arkivo.archive.spi.ArkivoStreamingSourceProvider;
 import org.glavo.arkivo.codec.ChannelOwnership;
-import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormat;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressionProbeResult;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -25,7 +25,7 @@ public final class CompressionStreamingSourceProvider implements ArkivoStreaming
     public CompressionStreamingSourceProvider() {
     }
 
-    /// Probes the source and opens an owning decoder when an installed codec matches.
+    /// Probes the source and opens an owning decoder when an installed format matches.
     @Override
     public ArkivoStreamingSource probe(
             ReadableByteChannel source,
@@ -33,13 +33,13 @@ public final class CompressionStreamingSourceProvider implements ArkivoStreaming
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(environment, "environment");
-        CompressionProbeResult probe = CompressionCodecs.probe(source, ChannelOwnership.CLOSE);
-        @Nullable CompressionCodec codec = probe.codec();
-        if (codec == null) {
+        CompressionProbeResult probe = CompressionFormats.probe(source, ChannelOwnership.CLOSE);
+        @Nullable CompressionFormat format = probe.format();
+        if (format == null) {
             return new ArkivoStreamingSource(false, probe.channel());
         }
         try {
-            DecompressingReadableByteChannel decoder = codec.openDecoder(
+            DecompressingReadableByteChannel decoder = format.defaultCodec().openDecoder(
                     probe.channel(),
                     ChannelOwnership.CLOSE
             );

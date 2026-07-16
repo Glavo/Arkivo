@@ -438,15 +438,15 @@ final class SevenZipArchiveWriter implements AutoCloseable {
             case LZMA -> openLzma(compression.parameter(), output);
             case LZMA2 -> openLzma2(compression.parameter(), output);
             case BZIP2 -> new CompressionOutput(
-                    SevenZipCompressionCodecs.openEncoder("bzip2", compression.parameter(), output),
+                    SevenZipCompressionFormats.openEncoder("bzip2", compression.parameter(), output),
                     new MethodDescriptor(BZIP2_METHOD_ID, new byte[0])
             );
             case DEFLATE -> new CompressionOutput(
-                    SevenZipCompressionCodecs.openEncoder("deflate", compression.parameter(), output),
+                    SevenZipCompressionFormats.openEncoder("deflate", compression.parameter(), output),
                     new MethodDescriptor(DEFLATE_METHOD_ID, new byte[0])
             );
             case DEFLATE64 -> new CompressionOutput(
-                    SevenZipCompressionCodecs.openEncoder("deflate64", compression.parameter(), output),
+                    SevenZipCompressionFormats.openEncoder("deflate64", compression.parameter(), output),
                     new MethodDescriptor(DEFLATE64_METHOD_ID, new byte[0])
             );
             case PPMD -> openPpmd(
@@ -455,7 +455,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                     output
             );
             case ZSTANDARD -> new CompressionOutput(
-                    SevenZipCompressionCodecs.openEncoder("zstd", compression.parameter(), output),
+                    SevenZipCompressionFormats.openEncoder("zstd", compression.parameter(), output),
                     new MethodDescriptor(ZSTANDARD_METHOD_ID, new byte[0])
             );
         };
@@ -474,7 +474,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                 .order(ByteOrder.LITTLE_ENDIAN)
                 .putInt(memorySize);
         return new CompressionOutput(
-                SevenZipCompressionCodecs.openPpmdEncoder(maximumOrder, memorySize, output),
+                SevenZipCompressionFormats.openPpmdEncoder(maximumOrder, memorySize, output),
                 new MethodDescriptor(PPMD_METHOD_ID, properties)
         );
     }
@@ -488,7 +488,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
                 .order(ByteOrder.LITTLE_ENDIAN)
                 .putInt(dictionarySize);
         return new CompressionOutput(
-                SevenZipCompressionCodecs.openRawLZMAEncoder(dictionarySize, false, output),
+                SevenZipCompressionFormats.openRawLZMAEncoder(dictionarySize, false, output),
                 new MethodDescriptor(LZMA_METHOD_ID, properties)
         );
     }
@@ -497,7 +497,7 @@ final class SevenZipArchiveWriter implements AutoCloseable {
     /// Opens a raw LZMA2 encoder with its compact dictionary property.
     private static CompressionOutput openLzma2(int dictionarySize, OutputStream output) throws IOException {
         return new CompressionOutput(
-                SevenZipCompressionCodecs.openLZMA2Encoder(dictionarySize, output),
+                SevenZipCompressionFormats.openLZMA2Encoder(dictionarySize, output),
                 new MethodDescriptor(LZMA2_METHOD_ID, new byte[]{lzma2Property(dictionarySize)})
         );
     }

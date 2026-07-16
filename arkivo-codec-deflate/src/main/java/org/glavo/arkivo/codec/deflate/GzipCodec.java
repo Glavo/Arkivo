@@ -4,20 +4,19 @@
 package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionLevelCodec;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.CompressionStrategyCodec;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.FlushableFramedCompressionEncoder;
+import org.glavo.arkivo.codec.deflate.internal.GzipCompressionFormat;
 import org.glavo.arkivo.codec.deflate.internal.GzipDecoder;
 import org.glavo.arkivo.codec.deflate.internal.GzipEncoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Unmodifiable;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.List;
 import java.util.Objects;
 
 /// Provides an immutable gzip configuration and pure Java member engines.
@@ -65,17 +64,12 @@ public final class GzipCodec implements CompressionLevelCodec, CompressionStrate
         this.compressionStrategy = Objects.requireNonNull(compressionStrategy, "compressionStrategy");
     }
 
-    /// Returns the stable gzip codec name.
+    /// Returns the canonical gzip format.
     @Override
-    public String name() {
-        return NAME;
+    public CompressionFormat format() {
+        return GzipCompressionFormat.instance();
     }
 
-    /// Returns common gzip file extensions.
-    @Override
-    public @Unmodifiable List<String> fileExtensions() {
-        return List.of("gz", "gzip");
-    }
 
     /// Returns the configured gzip Deflate match-search level.
     @Override
@@ -124,20 +118,6 @@ public final class GzipCodec implements CompressionLevelCodec, CompressionStrate
                 : new GzipCodec(compressionLevel, compressionStrategy);
     }
 
-    /// Returns the number of leading bytes used to identify gzip streams.
-    @Override
-    public int probeSize() {
-        return 2;
-    }
-
-    /// Returns whether the given prefix starts with the gzip stream signature.
-    @Override
-    public boolean matches(ByteBuffer prefix) {
-        int position = prefix.position();
-        return prefix.remaining() >= 2
-                && Byte.toUnsignedInt(prefix.get(position)) == 0x1f
-                && Byte.toUnsignedInt(prefix.get(position + 1)) == 0x8b;
-    }
 
     /// Creates a flushable transport-independent gzip member encoder.
     @Override

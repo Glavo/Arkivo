@@ -7,7 +7,8 @@ import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormat;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
@@ -21,12 +22,12 @@ import java.io.OutputStream;
 
 /// Connects optional immutable compression codecs to ZIP entry streams.
 @NotNullByDefault
-final class ZipCompressionCodecs {
+final class ZipCompressionFormats {
     /// The stable optional raw LZMA codec name.
     private static final String RAW_LZMA_NAME = "lzma-raw";
 
     /// Creates no instances.
-    private ZipCompressionCodecs() {
+    private ZipCompressionFormats() {
     }
 
     /// Opens a named default encoder that retains the entry's compressed-data target.
@@ -34,7 +35,7 @@ final class ZipCompressionCodecs {
             String codecName,
             OutputStream target
     ) throws IOException {
-        return CompressionCodecs.openEncoder(
+        return CompressionFormats.openEncoder(
                 codecName,
                 StreamChannelAdapters.writableChannel(target),
                 ChannelOwnership.RETAIN
@@ -46,7 +47,7 @@ final class ZipCompressionCodecs {
             String codecName,
             InputStream source
     ) throws IOException {
-        return CompressionCodecs.openDecoder(
+        return CompressionFormats.openDecoder(
                 codecName,
                 StreamChannelAdapters.readableChannel(source),
                 ChannelOwnership.CLOSE
@@ -123,15 +124,15 @@ final class ZipCompressionCodecs {
 
     /// Returns an installed optional codec or reports the stable missing-codec diagnostic.
     private static CompressionCodec requireCodec(String codecName) throws IOException {
-        @Nullable CompressionCodec codec = CompressionCodecs.find(codecName);
-        if (codec == null) {
-            throw new IOException("Unknown compression codec: " + codecName);
+        @Nullable CompressionFormat format = CompressionFormats.find(codecName);
+        if (format == null) {
+            throw new IOException("Unknown compression format: " + codecName);
         }
-        return codec;
+        return format.defaultCodec();
     }
 
-    /// Creates a failure for an installed provider with an unexpected implementation type.
+    /// Creates a failure for an installed format with an unexpected implementation type.
     private static IOException incompatibleCodec(String codecName) {
-        return new IOException("Incompatible compression codec provider: " + codecName);
+        return new IOException("Incompatible default codec for compression format: " + codecName);
     }
 }

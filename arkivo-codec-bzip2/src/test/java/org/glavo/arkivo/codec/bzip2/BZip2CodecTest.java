@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.bzip2;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -39,26 +39,26 @@ public final class BZip2CodecTest {
         byte[] input = "hello bzip2".getBytes(StandardCharsets.UTF_8);
 
         assertEquals(true, codec instanceof CompressionCodec);
-        assertEquals(BZip2Codec.NAME, codec.name());
+        assertEquals(BZip2Codec.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
     /// Verifies that the BZip2 codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(BZip2Codec.class, Objects.requireNonNull(CompressionCodecs.find(BZip2Codec.NAME)).getClass());
-        assertEquals(BZip2Codec.class, Objects.requireNonNull(CompressionCodecs.find("bz2")).getClass());
+        assertEquals(BZip2Codec.class, Objects.requireNonNull(CompressionFormats.find(BZip2Codec.NAME)).defaultCodec().getClass());
+        assertEquals(BZip2Codec.class, Objects.requireNonNull(CompressionFormats.find("bz2")).defaultCodec().getClass());
     }
 
     /// Verifies BZip2 metadata and signature matching.
     @Test
     public void metadata() {
         BZip2Codec codec = new BZip2Codec();
-        assertEquals(java.util.List.of("bz2"), codec.aliases());
-        assertEquals(java.util.List.of("bz2", "bzip2"), codec.fileExtensions());
-        assertEquals(true, codec.matches(ByteBuffer.wrap(new byte[]{'B', 'Z', 'h', '9', 0x31})));
-        assertEquals(false, codec.matches(ByteBuffer.wrap(new byte[]{'B', 'Z', 'h', '0'})));
-        assertEquals(false, codec.matches(ByteBuffer.wrap(new byte[]{'B', 'Z', 'h'})));
+        assertEquals(java.util.List.of("bz2"), codec.format().aliases());
+        assertEquals(java.util.List.of("bz2", "bzip2"), codec.format().fileExtensions());
+        assertEquals(true, codec.format().matches(ByteBuffer.wrap(new byte[]{'B', 'Z', 'h', '9', 0x31})));
+        assertEquals(false, codec.format().matches(ByteBuffer.wrap(new byte[]{'B', 'Z', 'h', '0'})));
+        assertEquals(false, codec.format().matches(ByteBuffer.wrap(new byte[]{'B', 'Z', 'h'})));
     }
 
     /// Verifies direct channel I/O, compression-level mapping, counters, and ownership.

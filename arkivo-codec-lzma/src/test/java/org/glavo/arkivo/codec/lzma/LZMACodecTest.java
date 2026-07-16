@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.lzma;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionCodecs;
+import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimits;
@@ -48,14 +48,14 @@ public final class LZMACodecTest {
         byte[] input = "hello lzma".getBytes(StandardCharsets.UTF_8);
 
         assertEquals(true, codec instanceof CompressionCodec);
-        assertEquals(LZMACodec.NAME, codec.name());
+        assertEquals(LZMACodec.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
     /// Verifies that the LZMA codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(LZMACodec.class, Objects.requireNonNull(CompressionCodecs.find(LZMACodec.NAME)).getClass());
+        assertEquals(LZMACodec.class, Objects.requireNonNull(CompressionFormats.find(LZMACodec.NAME)).defaultCodec().getClass());
     }
 
     /// Rejects unsigned LZMA-alone output sizes that cannot be represented by the public size model.

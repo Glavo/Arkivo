@@ -241,7 +241,7 @@ final class CompressionChannelContextTest {
 
     /// Implements transport-independent identity coding for generic channel tests.
     @NotNullByDefault
-    private static final class IdentityCodec implements CompressionCodec {
+    private static final class IdentityCodec implements CompressionCodec, CompressionFormat {
         /// Creates an identity codec.
         private IdentityCodec() {
         }
@@ -250,6 +250,18 @@ final class CompressionChannelContextTest {
         @Override
         public String name() {
             return "identity";
+        }
+
+        /// Returns this test object as its format identity.
+        @Override
+        public CompressionFormat format() {
+            return this;
+        }
+
+        /// Returns this test object as the default codec configuration.
+        @Override
+        public CompressionCodec defaultCodec() {
+            return this;
         }
 
         /// Creates a fresh identity encoder.

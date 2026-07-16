@@ -1,4 +1,0 @@
-org.glavo.arkivo.codec.deflate.internal.DeflateCodecProvider
-org.glavo.arkivo.codec.deflate.internal.Deflate64CodecProvider
-org.glavo.arkivo.codec.deflate.internal.GzipCodecProvider
-org.glavo.arkivo.codec.deflate.internal.ZlibCodecProvider
