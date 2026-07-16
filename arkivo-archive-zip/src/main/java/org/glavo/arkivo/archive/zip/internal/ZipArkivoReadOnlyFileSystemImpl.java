@@ -4,8 +4,6 @@
 package org.glavo.arkivo.archive.zip.internal;
 
 
-
-
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
@@ -14,7 +12,6 @@ import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoVolumeChannel;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 
-import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
@@ -59,7 +56,6 @@ import java.nio.file.attribute.BasicFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileOwnerAttributeView;
-import java.nio.file.attribute.FileStoreAttributeView;
 import java.nio.file.attribute.FileTime;
 import java.nio.file.attribute.GroupPrincipal;
 import java.nio.file.attribute.PosixFileAttributeView;
@@ -96,7 +92,7 @@ import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.readUnsigned
 
 /// Implements ZIP archive file system state and operations.
 @NotNullByDefault
-public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
+public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem implements ZipFileSystemOperations {
     /// The maximum decoded entry size retained in memory by default.
     private static final long DEFAULT_DECODED_ENTRY_MEMORY_THRESHOLD = 1024L * 1024L;
 
@@ -204,7 +200,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     private boolean closeActionCompleted;
 
     /// Creates a ZIP archive file system instance.
-    public ZipArkivoFileSystemImpl(
+    public ZipArkivoReadOnlyFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             @Nullable Path archivePath,
             @Nullable ArkivoVolumeSource volumes,
@@ -214,7 +210,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     }
 
     /// Creates a ZIP archive file system instance with a close callback.
-    public ZipArkivoFileSystemImpl(
+    public ZipArkivoReadOnlyFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             @Nullable Path archivePath,
             @Nullable ArkivoVolumeSource volumes,
@@ -237,9 +233,9 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         this.decodedEntryStorage = configuredStorage != null
                 ? configuredStorage
                 : ArkivoEditStorage.hybrid(
-                        DEFAULT_DECODED_ENTRY_MEMORY_THRESHOLD,
-                        defaultDecodedEntryStorageDirectory(archivePath)
-                );
+                DEFAULT_DECODED_ENTRY_MEMORY_THRESHOLD,
+                defaultDecodedEntryStorageDirectory(archivePath)
+        );
         this.rootPath = ZipArkivoPath.root(this);
         this.indexLock = ZipLocks.create(config.threadSafety());
     }
@@ -289,7 +285,8 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     }
 
     /// Returns the archive URI used by ZIP path URI conversion, or `null` for volume-backed file systems.
-    @Nullable URI archiveUri() {
+    @Override
+    public @Nullable URI archiveUri() {
         return archivePath != null ? archivePath.toUri().normalize() : null;
     }
 
@@ -622,7 +619,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Returns the file store exposed by this ZIP file system.
     public FileStore fileStore() {
         try (Operation ignored = beginReadOperation()) {
-            return ZipFileStore.INSTANCE;
+            return ZipFileStore.READ_ONLY;
         }
     }
 
@@ -1001,7 +998,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             throw new UnsupportedOperationException("ZIP append mode does not support split archives");
         }
 
-        try (ZipArkivoFileSystemImpl fileSystem = new ZipArkivoFileSystemImpl(
+        try (ZipArkivoReadOnlyFileSystemImpl fileSystem = new ZipArkivoReadOnlyFileSystemImpl(
                 ZipArkivoFileSystemProvider.instance(),
                 archivePath,
                 null,
@@ -1026,7 +1023,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(config, "config");
-        try (ZipArkivoFileSystemImpl fileSystem = new ZipArkivoFileSystemImpl(
+        try (ZipArkivoReadOnlyFileSystemImpl fileSystem = new ZipArkivoReadOnlyFileSystemImpl(
                 ZipArkivoFileSystemProvider.instance(),
                 null,
                 new BorrowedVolumeSource(source),
@@ -1037,12 +1034,12 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     }
 
     /// Opens a read-only companion over a path-backed archive without owning update resources.
-    static ZipArkivoFileSystemImpl openUpdateReader(
+    static ZipArkivoReadOnlyFileSystemImpl openUpdateReader(
             ZipArkivoFileSystemProvider provider,
             Path archivePath,
             ZipArkivoFileSystemConfig config
     ) {
-        return new ZipArkivoFileSystemImpl(
+        return new ZipArkivoReadOnlyFileSystemImpl(
                 provider,
                 archivePath,
                 null,
@@ -1051,7 +1048,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     }
 
     /// Opens a read-only companion over a channel source without taking ownership of that source.
-    static ZipArkivoFileSystemImpl openUpdateReader(
+    static ZipArkivoReadOnlyFileSystemImpl openUpdateReader(
             ZipArkivoFileSystemProvider provider,
             ArkivoSeekableChannelSource source,
             ZipArkivoFileSystemConfig config
@@ -1060,12 +1057,12 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     }
 
     /// Opens a read-only companion over a volume source without taking ownership of that source.
-    static ZipArkivoFileSystemImpl openUpdateReader(
+    static ZipArkivoReadOnlyFileSystemImpl openUpdateReader(
             ZipArkivoFileSystemProvider provider,
             ArkivoVolumeSource source,
             ZipArkivoFileSystemConfig config
     ) {
-        return new ZipArkivoFileSystemImpl(
+        return new ZipArkivoReadOnlyFileSystemImpl(
                 provider,
                 null,
                 new BorrowedVolumeSource(source),
@@ -1099,7 +1096,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
 
     /// Reads central directory metadata through an already opened read-only ZIP file system.
     private static CentralDirectorySnapshot readCentralDirectorySnapshot(
-            ZipArkivoFileSystemImpl fileSystem,
+            ZipArkivoReadOnlyFileSystemImpl fileSystem,
             ZipArkivoFileSystemConfig config
     ) throws IOException {
         ZipIndex index = fileSystem.index();
@@ -2472,6 +2469,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
             return channel.volumeStartOffset(volumeIndex);
         }
     }
+
     /// Reads bytes from a channel until the destination buffer is full.
     private static void readFully(SeekableByteChannel channel, long position, ByteBuffer destination)
             throws IOException {
@@ -2845,76 +2843,6 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
         }
     }
 
-    /// Exposes the ZIP archive as a read-only file store.
-    private static final class ZipFileStore extends FileStore {
-        /// The shared ZIP file store instance.
-        private static final ZipFileStore INSTANCE = new ZipFileStore();
-
-        /// Creates a ZIP file store.
-        private ZipFileStore() {
-        }
-
-        /// Returns the file store name.
-        @Override
-        public String name() {
-            return "zip";
-        }
-
-        /// Returns the file store type.
-        @Override
-        public String type() {
-            return "zip";
-        }
-
-        /// Returns whether this file store is read-only.
-        @Override
-        public boolean isReadOnly() {
-            return true;
-        }
-
-        /// Returns the total space in bytes, or zero when it is not available.
-        @Override
-        public long getTotalSpace() {
-            return 0;
-        }
-
-        /// Returns the usable space in bytes.
-        @Override
-        public long getUsableSpace() {
-            return 0;
-        }
-
-        /// Returns the unallocated space in bytes.
-        @Override
-        public long getUnallocatedSpace() {
-            return 0;
-        }
-
-        /// Returns whether a file attribute view is supported.
-        @Override
-        public boolean supportsFileAttributeView(Class<? extends java.nio.file.attribute.FileAttributeView> type) {
-            return type == BasicFileAttributeView.class || type == ZipArkivoEntryAttributeView.class;
-        }
-
-        /// Returns whether a file attribute view is supported.
-        @Override
-        public boolean supportsFileAttributeView(String name) {
-            return "basic".equals(name) || "zip".equals(name);
-        }
-
-        /// Returns a file store attribute view.
-        @Override
-        public <V extends FileStoreAttributeView> @Nullable V getFileStoreAttributeView(Class<V> type) {
-            return null;
-        }
-
-        /// Reads a file store attribute.
-        @Override
-        public Object getAttribute(String attribute) throws IOException {
-            return ArkivoFileStoreAttributes.get(this, attribute);
-        }
-    }
-
     /// Implements ZIP entry file attributes.
     private static final class EntryAttributes implements ZipArkivoEntryAttributes {
         /// The synthetic root or directory key, or `null` for real entries.
@@ -3132,14 +3060,14 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Implements the synthesized POSIX entry attribute view.
     private static final class PosixEntryAttributeView implements PosixFileAttributeView {
         /// The file system used to read attributes.
-        private final ZipArkivoFileSystemImpl fileSystem;
+        private final ZipArkivoReadOnlyFileSystemImpl fileSystem;
 
         /// The path whose attributes are exposed.
         private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates a synthesized POSIX attribute view.
         private PosixEntryAttributeView(
-                ZipArkivoFileSystemImpl fileSystem,
+                ZipArkivoReadOnlyFileSystemImpl fileSystem,
                 ArkivoFileSystemProviderSupport.AttributeViewPath path
         ) {
             this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
@@ -3199,14 +3127,14 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Implements the synthesized owner entry attribute view.
     private static final class OwnerEntryAttributeView implements FileOwnerAttributeView {
         /// The file system used to read attributes.
-        private final ZipArkivoFileSystemImpl fileSystem;
+        private final ZipArkivoReadOnlyFileSystemImpl fileSystem;
 
         /// The path whose owner is exposed.
         private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates a synthesized owner attribute view.
         private OwnerEntryAttributeView(
-                ZipArkivoFileSystemImpl fileSystem,
+                ZipArkivoReadOnlyFileSystemImpl fileSystem,
                 ArkivoFileSystemProviderSupport.AttributeViewPath path
         ) {
             this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
@@ -3236,14 +3164,14 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Implements the ZIP entry attribute view.
     private static final class EntryAttributeView implements ZipArkivoEntryAttributeView {
         /// The file system used to read attributes.
-        private final ZipArkivoFileSystemImpl fileSystem;
+        private final ZipArkivoReadOnlyFileSystemImpl fileSystem;
 
         /// The path whose attributes are exposed.
         private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates an entry attribute view.
         private EntryAttributeView(
-                ZipArkivoFileSystemImpl fileSystem,
+                ZipArkivoReadOnlyFileSystemImpl fileSystem,
                 ArkivoFileSystemProviderSupport.AttributeViewPath path
         ) {
             this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");

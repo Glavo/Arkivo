@@ -7,7 +7,6 @@ import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
-import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.glavo.arkivo.archive.zip.ZipMethod;
@@ -52,8 +51,8 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         SYMBOLIC_LINK
     }
 
-    /// The internal streaming ZIP file system used by the current writer implementation.
-    private final StreamingZipArkivoFileSystemImpl fileSystem;
+    /// The sink that serializes completed ZIP entries.
+    private final ZipArchiveEntrySink entrySink;
 
     /// The parsed ZIP streaming writer configuration.
     private final ZipArkivoFileSystemConfig config;
@@ -65,30 +64,22 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
     private @Nullable ZipStreamingEntry pendingEntry;
 
     /// Creates a ZIP streaming writer.
-    private ZipArkivoStreamingWriterImpl(StreamingZipArkivoFileSystemImpl fileSystem, ZipArkivoFileSystemConfig config) {
-        this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
+    private ZipArkivoStreamingWriterImpl(ZipArchiveEntrySink entrySink, ZipArkivoFileSystemConfig config) {
+        this.entrySink = Objects.requireNonNull(entrySink, "entrySink");
         this.config = Objects.requireNonNull(config, "config");
         this.lock = ZipLocks.create(Objects.requireNonNull(config, "config").threadSafety());
     }
 
     /// Creates a streaming ZIP writer that writes to an archive path.
     public static ZipArkivoStreamingWriterImpl create(Path path, ZipArkivoFileSystemConfig config) throws IOException {
-        return new ZipArkivoStreamingWriterImpl(new StreamingZipArkivoFileSystemImpl(
-                ZipArkivoFileSystemProvider.instance(),
-                path,
-                config
-        ), config);
+        return new ZipArkivoStreamingWriterImpl(ZipArchiveEntrySink.create(path, config), config);
     }
 
     /// Opens a streaming ZIP writer over a writable channel.
     public static ZipArkivoStreamingWriterImpl open(WritableByteChannel output, ZipArkivoFileSystemConfig config) {
         Objects.requireNonNull(output, "output");
         try {
-            return new ZipArkivoStreamingWriterImpl(new StreamingZipArkivoFileSystemImpl(
-                    ZipArkivoFileSystemProvider.instance(),
-                    output,
-                    config
-            ), config);
+            return new ZipArkivoStreamingWriterImpl(ZipArchiveEntrySink.open(output, config), config);
         } catch (RuntimeException | Error exception) {
             closeAfterOpenFailure(output, exception);
             throw exception;
@@ -118,12 +109,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             long splitSize,
             ZipArkivoFileSystemConfig config
     ) throws IOException {
-        return new ZipArkivoStreamingWriterImpl(new StreamingZipArkivoFileSystemImpl(
-                ZipArkivoFileSystemProvider.instance(),
-                Objects.requireNonNull(target, "target"),
-                splitSize,
-                config
-        ), config);
+        return new ZipArkivoStreamingWriterImpl(ZipArchiveEntrySink.open(target, splitSize, config), config);
     }
 
     /// Begins a pending regular file ZIP entry for the given logical archive path.
@@ -186,8 +172,8 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             switch (entry.type) {
                 case FILE -> {
                     entry.attributes.requireSupportedFile();
-                    try (OutputStream ignored = fileSystem.newOutputStream(
-                            fileSystem.getPath("/" + entry.entryPath),
+                    try (OutputStream ignored = entrySink.openFile(
+                            entry.entryPath,
                             entry.attributes.metadata(entry, true)
                     )) {
                         // Closing the entry output stream writes an empty ZIP entry.
@@ -195,15 +181,15 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
                 }
                 case DIRECTORY -> {
                     entry.attributes.requireSupportedDirectory();
-                    fileSystem.createDirectory(
-                            fileSystem.getPath("/" + entry.entryPath),
+                    entrySink.writeDirectory(
+                            entry.entryPath,
                             entry.attributes.metadata(entry, false)
                     );
                 }
                 case SYMBOLIC_LINK -> {
                     entry.attributes.requireSupportedSymbolicLink();
-                    fileSystem.writeStoredEntry(
-                            fileSystem.getPath("/" + entry.entryPath),
+                    entrySink.writeStoredEntry(
+                            entry.entryPath,
                             Objects.requireNonNull(entry.linkTarget, "linkTarget").getBytes(StandardCharsets.UTF_8),
                             entry.attributes.metadata(entry, false)
                     );
@@ -232,8 +218,8 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
                 throw new IllegalStateException("Only ZIP file entries can open a body channel");
             }
             entry.attributes.requireSupportedFile();
-            OutputStream output = fileSystem.newOutputStream(
-                    fileSystem.getPath("/" + entry.entryPath),
+            OutputStream output = entrySink.openFile(
+                    entry.entryPath,
                     entry.attributes.metadata(entry, false)
             );
             entry.submitted = true;
@@ -249,7 +235,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
     protected void closeWriter() throws IOException {
         lock();
         try {
-            fileSystem.close();
+            entrySink.close();
         } finally {
             unlock();
         }
@@ -754,7 +740,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         }
 
         /// Returns write metadata for the pending entry.
-        private StreamingZipArkivoFileSystemImpl.EntryMetadata metadata(ZipStreamingEntry entry, boolean emptyFile) {
+        private ZipEntryWriteMetadata metadata(ZipStreamingEntry entry, boolean emptyFile) {
             ZipMethod effectiveMethod = method();
             ZipEncryption effectiveEncryption = encryption();
             long expectedSize = uncompressedSize;
@@ -763,7 +749,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
                 expectedSize = 0;
                 expectedCrc32 = 0;
             }
-            return new StreamingZipArkivoFileSystemImpl.EntryMetadata(
+            return new ZipEntryWriteMetadata(
                     effectiveMethod.id(),
                     effectiveEncryption,
                     lastModifiedTime,

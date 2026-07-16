@@ -5,12 +5,10 @@ package org.glavo.arkivo.archive.zip.internal;
 
 import org.glavo.arkivo.archive.internal.AbstractArkivoPath;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
-import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemProvider;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.net.URI;
-import java.nio.file.Path;
 import java.util.List;
 
 /// Represents a path inside a ZIP Arkivo file system.
@@ -52,11 +50,8 @@ final class ZipArkivoPath extends AbstractArkivoPath<ZipArkivoFileSystem> {
     @Override
     protected @Nullable URI archiveUri() {
         ZipArkivoFileSystem fileSystem = getFileSystem();
-        if (fileSystem instanceof ZipArkivoFileSystemImpl implementation) {
-            return implementation.archiveUri();
-        }
-        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl implementation) {
-            return implementation.archiveUri();
+        if (fileSystem instanceof ZipFileSystemOperations operations) {
+            return operations.archiveUri();
         }
         return null;
     }

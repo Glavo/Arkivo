@@ -16,9 +16,9 @@ import org.glavo.arkivo.archive.ArkivoVolumeChannel;
 import org.glavo.arkivo.archive.ArkivoVolumeOutput;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
-import org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoFileSystemImpl;
+import org.glavo.arkivo.archive.zip.internal.ZipArkivoWritableFileSystemImpl;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemConfig;
-import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemImpl;
+import org.glavo.arkivo.archive.zip.internal.ZipArkivoReadOnlyFileSystemImpl;
 import org.glavo.arkivo.codec.zstd.ZstdCodec;
 import org.tukaani.xz.LZMA2Options;
 import org.tukaani.xz.LZMAOutputStream;
@@ -292,7 +292,7 @@ public final class ZipArkivoFileSystemTest {
                 metadata
         );
 
-        Method centralDirectoryEntryBytes = StreamingZipArkivoFileSystemImpl.class.getDeclaredMethod(
+        Method centralDirectoryEntryBytes = ZipArkivoWritableFileSystemImpl.class.getDeclaredMethod(
                 "centralDirectoryEntryBytes",
                 centralEntry.getClass()
         );
@@ -317,12 +317,12 @@ public final class ZipArkivoFileSystemTest {
     @Test
     public void streamingWriterZip64DataDescriptor() throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        StreamingZipArkivoFileSystemImpl fileSystem = new StreamingZipArkivoFileSystemImpl(
+        ZipArkivoWritableFileSystemImpl fileSystem = new ZipArkivoWritableFileSystemImpl(
                 ZipArkivoFileSystemProvider.instance(),
                 output,
                 ZipArkivoFileSystemConfig.fromOptions(ArchiveOptions.EMPTY)
         );
-        Method writeDataDescriptor = StreamingZipArkivoFileSystemImpl.class.getDeclaredMethod(
+        Method writeDataDescriptor = ZipArkivoWritableFileSystemImpl.class.getDeclaredMethod(
                 "writeDataDescriptor",
                 long.class,
                 long.class,
@@ -2624,7 +2624,7 @@ public final class ZipArkivoFileSystemTest {
     @Test
     public void streamingCloseActionFailureIsSuppressedWhenOutputCloseFails() throws Exception {
         CloseTrackingOutputStream archiveOutput = new CloseTrackingOutputStream(true);
-        StreamingZipArkivoFileSystemImpl fileSystem = new StreamingZipArkivoFileSystemImpl(
+        ZipArkivoWritableFileSystemImpl fileSystem = new ZipArkivoWritableFileSystemImpl(
                 ZipArkivoFileSystemProvider.instance(),
                 archiveOutput,
                 ZipArkivoFileSystemConfig.DEFAULTS
@@ -2646,7 +2646,7 @@ public final class ZipArkivoFileSystemTest {
     public void streamingCloseActionFailureIsSuppressedWhenOutputCloseFailsAtRuntime() throws Exception {
         RuntimeCloseFailingCloseTrackingOutputStream archiveOutput =
                 new RuntimeCloseFailingCloseTrackingOutputStream();
-        StreamingZipArkivoFileSystemImpl fileSystem = new StreamingZipArkivoFileSystemImpl(
+        ZipArkivoWritableFileSystemImpl fileSystem = new ZipArkivoWritableFileSystemImpl(
                 ZipArkivoFileSystemProvider.instance(),
                 archiveOutput,
                 ZipArkivoFileSystemConfig.DEFAULTS
@@ -2672,7 +2672,7 @@ public final class ZipArkivoFileSystemTest {
     @Test
     public void streamingCloseActionFailureIsSuppressedWhenEntryCloseFailsAtRuntime() throws Exception {
         RuntimeFailingCloseTrackingOutputStream archiveOutput = new RuntimeFailingCloseTrackingOutputStream();
-        StreamingZipArkivoFileSystemImpl fileSystem = new StreamingZipArkivoFileSystemImpl(
+        ZipArkivoWritableFileSystemImpl fileSystem = new ZipArkivoWritableFileSystemImpl(
                 ZipArkivoFileSystemProvider.instance(),
                 archiveOutput,
                 ZipArkivoFileSystemConfig.DEFAULTS
@@ -2821,6 +2821,7 @@ public final class ZipArkivoFileSystemTest {
     }
 
     /// Verifies real-path resolution and file identity through persisted ZIP symbolic links.
+    ///
     /// @param contentReadable whether completed entry bodies are readable in the current file-system mode
     private static void assertSymbolicLinkIdentity(
             ZipArkivoFileSystem fileSystem,
@@ -3154,7 +3155,7 @@ public final class ZipArkivoFileSystemTest {
                 Path committed = fileSystem.getPath("/committed.txt");
                 Files.writeString(committed, "committed", StandardCharsets.UTF_8);
                 var fileStore = Files.getFileStore(committed);
-                assertStreamingZipFileStoreAttributeViews(fileStore, false);
+                assertWritableZipFileStoreAttributeViews(fileStore, false);
                 assertEquals(fileStore.name(), fileStore.getAttribute("name"));
                 assertEquals(fileStore.type(), fileStore.getAttribute("type"));
                 assertEquals(Boolean.valueOf(false), fileStore.getAttribute("readOnly"));
@@ -4393,6 +4394,7 @@ public final class ZipArkivoFileSystemTest {
             assertEquals(false, Files.exists(original.getPath("/added.bin")));
         }
     }
+
     /// Verifies archive finalization failures roll back custom split output transactions.
     @Test
     public void splitVolumeTargetRollsBackAfterEntryFinalizationFailure() throws IOException {
@@ -4413,6 +4415,7 @@ public final class ZipArkivoFileSystemTest {
         assertEquals(1, output.rollbackCount());
         assertEquals(1, output.closeCount());
     }
+
     /// Verifies that a custom volume target is rolled back when opening a later volume fails.
     @Test
     public void streamingWriterRollsBackCustomVolumeTargetAfterWriteFailure() throws IOException {
@@ -7846,7 +7849,7 @@ public final class ZipArkivoFileSystemTest {
     @Test
     public void closeActionFailureIsSuppressedWhenZipVolumeSourceCloseFails() throws IOException {
         CloseFailingOwnedZipVolumeSource volumes = new CloseFailingOwnedZipVolumeSource();
-        ZipArkivoFileSystemImpl fileSystem = new ZipArkivoFileSystemImpl(
+        ZipArkivoReadOnlyFileSystemImpl fileSystem = new ZipArkivoReadOnlyFileSystemImpl(
                 ZipArkivoFileSystemProvider.instance(),
                 null,
                 volumes,
@@ -7869,7 +7872,7 @@ public final class ZipArkivoFileSystemTest {
     public void zipFileSystemCloseRetriesVolumeSourceCleanupAfterFailure() throws IOException {
         CloseFailingOwnedZipVolumeSource volumes = new CloseFailingOwnedZipVolumeSource(1);
         int[] closeActionCount = new int[1];
-        ZipArkivoFileSystemImpl fileSystem = new ZipArkivoFileSystemImpl(
+        ZipArkivoReadOnlyFileSystemImpl fileSystem = new ZipArkivoReadOnlyFileSystemImpl(
                 ZipArkivoFileSystemProvider.instance(),
                 null,
                 volumes,
@@ -8253,7 +8256,7 @@ public final class ZipArkivoFileSystemTest {
             long size
     ) throws ReflectiveOperationException {
         Class<?> type = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemImpl$BoundedSeekableByteChannel"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoReadOnlyFileSystemImpl$BoundedSeekableByteChannel"
         );
         Constructor<?> constructor = type.getDeclaredConstructor(SeekableByteChannel.class, long.class);
         constructor.setAccessible(true);
@@ -8264,7 +8267,7 @@ public final class ZipArkivoFileSystemTest {
     private static SeekableByteChannel newSingleArchiveChannel(SeekableByteChannel channel)
             throws ReflectiveOperationException {
         Class<?> type = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemImpl$SingleArchiveChannel"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoReadOnlyFileSystemImpl$SingleArchiveChannel"
         );
         Constructor<?> constructor = type.getDeclaredConstructor(SeekableByteChannel.class);
         constructor.setAccessible(true);
@@ -8278,7 +8281,7 @@ public final class ZipArkivoFileSystemTest {
             long expectedUncompressedSize
     ) throws ReflectiveOperationException {
         Class<?> type = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemImpl$ValidatingEntryInputStream"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoReadOnlyFileSystemImpl$ValidatingEntryInputStream"
         );
         Constructor<?> constructor = type.getDeclaredConstructor(InputStream.class, long.class, long.class);
         constructor.setAccessible(true);
@@ -8292,16 +8295,16 @@ public final class ZipArkivoFileSystemTest {
             long expectedUncompressedSize
     ) throws ReflectiveOperationException {
         Class<?> type = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemImpl$ValidatingStoredEntryByteChannel"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoReadOnlyFileSystemImpl$ValidatingStoredEntryByteChannel"
         );
         Constructor<?> constructor = type.getDeclaredConstructor(SeekableByteChannel.class, long.class, long.class);
         constructor.setAccessible(true);
         return (SeekableByteChannel) constructor.newInstance(channel, expectedCrc32, expectedUncompressedSize);
     }
 
-    /// Verifies common streaming ZIP file store attribute view declarations.
-    private static void assertStreamingZipFileStoreAttributeViews(FileStore fileStore, boolean readOnly) {
-        assertEquals("zip-stream", fileStore.name());
+    /// Verifies common writable ZIP file store attribute view declarations.
+    private static void assertWritableZipFileStoreAttributeViews(FileStore fileStore, boolean readOnly) {
+        assertEquals("zip", fileStore.name());
         assertEquals("zip", fileStore.type());
         assertEquals(readOnly, fileStore.isReadOnly());
         assertEquals(true, fileStore.supportsFileAttributeView(BasicFileAttributeView.class));
@@ -8313,20 +8316,20 @@ public final class ZipArkivoFileSystemTest {
         assertEquals(false, fileStore.supportsFileAttributeView("posix"));
     }
 
-    /// Replaces the streaming ZIP file system close action for close failure tests.
+    /// Replaces the writable ZIP file system close action for close failure tests.
     private static void setStreamingZipCloseAction(
-            StreamingZipArkivoFileSystemImpl fileSystem,
+            ZipArkivoWritableFileSystemImpl fileSystem,
             Runnable closeAction
     ) throws ReflectiveOperationException {
-        Field field = StreamingZipArkivoFileSystemImpl.class.getDeclaredField("closeAction");
+        Field field = ZipArkivoWritableFileSystemImpl.class.getDeclaredField("closeAction");
         field.setAccessible(true);
         field.set(fileSystem, closeAction);
     }
 
-    /// Creates streaming ZIP entry metadata through its private constructor.
+    /// Creates writable ZIP entry metadata through its private constructor.
     private static Object zipEntryMetadata() throws ReflectiveOperationException {
         Class<?> type = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoFileSystemImpl$EntryMetadata"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoWritableFileSystemImpl$EntryMetadata"
         );
         Constructor<?> constructor = type.getDeclaredConstructor(
                 int.class,
@@ -8367,7 +8370,7 @@ public final class ZipArkivoFileSystemTest {
             Object metadata
     ) throws ReflectiveOperationException {
         Class<?> type = Class.forName(
-                "org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoFileSystemImpl$CentralEntry"
+                "org.glavo.arkivo.archive.zip.internal.ZipArkivoWritableFileSystemImpl$CentralEntry"
         );
         Constructor<?> constructor = type.getDeclaredConstructor(
                 String.class,
@@ -8378,12 +8381,12 @@ public final class ZipArkivoFileSystemTest {
                 int.class,
                 long.class,
                 long.class,
-                 long.class,
-                 int.class,
-                 long.class,
-                 long.class,
-                 long.class,
-                 metadata.getClass()
+                long.class,
+                int.class,
+                long.class,
+                long.class,
+                long.class,
+                metadata.getClass()
         );
         constructor.setAccessible(true);
         return constructor.newInstance(
@@ -8396,11 +8399,11 @@ public final class ZipArkivoFileSystemTest {
                 0L,
                 compressedSize,
                 uncompressedSize,
-                 0,
-                 localHeaderOffset,
-                 0L,
-                 0L,
-                 metadata
+                0,
+                localHeaderOffset,
+                0L,
+                0L,
+                metadata
         );
     }
 

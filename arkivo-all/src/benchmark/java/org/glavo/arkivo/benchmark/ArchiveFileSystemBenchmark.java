@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.benchmark;
 
+import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
@@ -32,7 +33,6 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
@@ -162,14 +162,12 @@ public class ArchiveFileSystemBenchmark {
     /// Creates the benchmark solid 7z archive through the public streaming writer.
     private static void createSevenZip(Path archive) throws IOException {
         byte[] content = content();
-        Map<String, Object> environment = Map.of(
-                SevenZipArkivoFileSystem.COMPRESSION.key(),
-                SevenZipCompression.lzma2(1024 * 1024),
-                SevenZipArkivoFileSystem.SOLID_FILE_COUNT.key(),
-                64
-        );
+        ArchiveOptions options = ArchiveOptions.builder()
+                .set(SevenZipArkivoFileSystem.COMPRESSION, SevenZipCompression.lzma2(1024 * 1024))
+                .set(SevenZipArkivoFileSystem.SOLID_FILE_COUNT, 64)
+                .build();
         try (SevenZipArkivoStreamingWriter writer =
-                     SevenZipArkivoStreamingWriter.create(archive, environment)) {
+                     SevenZipArkivoStreamingWriter.create(archive, options)) {
             for (int index = 0; index < ENTRY_COUNT; index++) {
                 writer.beginFile(entryName(index));
                 try (OutputStream output = writer.openOutputStream()) {

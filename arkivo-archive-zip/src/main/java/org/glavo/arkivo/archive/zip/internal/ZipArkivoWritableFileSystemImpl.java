@@ -29,7 +29,6 @@ import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
-import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.glavo.arkivo.archive.zip.ZipMethod;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -137,7 +136,8 @@ import static org.glavo.arkivo.archive.zip.internal.ZipLittleEndian.writeShort;
 /// Complete-rewrite sessions expose existing entries and completed staged entries for reading. Direct streaming
 /// creation remains write-only because emitted entry bytes cannot be recovered from the output endpoint.
 @NotNullByDefault
-public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
+public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
+        implements ZipFileSystemOperations, ZipArchiveEntrySink {
     /// The LZMA SDK major version stored in ZIP LZMA property headers.
     private static final int LZMA_SDK_MAJOR_VERSION = 9;
 
@@ -211,10 +211,10 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     private final @Nullable ArkivoStoredContent stagedRecords;
 
     /// The existing archive snapshot that requires a full rewrite, or `null` for a new archive.
-    private final @Nullable ZipArkivoFileSystemImpl.CentralDirectorySnapshot rewriteSnapshot;
+    private final @Nullable ZipArkivoReadOnlyFileSystemImpl.CentralDirectorySnapshot rewriteSnapshot;
 
     /// The borrowed read-only view of an archive being updated, or `null` outside complete-rewrite mode.
-    private final @Nullable ZipArkivoFileSystemImpl existingArchiveReader;
+    private final @Nullable ZipArkivoReadOnlyFileSystemImpl existingArchiveReader;
 
     /// Uncompressed staged bodies for entries written during complete-rewrite mode.
     private final HashMap<String, ArkivoStoredContent> stagedEntryContents = new HashMap<>();
@@ -273,8 +273,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// The action to run after this file system is closed, or `null` when no action is needed.
     private final @Nullable Runnable closeAction;
 
-    /// Creates a streaming ZIP archive file system.
-    public StreamingZipArkivoFileSystemImpl(
+    /// Creates a writable ZIP archive file system.
+    public ZipArkivoWritableFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             Path archivePath,
             ZipArkivoFileSystemConfig config
@@ -282,8 +282,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         this(provider, archivePath, config, null, false);
     }
 
-    /// Creates a streaming ZIP archive file system.
-    public StreamingZipArkivoFileSystemImpl(
+    /// Creates a writable ZIP archive file system.
+    public ZipArkivoWritableFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             Path archivePath,
             ZipArkivoFileSystemConfig config,
@@ -292,8 +292,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         this(provider, archivePath, config, closeAction, false);
     }
 
-    /// Creates a streaming ZIP archive file system.
-    public StreamingZipArkivoFileSystemImpl(
+    /// Creates a writable ZIP archive file system.
+    public ZipArkivoWritableFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             Path archivePath,
             ZipArkivoFileSystemConfig config,
@@ -317,7 +317,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         if (append && splitSize != ZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
             throw new UnsupportedOperationException("ZIP append mode does not support split output");
         }
-        ZipArkivoFileSystemImpl.CentralDirectorySnapshot appendSnapshot =
+        ZipArkivoReadOnlyFileSystemImpl.CentralDirectorySnapshot appendSnapshot =
                 append ? readAppendSnapshot(archivePath, config) : null;
         if (appendSnapshot != null) {
             requireCommitTargetSourceOptions(archivePath, config.openOptions());
@@ -448,13 +448,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             this.existingEntryNames = new HashSet<>();
         }
         this.existingArchiveReader = appendSnapshot != null
-                ? ZipArkivoFileSystemImpl.openUpdateReader(provider, archivePath, config)
+                ? ZipArkivoReadOnlyFileSystemImpl.openUpdateReader(provider, archivePath, config)
                 : null;
         this.rootPath = ZipArkivoPath.root(this);
     }
 
     /// Reads the existing central directory snapshot required by append mode.
-    private static @Nullable ZipArkivoFileSystemImpl.CentralDirectorySnapshot readAppendSnapshot(
+    private static @Nullable ZipArkivoReadOnlyFileSystemImpl.CentralDirectorySnapshot readAppendSnapshot(
             Path archivePath,
             ZipArkivoFileSystemConfig config
     ) throws IOException {
@@ -468,15 +468,15 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             }
             throw new NoSuchFileException(archivePath.toString());
         }
-        return ZipArkivoFileSystemImpl.readCentralDirectorySnapshot(archivePath, config);
+        return ZipArkivoReadOnlyFileSystemImpl.readCentralDirectorySnapshot(archivePath, config);
     }
 
     /// Wraps immutable source snapshots with mutable-session entry names.
     private static ArrayList<ExistingEntry> existingEntries(
-            List<ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot> snapshots
+            List<ZipArkivoReadOnlyFileSystemImpl.CentralDirectoryEntrySnapshot> snapshots
     ) {
         ArrayList<ExistingEntry> entries = new ArrayList<>(snapshots.size());
-        for (ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot snapshot : snapshots) {
+        for (ZipArkivoReadOnlyFileSystemImpl.CentralDirectoryEntrySnapshot snapshot : snapshots) {
             entries.add(ExistingEntry.original(snapshot));
         }
         return entries;
@@ -490,7 +490,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     }
 
     /// Opens a complete-rewrite ZIP update over an owned repeatable single-volume source.
-    public static StreamingZipArkivoFileSystemImpl openUpdate(
+    public static ZipArkivoWritableFileSystemImpl openUpdate(
             ZipArkivoFileSystemProvider provider,
             ArkivoSeekableChannelSource source,
             ZipArkivoFileSystemConfig config
@@ -517,7 +517,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                         "ZIP channel-source update mode always performs a complete archive rewrite"
                 );
             }
-            return new StreamingZipArkivoFileSystemImpl(
+            return new ZipArkivoWritableFileSystemImpl(
                     provider,
                     source,
                     null,
@@ -535,7 +535,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     }
 
     /// Opens a complete-rewrite ZIP update over an owned multi-volume source.
-    public static StreamingZipArkivoFileSystemImpl openUpdate(
+    public static ZipArkivoWritableFileSystemImpl openUpdate(
             ZipArkivoFileSystemProvider provider,
             ArkivoVolumeSource source,
             ArkivoVolumeTarget target,
@@ -571,7 +571,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                         "ZIP volume updates always perform a complete archive rewrite"
                 );
             }
-            return new StreamingZipArkivoFileSystemImpl(provider, source, target, splitSize, config);
+            return new ZipArkivoWritableFileSystemImpl(provider, source, target, splitSize, config);
         } catch (IOException | RuntimeException | Error exception) {
             try {
                 source.close();
@@ -583,7 +583,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     }
 
     /// Creates a complete-rewrite ZIP editor over a repeatable volume source.
-    private StreamingZipArkivoFileSystemImpl(
+    private ZipArkivoWritableFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             ArkivoVolumeSource source,
             @Nullable ArkivoVolumeTarget rewriteVolumeTarget,
@@ -602,8 +602,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         this.closeAction = null;
         this.replaceExistingEntries = true;
 
-        ZipArkivoFileSystemImpl.CentralDirectorySnapshot snapshot =
-                ZipArkivoFileSystemImpl.readCentralDirectorySnapshot(source, config);
+        ZipArkivoReadOnlyFileSystemImpl.CentralDirectorySnapshot snapshot =
+                ZipArkivoReadOnlyFileSystemImpl.readCentralDirectorySnapshot(source, config);
         ArkivoEditStorage openedEditStorage = config.editStorage();
         if (openedEditStorage == null) {
             openedEditStorage = ArkivoEditStorage.temporaryFiles(defaultEditStorageDirectory());
@@ -661,7 +661,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         this.archiveComment = snapshot.archiveComment();
         this.existingCentralDirectoryEntries = existingEntries(snapshot.entries());
         this.existingEntryNames = new HashSet<>(snapshot.entryNames());
-        this.existingArchiveReader = ZipArkivoFileSystemImpl.openUpdateReader(provider, source, config);
+        this.existingArchiveReader = ZipArkivoReadOnlyFileSystemImpl.openUpdateReader(provider, source, config);
         this.rootPath = ZipArkivoPath.root(this);
     }
 
@@ -670,8 +670,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         return Path.of(System.getProperty("java.io.tmpdir", ".")).toAbsolutePath().normalize();
     }
 
-    /// Creates a streaming ZIP archive file system over a writable channel.
-    public StreamingZipArkivoFileSystemImpl(
+    /// Creates a writable ZIP archive file system over a writable channel.
+    public ZipArkivoWritableFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             WritableByteChannel output,
             ZipArkivoFileSystemConfig config
@@ -705,8 +705,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         this.rootPath = ZipArkivoPath.root(this);
     }
 
-    /// Creates a streaming ZIP archive file system over an output stream.
-    public StreamingZipArkivoFileSystemImpl(
+    /// Creates a writable ZIP archive file system over an output stream.
+    public ZipArkivoWritableFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             OutputStream output,
             ZipArkivoFileSystemConfig config
@@ -718,8 +718,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         );
     }
 
-    /// Creates a streaming ZIP archive file system over a transactional volume target.
-    public StreamingZipArkivoFileSystemImpl(
+    /// Creates a writable ZIP archive file system over a transactional volume target.
+    public ZipArkivoWritableFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             ArkivoVolumeTarget target,
             long splitSize,
@@ -758,10 +758,11 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     }
 
     /// Returns the archive URI used by ZIP path URI conversion.
+    @Override
     public URI archiveUri() {
         Path path = archivePath;
         if (path == null) {
-            throw new UnsupportedOperationException("Streaming ZIP output paths backed by non-path output cannot be converted to URIs");
+            throw new UnsupportedOperationException("Non-path ZIP output cannot be converted to an archive URI");
         }
         return path.toUri().normalize();
     }
@@ -893,7 +894,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// Copies the preamble and every surviving local record into the assembled archive.
     private void copySurvivingLocalRecords() throws IOException {
         ArkivoStoredContent records = Objects.requireNonNull(stagedRecords, "stagedRecords");
-        ZipArkivoFileSystemImpl.CentralDirectorySnapshot snapshot =
+        ZipArkivoReadOnlyFileSystemImpl.CentralDirectorySnapshot snapshot =
                 Objects.requireNonNull(rewriteSnapshot, "rewriteSnapshot");
         relocatedExistingEntryOffsets.clear();
 
@@ -962,7 +963,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         if (path != null) {
             return Files.newByteChannel(path, StandardOpenOption.READ);
         }
-        return ZipArkivoFileSystemImpl.openLogicalArchiveChannel(
+        return ZipArkivoReadOnlyFileSystemImpl.openLogicalArchiveChannel(
                 Objects.requireNonNull(archiveSource, "archiveSource")
         );
     }
@@ -1127,7 +1128,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Closes the borrowed read-only archive view and returns the accumulated failure.
     private @Nullable Throwable closeExistingArchiveReader(@Nullable Throwable failure) {
-        ZipArkivoFileSystemImpl reader = existingArchiveReader;
+        ZipArkivoReadOnlyFileSystemImpl reader = existingArchiveReader;
         if (reader != null && reader.isOpen()) {
             try {
                 reader.close();
@@ -1290,8 +1291,14 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     @Override
     public @Unmodifiable Iterable<FileStore> getFileStores() {
         try (Operation ignored = beginReadOperation()) {
-            return List.of(StreamingZipFileStore.INSTANCE);
+            return List.of(ZipFileStore.WRITABLE);
         }
+    }
+
+    /// Returns the synthetic file store exposed for writable ZIP entries.
+    @Override
+    public FileStore fileStore() {
+        return ZipFileStore.WRITABLE;
     }
 
     /// Returns the supported file attribute view names.
@@ -1509,7 +1516,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
             String target = writtenSymbolicLinkTargets.get(entryName);
             if (target == null) {
-                ZipArkivoFileSystemImpl reader = Objects.requireNonNull(
+                ZipArkivoReadOnlyFileSystemImpl reader = Objects.requireNonNull(
                         existingArchiveReader,
                         "existingArchiveReader"
                 );
@@ -1883,7 +1890,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                 return stagedContent.openChannel(Set.of(StandardOpenOption.READ));
             }
             if (visibleExistingEntry(entryName)) {
-                ZipArkivoFileSystemImpl reader = Objects.requireNonNull(
+                ZipArkivoReadOnlyFileSystemImpl reader = Objects.requireNonNull(
                         existingArchiveReader,
                         "existingArchiveReader"
                 );
@@ -2043,7 +2050,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             return stagedContent.openChannel(Set.of(StandardOpenOption.READ));
         }
         if (visibleExistingEntry(entryName)) {
-            ZipArkivoFileSystemImpl reader = Objects.requireNonNull(existingArchiveReader, "existingArchiveReader");
+            ZipArkivoReadOnlyFileSystemImpl reader = Objects.requireNonNull(existingArchiveReader, "existingArchiveReader");
             return reader.newByteChannel(
                     reader.getPath("/" + existingSourceEntryName(entryName)),
                     Set.of(StandardOpenOption.READ)
@@ -2128,6 +2135,42 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         try (Operation ignored = beginWriteOperation()) {
             return manageOutputStream(newOutputStreamLocked(path, metadata, options));
         }
+    }
+
+    /// Opens a regular entry body for a normalized streaming-writer entry name.
+    @Override
+    public OutputStream openFile(String entryName, ZipEntryWriteMetadata metadata) throws IOException {
+        return newOutputStream(getPath("/" + entryName), entryMetadata(metadata));
+    }
+
+    /// Writes a directory for a normalized streaming-writer entry name.
+    @Override
+    public void writeDirectory(String entryName, ZipEntryWriteMetadata metadata) throws IOException {
+        createDirectory(getPath("/" + entryName), entryMetadata(metadata));
+    }
+
+    /// Writes a complete stored entry for a normalized streaming-writer entry name.
+    @Override
+    public void writeStoredEntry(String entryName, byte[] content, ZipEntryWriteMetadata metadata) throws IOException {
+        writeStoredEntry(getPath("/" + entryName), content, entryMetadata(metadata));
+    }
+
+    /// Converts transport-independent ZIP entry metadata to the serializer's validated representation.
+    private static EntryMetadata entryMetadata(ZipEntryWriteMetadata metadata) {
+        Objects.requireNonNull(metadata, "metadata");
+        return new EntryMetadata(
+                metadata.method(),
+                metadata.encryption(),
+                metadata.lastModifiedTime(),
+                metadata.versionMadeBy(),
+                metadata.internalAttributes(),
+                metadata.externalAttributes(),
+                metadata.expectedUncompressedSize(),
+                metadata.expectedCrc32(),
+                metadata.localExtraData(),
+                metadata.centralDirectoryExtraData(),
+                metadata.rawComment()
+        );
     }
 
     /// Opens an entry output stream while the caller holds the exclusive operation lock.
@@ -2830,7 +2873,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     @Override
     public long preambleSize() throws IOException {
         try (Operation ignored = beginReadOperation()) {
-            ZipArkivoFileSystemImpl reader = existingArchiveReader;
+            ZipArkivoReadOnlyFileSystemImpl reader = existingArchiveReader;
             if (reader == null) {
                 throw new UnsupportedOperationException("Streaming ZIP creation does not expose a preamble");
             }
@@ -2842,7 +2885,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     @Override
     public SeekableByteChannel openPreambleChannel() throws IOException {
         try (Operation ignored = beginReadOperation()) {
-            ZipArkivoFileSystemImpl reader = existingArchiveReader;
+            ZipArkivoReadOnlyFileSystemImpl reader = existingArchiveReader;
             if (reader == null) {
                 throw new UnsupportedOperationException("Streaming ZIP creation does not expose a preamble");
             }
@@ -3368,7 +3411,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
         byte[] relocated = new byte[
                 rawEntry.length - extraLength + relocatedExtraData.length
-        ];
+                ];
         System.arraycopy(rawEntry, 0, relocated, 0, extraOffset);
         System.arraycopy(relocatedExtraData, 0, relocated, extraOffset, relocatedExtraData.length);
         System.arraycopy(
@@ -3419,7 +3462,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         requireUInt16(extraData.length, "central directory extra data length");
         byte[] renamed = new byte[
                 ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE + rawName.length + extraData.length + commentLength
-        ];
+                ];
         System.arraycopy(rawEntry, 0, renamed, 0, ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE);
         int extraOffset = ZIP_CENTRAL_DIRECTORY_HEADER_MIN_SIZE + rawName.length;
         int commentOffset = extraOffset + extraData.length;
@@ -3952,6 +3995,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
             checkOpen();
         }
     }
+
     /// Counts bytes written to an output stream.
     @NotNullByDefault
     private static class CountingOutputStream extends OutputStream {
@@ -4622,7 +4666,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
         /// Returns attributes parsed from an append-mode central directory snapshot.
         private static EntryAttributes existing(
-                ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot snapshot,
+                ZipArkivoReadOnlyFileSystemImpl.CentralDirectoryEntrySnapshot snapshot,
                 ZipArkivoFileSystemConfig config
         ) throws IOException {
             byte[] bytes = snapshot.bytes();
@@ -4927,14 +4971,14 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     @NotNullByDefault
     private static final class PosixEntryAttributeView implements PosixFileAttributeView {
         /// The file system used to read attributes.
-        private final StreamingZipArkivoFileSystemImpl fileSystem;
+        private final ZipArkivoWritableFileSystemImpl fileSystem;
 
         /// The path whose attributes are exposed.
         private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates a synthesized POSIX attribute view.
         private PosixEntryAttributeView(
-                StreamingZipArkivoFileSystemImpl fileSystem,
+                ZipArkivoWritableFileSystemImpl fileSystem,
                 ArkivoFileSystemProviderSupport.AttributeViewPath path
         ) {
             this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
@@ -4992,14 +5036,14 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     @NotNullByDefault
     private static final class OwnerEntryAttributeView implements FileOwnerAttributeView {
         /// The file system used to read attributes.
-        private final StreamingZipArkivoFileSystemImpl fileSystem;
+        private final ZipArkivoWritableFileSystemImpl fileSystem;
 
         /// The path whose owner is exposed.
         private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates a synthesized owner attribute view.
         private OwnerEntryAttributeView(
-                StreamingZipArkivoFileSystemImpl fileSystem,
+                ZipArkivoWritableFileSystemImpl fileSystem,
                 ArkivoFileSystemProviderSupport.AttributeViewPath path
         ) {
             this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
@@ -5029,14 +5073,14 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     @NotNullByDefault
     private static final class EntryAttributeView implements ZipArkivoEntryAttributeView {
         /// The file system used to read attributes.
-        private final StreamingZipArkivoFileSystemImpl fileSystem;
+        private final ZipArkivoWritableFileSystemImpl fileSystem;
 
         /// The path whose attributes are exposed.
         private final ArkivoFileSystemProviderSupport.AttributeViewPath path;
 
         /// Creates an entry attribute view.
         private EntryAttributeView(
-                StreamingZipArkivoFileSystemImpl fileSystem,
+                ZipArkivoWritableFileSystemImpl fileSystem,
                 ArkivoFileSystemProviderSupport.AttributeViewPath path
         ) {
             this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
@@ -5522,9 +5566,9 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Stores either an unchanged local record header size or replacement header bytes.
     ///
-    /// @param fixedHeader the replacement fixed header, or an empty array for an unchanged record
-    /// @param rawName the replacement encoded name, or an empty array for an unchanged record
-    /// @param localExtraData the replacement local extra data, or an empty array for an unchanged record
+    /// @param fixedHeader     the replacement fixed header, or an empty array for an unchanged record
+    /// @param rawName         the replacement encoded name, or an empty array for an unchanged record
+    /// @param localExtraData  the replacement local extra data, or an empty array for an unchanged record
     /// @param finalHeaderSize the final local header size
     private record LocalRecordRewrite(
             byte @Unmodifiable [] fixedHeader,
@@ -5583,13 +5627,13 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
     /// Tracks one immutable source entry under its current update-session name.
     ///
-    /// @param source the immutable central directory and local record source
-    /// @param entryName the current normalized entry name
-    /// @param rawName the current encoded central and local header name
+    /// @param source                the immutable central directory and local record source
+    /// @param entryName             the current normalized entry name
+    /// @param rawName               the current encoded central and local header name
     /// @param centralDirectoryBytes the current central directory entry bytes
     /// @param localTimestampChanged whether the local header timestamp differs from the source
     private record ExistingEntry(
-            ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot source,
+            ZipArkivoReadOnlyFileSystemImpl.CentralDirectoryEntrySnapshot source,
             String entryName,
             byte @Unmodifiable [] rawName,
             byte @Unmodifiable [] centralDirectoryBytes,
@@ -5608,7 +5652,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
 
         /// Creates an unchanged state from one source snapshot.
         private static ExistingEntry original(
-                ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot source
+                ZipArkivoReadOnlyFileSystemImpl.CentralDirectoryEntrySnapshot source
         ) {
             byte[] centralDirectoryBytes = source.bytes();
             int nameLength = readUnsignedShort(centralDirectoryBytes, 28);
@@ -5637,8 +5681,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         private ExistingEntry withLastModifiedTime(FileTime lastModifiedTime) {
             byte[] updated = centralDirectoryBytes.clone();
             ByteBuffer header = ByteBuffer.wrap(updated).order(ByteOrder.LITTLE_ENDIAN);
-            header.putShort(12, (short) StreamingZipArkivoFileSystemImpl.dosTime(lastModifiedTime));
-            header.putShort(14, (short) StreamingZipArkivoFileSystemImpl.dosDate(lastModifiedTime));
+            header.putShort(12, (short) ZipArkivoWritableFileSystemImpl.dosTime(lastModifiedTime));
+            header.putShort(14, (short) ZipArkivoWritableFileSystemImpl.dosDate(lastModifiedTime));
             return new ExistingEntry(source, entryName, rawName, updated, true);
         }
 
@@ -5700,8 +5744,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         }
 
         /// Returns a snapshot containing the current central directory metadata for attribute parsing.
-        private ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot attributesSnapshot() {
-            return new ZipArkivoFileSystemImpl.CentralDirectoryEntrySnapshot(
+        private ZipArkivoReadOnlyFileSystemImpl.CentralDirectoryEntrySnapshot attributesSnapshot() {
+            return new ZipArkivoReadOnlyFileSystemImpl.CentralDirectoryEntrySnapshot(
                     entryName,
                     centralDirectoryBytes,
                     source.localHeaderOffset(),
@@ -5726,7 +5770,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
     /// Describes a relocated local header location.
     ///
     /// @param diskNumber the zero-based output disk number
-    /// @param offset the local header offset relative to the output disk
+    /// @param offset     the local header offset relative to the output disk
     @NotNullByDefault
     private record RelocatedLocalHeader(int diskNumber, long offset) {
         /// Creates a relocated local header location.
@@ -5929,8 +5973,8 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     entryName,
                     rawName,
                     flags,
-                    StreamingZipArkivoFileSystemImpl.dosTime(lastModifiedTime),
-                    StreamingZipArkivoFileSystemImpl.dosDate(lastModifiedTime),
+                    ZipArkivoWritableFileSystemImpl.dosTime(lastModifiedTime),
+                    ZipArkivoWritableFileSystemImpl.dosDate(lastModifiedTime),
                     versionMadeBy,
                     internalAttributes,
                     externalAttributes,

@@ -4,19 +4,19 @@
 package org.glavo.arkivo.archive.zip;
 
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
-import org.glavo.arkivo.archive.ArchiveOptions;
-import org.glavo.arkivo.archive.internal.SeekableChannelSources;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArchiveOption;
+import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
-import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
-import org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoFileSystemImpl;
+import org.glavo.arkivo.archive.internal.SeekableChannelSources;
 import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemConfig;
-import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemImpl;
+import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemProvider;
+import org.glavo.arkivo.archive.zip.internal.ZipArkivoReadOnlyFileSystemImpl;
+import org.glavo.arkivo.archive.zip.internal.ZipArkivoWritableFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -39,7 +39,7 @@ import java.util.Objects;
 /// complete-rewrite mutation.
 @NotNullByDefault
 public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
-        permits StreamingZipArkivoFileSystemImpl, ZipArkivoFileSystemImpl {
+        permits ZipArkivoReadOnlyFileSystemImpl, ZipArkivoWritableFileSystemImpl {
     /// The option for an `ArkivoPasswordProvider` value.
     public static final ArchiveOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArchiveOption.of("arkivo.zip", "passwordProvider", ArkivoPasswordProvider.class);
@@ -109,6 +109,7 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
         Objects.requireNonNull(options, "options");
         return SeekableChannelSources.open(source, channelSource -> open(channelSource, options));
     }
+
     /// Opens a read-only ZIP archive file system from a repeatable seekable channel source.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
@@ -129,12 +130,12 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
         Objects.requireNonNull(options, "options");
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromOptions(options);
         return config.archiveWritable()
-                ? StreamingZipArkivoFileSystemImpl.openUpdate(
+                ? ZipArkivoWritableFileSystemImpl.openUpdate(
                         ZipArkivoFileSystemProvider.instance(),
                         source,
                         config
                 )
-                : new ZipArkivoFileSystemImpl(ZipArkivoFileSystemProvider.instance(), null, source, config);
+                : new ZipArkivoReadOnlyFileSystemImpl(ZipArkivoFileSystemProvider.instance(), null, source, config);
     }
 
     /// Opens a split ZIP archive file system.
@@ -150,7 +151,7 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
         if (config.archiveWritable()) {
             throw new UnsupportedOperationException("ZIP volume sources cannot be opened with write archive options");
         }
-        return new ZipArkivoFileSystemImpl(ZipArkivoFileSystemProvider.instance(), null, volumes, config);
+        return new ZipArkivoReadOnlyFileSystemImpl(ZipArkivoFileSystemProvider.instance(), null, volumes, config);
     }
 
     /// Opens a complete-rewrite update over a multi-volume source and transactional volume target.
@@ -192,7 +193,7 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
             throw new IllegalArgumentException("ZIP volume updates always perform a complete rewrite");
         }
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromUpdateOptions(options);
-        return StreamingZipArkivoFileSystemImpl.openUpdate(
+        return ZipArkivoWritableFileSystemImpl.openUpdate(
                 ZipArkivoFileSystemProvider.instance(),
                 source,
                 target,
@@ -237,7 +238,7 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
             throw new IllegalArgumentException("ZIP volume target creation has no source to mutate");
         }
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromWriterOptions(options);
-        return new StreamingZipArkivoFileSystemImpl(
+        return new ZipArkivoWritableFileSystemImpl(
                 ZipArkivoFileSystemProvider.instance(),
                 target,
                 splitSize,

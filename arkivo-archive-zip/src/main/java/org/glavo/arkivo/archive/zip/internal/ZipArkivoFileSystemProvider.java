@@ -8,9 +8,6 @@ import org.glavo.arkivo.archive.zip.ZipArkivoFormat;
 import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
-import org.glavo.arkivo.archive.zip.internal.StreamingZipArkivoFileSystemImpl;
-import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemConfig;
-import org.glavo.arkivo.archive.zip.internal.ZipArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -28,7 +25,6 @@ import java.nio.file.LinkOption;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.ProviderMismatchException;
-import java.nio.file.ReadOnlyFileSystemException;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.FileAttributeView;
@@ -72,20 +68,20 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
         ArkivoFileSystemProviderSupport.ParsedUri parsedUri = parseUri(uri, false);
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromOptions(ArchiveOptions.fromEnvironment(environment));
         return fileSystems.open(parsedUri.archiveUri(), closeAction -> config.archiveWritable()
-                ? new StreamingZipArkivoFileSystemImpl(
-                        this,
-                        parsedUri.archivePath(),
-                        config,
-                        closeAction,
-                        true
-                )
-                : new ZipArkivoFileSystemImpl(
-                        this,
-                        parsedUri.archivePath(),
-                        null,
-                        config,
-                        closeAction
-                ));
+                ? new ZipArkivoWritableFileSystemImpl(
+                this,
+                parsedUri.archivePath(),
+                config,
+                closeAction,
+                true
+        )
+                : new ZipArkivoReadOnlyFileSystemImpl(
+                this,
+                parsedUri.archivePath(),
+                null,
+                config,
+                closeAction
+        ));
     }
 
     /// Opens a ZIP archive file system from an archive path.
@@ -102,8 +98,8 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
         Objects.requireNonNull(path, "path");
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromOptions(options);
         return config.archiveWritable()
-                ? new StreamingZipArkivoFileSystemImpl(this, path, config, null, true)
-                : new ZipArkivoFileSystemImpl(this, path, null, config);
+                ? new ZipArkivoWritableFileSystemImpl(this, path, config, null, true)
+                : new ZipArkivoReadOnlyFileSystemImpl(this, path, null, config);
     }
 
     /// Returns an open ZIP archive file system for a provider URI.
@@ -128,86 +124,46 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
             Set<? extends OpenOption> options,
             FileAttribute<?>... attributes
     ) throws IOException {
-        ZipArkivoFileSystem fileSystem = fileSystem(path);
         Path readPath = ArkivoFileSystemProviderSupport.resolveReadChannelPath(path, options);
-        if (fileSystem instanceof ZipArkivoFileSystemImpl readFileSystem) {
-            return readFileSystem.newByteChannel(readPath, options, attributes);
-        }
-        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
-            return writeFileSystem.newByteChannel(readPath, options, attributes);
-        }
-        throw new ProviderMismatchException();
+        return operations(path).newByteChannel(readPath, options, attributes);
     }
 
     /// Opens an input stream for a path inside a ZIP archive file system.
     @Override
     public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
-        ZipArkivoFileSystem fileSystem = fileSystem(path);
         Path readPath = ArkivoFileSystemProviderSupport.resolveReadPath(path, options);
-        if (fileSystem instanceof ZipArkivoFileSystemImpl readFileSystem) {
-            return readFileSystem.newInputStream(readPath, options);
-        }
-        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
-            return writeFileSystem.newInputStream(readPath, options);
-        }
-        throw new ProviderMismatchException();
+        return operations(path).newInputStream(readPath, options);
     }
 
-    /// Opens an output stream for a path inside a writable streaming ZIP archive file system.
+    /// Opens an output stream for a path inside a writable ZIP archive file system.
     @Override
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
-        ZipArkivoFileSystem fileSystem = fileSystem(path);
-        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
-            return writeFileSystem.newOutputStream(path, options);
-        }
-        throw new ReadOnlyFileSystemException();
+        return operations(path).newOutputStream(path, options);
     }
 
     /// Opens a directory stream for a path inside a ZIP archive file system.
     @Override
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter) throws IOException {
-        ZipArkivoFileSystem fileSystem = fileSystem(directory);
         Path readDirectory = ArkivoFileSystemProviderSupport.resolveReadPath(directory);
-        if (fileSystem instanceof ZipArkivoFileSystemImpl readFileSystem) {
-            return readFileSystem.newDirectoryStream(readDirectory, filter);
-        }
-        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
-            return writeFileSystem.newDirectoryStream(readDirectory, filter);
-        }
-        throw new ProviderMismatchException();
+        return operations(directory).newDirectoryStream(readDirectory, filter);
     }
 
-    /// Creates a directory inside a writable streaming ZIP archive file system.
+    /// Creates a directory inside a writable ZIP archive file system.
     @Override
     public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
-        ZipArkivoFileSystem fileSystem = fileSystem(directory);
-        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
-            writeFileSystem.createDirectory(directory, attributes);
-            return;
-        }
-        throw new ReadOnlyFileSystemException();
+        operations(directory).createDirectory(directory, attributes);
     }
 
-    /// Creates a symbolic link inside a writable streaming ZIP archive file system.
+    /// Creates a symbolic link inside a writable ZIP archive file system.
     @Override
     public void createSymbolicLink(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
-        ZipArkivoFileSystem fileSystem = fileSystem(link);
-        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
-            writeFileSystem.createSymbolicLink(link, target, attributes);
-            return;
-        }
-        throw new ReadOnlyFileSystemException();
+        operations(link).createSymbolicLink(link, target, attributes);
     }
 
     /// Deletes a path inside a ZIP archive file system.
     @Override
     public void delete(Path path) throws IOException {
-        ZipArkivoFileSystem fileSystem = fileSystem(path);
-        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
-            writeFileSystem.delete(path);
-            return;
-        }
-        throw new ReadOnlyFileSystemException();
+        operations(path).delete(path);
     }
 
     /// Copies a path inside or across ZIP archive file systems.
@@ -220,13 +176,8 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     /// Moves a path inside or across ZIP archive file systems.
     @Override
     public void move(Path source, Path target, CopyOption... options) throws IOException {
-        ZipArkivoFileSystem fileSystem = fileSystem(source);
         ArkivoFileSystemProviderSupport.requireSameFileSystemMove(source, target);
-        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
-            writeFileSystem.move(source, target, options);
-            return;
-        }
-        throw new ReadOnlyFileSystemException();
+        operations(source).move(source, target, options);
     }
 
     /// Returns whether two ZIP archive paths refer to the same file.
@@ -247,96 +198,51 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     /// Returns the file store for a ZIP archive path.
     @Override
     public FileStore getFileStore(Path path) throws IOException {
-        ZipArkivoFileSystem fileSystem = fileSystem(path);
-        if (fileSystem instanceof ZipArkivoFileSystemImpl readFileSystem) {
-            readFileSystem.checkAccess(path);
-            return readFileSystem.fileStore();
-        }
-        return fileSystem.getFileStores().iterator().next();
+        ZipFileSystemOperations operations = operations(path);
+        operations.checkAccess(path);
+        return operations.fileStore();
     }
 
     /// Checks access to a ZIP archive path.
     @Override
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
-        ZipArkivoFileSystem fileSystem = fileSystem(path);
-        if (fileSystem instanceof ZipArkivoFileSystemImpl readFileSystem) {
-            readFileSystem.checkAccess(path, modes);
-            return;
-        }
-        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
-            writeFileSystem.checkAccess(path, modes);
-            return;
-        }
-        throw new ProviderMismatchException();
+        operations(path).checkAccess(path, modes);
     }
 
     /// Returns a file attribute view for a ZIP archive path.
     @Override
     public <V extends FileAttributeView> @Nullable V getFileAttributeView(Path path, Class<V> type, LinkOption... options) {
-        ZipArkivoFileSystem fileSystem = fileSystem(path);
-        if (fileSystem instanceof ZipArkivoFileSystemImpl readFileSystem) {
-            return readFileSystem.getFileAttributeView(path, type, options);
-        }
-        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
-            return writeFileSystem.getFileAttributeView(path, type, options);
-        }
-        return null;
+        return operations(path).getFileAttributeView(path, type, options);
     }
 
     /// Reads file attributes for a ZIP archive path.
     @Override
     public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, LinkOption... options) throws IOException {
-        ZipArkivoFileSystem fileSystem = fileSystem(path);
         Path readPath = ArkivoFileSystemProviderSupport.resolveReadPath(path, options);
-        if (fileSystem instanceof ZipArkivoFileSystemImpl readFileSystem) {
-            return readFileSystem.readAttributes(readPath, type);
-        }
-        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
-            return writeFileSystem.readAttributes(readPath, type);
-        }
-        throw new ProviderMismatchException();
+        return operations(path).readAttributes(readPath, type);
     }
 
     /// Reads named file attributes for a ZIP archive path.
     @Override
     public Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options) throws IOException {
-        ZipArkivoFileSystem fileSystem = fileSystem(path);
         Path readPath = ArkivoFileSystemProviderSupport.resolveReadPath(path, options);
-        if (fileSystem instanceof ZipArkivoFileSystemImpl readFileSystem) {
-            return readFileSystem.readAttributes(readPath, attributes);
-        }
-        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
-            return writeFileSystem.readAttributes(readPath, attributes);
-        }
-        throw new ProviderMismatchException();
+        return operations(path).readAttributes(readPath, attributes);
     }
 
     /// Reads a symbolic link target from a ZIP archive path.
     @Override
     public Path readSymbolicLink(Path link) throws IOException {
-        ZipArkivoFileSystem fileSystem = fileSystem(link);
-        if (fileSystem instanceof ZipArkivoFileSystemImpl readFileSystem) {
-            return readFileSystem.readSymbolicLink(link);
-        }
-        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
-            return writeFileSystem.readSymbolicLink(link);
-        }
-        throw new ProviderMismatchException();
+        return operations(link).readSymbolicLink(link);
     }
 
     /// Sets a named file attribute for a ZIP archive path.
     @Override
     public void setAttribute(Path path, String attribute, Object value, LinkOption... options) throws IOException {
-        ZipArkivoFileSystem fileSystem = fileSystem(path);
-        if (fileSystem instanceof StreamingZipArkivoFileSystemImpl writeFileSystem) {
-            writeFileSystem.setAttribute(
-                    ArkivoFileSystemProviderSupport.resolveReadPath(path, options),
-                    attribute,
-                    value
-            );
-            return;
-        }
-        throw new ReadOnlyFileSystemException();
+        operations(path).setAttribute(
+                ArkivoFileSystemProviderSupport.resolveReadPath(path, options),
+                attribute,
+                value
+        );
     }
 
     /// Returns the ZIP file system implementation that owns a path.
@@ -347,12 +253,12 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
         throw new ProviderMismatchException();
     }
 
-    /// Returns the read-only ZIP file system implementation that owns a path.
-    private static ZipArkivoFileSystemImpl readFileSystem(Path path) {
-        if (path.getFileSystem() instanceof ZipArkivoFileSystemImpl fileSystem) {
-            return fileSystem;
+    /// Returns the provider-facing ZIP file system operations that own a path.
+    private static ZipFileSystemOperations operations(Path path) {
+        if (path.getFileSystem() instanceof ZipFileSystemOperations operations) {
+            return operations;
         }
-        throw new ReadOnlyFileSystemException();
+        throw new ProviderMismatchException();
     }
 
     /// Parses a ZIP provider URI through the shared archive URI grammar.

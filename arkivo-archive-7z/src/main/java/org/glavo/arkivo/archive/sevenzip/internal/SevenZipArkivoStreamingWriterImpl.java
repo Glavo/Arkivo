@@ -8,7 +8,6 @@ import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
-import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCoderGraph;
@@ -59,8 +58,8 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
         SYMBOLIC_LINK
     }
 
-    /// The writable 7z file system used to encode entries.
-    private final SevenZipArkivoFileSystemImpl fileSystem;
+    /// The sink that serializes completed 7z entries.
+    private final SevenZipArchiveEntrySink entrySink;
 
     /// The optional state lock.
     private final @Nullable ReentrantLock lock;
@@ -71,12 +70,12 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
     /// The currently open file body, or `null` when no body is open.
     private @Nullable EntryBodyOutputStream currentBody;
 
-    /// Creates a streaming writer over an initialized writable file system.
+    /// Creates a streaming writer over an initialized archive entry sink.
     private SevenZipArkivoStreamingWriterImpl(
-            SevenZipArkivoFileSystemImpl fileSystem,
+            SevenZipArchiveEntrySink entrySink,
             SevenZipArkivoFileSystemConfig config
     ) {
-        this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
+        this.entrySink = Objects.requireNonNull(entrySink, "entrySink");
         this.lock = config.threadSafety() == ArkivoFileSystemThreadSafety.NONE ? null : new ReentrantLock();
     }
 
@@ -85,15 +84,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
             Path path,
             SevenZipArkivoFileSystemConfig config
     ) throws IOException {
-        return new SevenZipArkivoStreamingWriterImpl(
-                new SevenZipArkivoFileSystemImpl(
-                        SevenZipArkivoFileSystemProvider.instance(),
-                        Objects.requireNonNull(path, "path"),
-                        null,
-                        config
-                ),
-                config
-        );
+        return new SevenZipArkivoStreamingWriterImpl(SevenZipArchiveEntrySink.create(path, config), config);
     }
 
     /// Opens a streaming writer over an owned output stream.
@@ -111,17 +102,8 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
             SevenZipArkivoFileSystemConfig config
     ) throws IOException {
         Objects.requireNonNull(output, "output");
-        SevenZipSingleVolumeTarget target = new SevenZipSingleVolumeTarget(output);
         try {
-            return new SevenZipArkivoStreamingWriterImpl(
-                    new SevenZipArkivoFileSystemImpl(
-                            SevenZipArkivoFileSystemProvider.instance(),
-                            target,
-                            Long.MAX_VALUE,
-                            config
-                    ),
-                    config
-            );
+            return new SevenZipArkivoStreamingWriterImpl(SevenZipArchiveEntrySink.open(output, config), config);
         } catch (IOException | RuntimeException | Error exception) {
             try {
                 output.close();
@@ -139,12 +121,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
             SevenZipArkivoFileSystemConfig config
     ) throws IOException {
         return new SevenZipArkivoStreamingWriterImpl(
-                new SevenZipArkivoFileSystemImpl(
-                        SevenZipArkivoFileSystemProvider.instance(),
-                        Objects.requireNonNull(target, "target"),
-                        splitSize,
-                        config
-                ),
+                SevenZipArchiveEntrySink.open(target, splitSize, config),
                 config
         );
     }
@@ -212,18 +189,17 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
             ensureOpen();
             PendingEntry entry = requirePendingEntry();
             entry.ensurePending();
-            Path path = fileSystem.getPath("/" + entry.path);
             SevenZipEntryWriteMetadata metadata = entry.attributes.metadata();
             switch (entry.type) {
                 case FILE -> {
-                    try (OutputStream ignored = fileSystem.newOutputStream(path, metadata)) {
+                    try (OutputStream ignored = entrySink.openFile(entry.path, metadata)) {
                         // Closing the entry output stream emits an empty file.
                     }
                 }
-                case DIRECTORY -> fileSystem.createDirectory(path, metadata);
-                case SYMBOLIC_LINK -> fileSystem.createSymbolicLink(
-                        path,
-                        fileSystem.getPath(Objects.requireNonNull(entry.linkTarget, "linkTarget")),
+                case DIRECTORY -> entrySink.writeDirectory(entry.path, metadata);
+                case SYMBOLIC_LINK -> entrySink.writeSymbolicLink(
+                        entry.path,
+                        Objects.requireNonNull(entry.linkTarget, "linkTarget"),
                         metadata
                 );
             }
@@ -250,8 +226,8 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
             if (entry.type != EntryType.FILE) {
                 throw new IllegalStateException("Only 7z file entries can open a body stream");
             }
-            OutputStream output = fileSystem.newOutputStream(
-                    fileSystem.getPath("/" + entry.path),
+            OutputStream output = entrySink.openFile(
+                    entry.path,
                     entry.attributes.metadata()
             );
             entry.committed = true;
@@ -279,7 +255,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
                 }
             }
 
-            if (failure == null && pendingEntry != null && fileSystem.isOpen()) {
+            if (failure == null && pendingEntry != null && entrySink.isOpen()) {
                 try {
                     finishCurrentEntry();
                 } catch (IOException | RuntimeException | Error exception) {
@@ -288,7 +264,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
             }
 
             try {
-                fileSystem.close();
+                entrySink.close();
             } catch (IOException | RuntimeException | Error exception) {
                 failure = appendFailure(failure, exception);
             }
@@ -301,7 +277,7 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
 
     /// Requires the writer to remain open.
     private void ensureOpen() {
-        if (!fileSystem.isOpen()) {
+        if (!entrySink.isOpen()) {
             throw new IllegalStateException("7z streaming writer is closed");
         }
     }
