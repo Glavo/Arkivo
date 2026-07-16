@@ -49,7 +49,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies the first-class channel contract across all installed codec providers.
+/// Verifies the first-class channel contract across default codecs for all installed formats.
 @NotNullByDefault
 final class CodecChannelContractTest {
     /// Verifies channel transfer, counters, endpoint ownership, and interface consistency.

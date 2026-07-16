@@ -39,7 +39,7 @@ final class TarArkivoCompressedStreamingTest {
     /// The entry content used by streaming round trips.
     private static final byte[] CONTENT = "compressed streaming TAR".getBytes(StandardCharsets.UTF_8);
 
-    /// Verifies gzip streaming through ordinary non-seekable channels and a stable codec name.
+    /// Verifies gzip streaming through ordinary non-seekable channels and a stable compression format name.
     @Test
     void roundTripsGzipThroughChannels() throws IOException {
         Map<String, Object> environment = Map.of(TarArkivoFileSystem.COMPRESSION.key(), "gzip");

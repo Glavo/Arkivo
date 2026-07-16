@@ -64,19 +64,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /// Verifies runtime discovery through the all-in-one aggregate module.
 @NotNullByDefault
 final class AllAggregationTest {
-    /// Verifies that all aggregated archive and codec providers are visible.
+    /// Verifies that all aggregated archive and compression formats are visible.
     @Test
-    void discoversAllAggregatedProviders() {
-        Set<String> archiveNames = ArkivoFormats.installed()
+    void discoversAllAggregatedFormats() {
+        Set<String> archiveFormatNames = ArkivoFormats.installed()
                 .stream()
                 .map(ArkivoFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
-        Set<String> codecNames = CompressionFormats.installed()
+        Set<String> compressionFormatNames = CompressionFormats.installed()
                 .stream()
                 .map(CompressionFormat::name)
                 .collect(Collectors.toUnmodifiableSet());
 
-        assertEquals(Set.of("7z", "ar", "rar", "tar", "zip"), archiveNames);
+        assertEquals(Set.of("7z", "ar", "rar", "tar", "zip"), archiveFormatNames);
         assertTrue(ArkivoFormats.installed().stream().allMatch(ArkivoFileSystemFormat.class::isInstance));
         assertEquals(
                 Set.of(
@@ -92,7 +92,7 @@ final class AllAggregationTest {
                         "zlib",
                         "zstd"
                 ),
-                codecNames
+                compressionFormatNames
         );
     }
 

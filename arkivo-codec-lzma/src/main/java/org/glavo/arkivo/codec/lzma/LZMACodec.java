@@ -20,7 +20,7 @@ import java.util.Objects;
 /// Provides an immutable LZMA-alone configuration and transport-independent engines.
 @NotNullByDefault
 public final class LZMACodec implements PledgedSourceSizeCodec {
-    /// The stable LZMA codec name.
+    /// The stable LZMA compression format name.
     public static final String NAME = "lzma";
 
     /// The default LZMA dictionary size used for encoding.

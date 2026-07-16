@@ -40,9 +40,9 @@ final class CodecFactoryTest {
     private static final byte @Unmodifiable [] CONTENT =
             "unified codec context factory\n".repeat(512).getBytes(StandardCharsets.UTF_8);
 
-    /// Verifies named factories round-trip every installed bidirectional codec.
+    /// Verifies named factories round-trip the default codec of every installed bidirectional format.
     @Test
-    void roundTripsEveryCodecByName() throws IOException {
+    void roundTripsEveryDefaultCodecByFormatName() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
             CompressionCodec codec = format.defaultCodec();
             TrackingWritableChannel target = new TrackingWritableChannel();
@@ -117,9 +117,9 @@ final class CodecFactoryTest {
         }
     }
 
-    /// Verifies named channel transfers round-trip every installed codec without closing caller channels.
+    /// Verifies named channel transfers round-trip default codecs for all installed formats without closing caller channels.
     @Test
-    void transfersEveryCodecByName() throws IOException {
+    void transfersEveryDefaultCodecByFormatName() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
             CompressionCodec codec = format.defaultCodec();
 
@@ -297,10 +297,10 @@ final class CodecFactoryTest {
     }
 
     /// Encodes the shared content through one named codec.
-    private static byte[] encode(String codecName) throws IOException {
+    private static byte[] encode(String formatName) throws IOException {
         TrackingWritableChannel target = new TrackingWritableChannel();
         try (CompressingWritableByteChannel encoder = CompressionFormats.openEncoder(
-                codecName,
+                formatName,
                 target,
                 ChannelOwnership.CLOSE
         )) {

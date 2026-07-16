@@ -227,7 +227,7 @@ final class TarArkivoCompressionTest {
     }
 
     /// Creates a compressed forward-only TAR archive.
-    private static void createCompressedArchive(Path archivePath, String codecName) throws IOException {
+    private static void createCompressedArchive(Path archivePath, String formatName) throws IOException {
         Map<String, Object> environment = Map.of(
                 ArkivoFileSystem.OPEN_OPTIONS.key(),
                 Set.of(
@@ -236,7 +236,7 @@ final class TarArkivoCompressionTest {
                         StandardOpenOption.WRITE
                 ),
                 TarArkivoFileSystem.COMPRESSION.key(),
-                codecName
+                formatName
         );
         try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, environment)) {
             Files.writeString(fileSystem.getPath("/value.txt"), "initial", StandardCharsets.UTF_8);

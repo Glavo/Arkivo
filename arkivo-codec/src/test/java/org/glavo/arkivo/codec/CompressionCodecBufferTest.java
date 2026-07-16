@@ -175,7 +175,7 @@ final class CompressionCodecBufferTest {
             this.failOpen = failOpen;
         }
 
-        /// Returns the test codec name.
+        /// Returns the test compression format name.
         @Override
         public String name() {
             return "read-ahead";
@@ -219,7 +219,7 @@ final class CompressionCodecBufferTest {
         private IdentityCodec() {
         }
 
-        /// Returns the identity codec name.
+        /// Returns the identity compression format name.
         @Override
         public String name() {
             return "identity";

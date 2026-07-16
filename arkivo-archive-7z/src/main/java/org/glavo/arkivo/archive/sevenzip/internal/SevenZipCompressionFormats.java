@@ -25,28 +25,29 @@ import java.io.OutputStream;
 import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
-/// Connects optional immutable compression codecs to 7z coder streams.
+/// Resolves optional compression formats and adapts their immutable codecs to 7z coder streams.
 @NotNullByDefault
 final class SevenZipCompressionFormats {
-    /// The stable optional raw LZMA codec name.
+    /// The stable optional raw LZMA format name.
     private static final String RAW_LZMA_NAME = "lzma-raw";
 
-    /// The stable optional raw LZMA2 codec name.
+    /// The stable optional raw LZMA2 format name.
     private static final String LZMA2_NAME = "lzma2";
 
-    /// The stable optional PPMd codec name.
+    /// The stable optional PPMd format name.
     private static final String PPMD_NAME = "ppmd";
+
     /// Creates no instances.
     private SevenZipCompressionFormats() {
     }
 
     /// Opens a compression-level-configured encoder that owns the downstream coder stream.
     static OutputStream openEncoder(
-            String codecName,
+            String formatName,
             int compressionLevel,
             OutputStream target
     ) throws IOException {
-        CompressionCodec codec = requireCodec(codecName);
+        CompressionCodec codec = requireDefaultCodec(formatName);
         if (!(codec instanceof CompressionLevelCodec configurableCodec)) {
             throw new UnsupportedOperationException(
                     "Compression codec does not support compression levels: " + codec.format().name()
@@ -64,7 +65,7 @@ final class SevenZipCompressionFormats {
             long memorySize,
             OutputStream target
     ) throws IOException {
-        CompressionCodec codec = requireCodec(PPMD_NAME);
+        CompressionCodec codec = requireDefaultCodec(PPMD_NAME);
         if (!(codec instanceof PPMdCodec ppmdCodec)) {
             throw incompatibleCodec(PPMD_NAME);
         }
@@ -80,7 +81,7 @@ final class SevenZipCompressionFormats {
             boolean endMarker,
             OutputStream target
     ) throws IOException {
-        CompressionCodec codec = requireCodec(RAW_LZMA_NAME);
+        CompressionCodec codec = requireDefaultCodec(RAW_LZMA_NAME);
         if (!(codec instanceof RawLZMACodec rawCodec)) {
             throw incompatibleCodec(RAW_LZMA_NAME);
         }
@@ -94,7 +95,7 @@ final class SevenZipCompressionFormats {
 
     /// Opens a raw LZMA2 encoder that owns the downstream coder stream.
     static OutputStream openLZMA2Encoder(long dictionarySize, OutputStream target) throws IOException {
-        CompressionCodec codec = requireCodec(LZMA2_NAME);
+        CompressionCodec codec = requireDefaultCodec(LZMA2_NAME);
         if (!(codec instanceof LZMA2Codec lzma2Codec)) {
             throw incompatibleCodec(LZMA2_NAME);
         }
@@ -106,12 +107,12 @@ final class SevenZipCompressionFormats {
 
     /// Opens a size-limited decoder that owns the packed coder stream.
     static InputStream openDecoder(
-            String codecName,
+            String formatName,
             InputStream source,
             long maximumOutputSize
     ) throws IOException {
         DecompressingReadableByteChannel decoder = CompressionFormats.openDecoder(
-                codecName,
+                formatName,
                 StreamChannelAdapters.readableChannel(source),
                 DecompressionLimits.ofMaximumOutputSize(maximumOutputSize),
                 ChannelOwnership.CLOSE
@@ -126,7 +127,7 @@ final class SevenZipCompressionFormats {
             long memorySize,
             long decodedSize
     ) throws IOException {
-        CompressionCodec codec = requireCodec(PPMD_NAME);
+        CompressionCodec codec = requireDefaultCodec(PPMD_NAME);
         if (!(codec instanceof PPMdCodec ppmdCodec)) {
             throw incompatibleCodec(PPMD_NAME);
         }
@@ -148,7 +149,7 @@ final class SevenZipCompressionFormats {
             long dictionarySize,
             long decodedSize
     ) throws IOException {
-        CompressionCodec codec = requireCodec(RAW_LZMA_NAME);
+        CompressionCodec codec = requireDefaultCodec(RAW_LZMA_NAME);
         if (!(codec instanceof RawLZMACodec rawCodec)) {
             throw incompatibleCodec(RAW_LZMA_NAME);
         }
@@ -172,7 +173,7 @@ final class SevenZipCompressionFormats {
             long dictionarySize,
             long maximumOutputSize
     ) throws IOException {
-        CompressionCodec codec = requireCodec(LZMA2_NAME);
+        CompressionCodec codec = requireDefaultCodec(LZMA2_NAME);
         if (!(codec instanceof LZMA2Codec lzma2Codec)) {
             throw incompatibleCodec(LZMA2_NAME);
         }
@@ -213,17 +214,17 @@ final class SevenZipCompressionFormats {
         return StreamChannelAdapters.inputStream(decoder);
     }
 
-    /// Returns an installed optional codec or reports the stable missing-codec diagnostic.
-    private static CompressionCodec requireCodec(String codecName) throws IOException {
-        @Nullable CompressionFormat format = CompressionFormats.find(codecName);
+    /// Returns the default codec for an installed optional format or reports the stable missing-format diagnostic.
+    private static CompressionCodec requireDefaultCodec(String formatName) throws IOException {
+        @Nullable CompressionFormat format = CompressionFormats.find(formatName);
         if (format == null) {
-            throw new IOException("Unknown compression format: " + codecName);
+            throw new IOException("Unknown compression format: " + formatName);
         }
         return format.defaultCodec();
     }
 
     /// Creates a failure for an installed format with an unexpected implementation type.
-    private static IOException incompatibleCodec(String codecName) {
-        return new IOException("Incompatible default codec for compression format: " + codecName);
+    private static IOException incompatibleCodec(String formatName) {
+        return new IOException("Incompatible default codec for compression format: " + formatName);
     }
 }

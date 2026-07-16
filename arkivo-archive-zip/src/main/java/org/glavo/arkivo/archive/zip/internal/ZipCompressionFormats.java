@@ -20,43 +20,43 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 
-/// Connects optional immutable compression codecs to ZIP entry streams.
+/// Resolves compression formats and adapts their immutable codecs to ZIP entry streams.
 @NotNullByDefault
 final class ZipCompressionFormats {
-    /// The stable optional raw LZMA codec name.
+    /// The stable optional raw LZMA format name.
     private static final String RAW_LZMA_NAME = "lzma-raw";
 
     /// Creates no instances.
     private ZipCompressionFormats() {
     }
 
-    /// Opens a named default encoder that retains the entry's compressed-data target.
+    /// Opens the default encoder for a named format and retains the entry's compressed-data target.
     static CompressingWritableByteChannel openEncoder(
-            String codecName,
+            String formatName,
             OutputStream target
     ) throws IOException {
         return CompressionFormats.openEncoder(
-                codecName,
+                formatName,
                 StreamChannelAdapters.writableChannel(target),
                 ChannelOwnership.RETAIN
         );
     }
 
-    /// Opens a named default decoder that owns the compressed entry stream.
+    /// Opens the default decoder for a named format and owns the compressed entry stream.
     static DecompressingReadableByteChannel openDecoder(
-            String codecName,
+            String formatName,
             InputStream source
     ) throws IOException {
         return CompressionFormats.openDecoder(
-                codecName,
+                formatName,
                 StreamChannelAdapters.readableChannel(source),
                 ChannelOwnership.CLOSE
         );
     }
 
-    /// Opens an input-stream view over an owning named decoder.
-    static InputStream openInputStream(String codecName, InputStream source) throws IOException {
-        return StreamChannelAdapters.inputStream(openDecoder(codecName, source));
+    /// Opens an input-stream view over the owning default decoder for a named format.
+    static InputStream openInputStream(String formatName, InputStream source) throws IOException {
+        return StreamChannelAdapters.inputStream(openDecoder(formatName, source));
     }
 
     /// Opens a raw LZMA encoder that retains the compressed entry target.
@@ -65,7 +65,7 @@ final class ZipCompressionFormats {
             boolean endMarker,
             OutputStream target
     ) throws IOException {
-        CompressionCodec codec = requireCodec(RAW_LZMA_NAME);
+        CompressionCodec codec = requireDefaultCodec(RAW_LZMA_NAME);
         if (!(codec instanceof RawLZMACodec rawCodec)) {
             throw incompatibleCodec(RAW_LZMA_NAME);
         }
@@ -101,7 +101,7 @@ final class ZipCompressionFormats {
             long dictionarySize,
             long decodedSize
     ) throws IOException {
-        CompressionCodec codec = requireCodec(RAW_LZMA_NAME);
+        CompressionCodec codec = requireDefaultCodec(RAW_LZMA_NAME);
         if (!(codec instanceof RawLZMACodec rawCodec)) {
             throw incompatibleCodec(RAW_LZMA_NAME);
         }
@@ -122,17 +122,17 @@ final class ZipCompressionFormats {
         );
     }
 
-    /// Returns an installed optional codec or reports the stable missing-codec diagnostic.
-    private static CompressionCodec requireCodec(String codecName) throws IOException {
-        @Nullable CompressionFormat format = CompressionFormats.find(codecName);
+    /// Returns the default codec for an installed optional format or reports the stable missing-format diagnostic.
+    private static CompressionCodec requireDefaultCodec(String formatName) throws IOException {
+        @Nullable CompressionFormat format = CompressionFormats.find(formatName);
         if (format == null) {
-            throw new IOException("Unknown compression format: " + codecName);
+            throw new IOException("Unknown compression format: " + formatName);
         }
         return format.defaultCodec();
     }
 
     /// Creates a failure for an installed format with an unexpected implementation type.
-    private static IOException incompatibleCodec(String codecName) {
-        return new IOException("Incompatible default codec for compression format: " + codecName);
+    private static IOException incompatibleCodec(String formatName) {
+        return new IOException("Incompatible default codec for compression format: " + formatName);
     }
 }

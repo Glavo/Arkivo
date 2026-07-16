@@ -25,7 +25,7 @@ import java.util.Objects;
 @NotNullByDefault
 public final class ZlibCodec
         implements CompressionLevelCodec, CompressionStrategyCodec, DictionaryCompressionCodec {
-    /// The stable zlib codec name.
+    /// The stable zlib compression format name.
     public static final String NAME = "zlib";
 
     /// The minimum zlib Deflate match-search level.

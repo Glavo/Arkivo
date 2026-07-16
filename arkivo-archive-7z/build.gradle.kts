@@ -45,17 +45,17 @@ val verifyPublishedSevenZipWriter by tasks.registering {
 
 val verifyOptionalCompressionFormats by tasks.registering(JavaExec::class) {
     group = "verification"
-    description = "Verifies 7z loads and diagnoses operations without optional compression codecs."
+    description = "Verifies 7z loads and diagnoses operations without optional compression formats."
     dependsOn(tasks.named("testClasses"))
 
     classpath = sourceSets.test.get().runtimeClasspath.filter { file ->
         val path = file.invariantSeparatorsPath
-        sequenceOf("bzip2", "deflate", "lzma", "ppmd", "zstd").none { codecName ->
-            path.contains("/arkivo-codec-$codecName/")
-                    || file.name.startsWith("arkivo-codec-$codecName")
+        sequenceOf("bzip2", "deflate", "lzma", "ppmd", "zstd").none { codecModuleName ->
+            path.contains("/arkivo-codec-$codecModuleName/")
+                    || file.name.startsWith("arkivo-codec-$codecModuleName")
         }
     }
-    mainClass.set("org.glavo.arkivo.archive.sevenzip.internal.SevenZipOptionalCodecProbe")
+    mainClass.set("org.glavo.arkivo.archive.sevenzip.internal.SevenZipOptionalFormatProbe")
 }
 
 tasks.named("check") {

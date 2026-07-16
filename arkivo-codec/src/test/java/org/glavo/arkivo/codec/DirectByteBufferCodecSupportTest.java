@@ -133,7 +133,7 @@ final class DirectByteBufferCodecSupportTest {
     /// Provides a length-prefixed identity format exclusively through buffer engines.
     @NotNullByDefault
     private static final class LengthPrefixedCodec implements CompressionCodec, CompressionFormat {
-        /// Returns the test codec name.
+        /// Returns the test compression format name.
         @Override
         public String name() {
             return "length-prefixed";

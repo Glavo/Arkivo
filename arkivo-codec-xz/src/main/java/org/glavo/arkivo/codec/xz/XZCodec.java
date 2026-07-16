@@ -22,7 +22,7 @@ import java.util.Objects;
 /// Provides an immutable XZ configuration and pure Java transport-independent engines.
 @NotNullByDefault
 public final class XZCodec implements CompressionCodec {
-    /// The stable XZ codec name.
+    /// The stable XZ compression format name.
     public static final String NAME = "xz";
 
     /// The default XZ LZMA2 dictionary size.

@@ -16,9 +16,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /// Verifies runtime discovery through the aggregate codecs module.
 @NotNullByDefault
 final class CodecAggregationTest {
-    /// Verifies that every aggregated compression codec provider is visible.
+    /// Verifies that every aggregated compression format is visible.
     @Test
-    void discoversAggregatedCodecs() {
+    void discoversAggregatedFormats() {
         Set<String> names = CompressionFormats.installed()
                 .stream()
                 .map(CompressionFormat::name)

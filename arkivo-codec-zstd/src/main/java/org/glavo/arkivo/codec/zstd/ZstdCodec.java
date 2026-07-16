@@ -29,7 +29,7 @@ import java.util.Objects;
 @NotNullByDefault
 public final class ZstdCodec
         implements CompressionLevelCodec, DictionaryCompressionCodec, PledgedSourceSizeCodec {
-    /// The stable Zstandard codec name.
+    /// The stable Zstandard compression format name.
     public static final String NAME = "zstd";
 
     /// The minimum compression level accepted by Zstandard 1.x.

@@ -20,7 +20,7 @@ import java.util.Objects;
 /// Provides an immutable headerless LZMA configuration for containers that carry model properties separately.
 @NotNullByDefault
 public final class RawLZMACodec implements PledgedSourceSizeCodec {
-    /// The stable raw LZMA codec name.
+    /// The stable raw LZMA compression format name.
     public static final String NAME = "lzma-raw";
 
     /// The default dictionary size used for raw LZMA.

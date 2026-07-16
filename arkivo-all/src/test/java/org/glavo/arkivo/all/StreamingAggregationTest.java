@@ -869,20 +869,20 @@ final class StreamingAggregationTest {
         assertArchive(zipArchive());
     }
 
-    /// Verifies TAR readers automatically detect every installed codec with a reliable stream signature.
+    /// Verifies TAR readers automatically detect every installed compression format with a reliable stream signature.
     @Test
-    void opensCompressedTarStreamsWithInstalledCodecs() throws IOException {
-        for (String codecName : Set.of("bzip2", "gzip", "xz", "zlib", "zstd")) {
+    void opensCompressedTarStreamsWithInstalledFormats() throws IOException {
+        for (String formatName : Set.of("bzip2", "gzip", "xz", "zlib", "zstd")) {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             Map<String, Object> environment = Map.of(
                     TarArkivoFileSystem.COMPRESSION.key(),
-                    codecName
+                    formatName
             );
             WritableByteChannel target = Channels.newChannel(output);
             try (ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter("tar", target, environment)) {
                 writeEntry(writer);
             }
-            assertFalse(target.isOpen(), codecName);
+            assertFalse(target.isOpen(), formatName);
 
             ReadableByteChannel source = Channels.newChannel(
                     new ByteArrayInputStream(output.toByteArray())
@@ -891,7 +891,7 @@ final class StreamingAggregationTest {
                 assertInstanceOf(TarArkivoStreamingReader.class, reader);
                 assertEntry(reader);
             }
-            assertFalse(source.isOpen(), codecName);
+            assertFalse(source.isOpen(), formatName);
 
             ReadableByteChannel namedSource = Channels.newChannel(
                     new ByteArrayInputStream(output.toByteArray())
@@ -903,7 +903,7 @@ final class StreamingAggregationTest {
                 assertInstanceOf(TarArkivoStreamingReader.class, reader);
                 assertEntry(reader);
             }
-            assertFalse(namedSource.isOpen(), codecName);
+            assertFalse(namedSource.isOpen(), formatName);
         }
     }
 

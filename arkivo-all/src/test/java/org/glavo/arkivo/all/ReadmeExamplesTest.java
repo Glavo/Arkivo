@@ -7,6 +7,7 @@ import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -33,7 +34,8 @@ final class ReadmeExamplesTest {
     void compressesAndDecompressesBuffer() throws IOException {
         byte[] input = "Arkivo buffer example".getBytes(StandardCharsets.UTF_8);
 
-        CompressionCodec codec = Objects.requireNonNull(CompressionFormats.find("zstd")).defaultCodec();
+        CompressionFormat format = Objects.requireNonNull(CompressionFormats.find("zstd"));
+        CompressionCodec codec = format.defaultCodec();
         ByteBuffer compressed = codec.compress(ByteBuffer.wrap(input));
         ByteBuffer decoded = codec.decompress(compressed, input.length);
 

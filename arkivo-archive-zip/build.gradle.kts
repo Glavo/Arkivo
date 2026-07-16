@@ -15,17 +15,17 @@ dependencies {
 
 val verifyOptionalCompressionFormats by tasks.registering(JavaExec::class) {
     group = "verification"
-    description = "Verifies ZIP loads and diagnoses operations without optional compression codecs."
+    description = "Verifies ZIP loads and diagnoses operations without optional compression formats."
     dependsOn(tasks.named("testClasses"))
 
     classpath = sourceSets.test.get().runtimeClasspath.filter { file ->
         val path = file.invariantSeparatorsPath
-        sequenceOf("bzip2", "lzma", "xz", "zstd").none { codecName ->
-            path.contains("/arkivo-codec-$codecName/")
-                    || file.name.startsWith("arkivo-codec-$codecName")
+        sequenceOf("bzip2", "lzma", "xz", "zstd").none { codecModuleName ->
+            path.contains("/arkivo-codec-$codecModuleName/")
+                    || file.name.startsWith("arkivo-codec-$codecModuleName")
         } && !file.name.startsWith("zstd-jni")
     }
-    mainClass.set("org.glavo.arkivo.archive.zip.internal.ZipOptionalCodecProbe")
+    mainClass.set("org.glavo.arkivo.archive.zip.internal.ZipOptionalFormatProbe")
 }
 
 tasks.named("check") {

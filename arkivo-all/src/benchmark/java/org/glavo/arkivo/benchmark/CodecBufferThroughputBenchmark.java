@@ -54,9 +54,9 @@ public class CodecBufferThroughputBenchmark {
     /// The externally declared raw LZMA-family dictionary size.
     private static final int LZMA_DICTIONARY_SIZE = 1 << 20;
 
-    /// The stable codec name selected for the current benchmark trial.
+    /// The stable compression format name selected for the current benchmark trial.
     @Param({"bzip2", "deflate", "deflate64", "gzip", "lzma", "lzma-raw", "lzma2", "ppmd", "xz", "zlib", "zstd"})
-    public String codecName = "gzip";
+    public String formatName = "gzip";
 
     /// The deterministic uncompressed bytes used to verify decoder output.
     private byte @Unmodifiable [] expected = new byte[0];
@@ -88,9 +88,9 @@ public class CodecBufferThroughputBenchmark {
     /// Creates reusable engines and buffers and verifies one complete round trip.
     @Setup
     public void setUp() throws IOException {
-        CompressionFormat selectedFormat = CompressionFormats.find(codecName);
+        CompressionFormat selectedFormat = CompressionFormats.find(formatName);
         if (selectedFormat == null) {
-            throw new IllegalArgumentException("Compression codec is not installed: " + codecName);
+            throw new IllegalArgumentException("Compression format is not installed: " + formatName);
         }
 
         CompressionCodec selectedCodec = selectedFormat.defaultCodec();
@@ -135,7 +135,7 @@ public class CodecBufferThroughputBenchmark {
         int restoredSize = decodeOnce();
         if (restoredSize != expected.length
                 || !Arrays.equals(expected, 0, expected.length, decodedOutput.array(), 0, restoredSize)) {
-            throw new AssertionError("Codec buffer benchmark setup did not round trip " + codecName);
+            throw new AssertionError("Codec buffer benchmark setup did not round trip " + formatName);
         }
     }
 
@@ -247,7 +247,7 @@ public class CodecBufferThroughputBenchmark {
             int targetPosition = decodedOutput.position();
             CodecOutcome outcome = current.decode(compressedInput, decodedOutput, true);
             if (outcome == CodecOutcome.FINISHED) {
-                if (compressedInput.hasRemaining() && !codecName.equals("ppmd")) {
+                if (compressedInput.hasRemaining() && !formatName.equals("ppmd")) {
                     throw new IOException("Compression decoder left trailing input");
                 }
                 return decodedOutput.position();

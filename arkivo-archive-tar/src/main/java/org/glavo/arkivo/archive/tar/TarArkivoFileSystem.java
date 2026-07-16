@@ -39,7 +39,7 @@ import java.util.Objects;
 public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permits TarArkivoFileSystemImpl {
     /// The environment option for a compression codec wrapping the TAR byte stream.
     ///
-    /// Values may be a CompressionCodec or stable codec name. Existing seekable archives auto-detect installed formats
+    /// Values may be a CompressionCodec or stable compression format name. Existing seekable archives auto-detect installed formats
     /// when this option is absent, while forward-only streaming readers treat an absent option as uncompressed because
     /// they cannot reliably undo a false compression match. New archives remain uncompressed when it is absent.
     public static final ArkivoFileSystemOption<CompressionCodec> COMPRESSION =

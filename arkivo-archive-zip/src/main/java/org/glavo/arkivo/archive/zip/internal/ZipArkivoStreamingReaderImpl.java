@@ -1912,8 +1912,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         /// The channel-first compression decoder.
         private final DecompressingReadableByteChannel decoder;
 
-        /// The codec name used in diagnostics.
-        private final String codecDisplayName;
+        /// The compression format display name used in diagnostics.
+        private final String formatDisplayName;
 
         /// The directive used while decoding the current compressed stream.
         private final DecodeDirective decodeDirective;
@@ -1981,10 +1981,10 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             );
         }
 
-        /// Creates a data descriptor input stream for the named channel-first codec.
+        /// Creates a data descriptor input stream for the default codec of a named compression format.
         private CodecDataDescriptorInputStream(
-                String codecName,
-                String codecDisplayName,
+                String formatName,
+                String formatDisplayName,
                 DecodeDirective decodeDirective,
                 CodecStatus terminalStatus,
                 PushbackInputStream input,
@@ -1997,12 +1997,12 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 boolean pushbackSourceRemainder
         ) throws IOException {
             this(
-                    codecDisplayName,
+                    formatDisplayName,
                     decodeDirective,
                     terminalStatus,
                     input,
                     ZipCompressionFormats.openDecoder(
-                            codecName,
+                            formatName,
                             dataDescriptorDecoderSource(compressedInput, pushbackSourceRemainder)
                     ),
                     compressedSizeOffset,
@@ -2016,7 +2016,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
 
         /// Creates a data descriptor input stream over a configured channel-first decoder.
         private CodecDataDescriptorInputStream(
-                String codecDisplayName,
+                String formatDisplayName,
                 DecodeDirective decodeDirective,
                 CodecStatus terminalStatus,
                 PushbackInputStream input,
@@ -2030,7 +2030,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         ) {
             this.input = Objects.requireNonNull(input, "input");
             this.decoder = Objects.requireNonNull(decoder, "decoder");
-            this.codecDisplayName = Objects.requireNonNull(codecDisplayName, "codecDisplayName");
+            this.formatDisplayName = Objects.requireNonNull(formatDisplayName, "formatDisplayName");
             this.decodeDirective = Objects.requireNonNull(decodeDirective, "decodeDirective");
             this.terminalStatus = Objects.requireNonNull(terminalStatus, "terminalStatus");
             this.compressedSizeOffset = compressedSizeOffset;
@@ -2079,7 +2079,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                     streamFinished = true;
                     unreadSourceRemainder();
                 } else if (result.status() == CodecStatus.END_OF_INPUT) {
-                    throw new EOFException("Unexpected end of " + codecDisplayName + " ZIP entry before data descriptor");
+                    throw new EOFException("Unexpected end of " + formatDisplayName + " ZIP entry before data descriptor");
                 }
 
                 if (decoded > 0) {
@@ -2088,7 +2088,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                     return decoded;
                 }
                 if (result.status() == CodecStatus.ACTIVE && result.inputBytes() == 0L) {
-                    throw new IOException(codecDisplayName + " ZIP decoder made no progress");
+                    throw new IOException(formatDisplayName + " ZIP decoder made no progress");
                 }
             }
         }
@@ -2126,10 +2126,10 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 return;
             }
             if (!pushbackSourceRemainder) {
-                throw new IOException(codecDisplayName + " ZIP decoder read past encrypted entry data");
+                throw new IOException(formatDisplayName + " ZIP decoder read past encrypted entry data");
             }
             if (remainder.remaining() > PUSHBACK_BUFFER_SIZE) {
-                throw new IOException("ZIP pushback buffer is too small for " + codecDisplayName + " data descriptor");
+                throw new IOException("ZIP pushback buffer is too small for " + formatDisplayName + " data descriptor");
             }
             for (int index = remainder.limit() - 1; index >= remainder.position(); index--) {
                 input.unread(Byte.toUnsignedInt(remainder.get(index)));
@@ -2147,7 +2147,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             Throwable failure = null;
             try {
                 if (!streamFinished) {
-                    failure = new EOFException("Unexpected end of " + codecDisplayName + " ZIP entry before data descriptor");
+                    failure = new EOFException("Unexpected end of " + formatDisplayName + " ZIP entry before data descriptor");
                 } else {
                     ZipAesCrypto.Decryptor decryptor = aesDecryptor;
                     if (decryptor != null) {

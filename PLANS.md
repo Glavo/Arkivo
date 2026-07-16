@@ -262,10 +262,10 @@ ZIP file systems should expose the optional preamble bytes stored before the ZIP
 
 ZIP Deflate, BZip2, Deflate64, raw LZMA, XZ, and Zstandard entry reading and writing use the general codec context API.
 The ZIP module has a non-transitive implementation dependency on `arkivo-codec-deflate` for its mandatory core method
-and depends on `arkivo-codec` while discovering the other codec providers at runtime. Streaming Deflate, BZip2,
+and depends on `arkivo-codec` while discovering the other compression formats at runtime. Streaming Deflate, BZip2,
 Deflate64, raw LZMA, XZ, and Zstandard entries with data descriptors preserve exact compressed-stream boundaries through
 decoder progress and unconsumed-input reporting. ZIP LZMA retains a container adapter for its property header while the
-raw EOS-framed payload uses the optional LZMA codec provider.
+raw EOS-framed payload uses the optional raw LZMA format's default codec.
 
 Streaming archive APIs use channel-first reader and writer format contracts for forward-only access. AR, TAR, and ZIP expose streaming readers and writers; 7z exposes a streaming writer backed by seekable staging, while RAR exposes a read-only streaming reader.
 Common archive read options limit logical entry count, individual entry size, total logical entry size, and cumulative
@@ -307,9 +307,9 @@ semantics while keeping direct creation and append-only output channels forward-
 7z compression pipelines support ordered chains of Delta and BCJ executable filters, including x86, PowerPC, IA-64, ARM, ARM-Thumb, SPARC, ARM64, and RISC-V transforms. ARM64 and RISC-V use their modern single-byte 7z method IDs. BCJ readers and writers support optional unsigned 32-bit start offsets and enforce architecture-specific alignment. BCJ2 is exposed as a sole graph filter: output is split into MAIN, CALL, JUMP, and range branches, the first three branches use the selected compression, and every physical branch is encrypted independently when data encryption is enabled. BCJ2 folders use temporary-file staging to preserve contiguous physical streams with bounded heap use.
 
 7z Deflate, Deflate64, BZip2, raw LZMA, LZMA2, and Zstandard coder reading and writing use the general codec context API and discover optional
-providers at runtime. PPMd7 reading uses the same optional codec discovery and passes the coder's model order, memory size,
+formats at runtime. PPMd7 reading uses the same optional format discovery and passes the coder's model order, memory size,
 and exact unpack size as typed raw-stream options. Decoder contexts enforce the coder's declared unpack size. Raw LZMA and
-LZMA2 properties remain 7z metadata while the payloads are handled by optional raw codec providers.
+LZMA2 properties remain 7z metadata while the payloads are handled by codecs derived from the optional raw formats' defaults.
 
 7z entry attributes expose immutable structured coder graphs in declaration order, including raw coder properties, input and output stream ranges, bind pairs, physical packed-stream ordinals, per-output unpack sizes, and the final decoded output.
 

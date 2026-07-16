@@ -29,7 +29,7 @@ import java.util.Objects;
 @NotNullByDefault
 public final class DeflateCodec
         implements CompressionLevelCodec, CompressionStrategyCodec, DictionaryCompressionCodec {
-    /// The stable raw Deflate codec name.
+    /// The stable raw Deflate compression format name.
     public static final String NAME = "deflate";
 
     /// The minimum raw Deflate match-search level.

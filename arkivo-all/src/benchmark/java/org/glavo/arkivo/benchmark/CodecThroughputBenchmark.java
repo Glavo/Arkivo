@@ -38,9 +38,9 @@ public class CodecThroughputBenchmark {
     /// The uncompressed byte count processed by each benchmark invocation.
     private static final int SOURCE_SIZE = 4 * 1024 * 1024;
 
-    /// The stable codec name selected for the current benchmark trial.
+    /// The stable compression format name selected for the current benchmark trial.
     @Param({"deflate", "deflate64", "gzip", "zlib", "zstd"})
-    public String codecName = "gzip";
+    public String formatName = "gzip";
 
     /// The deterministic compressible source bytes.
     private byte @Unmodifiable [] source = new byte[0];
@@ -57,10 +57,10 @@ public class CodecThroughputBenchmark {
             content[index] = (byte) (offset < 48 * 1024 ? offset * 31 : index * 17);
         }
         source = content;
-        compressed = compress(codecName, source);
-        byte[] restored = decompress(codecName, compressed, source.length);
+        compressed = compress(formatName, source);
+        byte[] restored = decompress(formatName, compressed, source.length);
         if (!Arrays.equals(source, restored)) {
-            throw new AssertionError("Codec benchmark setup did not round trip " + codecName);
+            throw new AssertionError("Codec benchmark setup did not round trip " + formatName);
         }
     }
 
@@ -68,21 +68,21 @@ public class CodecThroughputBenchmark {
     @Benchmark
     @OperationsPerInvocation(SOURCE_SIZE)
     public byte[] compress() throws IOException {
-        return compress(codecName, source);
+        return compress(formatName, source);
     }
 
     /// Decompresses one encoding through the public channel adapter API.
     @Benchmark
     @OperationsPerInvocation(SOURCE_SIZE)
     public byte[] decompress() throws IOException {
-        return decompress(codecName, compressed, source.length);
+        return decompress(formatName, compressed, source.length);
     }
 
     /// Compresses the requested source and returns the resulting frame.
-    private static byte[] compress(String codecName, byte[] source) throws IOException {
+    private static byte[] compress(String formatName, byte[] source) throws IOException {
         ByteArrayOutputStream target = new ByteArrayOutputStream(source.length);
         CompressionFormats.compress(
-                codecName,
+                formatName,
                 Channels.newChannel(new ByteArrayInputStream(source)),
                 Channels.newChannel(target)
         );
@@ -90,10 +90,10 @@ public class CodecThroughputBenchmark {
     }
 
     /// Decompresses one frame into an output buffer sized for the expected content.
-    private static byte[] decompress(String codecName, byte[] compressed, int expectedSize) throws IOException {
+    private static byte[] decompress(String formatName, byte[] compressed, int expectedSize) throws IOException {
         ByteArrayOutputStream target = new ByteArrayOutputStream(expectedSize);
         CompressionFormats.decompress(
-                codecName,
+                formatName,
                 Channels.newChannel(new ByteArrayInputStream(compressed)),
                 Channels.newChannel(target)
         );

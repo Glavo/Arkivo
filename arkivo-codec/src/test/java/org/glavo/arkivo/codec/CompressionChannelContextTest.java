@@ -246,7 +246,7 @@ final class CompressionChannelContextTest {
         private IdentityCodec() {
         }
 
-        /// Returns the identity codec name.
+        /// Returns the identity compression format name.
         @Override
         public String name() {
             return "identity";
