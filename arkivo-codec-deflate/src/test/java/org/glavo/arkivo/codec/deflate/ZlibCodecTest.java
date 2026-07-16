@@ -21,7 +21,6 @@ import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
-import java.util.Objects;
 import java.util.zip.Adler32;
 import java.util.zip.DataFormatException;
 import java.util.zip.Deflater;
@@ -50,7 +49,7 @@ public final class ZlibCodecTest {
     /// Verifies that the zlib codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(ZlibCodec.class, Objects.requireNonNull(CompressionFormats.find(ZlibCodec.NAME)).defaultCodec().getClass());
+        assertEquals(ZlibCodec.class, CompressionFormats.require(ZlibCodec.NAME).defaultCodec().getClass());
     }
 
     /// Verifies zlib header matching.

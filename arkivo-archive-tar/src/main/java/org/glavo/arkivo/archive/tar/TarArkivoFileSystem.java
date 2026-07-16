@@ -9,11 +9,9 @@ import org.glavo.arkivo.archive.ArkivoFileSystemOption;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemImpl;
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.channels.SeekableByteChannel;
@@ -117,11 +115,7 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
             return codec;
         }
         if (value instanceof String name) {
-            @Nullable CompressionFormat format = CompressionFormats.find(name);
-            if (format != null) {
-                return format.defaultCodec();
-            }
-            throw new IllegalArgumentException("Compression format is not installed: " + name);
+            return CompressionFormats.require(name).defaultCodec();
         }
         throw new IllegalArgumentException(
                 "Expected CompressionCodec or String for key: " + COMPRESSION.key()

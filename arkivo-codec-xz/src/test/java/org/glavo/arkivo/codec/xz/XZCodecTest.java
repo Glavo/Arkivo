@@ -41,7 +41,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Objects;
 import java.util.Random;
 import java.util.zip.CRC32;
 
@@ -68,7 +67,7 @@ public final class XZCodecTest {
     /// Verifies that the XZ codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(XZCodec.class, Objects.requireNonNull(CompressionFormats.find(XZCodec.NAME)).defaultCodec().getClass());
+        assertEquals(XZCodec.class, CompressionFormats.require(XZCodec.NAME).defaultCodec().getClass());
     }
 
     /// Verifies XZ signature matching.

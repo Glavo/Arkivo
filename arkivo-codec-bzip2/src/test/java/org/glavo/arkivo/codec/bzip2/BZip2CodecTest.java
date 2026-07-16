@@ -21,7 +21,6 @@ import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
-import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -46,8 +45,8 @@ public final class BZip2CodecTest {
     /// Verifies that the BZip2 codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(BZip2Codec.class, Objects.requireNonNull(CompressionFormats.find(BZip2Codec.NAME)).defaultCodec().getClass());
-        assertEquals(BZip2Codec.class, Objects.requireNonNull(CompressionFormats.find("bz2")).defaultCodec().getClass());
+        assertEquals(BZip2Codec.class, CompressionFormats.require(BZip2Codec.NAME).defaultCodec().getClass());
+        assertEquals(BZip2Codec.class, CompressionFormats.require("bz2").defaultCodec().getClass());
     }
 
     /// Verifies BZip2 metadata and signature matching.

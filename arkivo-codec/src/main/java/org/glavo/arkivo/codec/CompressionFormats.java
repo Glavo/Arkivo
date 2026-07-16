@@ -41,6 +41,13 @@ public final class CompressionFormats {
         return CompressionFormatRegistry.load().find(name);
     }
 
+    /// Returns the installed format with the given stable name or alias, ignoring case.
+    ///
+    /// @throws IllegalArgumentException when no matching format is installed
+    public static CompressionFormat require(String name) {
+        return CompressionFormatRegistry.load().require(name);
+    }
+
     /// Returns the first installed format matching the remaining prefix bytes.
     ///
     /// The supplied buffer is not modified.

@@ -64,7 +64,7 @@ requires a caller-selected output limit.
 ```java
 byte[] input = "Arkivo buffer example".getBytes(StandardCharsets.UTF_8);
 
-CompressionFormat format = Objects.requireNonNull(CompressionFormats.find("zstd"));
+CompressionFormat format = CompressionFormats.require("zstd");
 CompressionCodec codec = format.defaultCodec();
 ByteBuffer compressed = codec.compress(ByteBuffer.wrap(input));
 ByteBuffer decoded = codec.decompress(compressed, input.length);

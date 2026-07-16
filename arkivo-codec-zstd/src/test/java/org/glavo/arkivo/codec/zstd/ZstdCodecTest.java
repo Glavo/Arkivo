@@ -70,7 +70,7 @@ public final class ZstdCodecTest {
     /// Verifies that the Zstandard codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(ZstdCodec.class, Objects.requireNonNull(CompressionFormats.find(ZstdCodec.NAME)).defaultCodec().getClass());
+        assertEquals(ZstdCodec.class, CompressionFormats.require(ZstdCodec.NAME).defaultCodec().getClass());
     }
 
     /// Verifies Zstandard metadata and ByteBuffer one-shot compression.

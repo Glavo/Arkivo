@@ -30,6 +30,7 @@ import java.util.stream.Collectors;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -66,6 +67,20 @@ final class CodecFactoryTest {
             }
             assertFalse(source.isOpen(), codec.format().name());
         }
+    }
+
+    /// Verifies required lookup accepts stable names and aliases and rejects unknown formats.
+    @Test
+    void requiresFormatsByNameOrAlias() {
+        CompressionFormat format = CompressionFormats.require("bzip2");
+
+        assertSame(format, CompressionFormats.require("BZIP2"));
+        assertSame(format, CompressionFormats.require("bz2"));
+        IllegalArgumentException exception = assertThrows(
+                IllegalArgumentException.class,
+                () -> CompressionFormats.require("missing")
+        );
+        assertEquals("Unknown compression format: missing", exception.getMessage());
     }
 
     /// Verifies convenience overloads accept aliases and retain caller-owned channels.

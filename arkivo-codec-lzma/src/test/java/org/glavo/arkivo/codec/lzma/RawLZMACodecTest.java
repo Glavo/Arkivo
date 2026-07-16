@@ -22,7 +22,6 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
-import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -52,15 +51,15 @@ public final class RawLZMACodecTest {
     public void discoversRawProviders() {
         assertInstanceOf(
                 RawLZMACodec.class,
-                Objects.requireNonNull(CompressionFormats.find(RawLZMACodec.NAME)).defaultCodec()
+                CompressionFormats.require(RawLZMACodec.NAME).defaultCodec()
         );
         assertInstanceOf(
                 RawLZMACodec.class,
-                Objects.requireNonNull(CompressionFormats.find("raw-lzma")).defaultCodec()
+                CompressionFormats.require("raw-lzma").defaultCodec()
         );
         assertInstanceOf(
                 LZMA2Codec.class,
-                Objects.requireNonNull(CompressionFormats.find(LZMA2Codec.NAME)).defaultCodec()
+                CompressionFormats.require(LZMA2Codec.NAME).defaultCodec()
         );
     }
 

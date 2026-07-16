@@ -20,7 +20,6 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
-import java.util.Objects;
 import java.util.zip.CRC32;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
@@ -48,7 +47,7 @@ public final class GzipCodecTest {
     /// Verifies that the gzip codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(GzipCodec.class, Objects.requireNonNull(CompressionFormats.find(GzipCodec.NAME)).defaultCodec().getClass());
+        assertEquals(GzipCodec.class, CompressionFormats.require(GzipCodec.NAME).defaultCodec().getClass());
     }
 
     /// Verifies gzip metadata and signature matching.

@@ -17,7 +17,6 @@ import java.io.OutputStream;
 import java.nio.channels.Channels;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
-import java.util.Objects;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 import java.util.zip.Inflater;
@@ -44,7 +43,7 @@ public final class DeflateCodecTest {
     /// Verifies that the raw deflate codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(DeflateCodec.class, Objects.requireNonNull(CompressionFormats.find(DeflateCodec.NAME)).defaultCodec().getClass());
+        assertEquals(DeflateCodec.class, CompressionFormats.require(DeflateCodec.NAME).defaultCodec().getClass());
     }
 
     /// Verifies large channel operations interoperate with the JDK raw deflate streams.

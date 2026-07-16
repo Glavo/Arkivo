@@ -29,7 +29,6 @@ import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
-import java.util.Objects;
 import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -55,7 +54,7 @@ public final class LZMACodecTest {
     /// Verifies that the LZMA codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(LZMACodec.class, Objects.requireNonNull(CompressionFormats.find(LZMACodec.NAME)).defaultCodec().getClass());
+        assertEquals(LZMACodec.class, CompressionFormats.require(LZMACodec.NAME).defaultCodec().getClass());
     }
 
     /// Rejects unsigned LZMA-alone output sizes that cannot be represented by the public size model.
