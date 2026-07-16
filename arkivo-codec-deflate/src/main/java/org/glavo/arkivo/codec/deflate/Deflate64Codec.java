@@ -19,7 +19,7 @@ import java.util.Objects;
 
 /// Provides an immutable raw Deflate64 configuration and pure Java buffer engines.
 @NotNullByDefault
-public final class Deflate64Codec implements CompressionCodec.LevelConfigurable {
+public final class Deflate64Codec implements CompressionCodec.LevelConfigurable<Deflate64Codec> {
     /// The stable Deflate64 compression format name.
     public static final String NAME = "deflate64";
 

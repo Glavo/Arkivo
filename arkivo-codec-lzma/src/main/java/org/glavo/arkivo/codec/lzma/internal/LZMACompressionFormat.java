@@ -36,7 +36,7 @@ public final class LZMACompressionFormat implements CompressionFormat {
 
     /// Returns the default immutable LZMA-alone codec.
     @Override
-    public CompressionCodec defaultCodec() {
+    public CompressionCodec<?> defaultCodec() {
         return LZMACodec.DEFAULT;
     }
 }

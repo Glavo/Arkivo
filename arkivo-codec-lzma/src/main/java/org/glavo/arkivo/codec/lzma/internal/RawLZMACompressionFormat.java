@@ -51,7 +51,7 @@ public final class RawLZMACompressionFormat implements CompressionFormat {
 
     /// Returns the default immutable raw LZMA codec.
     @Override
-    public CompressionCodec defaultCodec() {
+    public CompressionCodec<?> defaultCodec() {
         return RawLZMACodec.DEFAULT;
     }
 }

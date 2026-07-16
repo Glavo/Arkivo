@@ -42,7 +42,7 @@ public final class ZstdCodecTest {
         ZstdCodec codec = new ZstdCodec().withCompressionLevel(1);
         byte[] input = "hello zstd".getBytes(StandardCharsets.UTF_8);
 
-        assertEquals(true, codec instanceof CompressionCodec);
+        assertEquals(true, codec instanceof CompressionCodec<?>);
         assertEquals(ZstdCodec.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
@@ -626,7 +626,7 @@ public final class ZstdCodecTest {
     }
 
     /// Compresses and decompresses the given bytes.
-    private static byte[] roundTrip(CompressionCodec codec, byte[] input) throws IOException {
+    private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
         try (OutputStream output = codec.compressTo(compressed)) {
             output.write(input);

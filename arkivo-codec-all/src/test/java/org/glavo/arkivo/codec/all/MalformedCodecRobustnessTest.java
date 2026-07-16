@@ -54,9 +54,9 @@ final class MalformedCodecRobustnessTest {
     @Timeout(value = 120, unit = TimeUnit.SECONDS)
     void boundsAndNormalizesMalformedCodecFailures() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             byte[] validFrame = compress(codec);
-            CompressionCodec decoderCodec =
+            CompressionCodec<?> decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
             DecompressionLimits limits = boundedLimits();
             assertArrayEquals(CONTENT, decodeNamed(decoderCodec, validFrame, limits), codec.format().name());
@@ -79,7 +79,7 @@ final class MalformedCodecRobustnessTest {
     }
 
     /// Compresses the shared plaintext with one codec's default encoder.
-    private static byte[] compress(CompressionCodec codec) throws IOException {
+    private static byte[] compress(CompressionCodec<?> codec) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         codec.compress(
                 Channels.newChannel(new ByteArrayInputStream(CONTENT)),
@@ -95,8 +95,8 @@ final class MalformedCodecRobustnessTest {
 
     /// Exercises signature detection and every applicable decoder factory for one damaged frame.
     private static void exerciseMalformedFrame(
-            CompressionCodec codec,
-            CompressionCodec decoderCodec,
+            CompressionCodec<?> codec,
+            CompressionCodec<?> decoderCodec,
             byte[] frame,
             DecompressionLimits limits,
             boolean detectable,
@@ -121,7 +121,7 @@ final class MalformedCodecRobustnessTest {
 
     /// Decodes a frame through its explicit provider.
     private static byte[] decodeNamed(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             byte[] frame,
             DecompressionLimits limits
     ) throws IOException {

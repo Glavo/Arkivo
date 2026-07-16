@@ -36,7 +36,7 @@ public final class DeflateCompressionFormat implements CompressionFormat {
 
     /// Returns the default immutable raw Deflate codec.
     @Override
-    public CompressionCodec defaultCodec() {
+    public CompressionCodec<?> defaultCodec() {
         return DeflateCodec.DEFAULT;
     }
 }

@@ -41,7 +41,7 @@ public final class ZlibCodecTest {
         ZlibCodec codec = new ZlibCodec();
         byte[] input = "hello zlib".getBytes(StandardCharsets.UTF_8);
 
-        assertEquals(true, codec instanceof CompressionCodec);
+        assertEquals(true, codec instanceof CompressionCodec<?>);
         assertEquals(ZlibCodec.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
@@ -202,7 +202,7 @@ public final class ZlibCodecTest {
     }
 
     /// Compresses and decompresses the given bytes.
-    private static byte[] roundTrip(CompressionCodec codec, byte[] input) throws IOException {
+    private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
         try (OutputStream output = codec.compressTo(compressed)) {
             output.write(input);

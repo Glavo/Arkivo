@@ -138,7 +138,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private final @Nullable ArkivoCommitTarget commitTarget;
 
     /// The compression codec wrapping the TAR stream, or `null` for an uncompressed archive.
-    private final @Nullable CompressionCodec compressionCodec;
+    private final @Nullable CompressionCodec<?> compressionCodec;
 
     /// Whether this file system is read-only.
     private final boolean readOnly;
@@ -188,7 +188,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             boolean readOnly,
             boolean updateMode,
             @Nullable ArkivoCommitTarget commitTarget,
-            @Nullable CompressionCodec compressionCodec,
+            @Nullable CompressionCodec<?> compressionCodec,
             Runnable closeAction
     ) {
         super(threadSafety);
@@ -238,7 +238,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
                 environment,
                 Set.of(StandardOpenOption.READ)
         );
-        @Nullable CompressionCodec requestedCompression = TarArkivoFileSystem.COMPRESSION.read(environment);
+        @Nullable CompressionCodec<?> requestedCompression = TarArkivoFileSystem.COMPRESSION.read(environment);
         if (isArchiveUpdateOpen(openOptions)) {
             validateArchiveUpdateOptions(openOptions);
             if (ArkivoFileSystem.SOURCE_MUTATION_POLICY.isPresent(environment)) {
@@ -249,7 +249,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             try {
                 Map<String, Node> nodes;
                 boolean newArchive = !Files.exists(archivePath);
-                @Nullable CompressionCodec compressionCodec = requestedCompression;
+                @Nullable CompressionCodec<?> compressionCodec = requestedCompression;
                 if (!newArchive) {
                     if (compressionCodec == null) {
                         compressionCodec = detectCompression(archivePath);
@@ -325,7 +325,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(environment);
         Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
         try {
-            @Nullable CompressionCodec compressionCodec = requestedCompression;
+            @Nullable CompressionCodec<?> compressionCodec = requestedCompression;
             if (compressionCodec == null) {
                 compressionCodec = detectCompression(archivePath);
             }
@@ -371,7 +371,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
         ArkivoFileSystemThreadSafety threadSafety;
         ArkivoEditStorage editStorage;
-        @Nullable CompressionCodec requestedCompression;
+        @Nullable CompressionCodec<?> requestedCompression;
         boolean updateMode;
         @Nullable ArkivoCommitTarget commitTarget;
         try {
@@ -408,7 +408,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
         Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
         try {
-            @Nullable CompressionCodec compressionCodec = requestedCompression;
+            @Nullable CompressionCodec<?> compressionCodec = requestedCompression;
             if (compressionCodec == null) {
                 try (SeekableByteChannel probeChannel = source.openChannel()) {
                     compressionCodec = detectCompression(probeChannel);
@@ -2108,19 +2108,19 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     }
 
     /// Detects a compression codec whose decoded path prefix is a valid TAR archive.
-    private static @Nullable CompressionCodec detectCompression(Path path) throws IOException {
+    private static @Nullable CompressionCodec<?> detectCompression(Path path) throws IOException {
         try (SeekableByteChannel channel = Files.newByteChannel(path, StandardOpenOption.READ)) {
             return detectCompression(channel);
         }
     }
 
     /// Detects a compression codec whose decoded channel prefix is a valid TAR archive.
-    private static @Nullable CompressionCodec detectCompression(SeekableByteChannel channel) throws IOException {
+    private static @Nullable CompressionCodec<?> detectCompression(SeekableByteChannel channel) throws IOException {
         @Nullable CompressionFormat candidate = CompressionFormats.detect(channel);
         if (candidate == null) {
             return null;
         }
-        CompressionCodec codec = candidate.defaultCodec();
+        CompressionCodec<?> codec = candidate.defaultCodec();
         channel.position(0L);
         try (InputStream input = openArchiveInput(Channels.newInputStream(channel), codec)) {
             byte[] probe = new byte[TarArkivoFormat.instance().probeSize()];

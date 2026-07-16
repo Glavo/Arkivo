@@ -195,7 +195,7 @@ public final class XZUtilsOfficialCorpusTest {
     }
 
     /// Decompresses one complete file through the given Arkivo channel codec with a bounded output.
-    private static byte[] decompress(CompressionCodec codec, Path sourcePath) throws IOException {
+    private static byte[] decompress(CompressionCodec<?> codec, Path sourcePath) throws IOException {
 
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         try (var source = Files.newByteChannel(sourcePath);

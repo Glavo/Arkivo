@@ -272,7 +272,7 @@ final class AllAggregationTest {
                 .getBytes(StandardCharsets.UTF_8);
 
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
 
             ByteBuffer source = ByteBuffer.allocateDirect(expected.length + 4);
             source.position(2);
@@ -292,7 +292,7 @@ final class AllAggregationTest {
             int decodedStart = 2;
             decoded.position(decodedStart);
             decoded.limit(decodedStart + expected.length);
-            CompressionCodec decoderCodec = codec instanceof PPMdCodec ppmdCodec
+            CompressionCodec<?> decoderCodec = codec instanceof PPMdCodec ppmdCodec
                     ? ppmdCodec.withDecodedSize(expected.length)
                     : codec;
             decoderCodec.decompress(compressed, decoded);
@@ -318,7 +318,7 @@ final class AllAggregationTest {
 
         byte[] content = "Arkivo compression probe".getBytes(StandardCharsets.UTF_8);
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             if (format.probeSize() == 0) {
                 continue;
             }

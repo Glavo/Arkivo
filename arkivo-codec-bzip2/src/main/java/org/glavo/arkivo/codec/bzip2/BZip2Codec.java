@@ -18,7 +18,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 /// Provides an immutable BZip2 compression configuration and creates transport-independent engines.
 @NotNullByDefault
-public final class BZip2Codec implements CompressionCodec.LevelConfigurable {
+public final class BZip2Codec implements CompressionCodec.LevelConfigurable<BZip2Codec> {
     /// The stable BZip2 compression format name.
     public static final String NAME = "bzip2";
 

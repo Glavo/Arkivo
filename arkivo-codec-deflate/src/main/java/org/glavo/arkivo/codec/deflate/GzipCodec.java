@@ -20,7 +20,7 @@ import java.util.Objects;
 
 /// Provides an immutable gzip configuration and pure Java member engines.
 @NotNullByDefault
-public final class GzipCodec implements CompressionCodec.LevelConfigurable, CompressionCodec.StrategyConfigurable {
+public final class GzipCodec implements CompressionCodec.LevelConfigurable<GzipCodec>, CompressionCodec.StrategyConfigurable<GzipCodec> {
     /// The stable gzip compression format name.
     public static final String NAME = "gzip";
 

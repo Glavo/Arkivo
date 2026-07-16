@@ -22,9 +22,9 @@ import java.util.Objects;
 /// Provides an immutable zlib configuration and pure Java stream engines.
 @NotNullByDefault
 public final class ZlibCodec
-        implements CompressionCodec.LevelConfigurable,
-        CompressionCodec.StrategyConfigurable,
-        CompressionCodec.DictionaryConfigurable {
+        implements CompressionCodec.LevelConfigurable<ZlibCodec>,
+        CompressionCodec.StrategyConfigurable<ZlibCodec>,
+        CompressionCodec.DictionaryConfigurable<ZlibCodec> {
     /// The stable zlib compression format name.
     public static final String NAME = "zlib";
 

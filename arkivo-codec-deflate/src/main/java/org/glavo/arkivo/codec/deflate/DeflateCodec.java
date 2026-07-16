@@ -26,9 +26,9 @@ import java.util.Objects;
 /// by the encoder; a different dictionary is not always detectable.
 @NotNullByDefault
 public final class DeflateCodec
-        implements CompressionCodec.LevelConfigurable,
-        CompressionCodec.StrategyConfigurable,
-        CompressionCodec.DictionaryConfigurable {
+        implements CompressionCodec.LevelConfigurable<DeflateCodec>,
+        CompressionCodec.StrategyConfigurable<DeflateCodec>,
+        CompressionCodec.DictionaryConfigurable<DeflateCodec> {
     /// The stable raw Deflate compression format name.
     public static final String NAME = "deflate";
 

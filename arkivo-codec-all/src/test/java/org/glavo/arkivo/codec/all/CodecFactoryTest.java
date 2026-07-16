@@ -45,7 +45,7 @@ final class CodecFactoryTest {
     @Test
     void roundTripsEveryDefaultCodecByFormatName() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             TrackingWritableChannel target = new TrackingWritableChannel();
             try (CompressingWritableByteChannel encoder = CompressionFormats.openEncoder(
                     codec.format().name(),
@@ -57,7 +57,7 @@ final class CodecFactoryTest {
             assertFalse(target.isOpen(), codec.format().name());
 
             TrackingReadableChannel source = new TrackingReadableChannel(target.bytes());
-            CompressionCodec decoderCodec =
+            CompressionCodec<?> decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
             try (DecompressingReadableByteChannel decoder = decoderCodec.openDecoder(
                     source,
@@ -116,7 +116,7 @@ final class CodecFactoryTest {
         assertEquals(expected, signed);
 
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             if (format.probeSize() == 0) {
                 continue;
             }
@@ -136,7 +136,7 @@ final class CodecFactoryTest {
     @Test
     void transfersEveryDefaultCodecByFormatName() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
 
             TrackingReadableChannel source = new TrackingReadableChannel(CONTENT);
             TrackingWritableChannel compressed = new TrackingWritableChannel();
@@ -152,7 +152,7 @@ final class CodecFactoryTest {
 
             TrackingReadableChannel encoded = new TrackingReadableChannel(compressed.bytes());
             TrackingWritableChannel decoded = new TrackingWritableChannel();
-            CompressionCodec decoderCodec =
+            CompressionCodec<?> decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
             CodecTransferResult decompression = decoderCodec.decompress(encoded, decoded);
             if (CodecContractConfigurations.requiresDecoderConfiguration(codec)) {
@@ -192,7 +192,7 @@ final class CodecFactoryTest {
     @Test
     void opensNamedAndDetectedStreamAdapters() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
 
             TrackingOutputStream compressed = new TrackingOutputStream();
             try (OutputStream output = CompressionFormats.compressTo(
@@ -204,7 +204,7 @@ final class CodecFactoryTest {
             assertTrue(compressed.closed(), codec.format().name());
 
             TrackingInputStream encoded = new TrackingInputStream(compressed.bytes());
-            CompressionCodec decoderCodec =
+            CompressionCodec<?> decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
             try (InputStream input = decoderCodec.decompressFrom(encoded)) {
                 assertArrayEquals(CONTENT, input.readAllBytes(), codec.format().name());

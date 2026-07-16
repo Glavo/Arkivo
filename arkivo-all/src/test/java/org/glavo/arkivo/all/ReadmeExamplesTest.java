@@ -34,7 +34,7 @@ final class ReadmeExamplesTest {
         byte[] input = "Arkivo buffer example".getBytes(StandardCharsets.UTF_8);
 
         CompressionFormat format = CompressionFormats.require("zstd");
-        CompressionCodec codec = format.defaultCodec();
+        CompressionCodec<?> codec = format.defaultCodec();
         ByteBuffer compressed = codec.compress(ByteBuffer.wrap(input));
         ByteBuffer decoded = codec.decompress(compressed, input.length);
 

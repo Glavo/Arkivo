@@ -58,7 +58,7 @@ public final class ZstdCompressionFormat implements CompressionFormat {
 
     /// Returns the default immutable Zstandard codec.
     @Override
-    public CompressionCodec defaultCodec() {
+    public CompressionCodec<?> defaultCodec() {
         return ZstdCodec.DEFAULT;
     }
 }

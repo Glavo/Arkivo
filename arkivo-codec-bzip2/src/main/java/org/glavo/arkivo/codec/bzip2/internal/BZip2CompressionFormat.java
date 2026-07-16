@@ -74,7 +74,7 @@ public final class BZip2CompressionFormat implements CompressionFormat {
 
     /// Returns the default immutable BZip2 codec.
     @Override
-    public CompressionCodec defaultCodec() {
+    public CompressionCodec<?> defaultCodec() {
         return BZip2Codec.DEFAULT;
     }
 }

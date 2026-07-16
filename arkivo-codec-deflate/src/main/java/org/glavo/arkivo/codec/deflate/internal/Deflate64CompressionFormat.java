@@ -51,7 +51,7 @@ public final class Deflate64CompressionFormat implements CompressionFormat {
 
     /// Returns the default immutable raw Deflate64 codec.
     @Override
-    public CompressionCodec defaultCodec() {
+    public CompressionCodec<?> defaultCodec() {
         return Deflate64Codec.DEFAULT;
     }
 }

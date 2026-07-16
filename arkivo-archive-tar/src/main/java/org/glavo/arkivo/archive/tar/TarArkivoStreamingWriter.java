@@ -52,7 +52,7 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
     ) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(environment, "environment");
-        @Nullable CompressionCodec compressionCodec = TarArkivoFileSystem.COMPRESSION.read(environment);
+        @Nullable CompressionCodec<?> compressionCodec = TarArkivoFileSystem.COMPRESSION.read(environment);
         @Nullable ArkivoEditStorage bodyStorage = ArkivoFileSystem.EDIT_STORAGE.read(environment);
         WritableByteChannel archiveOutput = TarCompressionStreams.openArchiveOutput(
                 Files.newByteChannel(
@@ -97,7 +97,7 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
                     "TAR body storage must be provided either as an argument or an environment option"
             );
         }
-        @Nullable CompressionCodec compressionCodec = TarArkivoFileSystem.COMPRESSION.read(environment);
+        @Nullable CompressionCodec<?> compressionCodec = TarArkivoFileSystem.COMPRESSION.read(environment);
         return new TarArkivoStreamingWriterImpl(
                 StreamChannelAdapters.outputStream(TarCompressionStreams.openArchiveOutput(
                         Files.newByteChannel(
@@ -160,7 +160,7 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
     ) throws IOException {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(environment, "environment");
-        @Nullable CompressionCodec compressionCodec = TarArkivoFileSystem.COMPRESSION.read(environment);
+        @Nullable CompressionCodec<?> compressionCodec = TarArkivoFileSystem.COMPRESSION.read(environment);
         @Nullable ArkivoEditStorage bodyStorage = ArkivoFileSystem.EDIT_STORAGE.read(environment);
         WritableByteChannel archiveOutput = TarCompressionStreams.openArchiveOutput(output, compressionCodec);
         return bodyStorage == null
@@ -194,7 +194,7 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
                     "TAR body storage must be provided either as an argument or an environment option"
             );
         }
-        @Nullable CompressionCodec compressionCodec = TarArkivoFileSystem.COMPRESSION.read(environment);
+        @Nullable CompressionCodec<?> compressionCodec = TarArkivoFileSystem.COMPRESSION.read(environment);
         return new TarArkivoStreamingWriterImpl(
                 StreamChannelAdapters.outputStream(TarCompressionStreams.openArchiveOutput(
                         output,

@@ -61,7 +61,7 @@ public final class GzipCompressionFormat implements CompressionFormat {
 
     /// Returns the default immutable gzip codec.
     @Override
-    public CompressionCodec defaultCodec() {
+    public CompressionCodec<?> defaultCodec() {
         return GzipCodec.DEFAULT;
     }
 }

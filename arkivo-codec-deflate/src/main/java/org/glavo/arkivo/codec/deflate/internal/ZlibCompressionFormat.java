@@ -59,7 +59,7 @@ public final class ZlibCompressionFormat implements CompressionFormat {
 
     /// Returns the default immutable zlib codec.
     @Override
-    public CompressionCodec defaultCodec() {
+    public CompressionCodec<?> defaultCodec() {
         return ZlibCodec.DEFAULT;
     }
 }

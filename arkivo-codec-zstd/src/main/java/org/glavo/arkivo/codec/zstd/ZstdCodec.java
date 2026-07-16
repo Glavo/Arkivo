@@ -26,9 +26,9 @@ import java.util.Objects;
 /// Provides an immutable Zstandard configuration and transport-independent frame engines.
 @NotNullByDefault
 public final class ZstdCodec
-        implements CompressionCodec.LevelConfigurable,
-        CompressionCodec.DictionaryConfigurable,
-        CompressionCodec.PledgedSourceSizeEncoderFactory {
+        implements CompressionCodec.LevelConfigurable<ZstdCodec>,
+        CompressionCodec.DictionaryConfigurable<ZstdCodec>,
+        CompressionCodec.PledgedSourceSizeEncoderFactory<ZstdCodec> {
     /// The stable Zstandard compression format name.
     public static final String NAME = "zstd";
 

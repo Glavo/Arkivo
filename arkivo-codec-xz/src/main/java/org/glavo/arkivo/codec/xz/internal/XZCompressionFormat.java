@@ -66,7 +66,7 @@ public final class XZCompressionFormat implements CompressionFormat {
 
     /// Returns the default immutable XZ codec.
     @Override
-    public CompressionCodec defaultCodec() {
+    public CompressionCodec<?> defaultCodec() {
         return XZCodec.DEFAULT;
     }
 }

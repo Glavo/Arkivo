@@ -21,7 +21,7 @@ import java.util.Objects;
 
 /// Provides an immutable XZ configuration and pure Java transport-independent engines.
 @NotNullByDefault
-public final class XZCodec implements CompressionCodec {
+public final class XZCodec implements CompressionCodec<XZCodec> {
     /// The stable XZ compression format name.
     public static final String NAME = "xz";
 

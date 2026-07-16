@@ -23,8 +23,10 @@ import java.util.Objects;
 ///
 /// Implementations must be safe for concurrent use. Stateful encoding and decoding progress belongs exclusively to
 /// engines and channel contexts created by a codec.
+///
+/// @param <C> the concrete immutable codec type returned by configuration methods
 @NotNullByDefault
-public interface CompressionCodec {
+public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// The sentinel returned when a size cannot be calculated or is not known.
     long UNKNOWN_SIZE = -1L;
 
@@ -246,8 +248,10 @@ public interface CompressionCodec {
     }
 
     /// Describes an immutable codec configuration with a selectable compression level.
+    ///
+    /// @param <C> the concrete immutable codec type returned by configuration methods
     @NotNullByDefault
-    interface LevelConfigurable extends CompressionCodec {
+    interface LevelConfigurable<C extends CompressionCodec<C>> extends CompressionCodec<C> {
         /// Returns the configured compression level.
         long compressionLevel();
 
@@ -261,35 +265,41 @@ public interface CompressionCodec {
         long defaultCompressionLevel();
 
         /// Returns an immutable codec configured with the requested compression level.
-        LevelConfigurable withCompressionLevel(long compressionLevel);
+        C withCompressionLevel(long compressionLevel);
     }
 
     /// Describes an immutable codec configuration with a selectable generic compression strategy.
+    ///
+    /// @param <C> the concrete immutable codec type returned by configuration methods
     @NotNullByDefault
-    interface StrategyConfigurable extends CompressionCodec {
+    interface StrategyConfigurable<C extends CompressionCodec<C>> extends CompressionCodec<C> {
         /// Returns the configured compression strategy.
         CompressionStrategy compressionStrategy();
 
         /// Returns an immutable codec configured with the requested compression strategy.
-        StrategyConfigurable withCompressionStrategy(CompressionStrategy compressionStrategy);
+        C withCompressionStrategy(CompressionStrategy compressionStrategy);
     }
 
     /// Describes an immutable codec configuration with an optional shared compression dictionary.
+    ///
+    /// @param <C> the concrete immutable codec type returned by configuration methods
     @NotNullByDefault
-    interface DictionaryConfigurable extends CompressionCodec {
+    interface DictionaryConfigurable<C extends CompressionCodec<C>> extends CompressionCodec<C> {
         /// Returns the configured dictionary, or `null` when dictionary-free operation is selected.
         @Nullable CompressionDictionary dictionary();
 
         /// Returns an immutable codec configured with the requested dictionary.
-        DictionaryConfigurable withDictionary(CompressionDictionary dictionary);
+        C withDictionary(CompressionDictionary dictionary);
 
         /// Returns an immutable codec configured without a dictionary.
-        DictionaryConfigurable withoutDictionary();
+        C withoutDictionary();
     }
 
     /// Creates encoders that can receive an exact uncompressed source size as operation-scoped metadata.
+    ///
+    /// @param <C> the concrete immutable codec type returned by configuration methods
     @NotNullByDefault
-    interface PledgedSourceSizeEncoderFactory extends CompressionCodec {
+    interface PledgedSourceSizeEncoderFactory<C extends CompressionCodec<C>> extends CompressionCodec<C> {
         /// Creates an encoder for a source with the requested exact byte count.
         ///
         /// `pledgedSourceSize` may be `CompressionCodec.UNKNOWN_SIZE` when the size is not known before encoding

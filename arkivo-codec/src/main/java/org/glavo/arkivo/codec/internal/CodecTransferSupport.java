@@ -29,7 +29,7 @@ public final class CodecTransferSupport {
 
     /// Compresses bytes between channels without taking ownership of either channel.
     public static CodecTransferResult compress(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             ReadableByteChannel source,
             WritableByteChannel target
     ) throws IOException {
@@ -47,7 +47,7 @@ public final class CodecTransferSupport {
 
     /// Decompresses bytes between channels without taking ownership of either channel.
     public static CodecTransferResult decompress(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             ReadableByteChannel source,
             WritableByteChannel target,
             DecompressionLimits limits

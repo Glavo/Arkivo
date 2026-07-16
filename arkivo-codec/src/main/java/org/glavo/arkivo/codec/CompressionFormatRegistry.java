@@ -131,7 +131,7 @@ public final class CompressionFormatRegistry {
     /// Resolves a service-created descriptor to the canonical identity exposed by its default codec.
     private static CompressionFormat canonicalizeFormat(CompressionFormat format) {
         CompressionFormat suppliedFormat = Objects.requireNonNull(format, "compression format");
-        CompressionCodec defaultCodec = Objects.requireNonNull(
+        CompressionCodec<?> defaultCodec = Objects.requireNonNull(
                 suppliedFormat.defaultCodec(),
                 "format default codec"
         );
@@ -146,7 +146,7 @@ public final class CompressionFormatRegistry {
                             + " does not match its default codec format " + canonicalFormat.name()
             );
         }
-        CompressionCodec canonicalDefaultCodec = Objects.requireNonNull(
+        CompressionCodec<?> canonicalDefaultCodec = Objects.requireNonNull(
                 canonicalFormat.defaultCodec(),
                 "canonical format default codec"
         );

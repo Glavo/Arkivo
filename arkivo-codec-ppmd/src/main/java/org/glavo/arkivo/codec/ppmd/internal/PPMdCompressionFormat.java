@@ -51,7 +51,7 @@ public final class PPMdCompressionFormat implements CompressionFormat {
 
     /// Returns the default immutable raw PPMd7 codec.
     @Override
-    public CompressionCodec defaultCodec() {
+    public CompressionCodec<?> defaultCodec() {
         return PPMdCodec.DEFAULT;
     }
 }

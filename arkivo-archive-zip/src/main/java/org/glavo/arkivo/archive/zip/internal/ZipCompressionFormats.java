@@ -65,7 +65,7 @@ final class ZipCompressionFormats {
             boolean endMarker,
             OutputStream target
     ) throws IOException {
-        CompressionCodec codec = requireDefaultCodec(RAW_LZMA_NAME);
+        CompressionCodec<?> codec = requireDefaultCodec(RAW_LZMA_NAME);
         if (!(codec instanceof RawLZMACodec rawCodec)) {
             throw incompatibleCodec(RAW_LZMA_NAME);
         }
@@ -101,7 +101,7 @@ final class ZipCompressionFormats {
             long dictionarySize,
             long decodedSize
     ) throws IOException {
-        CompressionCodec codec = requireDefaultCodec(RAW_LZMA_NAME);
+        CompressionCodec<?> codec = requireDefaultCodec(RAW_LZMA_NAME);
         if (!(codec instanceof RawLZMACodec rawCodec)) {
             throw incompatibleCodec(RAW_LZMA_NAME);
         }
@@ -123,7 +123,7 @@ final class ZipCompressionFormats {
     }
 
     /// Returns the default codec for an installed optional format or reports the stable missing-format diagnostic.
-    private static CompressionCodec requireDefaultCodec(String formatName) throws IOException {
+    private static CompressionCodec<?> requireDefaultCodec(String formatName) throws IOException {
         @Nullable CompressionFormat format = CompressionFormats.find(formatName);
         if (format == null) {
             throw new IOException("Unknown compression format: " + formatName);

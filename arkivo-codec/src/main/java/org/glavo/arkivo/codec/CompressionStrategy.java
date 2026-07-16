@@ -7,7 +7,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 /// Selects how a compressor searches for repeated input.
 ///
-/// A CompressionCodec.StrategyConfigurable exposes this common strategy set as immutable codec configuration.
+/// A `CompressionCodec.StrategyConfigurable<?>` exposes this common strategy set as immutable codec configuration.
 @NotNullByDefault
 public enum CompressionStrategy {
     /// Uses the codec's normal match search and entropy coding.

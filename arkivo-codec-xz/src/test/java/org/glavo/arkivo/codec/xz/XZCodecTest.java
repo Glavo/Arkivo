@@ -58,7 +58,7 @@ public final class XZCodecTest {
         XZCodec codec = new XZCodec();
         byte[] input = "hello xz".getBytes(StandardCharsets.UTF_8);
 
-        assertEquals(true, codec instanceof CompressionCodec);
+        assertEquals(true, codec instanceof CompressionCodec<?>);
         assertEquals(XZCodec.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
@@ -564,7 +564,7 @@ public final class XZCodecTest {
     }
 
     /// Compresses and decompresses the given bytes.
-    private static byte[] roundTrip(CompressionCodec codec, byte[] input) throws IOException {
+    private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
         try (OutputStream output = codec.compressTo(compressed)) {
             output.write(input);

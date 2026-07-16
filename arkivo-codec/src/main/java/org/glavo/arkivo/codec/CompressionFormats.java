@@ -404,7 +404,7 @@ public final class CompressionFormats {
     }
 
     /// Returns the named format's installed default codec.
-    private static CompressionCodec requireDefaultCodec(String formatName) throws IOException {
+    private static CompressionCodec<?> requireDefaultCodec(String formatName) throws IOException {
         @Nullable CompressionFormat format = find(formatName);
         if (format == null) {
             throw new IOException("Unknown compression format: " + formatName);
