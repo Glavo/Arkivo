@@ -1,11 +1,9 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.codec.lzma.internal;
+package org.glavo.arkivo.codec.lzma;
 
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
-import org.glavo.arkivo.codec.lzma.RawLZMACodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -13,28 +11,26 @@ import java.util.List;
 
 /// Describes the discoverable raw LZMA compression format.
 @NotNullByDefault
-public final class RawLZMACompressionFormat implements CompressionFormat {
+public final class RawLZMAFormat implements CompressionFormat {
+    /// The stable raw LZMA format name.
+    public static final String NAME = "lzma-raw";
+
     /// The canonical raw LZMA format instance.
-    private static final RawLZMACompressionFormat INSTANCE = new RawLZMACompressionFormat();
+    private static final RawLZMAFormat INSTANCE = new RawLZMAFormat();
 
     /// Creates a stateless format descriptor for service discovery.
-    public RawLZMACompressionFormat() {
+    public RawLZMAFormat() {
     }
 
     /// Returns the canonical raw LZMA format instance.
-    public static RawLZMACompressionFormat instance() {
-        return INSTANCE;
-    }
-
-    /// Supplies the canonical raw LZMA format to service discovery.
-    public static CompressionFormat provider() {
+    public static RawLZMAFormat instance() {
         return INSTANCE;
     }
 
     /// Returns the stable raw LZMA format name.
     @Override
     public String name() {
-        return RawLZMACodec.NAME;
+        return NAME;
     }
 
     /// Returns the alternate raw LZMA name.
@@ -51,7 +47,7 @@ public final class RawLZMACompressionFormat implements CompressionFormat {
 
     /// Returns the default immutable raw LZMA codec.
     @Override
-    public CompressionCodec<?> defaultCodec() {
+    public RawLZMACodec defaultCodec() {
         return RawLZMACodec.DEFAULT;
     }
 }

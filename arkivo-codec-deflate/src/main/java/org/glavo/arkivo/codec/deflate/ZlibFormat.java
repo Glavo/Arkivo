@@ -1,39 +1,35 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.codec.deflate.internal;
+package org.glavo.arkivo.codec.deflate;
 
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
-import org.glavo.arkivo.codec.deflate.ZlibCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.nio.ByteBuffer;
 
 /// Describes the discoverable zlib compression format.
 @NotNullByDefault
-public final class ZlibCompressionFormat implements CompressionFormat {
+public final class ZlibFormat implements CompressionFormat {
+    /// The stable zlib format name.
+    public static final String NAME = "zlib";
+
     /// The canonical zlib format instance.
-    private static final ZlibCompressionFormat INSTANCE = new ZlibCompressionFormat();
+    private static final ZlibFormat INSTANCE = new ZlibFormat();
 
     /// Creates a stateless format descriptor for service discovery.
-    public ZlibCompressionFormat() {
+    public ZlibFormat() {
     }
 
     /// Returns the canonical zlib format instance.
-    public static ZlibCompressionFormat instance() {
-        return INSTANCE;
-    }
-
-    /// Supplies the canonical zlib format to service discovery.
-    public static CompressionFormat provider() {
+    public static ZlibFormat instance() {
         return INSTANCE;
     }
 
     /// Returns the stable zlib format name.
     @Override
     public String name() {
-        return ZlibCodec.NAME;
+        return NAME;
     }
 
     /// Returns the number of leading bytes used to identify zlib streams.
@@ -59,7 +55,7 @@ public final class ZlibCompressionFormat implements CompressionFormat {
 
     /// Returns the default immutable zlib codec.
     @Override
-    public CompressionCodec<?> defaultCodec() {
+    public ZlibCodec defaultCodec() {
         return ZlibCodec.DEFAULT;
     }
 }

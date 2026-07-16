@@ -12,7 +12,7 @@ module org.glavo.arkivo.codec.lzma {
             org.glavo.arkivo.codec.xz;
 
     provides org.glavo.arkivo.codec.CompressionFormat with
-            org.glavo.arkivo.codec.lzma.internal.LZMACompressionFormat,
-            org.glavo.arkivo.codec.lzma.internal.RawLZMACompressionFormat,
-            org.glavo.arkivo.codec.lzma.internal.LZMA2CompressionFormat;
+            org.glavo.arkivo.codec.lzma.LZMAFormat,
+            org.glavo.arkivo.codec.lzma.RawLZMAFormat,
+            org.glavo.arkivo.codec.lzma.LZMA2Format;
 }

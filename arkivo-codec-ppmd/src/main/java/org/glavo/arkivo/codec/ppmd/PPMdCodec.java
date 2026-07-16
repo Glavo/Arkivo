@@ -6,12 +6,10 @@ package org.glavo.arkivo.codec.ppmd;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7Decoder;
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7Encoder;
-import org.glavo.arkivo.codec.ppmd.internal.PPMdCompressionFormat;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -20,9 +18,6 @@ import java.util.Objects;
 /// Provides an immutable raw PPMd7 configuration with externally declared model parameters and decoded size.
 @NotNullByDefault
 public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
-    /// The stable PPMd compression format name.
-    public static final String NAME = "ppmd";
-
     /// The default maximum context order used for compression.
     public static final int DEFAULT_MAXIMUM_ORDER = 6;
 
@@ -63,8 +58,8 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
 
     /// Returns the canonical raw PPMd7 format.
     @Override
-    public CompressionFormat format() {
-        return PPMdCompressionFormat.instance();
+    public PPMdFormat format() {
+        return PPMdFormat.instance();
     }
 
     /// Returns the configured maximum context order.

@@ -51,7 +51,7 @@ public final class RawLZMACodecTest {
     public void discoversRawProviders() {
         assertInstanceOf(
                 RawLZMACodec.class,
-                CompressionFormats.require(RawLZMACodec.NAME).defaultCodec()
+                CompressionFormats.require(RawLZMAFormat.NAME).defaultCodec()
         );
         assertInstanceOf(
                 RawLZMACodec.class,
@@ -59,7 +59,7 @@ public final class RawLZMACodecTest {
         );
         assertInstanceOf(
                 LZMA2Codec.class,
-                CompressionFormats.require(LZMA2Codec.NAME).defaultCodec()
+                CompressionFormats.require(LZMA2Format.NAME).defaultCodec()
         );
     }
 

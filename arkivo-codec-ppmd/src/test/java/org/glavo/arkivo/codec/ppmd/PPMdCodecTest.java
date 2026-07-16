@@ -46,7 +46,7 @@ final class PPMdCodecTest {
         assertEquals(1L << 20, configured.memorySize());
         assertEquals(PPMdCodec.DEFAULT_MAXIMUM_ORDER, codec.maximumOrder());
         assertSame(
-                CompressionFormats.require(PPMdCodec.NAME),
+                CompressionFormats.require(PPMdFormat.NAME),
                 CompressionFormats.require("ppmd7")
         );
     }

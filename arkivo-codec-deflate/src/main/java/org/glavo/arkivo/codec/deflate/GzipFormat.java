@@ -1,11 +1,9 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.codec.deflate.internal;
+package org.glavo.arkivo.codec.deflate;
 
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
-import org.glavo.arkivo.codec.deflate.GzipCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -14,28 +12,26 @@ import java.util.List;
 
 /// Describes the discoverable gzip compression format.
 @NotNullByDefault
-public final class GzipCompressionFormat implements CompressionFormat {
+public final class GzipFormat implements CompressionFormat {
+    /// The stable gzip format name.
+    public static final String NAME = "gzip";
+
     /// The canonical gzip format instance.
-    private static final GzipCompressionFormat INSTANCE = new GzipCompressionFormat();
+    private static final GzipFormat INSTANCE = new GzipFormat();
 
     /// Creates a stateless format descriptor for service discovery.
-    public GzipCompressionFormat() {
+    public GzipFormat() {
     }
 
     /// Returns the canonical gzip format instance.
-    public static GzipCompressionFormat instance() {
-        return INSTANCE;
-    }
-
-    /// Supplies the canonical gzip format to service discovery.
-    public static CompressionFormat provider() {
+    public static GzipFormat instance() {
         return INSTANCE;
     }
 
     /// Returns the stable gzip format name.
     @Override
     public String name() {
-        return GzipCodec.NAME;
+        return NAME;
     }
 
     /// Returns common gzip file extensions.
@@ -61,7 +57,7 @@ public final class GzipCompressionFormat implements CompressionFormat {
 
     /// Returns the default immutable gzip codec.
     @Override
-    public CompressionCodec<?> defaultCodec() {
+    public GzipCodec defaultCodec() {
         return GzipCodec.DEFAULT;
     }
 }

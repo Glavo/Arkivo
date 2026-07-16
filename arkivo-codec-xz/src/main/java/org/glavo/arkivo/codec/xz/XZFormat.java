@@ -1,11 +1,9 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.codec.xz.internal;
+package org.glavo.arkivo.codec.xz;
 
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
-import org.glavo.arkivo.codec.xz.XZCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -13,9 +11,12 @@ import java.nio.ByteBuffer;
 
 /// Describes the discoverable XZ compression format.
 @NotNullByDefault
-public final class XZCompressionFormat implements CompressionFormat {
+public final class XZFormat implements CompressionFormat {
+    /// The stable XZ format name.
+    public static final String NAME = "xz";
+
     /// The canonical XZ format instance.
-    private static final XZCompressionFormat INSTANCE = new XZCompressionFormat();
+    private static final XZFormat INSTANCE = new XZFormat();
 
     /// The XZ stream header magic bytes.
     private static final byte @Unmodifiable [] HEADER_MAGIC = {
@@ -23,23 +24,18 @@ public final class XZCompressionFormat implements CompressionFormat {
     };
 
     /// Creates a stateless format descriptor for service discovery.
-    public XZCompressionFormat() {
+    public XZFormat() {
     }
 
     /// Returns the canonical XZ format instance.
-    public static XZCompressionFormat instance() {
-        return INSTANCE;
-    }
-
-    /// Supplies the canonical XZ format to service discovery.
-    public static CompressionFormat provider() {
+    public static XZFormat instance() {
         return INSTANCE;
     }
 
     /// Returns the stable XZ format name.
     @Override
     public String name() {
-        return XZCodec.NAME;
+        return NAME;
     }
 
     /// Returns the number of leading bytes used to identify XZ streams.
@@ -66,7 +62,7 @@ public final class XZCompressionFormat implements CompressionFormat {
 
     /// Returns the default immutable XZ codec.
     @Override
-    public CompressionCodec<?> defaultCodec() {
+    public XZCodec defaultCodec() {
         return XZCodec.DEFAULT;
     }
 }

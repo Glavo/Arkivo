@@ -4,12 +4,10 @@
 package org.glavo.arkivo.codec.bzip2;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2ChannelEncoder;
-import org.glavo.arkivo.codec.bzip2.internal.BZip2CompressionFormat;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2Decoder;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2Encoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
@@ -21,9 +19,6 @@ import org.jetbrains.annotations.NotNullByDefault;
 public final class BZip2Codec
         implements CompressionCodec.LevelConfigurable<BZip2Codec>,
         CompressionCodec.Framed<BZip2Codec> {
-    /// The stable BZip2 compression format name.
-    public static final String NAME = "bzip2";
-
     /// The minimum BZip2 block-size level.
     public static final int MINIMUM_COMPRESSION_LEVEL = 1;
 
@@ -57,8 +52,8 @@ public final class BZip2Codec
 
     /// Returns the canonical BZip2 format.
     @Override
-    public CompressionFormat format() {
-        return BZip2CompressionFormat.instance();
+    public BZip2Format format() {
+        return BZip2Format.instance();
     }
 
     /// Returns the configured BZip2 block-size level.

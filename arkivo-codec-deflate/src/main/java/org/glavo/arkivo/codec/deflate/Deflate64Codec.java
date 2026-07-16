@@ -4,12 +4,10 @@
 package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.Deflate64Decoder;
-import org.glavo.arkivo.codec.deflate.internal.Deflate64CompressionFormat;
 import org.glavo.arkivo.codec.deflate.internal.Deflate64Encoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -22,9 +20,6 @@ import java.util.Objects;
 public final class Deflate64Codec
         implements CompressionCodec.LevelConfigurable<Deflate64Codec>,
         CompressionCodec.Flushable<Deflate64Codec> {
-    /// The stable Deflate64 compression format name.
-    public static final String NAME = "deflate64";
-
     /// The minimum Deflate64 match-search level.
     public static final int MINIMUM_COMPRESSION_LEVEL = 0;
 
@@ -61,8 +56,8 @@ public final class Deflate64Codec
 
     /// Returns the canonical raw Deflate64 format.
     @Override
-    public CompressionFormat format() {
-        return Deflate64CompressionFormat.instance();
+    public Deflate64Format format() {
+        return Deflate64Format.instance();
     }
 
 

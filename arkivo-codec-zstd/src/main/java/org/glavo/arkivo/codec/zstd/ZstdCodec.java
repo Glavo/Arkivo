@@ -8,11 +8,9 @@ import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.spi.CodecChannelAdapters;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
-import org.glavo.arkivo.codec.zstd.internal.ZstdCompressionFormat;
 import org.glavo.arkivo.codec.zstd.internal.ZstdDecoder;
 import org.glavo.arkivo.codec.zstd.internal.ZstdEncoder;
 import org.glavo.arkivo.codec.zstd.internal.ZstdEncoderParameters;
@@ -31,9 +29,6 @@ public final class ZstdCodec
         CompressionCodec.DictionaryConfigurable<ZstdCodec, ZstdDictionary>,
         CompressionCodec.PledgedSourceSizeEncoderFactory<ZstdCodec, CompressionEncoder.FlushableFramed>,
         CompressionCodec.FlushableFramed<ZstdCodec> {
-    /// The stable Zstandard compression format name.
-    public static final String NAME = "zstd";
-
     /// The minimum compression level accepted by Zstandard 1.x.
     public static final int MINIMUM_COMPRESSION_LEVEL = -131_072;
 
@@ -213,8 +208,8 @@ public final class ZstdCodec
 
     /// Returns the canonical Zstandard format.
     @Override
-    public CompressionFormat format() {
-        return ZstdCompressionFormat.instance();
+    public ZstdFormat format() {
+        return ZstdFormat.instance();
     }
 
     /// Returns the configured compression level.

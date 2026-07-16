@@ -4,14 +4,12 @@
 package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.RawCompressionDictionary;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.DeflateDecoder;
-import org.glavo.arkivo.codec.deflate.internal.DeflateCompressionFormat;
 import org.glavo.arkivo.codec.deflate.internal.DeflateEncoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -30,9 +28,6 @@ public final class DeflateCodec
         CompressionCodec.StrategyConfigurable<DeflateCodec>,
         CompressionCodec.DictionaryConfigurable<DeflateCodec, RawCompressionDictionary>,
         CompressionCodec.Flushable<DeflateCodec> {
-    /// The stable raw Deflate compression format name.
-    public static final String NAME = "deflate";
-
     /// The minimum raw Deflate match-search level.
     public static final int MINIMUM_COMPRESSION_LEVEL = 0;
 
@@ -82,8 +77,8 @@ public final class DeflateCodec
 
     /// Returns the canonical raw Deflate format.
     @Override
-    public CompressionFormat format() {
-        return DeflateCompressionFormat.instance();
+    public DeflateFormat format() {
+        return DeflateFormat.instance();
     }
 
 

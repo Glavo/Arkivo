@@ -1,11 +1,9 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.codec.ppmd.internal;
+package org.glavo.arkivo.codec.ppmd;
 
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
-import org.glavo.arkivo.codec.ppmd.PPMdCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -13,28 +11,26 @@ import java.util.List;
 
 /// Describes the discoverable raw PPMd7 compression format.
 @NotNullByDefault
-public final class PPMdCompressionFormat implements CompressionFormat {
+public final class PPMdFormat implements CompressionFormat {
+    /// The stable raw PPMd7 format name.
+    public static final String NAME = "ppmd";
+
     /// The canonical raw PPMd7 format instance.
-    private static final PPMdCompressionFormat INSTANCE = new PPMdCompressionFormat();
+    private static final PPMdFormat INSTANCE = new PPMdFormat();
 
     /// Creates a stateless format descriptor for service discovery.
-    public PPMdCompressionFormat() {
+    public PPMdFormat() {
     }
 
     /// Returns the canonical raw PPMd7 format instance.
-    public static PPMdCompressionFormat instance() {
-        return INSTANCE;
-    }
-
-    /// Supplies the canonical raw PPMd7 format to service discovery.
-    public static CompressionFormat provider() {
+    public static PPMdFormat instance() {
         return INSTANCE;
     }
 
     /// Returns the stable raw PPMd7 format name.
     @Override
     public String name() {
-        return PPMdCodec.NAME;
+        return NAME;
     }
 
     /// Returns the PPMd7 alias used by 7z containers.
@@ -51,7 +47,7 @@ public final class PPMdCompressionFormat implements CompressionFormat {
 
     /// Returns the default immutable raw PPMd7 codec.
     @Override
-    public CompressionCodec<?> defaultCodec() {
+    public PPMdCodec defaultCodec() {
         return PPMdCodec.DEFAULT;
     }
 }

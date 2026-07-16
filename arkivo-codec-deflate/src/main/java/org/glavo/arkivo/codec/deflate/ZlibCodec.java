@@ -4,12 +4,10 @@
 package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.deflate.internal.ZlibCompressionFormat;
 import org.glavo.arkivo.codec.deflate.internal.ZlibDecoder;
 import org.glavo.arkivo.codec.deflate.internal.ZlibEncoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
@@ -25,9 +23,6 @@ public final class ZlibCodec
         CompressionCodec.StrategyConfigurable<ZlibCodec>,
         CompressionCodec.DictionaryConfigurable<ZlibCodec, ZlibDictionary>,
         CompressionCodec.Flushable<ZlibCodec> {
-    /// The stable zlib compression format name.
-    public static final String NAME = "zlib";
-
     /// The minimum zlib Deflate match-search level.
     public static final int MINIMUM_COMPRESSION_LEVEL = 0;
 
@@ -74,8 +69,8 @@ public final class ZlibCodec
 
     /// Returns the canonical zlib format.
     @Override
-    public CompressionFormat format() {
-        return ZlibCompressionFormat.instance();
+    public ZlibFormat format() {
+        return ZlibFormat.instance();
     }
 
 

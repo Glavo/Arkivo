@@ -4,12 +4,10 @@
 package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.deflate.internal.GzipCompressionFormat;
 import org.glavo.arkivo.codec.deflate.internal.GzipDecoder;
 import org.glavo.arkivo.codec.deflate.internal.GzipEncoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
@@ -24,9 +22,6 @@ public final class GzipCodec
         implements CompressionCodec.LevelConfigurable<GzipCodec>,
         CompressionCodec.StrategyConfigurable<GzipCodec>,
         CompressionCodec.FlushableFramed<GzipCodec> {
-    /// The stable gzip compression format name.
-    public static final String NAME = "gzip";
-
     /// The minimum gzip Deflate match-search level.
     public static final int MINIMUM_COMPRESSION_LEVEL = 0;
 
@@ -68,8 +63,8 @@ public final class GzipCodec
 
     /// Returns the canonical gzip format.
     @Override
-    public CompressionFormat format() {
-        return GzipCompressionFormat.instance();
+    public GzipFormat format() {
+        return GzipFormat.instance();
     }
 
 

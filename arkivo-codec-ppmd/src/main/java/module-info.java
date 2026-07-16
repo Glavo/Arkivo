@@ -11,5 +11,5 @@ module org.glavo.arkivo.codec.ppmd {
     exports org.glavo.arkivo.codec.ppmd.internal to org.glavo.arkivo.archive.rar;
 
     provides org.glavo.arkivo.codec.CompressionFormat with
-            org.glavo.arkivo.codec.ppmd.internal.PPMdCompressionFormat;
+            org.glavo.arkivo.codec.ppmd.PPMdFormat;
 }

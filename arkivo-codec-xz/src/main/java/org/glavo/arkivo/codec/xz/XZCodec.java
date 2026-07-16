@@ -5,12 +5,10 @@ package org.glavo.arkivo.codec.xz;
 
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
-import org.glavo.arkivo.codec.xz.internal.XZCompressionFormat;
 import org.glavo.arkivo.codec.xz.internal.XZChannelEncoder;
 import org.glavo.arkivo.codec.xz.internal.XZDecoder;
 import org.glavo.arkivo.codec.xz.internal.XZEncoder;
@@ -22,9 +20,6 @@ import java.util.Objects;
 /// Provides an immutable XZ configuration and pure Java transport-independent engines.
 @NotNullByDefault
 public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> {
-    /// The stable XZ compression format name.
-    public static final String NAME = "xz";
-
     /// The default XZ LZMA2 dictionary size.
     public static final int DEFAULT_DICTIONARY_SIZE = XZChannelEncoder.DEFAULT_DICTIONARY_SIZE;
 
@@ -73,8 +68,8 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
 
     /// Returns the canonical XZ format.
     @Override
-    public CompressionFormat format() {
-        return XZCompressionFormat.instance();
+    public XZFormat format() {
+        return XZFormat.instance();
     }
 
     /// Returns the configured LZMA2 model properties.

@@ -36,14 +36,14 @@ public final class DeflateCodecTest {
         byte[] input = "hello deflate".getBytes(StandardCharsets.UTF_8);
 
         assertEquals(true, codec instanceof CompressionCodec<?>);
-        assertEquals(DeflateCodec.NAME, codec.format().name());
+        assertEquals(DeflateFormat.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
     /// Verifies that the raw deflate codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(DeflateCodec.class, CompressionFormats.require(DeflateCodec.NAME).defaultCodec().getClass());
+        assertEquals(DeflateCodec.class, CompressionFormats.require(DeflateFormat.NAME).defaultCodec().getClass());
     }
 
     /// Verifies large channel operations interoperate with the JDK raw deflate streams.

@@ -40,14 +40,14 @@ public final class ZlibCodecTest {
         byte[] input = "hello zlib".getBytes(StandardCharsets.UTF_8);
 
         assertEquals(true, codec instanceof CompressionCodec<?>);
-        assertEquals(ZlibCodec.NAME, codec.format().name());
+        assertEquals(ZlibFormat.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
     /// Verifies that the zlib codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(ZlibCodec.class, CompressionFormats.require(ZlibCodec.NAME).defaultCodec().getClass());
+        assertEquals(ZlibCodec.class, CompressionFormats.require(ZlibFormat.NAME).defaultCodec().getClass());
     }
 
     /// Verifies zlib header matching.

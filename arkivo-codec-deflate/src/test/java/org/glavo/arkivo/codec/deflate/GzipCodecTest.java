@@ -39,14 +39,14 @@ public final class GzipCodecTest {
         byte[] input = "hello gzip".getBytes(StandardCharsets.UTF_8);
 
         assertEquals(true, codec instanceof CompressionCodec<?>);
-        assertEquals(GzipCodec.NAME, codec.format().name());
+        assertEquals(GzipFormat.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
     /// Verifies that the gzip codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(GzipCodec.class, CompressionFormats.require(GzipCodec.NAME).defaultCodec().getClass());
+        assertEquals(GzipCodec.class, CompressionFormats.require(GzipFormat.NAME).defaultCodec().getClass());
     }
 
     /// Verifies gzip metadata and signature matching.

@@ -1,11 +1,10 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.codec.zstd.internal;
+package org.glavo.arkivo.codec.zstd;
 
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
-import org.glavo.arkivo.codec.zstd.ZstdCodec;
+import org.glavo.arkivo.codec.zstd.internal.ZstdFrameHeader;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -14,28 +13,26 @@ import java.util.List;
 
 /// Describes the discoverable standard Zstandard compression format.
 @NotNullByDefault
-public final class ZstdCompressionFormat implements CompressionFormat {
+public final class ZstdFormat implements CompressionFormat {
+    /// The stable Zstandard format name.
+    public static final String NAME = "zstd";
+
     /// The canonical Zstandard format instance.
-    private static final ZstdCompressionFormat INSTANCE = new ZstdCompressionFormat();
+    private static final ZstdFormat INSTANCE = new ZstdFormat();
 
     /// Creates a stateless format descriptor for service discovery.
-    public ZstdCompressionFormat() {
+    public ZstdFormat() {
     }
 
     /// Returns the canonical Zstandard format instance.
-    public static ZstdCompressionFormat instance() {
-        return INSTANCE;
-    }
-
-    /// Supplies the canonical Zstandard format to service discovery.
-    public static CompressionFormat provider() {
+    public static ZstdFormat instance() {
         return INSTANCE;
     }
 
     /// Returns the stable Zstandard format name.
     @Override
     public String name() {
-        return ZstdCodec.NAME;
+        return NAME;
     }
 
     /// Returns common Zstandard file extensions.
@@ -58,7 +55,7 @@ public final class ZstdCompressionFormat implements CompressionFormat {
 
     /// Returns the default immutable Zstandard codec.
     @Override
-    public CompressionCodec<?> defaultCodec() {
+    public ZstdCodec defaultCodec() {
         return ZstdCodec.DEFAULT;
     }
 }

@@ -1,11 +1,9 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.codec.bzip2.internal;
+package org.glavo.arkivo.codec.bzip2;
 
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
-import org.glavo.arkivo.codec.bzip2.BZip2Codec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -14,28 +12,26 @@ import java.util.List;
 
 /// Describes the discoverable BZip2 compression format.
 @NotNullByDefault
-public final class BZip2CompressionFormat implements CompressionFormat {
+public final class BZip2Format implements CompressionFormat {
+    /// The stable BZip2 format name.
+    public static final String NAME = "bzip2";
+
     /// The canonical BZip2 format instance.
-    private static final BZip2CompressionFormat INSTANCE = new BZip2CompressionFormat();
+    private static final BZip2Format INSTANCE = new BZip2Format();
 
     /// Creates a stateless format descriptor for service discovery.
-    public BZip2CompressionFormat() {
+    public BZip2Format() {
     }
 
     /// Returns the canonical BZip2 format instance.
-    public static BZip2CompressionFormat instance() {
-        return INSTANCE;
-    }
-
-    /// Supplies the canonical BZip2 format to service discovery.
-    public static CompressionFormat provider() {
+    public static BZip2Format instance() {
         return INSTANCE;
     }
 
     /// Returns the stable BZip2 format name.
     @Override
     public String name() {
-        return BZip2Codec.NAME;
+        return NAME;
     }
 
     /// Returns alternative stable names accepted for BZip2.
@@ -74,7 +70,7 @@ public final class BZip2CompressionFormat implements CompressionFormat {
 
     /// Returns the default immutable BZip2 codec.
     @Override
-    public CompressionCodec<?> defaultCodec() {
+    public BZip2Codec defaultCodec() {
         return BZip2Codec.DEFAULT;
     }
 }

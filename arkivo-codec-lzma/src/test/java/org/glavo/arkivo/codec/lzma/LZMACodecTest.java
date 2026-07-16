@@ -47,14 +47,14 @@ public final class LZMACodecTest {
         byte[] input = "hello lzma".getBytes(StandardCharsets.UTF_8);
 
         assertEquals(true, codec instanceof CompressionCodec<?>);
-        assertEquals(LZMACodec.NAME, codec.format().name());
+        assertEquals(LZMAFormat.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
     /// Verifies that the LZMA codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(LZMACodec.class, CompressionFormats.require(LZMACodec.NAME).defaultCodec().getClass());
+        assertEquals(LZMACodec.class, CompressionFormats.require(LZMAFormat.NAME).defaultCodec().getClass());
     }
 
     /// Rejects unsigned LZMA-alone output sizes that cannot be represented by the public size model.

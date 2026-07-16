@@ -58,14 +58,14 @@ public final class XZCodecTest {
         byte[] input = "hello xz".getBytes(StandardCharsets.UTF_8);
 
         assertEquals(true, codec instanceof CompressionCodec<?>);
-        assertEquals(XZCodec.NAME, codec.format().name());
+        assertEquals(XZFormat.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
     /// Verifies that the XZ codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(XZCodec.class, CompressionFormats.require(XZCodec.NAME).defaultCodec().getClass());
+        assertEquals(XZCodec.class, CompressionFormats.require(XZFormat.NAME).defaultCodec().getClass());
     }
 
     /// Verifies XZ signature matching.

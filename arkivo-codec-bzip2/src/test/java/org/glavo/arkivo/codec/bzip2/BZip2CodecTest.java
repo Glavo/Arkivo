@@ -38,14 +38,14 @@ public final class BZip2CodecTest {
         byte[] input = "hello bzip2".getBytes(StandardCharsets.UTF_8);
 
         assertEquals(true, codec instanceof CompressionCodec<?>);
-        assertEquals(BZip2Codec.NAME, codec.format().name());
+        assertEquals(BZip2Format.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
 
     /// Verifies that the BZip2 codec can be discovered through service loading.
     @Test
     public void findInstalledCodec() {
-        assertEquals(BZip2Codec.class, CompressionFormats.require(BZip2Codec.NAME).defaultCodec().getClass());
+        assertEquals(BZip2Codec.class, CompressionFormats.require(BZip2Format.NAME).defaultCodec().getClass());
         assertEquals(BZip2Codec.class, CompressionFormats.require("bz2").defaultCodec().getClass());
     }
 

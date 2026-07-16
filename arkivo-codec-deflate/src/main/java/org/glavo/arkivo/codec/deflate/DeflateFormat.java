@@ -1,42 +1,38 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.codec.deflate.internal;
+package org.glavo.arkivo.codec.deflate;
 
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
-import org.glavo.arkivo.codec.deflate.DeflateCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 
 /// Describes the discoverable raw Deflate compression format.
 @NotNullByDefault
-public final class DeflateCompressionFormat implements CompressionFormat {
+public final class DeflateFormat implements CompressionFormat {
+    /// The stable raw Deflate format name.
+    public static final String NAME = "deflate";
+
     /// The canonical raw Deflate format instance.
-    private static final DeflateCompressionFormat INSTANCE = new DeflateCompressionFormat();
+    private static final DeflateFormat INSTANCE = new DeflateFormat();
 
     /// Creates a stateless format descriptor for service discovery.
-    public DeflateCompressionFormat() {
+    public DeflateFormat() {
     }
 
     /// Returns the canonical raw Deflate format instance.
-    public static DeflateCompressionFormat instance() {
-        return INSTANCE;
-    }
-
-    /// Supplies the canonical raw Deflate format to service discovery.
-    public static CompressionFormat provider() {
+    public static DeflateFormat instance() {
         return INSTANCE;
     }
 
     /// Returns the stable raw Deflate format name.
     @Override
     public String name() {
-        return DeflateCodec.NAME;
+        return NAME;
     }
 
     /// Returns the default immutable raw Deflate codec.
     @Override
-    public CompressionCodec<?> defaultCodec() {
+    public DeflateCodec defaultCodec() {
         return DeflateCodec.DEFAULT;
     }
 }
