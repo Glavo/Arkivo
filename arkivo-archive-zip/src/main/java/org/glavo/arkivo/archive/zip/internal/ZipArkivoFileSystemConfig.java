@@ -11,7 +11,7 @@ import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoSourceMutationPolicy;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
-import org.glavo.arkivo.archive.zip.ZipEntryNameEncoding;
+import org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -50,7 +50,7 @@ public final class ZipArkivoFileSystemConfig {
             null,
             ZipEncryption.none(),
             NO_SPLIT_SIZE,
-            ZipEntryNameEncoding.standard(),
+            ZipLegacyCharsetDetector.standard(),
             ArkivoFileSystemThreadSafety.CONCURRENT_READ,
             null,
             null,
@@ -73,8 +73,8 @@ public final class ZipArkivoFileSystemConfig {
     /// The maximum size of each output volume, or `NO_SPLIT_SIZE` when split output is disabled.
     private final long splitSize;
 
-    /// The policy used to decode ZIP entry names when no authoritative Unicode name is available.
-    private final ZipEntryNameEncoding entryNameEncoding;
+    /// The detector used to select charsets for legacy ZIP entry names and comments.
+    private final ZipLegacyCharsetDetector legacyCharsetDetector;
 
     /// The requested ZIP file system thread-safety strategy.
     private final ArkivoFileSystemThreadSafety threadSafety;
@@ -106,7 +106,7 @@ public final class ZipArkivoFileSystemConfig {
             @Nullable ArkivoPasswordProvider passwordProvider,
             ZipEncryption defaultEncryption,
             long splitSize,
-            ZipEntryNameEncoding entryNameEncoding,
+            ZipLegacyCharsetDetector legacyCharsetDetector,
             ArkivoFileSystemThreadSafety threadSafety,
             @Nullable ArkivoEditStorage editStorage,
             @Nullable ArkivoCommitTarget commitTarget,
@@ -117,7 +117,7 @@ public final class ZipArkivoFileSystemConfig {
                 passwordProvider,
                 defaultEncryption,
                 splitSize,
-                entryNameEncoding,
+                legacyCharsetDetector,
                 threadSafety,
                 editStorage,
                 commitTarget,
@@ -135,7 +135,7 @@ public final class ZipArkivoFileSystemConfig {
             @Nullable ArkivoPasswordProvider passwordProvider,
             ZipEncryption defaultEncryption,
             long splitSize,
-            ZipEntryNameEncoding entryNameEncoding,
+            ZipLegacyCharsetDetector legacyCharsetDetector,
             ArkivoFileSystemThreadSafety threadSafety,
             @Nullable ArkivoEditStorage editStorage,
             @Nullable ArkivoCommitTarget commitTarget,
@@ -159,7 +159,10 @@ public final class ZipArkivoFileSystemConfig {
         this.passwordProvider = passwordProvider;
         this.defaultEncryption = Objects.requireNonNull(defaultEncryption, "defaultEncryption");
         this.splitSize = splitSize;
-        this.entryNameEncoding = Objects.requireNonNull(entryNameEncoding, "entryNameEncoding");
+        this.legacyCharsetDetector = Objects.requireNonNull(
+                legacyCharsetDetector,
+                "legacyCharsetDetector"
+        );
         this.threadSafety = Objects.requireNonNull(threadSafety, "threadSafety");
         this.editStorage = editStorage;
         this.commitTarget = commitTarget;
@@ -202,10 +205,10 @@ public final class ZipArkivoFileSystemConfig {
         ZipEncryption defaultEncryption =
                 options.getOrDefault(ZipArkivoFileSystem.DEFAULT_ENCRYPTION, ZipEncryption.none());
         long splitSize = splitSize(options);
-        ZipEntryNameEncoding entryNameEncoding =
+        ZipLegacyCharsetDetector legacyCharsetDetector =
                 options.getOrDefault(
-                        ZipArkivoFileSystem.ENTRY_NAME_ENCODING,
-                        ZipEntryNameEncoding.standard()
+                        ZipArkivoFileSystem.LEGACY_CHARSET_DETECTOR,
+                        ZipLegacyCharsetDetector.standard()
                 );
         ArkivoFileSystemThreadSafety threadSafety =
                 options.getOrDefault(
@@ -221,7 +224,7 @@ public final class ZipArkivoFileSystemConfig {
                 passwordProvider,
                 defaultEncryption,
                 splitSize,
-                entryNameEncoding,
+                legacyCharsetDetector,
                 threadSafety,
                 editStorage,
                 commitTarget,
@@ -258,9 +261,9 @@ public final class ZipArkivoFileSystemConfig {
         return splitSize;
     }
 
-    /// Returns the policy used to decode ZIP entry names when no authoritative Unicode name is available.
-    public ZipEntryNameEncoding entryNameEncoding() {
-        return entryNameEncoding;
+    /// Returns the detector used to select charsets for legacy ZIP entry names and comments.
+    public ZipLegacyCharsetDetector legacyCharsetDetector() {
+        return legacyCharsetDetector;
     }
 
     /// Returns the requested ZIP file system thread-safety strategy.

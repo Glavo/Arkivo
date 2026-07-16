@@ -11,11 +11,12 @@ import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoSourceMutationPolicy;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
-import org.glavo.arkivo.archive.zip.ZipEntryNameEncoding;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.Charset;
 import java.nio.file.StandardOpenOption;
 import java.util.HashMap;
 import java.util.Map;
@@ -42,7 +43,10 @@ public final class ZipArkivoFileSystemConfigTest {
         assertEquals("arkivo.zip.passwordProvider", ZipArkivoFileSystem.PASSWORD_PROVIDER.key());
         assertEquals("arkivo.zip.defaultEncryption", ZipArkivoFileSystem.DEFAULT_ENCRYPTION.key());
         assertEquals("arkivo.zip.splitSize", ZipArkivoFileSystem.SPLIT_SIZE.key());
-        assertEquals("arkivo.zip.entryNameEncoding", ZipArkivoFileSystem.ENTRY_NAME_ENCODING.key());
+        assertEquals(
+                "arkivo.zip.legacyCharsetDetector",
+                ZipArkivoFileSystem.LEGACY_CHARSET_DETECTOR.key()
+        );
         assertEquals("arkivo.threadSafety", ArkivoFileSystem.THREAD_SAFETY.key());
         assertEquals("arkivo.editStorage", ArkivoFileSystem.EDIT_STORAGE.key());
         assertEquals("arkivo.commitTarget", ArkivoFileSystem.COMMIT_TARGET.key());
@@ -51,18 +55,21 @@ public final class ZipArkivoFileSystemConfigTest {
 
     /// Verifies that string environment values are parsed through typed ZIP options.
     @Test
-    public void stringValues() {
+    public void stringValues() throws Exception {
         Map<String, Object> environment = new HashMap<>();
         environment.put(ArkivoFileSystem.THREAD_SAFETY.key(), "strict");
         environment.put(ZipArkivoFileSystem.DEFAULT_ENCRYPTION.key(), "winzip-aes-256");
         environment.put(ZipArkivoFileSystem.SPLIT_SIZE.key(), "65536");
-        environment.put(ZipArkivoFileSystem.ENTRY_NAME_ENCODING.key(), "gb18030");
+        environment.put(ZipArkivoFileSystem.LEGACY_CHARSET_DETECTOR.key(), "gb18030");
 
         ZipArkivoFileSystemConfig config = fromEnvironment(environment);
 
         assertEquals(ZipEncryption.winZipAes256(), config.defaultEncryption());
         assertEquals(65536L, config.splitSize());
-        assertEquals(ZipEntryNameEncoding.parse("gb18030"), config.entryNameEncoding());
+        assertEquals(
+                Charset.forName("GB18030"),
+                config.legacyCharsetDetector().detect(ByteBuffer.allocate(0))
+        );
         assertEquals(ArkivoFileSystemThreadSafety.STRICT, config.threadSafety());
     }
 

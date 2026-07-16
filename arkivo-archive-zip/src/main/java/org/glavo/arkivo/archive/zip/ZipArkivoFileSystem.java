@@ -20,6 +20,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
 import java.nio.channels.SeekableByteChannel;
+import java.nio.charset.Charset;
 import java.nio.file.Path;
 import java.util.Objects;
 
@@ -61,13 +62,13 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
     public static final ArchiveOption<Long> SPLIT_SIZE =
             ArchiveOption.of("arkivo.zip", "splitSize", Long.class, ZipArkivoFileSystem::splitSizeOptionValue);
 
-    /// The option for a `ZipEntryNameEncoding` value that controls entry name decoding.
-    public static final ArchiveOption<ZipEntryNameEncoding> ENTRY_NAME_ENCODING =
+    /// The option for the detector used to select legacy entry-name and comment charsets while reading ZIP metadata.
+    public static final ArchiveOption<ZipLegacyCharsetDetector> LEGACY_CHARSET_DETECTOR =
             ArchiveOption.of(
                     "arkivo.zip",
-                    "entryNameEncoding",
-                    ZipEntryNameEncoding.class,
-                    ZipArkivoFileSystem::entryNameEncodingOptionValue
+                    "legacyCharsetDetector",
+                    ZipLegacyCharsetDetector.class,
+                    ZipArkivoFileSystem::legacyCharsetDetectorOptionValue
             );
 
     /// Creates a ZIP archive file system base instance.
@@ -285,16 +286,20 @@ public abstract sealed class ZipArkivoFileSystem extends ArkivoFileSystem
         );
     }
 
-    /// Converts a raw entry name encoding option value.
-    private static ZipEntryNameEncoding entryNameEncodingOptionValue(Object value) {
-        if (value instanceof ZipEntryNameEncoding encoding) {
-            return encoding;
+    /// Converts a raw legacy charset detector option value.
+    private static ZipLegacyCharsetDetector legacyCharsetDetectorOptionValue(Object value) {
+        if (value instanceof ZipLegacyCharsetDetector detector) {
+            return detector;
+        }
+        if (value instanceof Charset charset) {
+            return ZipLegacyCharsetDetector.fixed(charset);
         }
         if (value instanceof String stringValue) {
-            return ZipEntryNameEncoding.parse(stringValue);
+            return ZipLegacyCharsetDetector.fixed(Charset.forName(stringValue));
         }
         throw new IllegalArgumentException(
-                "Expected ZipEntryNameEncoding or String for key: " + ENTRY_NAME_ENCODING.key()
+                "Expected ZipLegacyCharsetDetector, Charset, or String for key: "
+                        + LEGACY_CHARSET_DETECTOR.key()
         );
     }
 }

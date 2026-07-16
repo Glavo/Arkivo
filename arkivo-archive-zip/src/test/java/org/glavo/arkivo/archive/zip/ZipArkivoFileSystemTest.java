@@ -46,6 +46,7 @@ import java.nio.channels.NonWritableChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.channels.WritableByteChannel;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.ClosedFileSystemException;
 import java.nio.file.DirectoryNotEmptyException;
@@ -6606,7 +6607,7 @@ public final class ZipArkivoFileSystemTest {
     @Test
     public void decodesEntryCommentWithFallbackEncoding() throws IOException {
         byte[] name = "comment.txt".getBytes(StandardCharsets.UTF_8);
-        byte[] rawComment = "M\u00fcnchen".getBytes(ZipEntryNameEncoding.cp437());
+        byte[] rawComment = "M\u00fcnchen".getBytes(Charset.forName("IBM437"));
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithRawNameExtraAndComment(
                 name,
                 0,
@@ -6636,7 +6637,7 @@ public final class ZipArkivoFileSystemTest {
     @Test
     public void decodesUnicodeCommentExtraFieldBeforeFallback() throws IOException {
         byte[] name = "unicode-comment.txt".getBytes(StandardCharsets.UTF_8);
-        byte[] rawComment = "legacy".getBytes(ZipEntryNameEncoding.cp437());
+        byte[] rawComment = "legacy".getBytes(Charset.forName("IBM437"));
         byte[] centralExtraData = unicodeExtraField(0x6375, rawComment, "Gr\u00fc\u00dfe");
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithRawNameExtraAndComment(
                 name,

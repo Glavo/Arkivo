@@ -4589,7 +4589,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
         private static EntryAttributes written(CentralEntry entry, ZipArkivoFileSystemConfig config) throws IOException {
             byte[] centralDirectoryExtraData = entry.centralDirectoryExtraData();
             byte @Nullable [] rawComment = entry.rawComment.length > 0 ? entry.rawComment : null;
-            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(config.entryNameEncoding());
+            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(config.legacyCharsetDetector());
             return new EntryAttributes(
                     entryNameKey(entry.entryName),
                     entry.rawName,
@@ -4657,7 +4657,7 @@ public final class StreamingZipArkivoFileSystemImpl extends ZipArkivoFileSystem 
                     nextOffset
             );
             Zip64Values zip64 = Zip64Values.read(extraData, uncompressedSize, compressedSize, localHeaderOffset);
-            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(config.entryNameEncoding());
+            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(config.legacyCharsetDetector());
             String decodedPath = decoder.decodePath(rawPath, flags, extraData);
             byte @Nullable [] rawComment = rawCommentBytes.length > 0 ? rawCommentBytes : null;
             return new EntryAttributes(

@@ -3,17 +3,15 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
-import org.glavo.arkivo.archive.zip.ZipEntryNameEncoding;
+import org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
 import java.nio.charset.CodingErrorAction;
-import java.util.Arrays;
 import java.util.Objects;
 import java.util.zip.CRC32;
 
@@ -31,12 +29,18 @@ public final class ZipEntryNameDecoder {
     /// The Info-ZIP Unicode Comment Extra Field identifier.
     public static final int UNICODE_COMMENT_EXTRA_FIELD_ID = 0x6375;
 
-    /// The entry name encoding policy used when no authoritative Unicode name is available.
-    private final ZipEntryNameEncoding encoding;
+    /// The CP437 charset required by the original ZIP entry metadata encoding rules.
+    private static final Charset CP437 = Charset.forName("IBM437");
+
+    /// The detector used when no authoritative Unicode charset is available.
+    private final ZipLegacyCharsetDetector legacyCharsetDetector;
 
     /// Creates an entry name decoder.
-    public ZipEntryNameDecoder(ZipEntryNameEncoding encoding) {
-        this.encoding = Objects.requireNonNull(encoding, "encoding");
+    public ZipEntryNameDecoder(ZipLegacyCharsetDetector legacyCharsetDetector) {
+        this.legacyCharsetDetector = Objects.requireNonNull(
+                legacyCharsetDetector,
+                "legacyCharsetDetector"
+        );
     }
 
     /// Decodes a raw ZIP entry path.
@@ -112,45 +116,15 @@ public final class ZipEntryNameDecoder {
     }
 
     /// Decodes raw bytes after authoritative Unicode metadata has been considered.
-    private String decodeFallback(byte[] rawValue, int generalPurposeFlags) throws CharacterCodingException {
+    private String decodeFallback(byte[] rawValue, int generalPurposeFlags) throws IOException {
         if ((generalPurposeFlags & UTF_8_FLAG) != 0) {
             return strictDecode(rawValue, java.nio.charset.StandardCharsets.UTF_8);
         }
 
-        return switch (encoding.mode()) {
-            case STANDARD -> strictDecode(rawValue, ZipEntryNameEncoding.cp437());
-            case CHARSET -> strictDecode(rawValue, Objects.requireNonNull(encoding.charset(), "charset"));
-            case AUTO -> autoDecode(rawValue);
-        };
-    }
-
-    /// Chooses a fallback charset from the configured automatic candidate list.
-    private String autoDecode(byte[] rawValue) throws CharacterCodingException {
-        String bestValue = null;
-        int bestScore = Integer.MIN_VALUE;
-
-        for (Charset candidate : encoding.candidates()) {
-            String decodedValue;
-            try {
-                decodedValue = strictDecode(rawValue, candidate);
-            } catch (CharacterCodingException ignored) {
-                continue;
-            }
-            if (!roundTrips(rawValue, decodedValue, candidate)) {
-                continue;
-            }
-
-            int score = decodedNameScore(decodedValue);
-            if (score > bestScore) {
-                bestValue = decodedValue;
-                bestScore = score;
-            }
-        }
-
-        if (bestValue != null) {
-            return bestValue;
-        }
-        return strictDecode(rawValue, ZipEntryNameEncoding.cp437());
+        @Nullable Charset detectedCharset = legacyCharsetDetector.detect(
+                ByteBuffer.wrap(rawValue).asReadOnlyBuffer()
+        );
+        return strictDecode(rawValue, detectedCharset != null ? detectedCharset : CP437);
     }
 
     /// Strictly decodes a complete byte array with the given charset.
@@ -170,51 +144,6 @@ public final class ZipEntryNameDecoder {
                 .onUnmappableCharacter(CodingErrorAction.REPORT)
                 .decode(ByteBuffer.wrap(value, offset, length))
                 .toString();
-    }
-
-    /// Returns whether the decoded value encodes back to the same raw bytes.
-    private static boolean roundTrips(byte[] rawValue, String decodedValue, Charset charset) throws CharacterCodingException {
-        ByteBuffer encodedValue = charset.newEncoder()
-                .onMalformedInput(CodingErrorAction.REPORT)
-                .onUnmappableCharacter(CodingErrorAction.REPORT)
-                .encode(CharBuffer.wrap(decodedValue));
-        byte[] bytes = new byte[encodedValue.remaining()];
-        encodedValue.get(bytes);
-        return Arrays.equals(rawValue, bytes);
-    }
-
-    /// Scores a decoded path so automatic detection prefers readable names over mojibake.
-    private static int decodedNameScore(String value) {
-        int score = 0;
-        for (int index = 0; index < value.length(); index++) {
-            char character = value.charAt(index);
-            if (character == 0 || Character.isISOControl(character)) {
-                return Integer.MIN_VALUE;
-            }
-            if (character == '/') {
-                score += 3;
-            } else if (character <= 0x7f) {
-                score += asciiScore(character);
-            } else if (Character.isLetterOrDigit(character)) {
-                score += 8;
-            } else if (Character.isWhitespace(character)) {
-                score += 2;
-            } else {
-                score += 1;
-            }
-        }
-        return score;
-    }
-
-    /// Scores an ASCII character inside a decoded path.
-    private static int asciiScore(char character) {
-        if (Character.isLetterOrDigit(character)) {
-            return 4;
-        }
-        return switch (character) {
-            case '.', '_', '-', ' ', '(', ')', '[', ']' -> 3;
-            default -> 1;
-        };
     }
 
 }

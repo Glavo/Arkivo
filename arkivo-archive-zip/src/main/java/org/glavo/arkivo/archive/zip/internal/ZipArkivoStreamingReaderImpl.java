@@ -691,7 +691,8 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     /// Decodes an entry path.
     private String decodePath(byte[] rawName, int flags, byte[] extraData) throws IOException {
         try {
-            String path = new ZipEntryNameDecoder(config.entryNameEncoding()).decodePath(rawName, flags, extraData);
+            String path = new ZipEntryNameDecoder(config.legacyCharsetDetector())
+                    .decodePath(rawName, flags, extraData);
             requireValidEntryPath(path);
             return path;
         } catch (java.nio.charset.CharacterCodingException exception) {

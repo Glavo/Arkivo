@@ -23,7 +23,7 @@ import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
-import org.glavo.arkivo.archive.zip.ZipEntryNameEncoding;
+import org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector;
 import org.glavo.arkivo.archive.zip.ZipMethod;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -837,7 +837,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     private ZipIndex readIndex() throws IOException {
         try (ArchiveChannel channel = openArchiveChannel()) {
             ZipEndRecord endRecord = readEndRecord(channel);
-            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(config.entryNameEncoding());
+            ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(config.legacyCharsetDetector());
             ArkivoReadLimitTracker readLimits = ArkivoReadLimitTracker.fromLimits(
                     config.maximumEntryCount(),
                     config.maximumEntrySize(),
@@ -1071,7 +1071,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                 config.passwordProvider(),
                 config.defaultEncryption(),
                 ZipArkivoFileSystemConfig.NO_SPLIT_SIZE,
-                config.entryNameEncoding(),
+                config.legacyCharsetDetector(),
                 config.threadSafety(),
                 null,
                 null,
@@ -1101,7 +1101,7 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
                     index.entries.keySet(),
                     centralDirectoryEntrySnapshots(
                             centralDirectory,
-                            config.entryNameEncoding(),
+                            config.legacyCharsetDetector(),
                             index,
                             channel
                     ),
@@ -1115,12 +1115,12 @@ public final class ZipArkivoFileSystemImpl extends ZipArkivoFileSystem {
     /// Reads raw central directory entries together with their normalized keys.
     private static @Unmodifiable List<CentralDirectoryEntrySnapshot> centralDirectoryEntrySnapshots(
             ByteBuffer centralDirectory,
-            ZipEntryNameEncoding entryNameEncoding,
+            ZipLegacyCharsetDetector legacyCharsetDetector,
             ZipIndex index,
             SeekableByteChannel channel
     ) throws IOException {
         ByteBuffer buffer = centralDirectory.duplicate().order(ByteOrder.LITTLE_ENDIAN);
-        ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(entryNameEncoding);
+        ZipEntryNameDecoder decoder = new ZipEntryNameDecoder(legacyCharsetDetector);
         ArrayList<CentralDirectoryEntrySnapshot> entries = new ArrayList<>();
         while (buffer.hasRemaining()) {
             int offset = buffer.position();

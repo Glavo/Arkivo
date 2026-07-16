@@ -338,8 +338,8 @@ Archive file system factories should support format-specific open options in add
 `ArchiveOptions` should carry operation-level settings that are not entry metadata, including passwords, encryption defaults, character set policies, timestamp policies, overwrite behavior, and format-specific compatibility choices.
 
 ZIP entry name decoding should prefer authoritative Unicode metadata before falling back to a configured option.
-Readers should first honor validated Info-ZIP Unicode path and comment extra fields, then the UTF-8 general purpose bit flag, then the configured `ZipEntryNameEncoding` policy.
-The policy should support standard CP437 fallback, an explicit fallback charset, and deterministic automatic detection from a caller-provided or default candidate list.
+Readers should first honor validated Info-ZIP Unicode path and comment extra fields, then the UTF-8 general purpose bit flag, then the configured `ZipLegacyCharsetDetector`, falling back to CP437 when detection is inconclusive.
+The detector should receive an isolated read-only byte view, may select a charset or report an inconclusive result, and should remain pluggable rather than embedding a fixed heuristic candidate list in the archive API.
 
 Split or multi-volume archives should be modeled as an archive storage layout rather than as item metadata or compression codec behavior.
 

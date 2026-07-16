@@ -78,8 +78,7 @@ org.glavo.arkivo.archive.zip.ZipArkivoFormat
 org.glavo.arkivo.archive.zip.ZipArkivoStreamingReader
 org.glavo.arkivo.archive.zip.ZipArkivoStreamingWriter
 org.glavo.arkivo.archive.zip.ZipEncryption
-org.glavo.arkivo.archive.zip.ZipEntryNameEncoding
-org.glavo.arkivo.archive.zip.ZipEntryNameEncodingMode
+org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector
 org.glavo.arkivo.archive.zip.ZipMethod
 org.glavo.arkivo.codec.ChannelOwnership
 org.glavo.arkivo.codec.CodecOutcome
