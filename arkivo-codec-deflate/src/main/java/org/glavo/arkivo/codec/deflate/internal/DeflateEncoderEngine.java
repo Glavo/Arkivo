@@ -4,7 +4,6 @@
 package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
-import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -163,7 +162,7 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
     public DeflateEncoderEngine(
             Format format,
             int compressionLevel,
-            @Nullable CompressionDictionary dictionary,
+            byte @Nullable [] dictionary,
             CompressionStrategy strategy
     ) {
         this.format = Objects.requireNonNull(format, "format");
@@ -175,7 +174,7 @@ public final class DeflateEncoderEngine implements CompressionEncoder.Flushable 
         }
         this.compressionLevel = compressionLevel;
         this.strategy = Objects.requireNonNull(strategy, "strategy");
-        this.dictionary = dictionary != null ? dictionary.bytes() : null;
+        this.dictionary = dictionary != null ? dictionary.clone() : null;
         this.searchLimit = searchLimit(compressionLevel, strategy);
         this.history = new byte[format.windowSize()];
         this.matchBytes = new byte[format.windowSize() + BLOCK_SIZE];

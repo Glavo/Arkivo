@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.zstd.internal;
 
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.zstd.ZstdDictionary;
 import org.glavo.arkivo.codec.zstd.ZstdFrameInfo;
 import org.glavo.arkivo.codec.zstd.ZstdSkippableFrameInfo;
 import org.glavo.arkivo.codec.zstd.ZstdStandardFrameInfo;
@@ -196,7 +196,7 @@ public final class ZstdFrameHeader {
         }
 
         long dictionaryId = dictionaryIdSize == 0
-                ? CompressionDictionary.UNKNOWN_ID
+                ? ZstdDictionary.NO_DICTIONARY_ID
                 : readLittleEndian(source, fieldOffset, dictionaryIdSize);
         fieldOffset += dictionaryIdSize;
 

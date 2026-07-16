@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.codec.zstd;
 
-import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.DecompressionLimits;
@@ -27,7 +26,7 @@ import java.util.Objects;
 @NotNullByDefault
 public final class ZstdCodec
         implements CompressionCodec.LevelConfigurable<ZstdCodec>,
-        CompressionCodec.DictionaryConfigurable<ZstdCodec>,
+        CompressionCodec.DictionaryConfigurable<ZstdCodec, ZstdDictionary>,
         CompressionCodec.PledgedSourceSizeEncoderFactory<ZstdCodec> {
     /// The stable Zstandard compression format name.
     public static final String NAME = "zstd";
@@ -106,7 +105,7 @@ public final class ZstdCodec
     private final int compressionLevel;
 
     /// The configured dictionary, or null.
-    private final @Nullable CompressionDictionary dictionary;
+    private final @Nullable ZstdDictionary dictionary;
 
     /// Whether encoders emit frame checksums.
     private final boolean frameChecksum;
@@ -250,22 +249,22 @@ public final class ZstdCodec
 
     /// Returns the configured dictionary, or null.
     @Override
-    public @Nullable CompressionDictionary dictionary() {
+    public @Nullable ZstdDictionary dictionary() {
         return dictionary;
     }
 
     /// Returns an immutable codec with the requested dictionary.
     @Override
-    public ZstdCodec withDictionary(CompressionDictionary dictionary) {
+    public ZstdCodec withDictionary(ZstdDictionary dictionary) {
         Objects.requireNonNull(dictionary, "dictionary");
         return dictionary == this.dictionary
                 ? this
                 : toBuilder().dictionary(dictionary).build();
     }
 
-    /// Returns an immutable codec with a copy of the raw dictionary bytes.
+    /// Returns an immutable codec with an automatically interpreted copy of the dictionary bytes.
     public ZstdCodec withDictionary(byte[] dictionary) {
-        return withDictionary(CompressionDictionary.of(dictionary));
+        return withDictionary(ZstdDictionary.of(dictionary));
     }
 
     /// Returns an immutable codec without a dictionary.
@@ -475,15 +474,17 @@ public final class ZstdCodec
 
     /// Creates an unrestricted dictionary-aware framed decoder.
     @Override
-    public CompressionDecoder.DictionaryAware newDecoder() throws IOException {
+    public CompressionDecoder.DictionaryAware<ZstdDictionary, ZstdDictionaryRequest> newDecoder() throws IOException {
         return newDecoder(DecompressionLimits.UNLIMITED);
     }
 
     /// Creates a framed decoder with operation-scoped safety limits.
     @Override
-    public CompressionDecoder.DictionaryAware newDecoder(DecompressionLimits limits) throws IOException {
+    public CompressionDecoder.DictionaryAware<ZstdDictionary, ZstdDictionaryRequest> newDecoder(
+            DecompressionLimits limits
+    ) throws IOException {
         Objects.requireNonNull(limits, "limits");
-        return (CompressionDecoder.DictionaryAware) CompressionDecoderSupport.limitEngineOutput(
+        return CompressionDecoderSupport.limitEngineOutput(
                 new ZstdDecoder(
                         dictionary,
                         limits.maximumWindowSize(),
@@ -575,7 +576,7 @@ public final class ZstdCodec
         private int compressionLevel = DEFAULT_COMPRESSION_LEVEL;
 
         /// The selected dictionary, or null.
-        private @Nullable CompressionDictionary dictionary;
+        private @Nullable ZstdDictionary dictionary;
 
         /// Whether encoders emit frame checksums.
         private boolean frameChecksum;
@@ -675,14 +676,14 @@ public final class ZstdCodec
         }
 
         /// Selects an immutable dictionary.
-        public Builder dictionary(CompressionDictionary dictionary) {
+        public Builder dictionary(ZstdDictionary dictionary) {
             this.dictionary = Objects.requireNonNull(dictionary, "dictionary");
             return this;
         }
 
-        /// Selects a copy of raw dictionary bytes.
+        /// Selects an automatically interpreted copy of dictionary bytes.
         public Builder dictionary(byte[] dictionary) {
-            return dictionary(CompressionDictionary.of(dictionary));
+            return dictionary(ZstdDictionary.of(dictionary));
         }
 
         /// Clears the selected dictionary.

@@ -10,7 +10,7 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.RawCompressionDictionary;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
@@ -19,6 +19,11 @@ import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.bzip2.BZip2Codec;
+import org.glavo.arkivo.codec.deflate.DeflateCodec;
+import org.glavo.arkivo.codec.deflate.ZlibCodec;
+import org.glavo.arkivo.codec.deflate.ZlibDictionary;
+import org.glavo.arkivo.codec.zstd.ZstdCodec;
+import org.glavo.arkivo.codec.zstd.ZstdDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -805,20 +810,24 @@ final class CodecChannelContractTest {
                 "common-prefix/alpha/beta/gamma/0123456789;"
                         + "common-prefix/alpha/beta/gamma/0123456789;"
         ).getBytes(StandardCharsets.UTF_8);
-        CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes);
-
         for (CompressionFormat format : CompressionFormats.installed()) {
             CompressionCodec<?> codec = format.defaultCodec();
             assertEquals(
                     dictionaryCodecs.contains(codec.format().name()),
-                    codec instanceof CompressionCodec.DictionaryConfigurable<?>,
+                    codec instanceof CompressionCodec.DictionaryConfigurable<?, ?>,
                     codec.format().name()
             );
-            if (!(codec instanceof CompressionCodec.DictionaryConfigurable<?> dictionaryCodec)) {
+            CompressionCodec<?> configured;
+            if (codec instanceof DeflateCodec deflateCodec) {
+                configured = deflateCodec.withDictionary(RawCompressionDictionary.of(dictionaryBytes));
+            } else if (codec instanceof ZlibCodec zlibCodec) {
+                configured = zlibCodec.withDictionary(ZlibDictionary.of(dictionaryBytes));
+            } else if (codec instanceof ZstdCodec zstdCodec) {
+                configured = zstdCodec.withDictionary(ZstdDictionary.rawContent(dictionaryBytes));
+            } else {
                 continue;
             }
 
-            CompressionCodec<?> configured = dictionaryCodec.withDictionary(dictionary);
             if (configured instanceof CompressionCodec.StrategyConfigurable<?> strategyCodec) {
                 configured = strategyCodec.withCompressionStrategy(CompressionStrategy.FILTERED);
             }

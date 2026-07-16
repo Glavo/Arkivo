@@ -109,7 +109,7 @@ final class ZstdBlockEncoder {
 
     /// Resets frame-local state to the configured dictionary.
     void reset(ZstdEncoderParameters parameters) {
-        ZstdDictionary dictionary = parameters.dictionary();
+        ZstdDictionaryContext dictionary = parameters.dictionary();
         huffmanTable = dictionary.huffmanEncoding();
         literalLengthTable =
                 ZstdSequenceEntropy.invertLiteralLengths(dictionary.literalLengthTable());

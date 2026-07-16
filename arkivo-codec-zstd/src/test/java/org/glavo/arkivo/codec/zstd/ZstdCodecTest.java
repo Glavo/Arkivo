@@ -7,7 +7,6 @@ import com.github.luben.zstd.Zstd;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
-import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel.Directive;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -189,21 +188,21 @@ public final class ZstdCodecTest {
     /// Verifies configured Zstandard codec instances are immutable.
     @Test
     public void configuredCodec() {
-        byte[] dictionary = {1, 2, 3};
+        byte[] dictionary = {1, 2, 3, 4, 5, 6, 7, 8};
         ZstdCodec codec = new ZstdCodec()
                 .withCompressionLevel(2)
                 .withDictionary(dictionary);
 
         dictionary[0] = 9;
         assertEquals(2, codec.compressionLevel());
-        CompressionDictionary configuredDictionary =
+        ZstdDictionary configuredDictionary =
                 Objects.requireNonNull(codec.dictionary());
-        assertArrayEquals(new byte[]{1, 2, 3}, configuredDictionary.bytes());
+        assertArrayEquals(new byte[]{1, 2, 3, 4, 5, 6, 7, 8}, configuredDictionary.bytes());
 
         byte[] returned = configuredDictionary.bytes();
         returned[1] = 9;
         assertArrayEquals(
-                new byte[]{1, 2, 3},
+                new byte[]{1, 2, 3, 4, 5, 6, 7, 8},
                 Objects.requireNonNull(codec.dictionary()).bytes()
         );
         assertNull(codec.withoutDictionary().dictionary());
@@ -215,7 +214,7 @@ public final class ZstdCodecTest {
     @Test
     public void channelConfiguration() throws IOException {
         byte[] dictionaryBytes = "shared zstd dictionary".getBytes(StandardCharsets.UTF_8);
-        CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes);
+        ZstdDictionary dictionary = ZstdDictionary.of(dictionaryBytes);
         byte[] input = "shared zstd dictionary payload".getBytes(StandardCharsets.UTF_8);
         ZstdCodec codec = ZstdCodec.builder()
                 .compressionLevel(-2L)
@@ -347,7 +346,7 @@ public final class ZstdCodecTest {
         ZstdStandardFrameInfo standard = (ZstdStandardFrameInfo) parsed;
         assertEquals(content.length, standard.contentSize());
         assertTrue(standard.windowSize() > 0L);
-        assertEquals(CompressionDictionary.UNKNOWN_ID, standard.dictionaryId());
+        assertEquals(ZstdDictionary.NO_DICTIONARY_ID, standard.dictionaryId());
         assertTrue(standard.checksum());
         assertEquals(frame.length, codec.frameCompressedSize(source));
         assertEquals(initialPosition, source.position());

@@ -7,7 +7,6 @@ import com.github.luben.zstd.Zstd;
 import com.github.luben.zstd.ZstdDecompressCtx;
 import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.CompressionDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -221,7 +220,7 @@ public final class ZstdPureJavaEncoderTest {
                 dictionary.length
         );
         ZstdCodec codec = ZstdCodec.builder()
-                .dictionary(CompressionDictionary.of(dictionary))
+                .dictionary(ZstdDictionary.of(dictionary))
                 .strategy(ZstdStrategy.BT_OPT)
                 .build();
         byte[] compressed = compress(codec, input);

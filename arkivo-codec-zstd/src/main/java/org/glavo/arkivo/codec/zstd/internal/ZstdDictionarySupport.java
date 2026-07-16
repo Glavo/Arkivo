@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
-import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.zstd.ZstdDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.nio.ByteBuffer;
@@ -11,17 +11,15 @@ import java.nio.ByteBuffer;
 /// Provides shared Zstandard dictionary metadata operations.
 @NotNullByDefault
 public final class ZstdDictionarySupport {
-    /// The formatted-dictionary magic in little-endian form.
-    private static final long DICTIONARY_MAGIC = 0xec30_a437L;
-
     /// Returns the dictionary identifier without changing the source buffer.
     public static long dictionaryId(ByteBuffer dictionary) {
         ByteBuffer source = dictionary.slice();
-        if (source.remaining() < 8 || readUnsignedInt(source, 0) != DICTIONARY_MAGIC) {
-            return CompressionDictionary.UNKNOWN_ID;
+        if (source.remaining() < 8
+                || readUnsignedInt(source, 0) != ZstdDictionary.FORMATTED_DICTIONARY_MAGIC) {
+            return ZstdDictionary.NO_DICTIONARY_ID;
         }
         long id = readUnsignedInt(source, 4);
-        return id == 0L ? CompressionDictionary.UNKNOWN_ID : id;
+        return id == 0L ? ZstdDictionary.NO_DICTIONARY_ID : id;
     }
 
     /// Reads one unsigned little-endian 32-bit field.

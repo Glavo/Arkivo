@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
-import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.zstd.ZstdDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -82,7 +82,7 @@ public final class ZstdEncoderParameters {
     private final long pledgedSourceSize;
 
     /// Parsed dictionary context.
-    private final ZstdDictionary dictionary;
+    private final ZstdDictionaryContext dictionary;
 
     /// Creates validated pure Java encoder parameters.
     ///
@@ -128,7 +128,7 @@ public final class ZstdEncoderParameters {
             int jobSize,
             int overlapLog,
             long pledgedSourceSize,
-            @Nullable CompressionDictionary dictionary
+            @Nullable ZstdDictionary dictionary
     ) throws IOException {
         if (workerCount < 0 || workerCount > MAX_WORKER_COUNT) {
             throw new IllegalArgumentException(
@@ -200,7 +200,7 @@ public final class ZstdEncoderParameters {
                 : Math.max(selectedJobSize, selectedOverlapSize);
         this.overlapSize = workerCount == 0 ? 0 : selectedOverlapSize;
         this.pledgedSourceSize = pledgedSourceSize;
-        this.dictionary = ZstdDictionary.parse(dictionary);
+        this.dictionary = ZstdDictionaryContext.parse(dictionary);
         if (this.dictionary.id() > 0xffff_ffffL) {
             throw new IllegalArgumentException("Zstandard dictionary identifier exceeds 32 bits");
         }
@@ -336,7 +336,7 @@ public final class ZstdEncoderParameters {
     }
 
     /// Returns the parsed dictionary context.
-    ZstdDictionary dictionary() {
+    ZstdDictionaryContext dictionary() {
         return dictionary;
     }
 
@@ -344,7 +344,7 @@ public final class ZstdEncoderParameters {
     long frameDictionaryId() {
         return dictionaryId && dictionary.id() > 0L
                 ? dictionary.id()
-                : CompressionDictionary.UNKNOWN_ID;
+                : ZstdDictionary.NO_DICTIONARY_ID;
     }
 
     /// Selects a bounded hash-table logarithm from the compression level.

@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
-import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.zstd.ZstdDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -30,7 +30,7 @@ public final class ZstdDictionaryBuilderTest {
             System.arraycopy(sample, 0, samples, index * sample.length, sample.length);
         }
 
-        ZstdDictionary dictionary = parse(samples, sampleSizes);
+        ZstdDictionaryContext dictionary = parse(samples, sampleSizes);
         ZstdEntropy.FseTable offsets = dictionary.offsetTable();
         ZstdEntropy.FseTable matches = dictionary.matchLengthTable();
         ZstdEntropy.FseTable literals = dictionary.literalLengthTable();
@@ -52,7 +52,7 @@ public final class ZstdDictionaryBuilderTest {
                 0x30, 0x31,
                 0x40, 0x41
         };
-        ZstdDictionary dictionary = parse(samples, new int[]{2, 2, 2, 2});
+        ZstdDictionaryContext dictionary = parse(samples, new int[]{2, 2, 2, 2});
         ZstdEntropy.FseTable offsets = dictionary.offsetTable();
         ZstdEntropy.FseTable matches = dictionary.matchLengthTable();
         ZstdEntropy.FseTable literals = dictionary.literalLengthTable();
@@ -66,7 +66,7 @@ public final class ZstdDictionaryBuilderTest {
     }
 
     /// Builds and parses one formatted dictionary fixture.
-    private static ZstdDictionary parse(
+    private static ZstdDictionaryContext parse(
             byte[] samples,
             int @Unmodifiable [] sampleSizes
     ) throws IOException {
@@ -77,7 +77,7 @@ public final class ZstdDictionaryBuilderTest {
                 3,
                 false
         );
-        return ZstdDictionary.parse(CompressionDictionary.of(bytes));
+        return ZstdDictionaryContext.parse(ZstdDictionary.of(bytes));
     }
 
     /// Counts symbols represented by at least one FSE state.

@@ -11,24 +11,25 @@ import java.nio.ReadOnlyBufferException;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
-/// Verifies immutable compression dictionary values and identifiers.
+/// Verifies immutable raw compression dictionary content.
 @NotNullByDefault
-final class CompressionDictionaryTest {
-    /// Verifies dictionary factories and byte access cannot mutate stored content.
+final class RawCompressionDictionaryTest {
+    /// Verifies factories and byte access cannot mutate stored content.
     @Test
     void preservesImmutableBytes() {
         byte[] source = {1, 2, 3};
-        CompressionDictionary dictionary = CompressionDictionary.of(source, 42L);
+        RawCompressionDictionary dictionary = RawCompressionDictionary.of(source);
 
         source[0] = 9;
         assertArrayEquals(new byte[]{1, 2, 3}, dictionary.bytes());
         byte[] returned = dictionary.bytes();
         returned[1] = 9;
         assertArrayEquals(new byte[]{1, 2, 3}, dictionary.bytes());
-        assertEquals(42L, dictionary.id());
         assertEquals(3, dictionary.size());
+        assertInstanceOf(CompressionDictionary.class, dictionary);
     }
 
     /// Verifies buffer factories preserve source state and expose independent read-only views.
@@ -41,7 +42,7 @@ final class CompressionDictionaryTest {
         int position = source.position();
         int limit = source.limit();
 
-        CompressionDictionary dictionary = CompressionDictionary.of(source, 7L);
+        RawCompressionDictionary dictionary = RawCompressionDictionary.of(source);
         assertEquals(position, source.position());
         assertEquals(limit, source.limit());
         assertArrayEquals(new byte[]{1, 2, 3}, dictionary.bytes());
@@ -54,18 +55,5 @@ final class CompressionDictionaryTest {
         ByteBuffer second = dictionary.buffer();
         assertEquals(0, second.position());
         assertThrows(ReadOnlyBufferException.class, () -> second.put((byte) 9));
-    }
-
-    /// Verifies unknown identifiers and invalid negative identifiers are distinguished.
-    @Test
-    void validatesIdentifiers() {
-        assertEquals(
-                CompressionDictionary.UNKNOWN_ID,
-                CompressionDictionary.of(new byte[0]).id()
-        );
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> CompressionDictionary.of(new byte[0], CompressionDictionary.UNKNOWN_ID - 1L)
-        );
     }
 }

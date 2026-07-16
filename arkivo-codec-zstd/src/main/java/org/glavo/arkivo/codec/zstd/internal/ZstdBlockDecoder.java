@@ -61,7 +61,7 @@ final class ZstdBlockDecoder {
             ZstdSequenceEntropy.OFFSET_DECODER;
 
     /// Configured dictionary context.
-    private final ZstdDictionary dictionary;
+    private final ZstdDictionaryContext dictionary;
 
     /// Ring buffer containing prior frame output.
     private final ZstdHistory history;
@@ -94,7 +94,7 @@ final class ZstdBlockDecoder {
     private long frameSize;
 
     /// Creates a block decoder for one frame.
-    ZstdBlockDecoder(long windowSize, ZstdDictionary dictionary) throws IOException {
+    ZstdBlockDecoder(long windowSize, ZstdDictionaryContext dictionary) throws IOException {
         if (windowSize < 0L) {
             throw new IllegalArgumentException("windowSize must not be negative");
         }

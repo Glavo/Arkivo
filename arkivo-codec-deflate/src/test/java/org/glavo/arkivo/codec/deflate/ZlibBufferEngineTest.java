@@ -5,7 +5,6 @@ package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
@@ -97,15 +96,15 @@ public final class ZlibBufferEngineTest {
         byte[] dictionaryBytes = dictionaryData();
         Adler32 checksum = new Adler32();
         checksum.update(dictionaryBytes);
-        CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes, checksum.getValue());
+        ZlibDictionary dictionary = ZlibDictionary.of(dictionaryBytes);
         byte[] input = Arrays.copyOfRange(dictionaryBytes, dictionaryBytes.length - 2048, dictionaryBytes.length);
         ZlibCodec dictionaryCodec = CODEC.withDictionary(dictionary);
         byte[] encoded = encodeInFragments(input, dictionaryCodec, 17, 3);
         ByteBuffer source = ByteBuffer.wrap(encoded);
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
 
-        try (CompressionDecoder.DictionaryAware decoder =
-                     (CompressionDecoder.DictionaryAware) CODEC.newDecoder()) {
+        try (CompressionDecoder.DictionaryAware<ZlibDictionary, ZlibDictionaryRequest> decoder =
+                     CODEC.newDecoder(DecompressionLimits.ofMaximumOutputSize(input.length))) {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocate(5);
@@ -113,14 +112,13 @@ public final class ZlibBufferEngineTest {
                 drain(target, decoded);
             } while (outcome == CodecOutcome.NEEDS_OUTPUT);
             assertEquals(CodecOutcome.NEEDS_DICTIONARY, outcome);
-            assertEquals(checksum.getValue(), decoder.requiredDictionaryId());
+            assertEquals(checksum.getValue(), decoder.dictionaryRequest().adler32());
 
-            CompressionDictionary wrongIdentifier = CompressionDictionary.of(
-                    dictionaryBytes,
-                    checksum.getValue() + 1L
-            );
-            assertThrows(IOException.class, () -> decoder.provideDictionary(wrongIdentifier));
-            assertEquals(checksum.getValue(), decoder.requiredDictionaryId());
+            byte[] wrongBytes = dictionaryBytes.clone();
+            wrongBytes[0] ^= 1;
+            ZlibDictionary wrongDictionary = ZlibDictionary.of(wrongBytes);
+            assertThrows(IOException.class, () -> decoder.provideDictionary(wrongDictionary));
+            assertEquals(checksum.getValue(), decoder.dictionaryRequest().adler32());
             decoder.provideDictionary(dictionary);
 
             do {

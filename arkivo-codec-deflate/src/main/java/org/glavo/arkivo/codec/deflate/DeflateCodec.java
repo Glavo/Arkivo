@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionFormat;
-import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.RawCompressionDictionary;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.DecompressionLimits;
@@ -28,7 +28,7 @@ import java.util.Objects;
 public final class DeflateCodec
         implements CompressionCodec.LevelConfigurable<DeflateCodec>,
         CompressionCodec.StrategyConfigurable<DeflateCodec>,
-        CompressionCodec.DictionaryConfigurable<DeflateCodec> {
+        CompressionCodec.DictionaryConfigurable<DeflateCodec, RawCompressionDictionary> {
     /// The stable raw Deflate compression format name.
     public static final String NAME = "deflate";
 
@@ -55,7 +55,7 @@ public final class DeflateCodec
     private final CompressionStrategy compressionStrategy;
 
     /// The configured preset dictionary, or null.
-    private final @Nullable CompressionDictionary dictionary;
+    private final @Nullable RawCompressionDictionary dictionary;
 
     /// Creates the default raw Deflate codec configuration.
     public DeflateCodec() {
@@ -66,7 +66,7 @@ public final class DeflateCodec
     private DeflateCodec(
             long compressionLevel,
             CompressionStrategy compressionStrategy,
-            @Nullable CompressionDictionary dictionary
+            @Nullable RawCompressionDictionary dictionary
     ) {
         if (compressionLevel < MINIMUM_COMPRESSION_LEVEL
                 || compressionLevel > MAXIMUM_COMPRESSION_LEVEL) {
@@ -135,13 +135,13 @@ public final class DeflateCodec
 
     /// Returns the configured preset dictionary, or null.
     @Override
-    public @Nullable CompressionDictionary dictionary() {
+    public @Nullable RawCompressionDictionary dictionary() {
         return dictionary;
     }
 
     /// Returns an immutable codec with the requested preset dictionary.
     @Override
-    public DeflateCodec withDictionary(CompressionDictionary dictionary) {
+    public DeflateCodec withDictionary(RawCompressionDictionary dictionary) {
         Objects.requireNonNull(dictionary, "dictionary");
         return dictionary == this.dictionary
                 ? this

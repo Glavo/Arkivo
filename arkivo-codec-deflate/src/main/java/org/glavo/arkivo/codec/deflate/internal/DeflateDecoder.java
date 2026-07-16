@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.RawCompressionDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -22,8 +22,11 @@ public final class DeflateDecoder implements CompressionDecoder {
     /// Creates a raw Deflate decoder with an optional preset dictionary.
     ///
     /// @param dictionary preset history content, or null
-    public DeflateDecoder(@Nullable CompressionDictionary dictionary) {
-        engine = new DeflateDecoderEngine(DeflateDecoderEngine.Format.DEFLATE, dictionary);
+    public DeflateDecoder(@Nullable RawCompressionDictionary dictionary) {
+        engine = new DeflateDecoderEngine(
+                DeflateDecoderEngine.Format.DEFLATE,
+                dictionary != null ? dictionary.bytes() : null
+        );
     }
 
     /// Decodes source bytes until input, output space, or the raw stream boundary stops progress.

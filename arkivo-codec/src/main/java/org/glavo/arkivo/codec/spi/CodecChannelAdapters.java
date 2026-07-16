@@ -9,7 +9,6 @@ import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -479,10 +478,10 @@ public final class CodecChannelAdapters {
                     continue;
                 }
                 if (outcome == CodecOutcome.NEEDS_DICTIONARY) {
-                    long dictionaryId = decoder instanceof CompressionDecoder.DictionaryAware dictionaryDecoder
-                            ? dictionaryDecoder.requiredDictionaryId()
-                            : CompressionDictionary.UNKNOWN_ID;
-                    throw new IOException("Compression decoder requires dictionary " + dictionaryId);
+                    String request = decoder instanceof CompressionDecoder.DictionaryAware<?, ?> dictionaryDecoder
+                            ? dictionaryDecoder.dictionaryRequest().toString()
+                            : "unspecified";
+                    throw new IOException("Compression decoder requires dictionary: " + request);
                 }
                 if (outcome == CodecOutcome.NEEDS_OUTPUT) {
                     if (target.position() == outputPosition && target.hasRemaining()) {

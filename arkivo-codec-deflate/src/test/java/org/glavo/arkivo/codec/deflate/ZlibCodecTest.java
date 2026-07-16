@@ -3,9 +3,7 @@
 
 package org.glavo.arkivo.codec.deflate;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
@@ -114,9 +112,10 @@ public final class ZlibCodecTest {
         byte[] input = Arrays.copyOfRange(dictionaryBytes, dictionaryBytes.length - 512, dictionaryBytes.length);
         Adler32 adler32 = new Adler32();
         adler32.update(dictionaryBytes);
-        CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes, adler32.getValue());
+        ZlibDictionary dictionary = ZlibDictionary.of(dictionaryBytes);
         ZlibCodec codec = new ZlibCodec().withDictionary(dictionary);
 
+        assertEquals(adler32.getValue(), dictionary.adler32());
         assertEquals(dictionary, codec.dictionary());
         ByteArrayOutputStream compressedByCodec = new ByteArrayOutputStream();
         codec.compress(
@@ -172,7 +171,7 @@ public final class ZlibCodecTest {
                 )
         );
         ZlibCodec wrongBytesCodec = new ZlibCodec().withDictionary(
-                CompressionDictionary.of(new byte[dictionaryBytes.length])
+                ZlibDictionary.of(new byte[dictionaryBytes.length])
         );
         assertThrows(
                 IOException.class,
@@ -182,23 +181,7 @@ public final class ZlibCodecTest {
                 )
         );
 
-        CompressionDictionary wrongIdentifier =
-                CompressionDictionary.of(dictionaryBytes, adler32.getValue() + 1L);
-        ZlibCodec wrongIdentifierCodec = new ZlibCodec().withDictionary(wrongIdentifier);
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> wrongIdentifierCodec.openEncoder(
-                        Channels.newChannel(new ByteArrayOutputStream()),
-                        ChannelOwnership.RETAIN
-                )
-        );
-        assertThrows(
-                IOException.class,
-                () -> wrongIdentifierCodec.decompress(
-                        Channels.newChannel(new ByteArrayInputStream(compressedByJdk.toByteArray())),
-                        Channels.newChannel(new ByteArrayOutputStream())
-                )
-        );
+
     }
 
     /// Compresses and decompresses the given bytes.

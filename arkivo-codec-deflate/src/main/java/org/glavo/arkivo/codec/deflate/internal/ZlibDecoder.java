@@ -6,7 +6,8 @@ package org.glavo.arkivo.codec.deflate.internal;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.deflate.ZlibDictionary;
+import org.glavo.arkivo.codec.deflate.ZlibDictionaryRequest;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -19,7 +20,8 @@ import java.util.zip.Adler32;
 
 /// Incrementally decodes and validates one zlib stream with explicit preset-dictionary negotiation.
 @NotNullByDefault
-public final class ZlibDecoder implements CompressionDecoder.DictionaryAware {
+public final class ZlibDecoder
+        implements CompressionDecoder.DictionaryAware<ZlibDictionary, ZlibDictionaryRequest> {
     /// Zlib flag indicating a four-byte preset-dictionary identifier.
     private static final int FLAG_PRESET_DICTIONARY = 0x20;
 
@@ -27,7 +29,7 @@ public final class ZlibDecoder implements CompressionDecoder.DictionaryAware {
     private final long maximumWindowSize;
 
     /// Configured preset dictionary applied automatically when requested, or null.
-    private final @Nullable CompressionDictionary configuredDictionary;
+    private final @Nullable ZlibDictionary configuredDictionary;
 
     /// Mutable storage for the two-byte zlib header.
     private final byte[] header = new byte[2];
@@ -59,14 +61,14 @@ public final class ZlibDecoder implements CompressionDecoder.DictionaryAware {
     /// Window size declared by the current zlib header.
     private int declaredWindowSize;
 
-    /// Dictionary identifier requested by the current stream, or the unknown sentinel.
-    private long requiredDictionaryId = CompressionDictionary.UNKNOWN_ID;
+    /// Adler-32 identifier requested by the current stream.
+    private long requiredDictionaryAdler32;
 
     /// Creates a zlib decoder with optional window and preset-dictionary configuration.
     ///
     /// @param maximumWindowSize maximum permitted declared window size, or CompressionCodec.UNKNOWN_SIZE
     /// @param dictionary preset dictionary applied automatically when requested, or null
-    public ZlibDecoder(long maximumWindowSize, @Nullable CompressionDictionary dictionary) {
+    public ZlibDecoder(long maximumWindowSize, @Nullable ZlibDictionary dictionary) {
         this.maximumWindowSize = maximumWindowSize;
         this.configuredDictionary = dictionary;
     }
@@ -114,8 +116,8 @@ public final class ZlibDecoder implements CompressionDecoder.DictionaryAware {
                     }
                     return CodecOutcome.NEEDS_INPUT;
                 }
-                requiredDictionaryId = bigEndianUnsignedInt(dictionaryIdentifier);
-                @Nullable CompressionDictionary selectedDictionary = configuredDictionary;
+                requiredDictionaryAdler32 = bigEndianUnsignedInt(dictionaryIdentifier);
+                @Nullable ZlibDictionary selectedDictionary = configuredDictionary;
                 if (selectedDictionary == null) {
                     state = State.NEEDS_DICTIONARY;
                     return CodecOutcome.NEEDS_DICTIONARY;
@@ -164,17 +166,18 @@ public final class ZlibDecoder implements CompressionDecoder.DictionaryAware {
         }
     }
 
-    /// Returns the Adler-32 identifier requested by the current zlib stream.
+    /// Returns the Adler-32 dictionary request from the current zlib stream.
     @Override
-    public long requiredDictionaryId() {
-        return state == State.NEEDS_DICTIONARY
-                ? requiredDictionaryId
-                : CompressionDictionary.UNKNOWN_ID;
+    public ZlibDictionaryRequest dictionaryRequest() {
+        if (state != State.NEEDS_DICTIONARY) {
+            throw new IllegalStateException("Zlib decoder is not waiting for a dictionary");
+        }
+        return new ZlibDictionaryRequest(requiredDictionaryAdler32);
     }
 
     /// Supplies the dictionary requested by the current zlib stream.
     @Override
-    public void provideDictionary(CompressionDictionary dictionary) throws IOException {
+    public void provideDictionary(ZlibDictionary dictionary) throws IOException {
         Objects.requireNonNull(dictionary, "dictionary");
         requireOpen();
         if (state != State.NEEDS_DICTIONARY) {
@@ -197,7 +200,7 @@ public final class ZlibDecoder implements CompressionDecoder.DictionaryAware {
         dictionaryIdentifierBytes = 0;
         trailerBytes = 0;
         declaredWindowSize = 0;
-        requiredDictionaryId = CompressionDictionary.UNKNOWN_ID;
+        requiredDictionaryAdler32 = 0L;
         state = State.HEADER;
     }
 
@@ -229,10 +232,10 @@ public final class ZlibDecoder implements CompressionDecoder.DictionaryAware {
     }
 
     /// Starts raw Deflate decoding with the selected dictionary and declared window.
-    private void beginBody(@Nullable CompressionDictionary dictionary) {
+    private void beginBody(@Nullable ZlibDictionary dictionary) {
         body = new DeflateDecoderEngine(
                 DeflateDecoderEngine.Format.DEFLATE,
-                dictionary,
+                dictionary != null ? dictionary.bytes() : null,
                 declaredWindowSize
         );
         checksum.reset();
@@ -240,20 +243,10 @@ public final class ZlibDecoder implements CompressionDecoder.DictionaryAware {
     }
 
     /// Validates and installs one requested preset dictionary.
-    private void applyDictionary(CompressionDictionary dictionary) throws IOException {
-        if (dictionary.id() != CompressionDictionary.UNKNOWN_ID
-                && dictionary.id() != requiredDictionaryId) {
-            throw new IOException(
-                    "Configured zlib dictionary identifier does not match " + requiredDictionaryId
-            );
-        }
-        byte[] bytes = dictionary.bytes();
-        Adler32 dictionaryChecksum = new Adler32();
-        dictionaryChecksum.update(bytes);
-        if (dictionaryChecksum.getValue() != requiredDictionaryId) {
-            throw new IOException(
-                    "Configured zlib dictionary does not match " + requiredDictionaryId
-            );
+    private void applyDictionary(ZlibDictionary dictionary) throws IOException {
+        ZlibDictionaryRequest request = new ZlibDictionaryRequest(requiredDictionaryAdler32);
+        if (!request.matches(dictionary)) {
+            throw new IOException("Configured zlib dictionary does not satisfy " + request);
         }
         beginBody(dictionary);
     }

@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
-import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.zstd.ZstdDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -32,7 +32,7 @@ public final class ZstdLiteralEncoderTest {
 
         byte[] block = new byte[section.length + 1];
         System.arraycopy(section, 0, block, 0, section.length);
-        byte[] decoded = new ZstdBlockDecoder(1 << 17, ZstdDictionary.NONE).decodeCompressed(block);
+        byte[] decoded = new ZstdBlockDecoder(1 << 17, ZstdDictionaryContext.NONE).decodeCompressed(block);
         assertArrayEquals(literals, decoded);
     }
 
@@ -47,8 +47,8 @@ public final class ZstdLiteralEncoderTest {
                 3,
                 false
         );
-        ZstdDictionary dictionary =
-                ZstdDictionary.parse(CompressionDictionary.of(dictionaryBytes));
+        ZstdDictionaryContext dictionary =
+                ZstdDictionaryContext.parse(ZstdDictionary.of(dictionaryBytes));
         ZstdLiteralEncoder.HuffmanEncoding huffman = dictionary.huffmanEncoding();
         assertNotNull(huffman);
         assertTrue(huffman.canEncode(samples));

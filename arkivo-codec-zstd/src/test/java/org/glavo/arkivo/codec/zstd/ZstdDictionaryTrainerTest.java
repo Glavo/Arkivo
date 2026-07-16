@@ -5,7 +5,6 @@ package org.glavo.arkivo.codec.zstd;
 
 import com.github.luben.zstd.ZstdCompressCtx;
 import com.github.luben.zstd.ZstdDecompressCtx;
-import org.glavo.arkivo.codec.CompressionDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -45,15 +44,15 @@ final class ZstdDictionaryTrainerTest {
         assertTrue(trainer.sampleBytes() > DICTIONARY_CAPACITY);
         assertEquals(SAMPLE_CAPACITY - trainer.sampleBytes(), trainer.remainingSampleCapacity());
 
-        CompressionDictionary dictionary = trainer.train();
+        ZstdDictionary dictionary = trainer.train();
         assertTrue(dictionary.size() > 0);
         assertTrue(dictionary.size() <= DICTIONARY_CAPACITY);
-        assertTrue(dictionary.id() >= 0L);
-        assertEquals(dictionary.id(), codec.dictionaryId(dictionary.buffer()));
+        assertTrue(dictionary.dictionaryId() > ZstdDictionary.NO_DICTIONARY_ID);
+        assertEquals(dictionary.dictionaryId(), codec.dictionaryId(dictionary.buffer()));
 
-        CompressionDictionary legacyDictionary = trainer.train(true);
+        ZstdDictionary legacyDictionary = trainer.train(true);
         assertTrue(legacyDictionary.size() > 0);
-        assertTrue(legacyDictionary.id() >= 0L);
+        assertTrue(legacyDictionary.dictionaryId() > ZstdDictionary.NO_DICTIONARY_ID);
         assertArrayEquals(dictionary.bytes(), trainer.train().bytes());
         assertFalse(java.util.Arrays.equals(dictionary.bytes(), legacyDictionary.bytes()));
 
@@ -188,7 +187,7 @@ final class ZstdDictionaryTrainerTest {
         int position = raw.position();
         int limit = raw.limit();
 
-        assertEquals(CompressionDictionary.UNKNOWN_ID, codec.dictionaryId(raw));
+        assertEquals(ZstdDictionary.NO_DICTIONARY_ID, codec.dictionaryId(raw));
         assertEquals(position, raw.position());
         assertEquals(limit, raw.limit());
     }

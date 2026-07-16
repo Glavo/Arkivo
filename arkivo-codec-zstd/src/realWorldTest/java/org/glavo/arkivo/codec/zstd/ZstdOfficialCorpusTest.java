@@ -6,7 +6,6 @@ package org.glavo.arkivo.codec.zstd;
 import com.github.luben.zstd.Zstd;
 import com.github.luben.zstd.ZstdCompressCtx;
 import com.github.luben.zstd.ZstdDecompressCtx;
-import org.glavo.arkivo.codec.CompressionDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.junit.jupiter.api.Test;
@@ -82,7 +81,7 @@ public final class ZstdOfficialCorpusTest {
                 corpusPath("tests/golden-dictionaries/http-dict-missing-symbols")
         );
         byte[] input = Files.readAllBytes(corpusPath("tests/golden-compression/http"));
-        CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes);
+        ZstdDictionary dictionary = ZstdDictionary.of(dictionaryBytes);
         ZstdCodec codec = new ZstdCodec().withDictionary(dictionary);
         byte[] compressed = compress(codec, input);
         assertArrayEquals(input, decompress(codec, compressed));
@@ -121,7 +120,7 @@ public final class ZstdOfficialCorpusTest {
                 trainer.addSample(source, Files.size(samplePath));
             }
         }
-        CompressionDictionary dictionary = trainer.train();
+        ZstdDictionary dictionary = trainer.train();
         byte[] input = Files.readAllBytes(corpusPath("tests/golden-compression/http"));
         ZstdCodec codec = new ZstdCodec().withDictionary(dictionary);
 
@@ -216,7 +215,7 @@ public final class ZstdOfficialCorpusTest {
             byte[] input
     ) throws IOException {
         ZstdCodec codec = new ZstdCodec().withDictionary(
-                CompressionDictionary.of(dictionaryBytes)
+                ZstdDictionary.of(dictionaryBytes)
         );
 
         byte[] pureJavaCompressed = compress(codec, input);

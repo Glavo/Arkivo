@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
-import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.zstd.ZstdDictionary;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -14,13 +14,10 @@ import java.util.Arrays;
 
 /// Holds validated Zstandard dictionary content and optional entropy tables.
 @NotNullByDefault
-final class ZstdDictionary {
-    /// The formatted-dictionary magic in little-endian form.
-    private static final long MAGIC = 0xec30_a437L;
-
+final class ZstdDictionaryContext {
     /// A context representing no dictionary.
-    static final ZstdDictionary NONE = new ZstdDictionary(
-            CompressionDictionary.UNKNOWN_ID,
+    static final ZstdDictionaryContext NONE = new ZstdDictionaryContext(
+            ZstdDictionary.NO_DICTIONARY_ID,
             new byte[0],
             null,
             null,
@@ -32,7 +29,7 @@ final class ZstdDictionary {
             8
     );
 
-    /// Dictionary identifier, or the unknown sentinel.
+    /// Formatted dictionary identifier, or `ZstdDictionary.NO_DICTIONARY_ID` for raw content.
     private final long id;
 
     /// Raw history content.
@@ -63,7 +60,7 @@ final class ZstdDictionary {
     private final int repeatedOffset3;
 
     /// Creates a dictionary context.
-    private ZstdDictionary(
+    private ZstdDictionaryContext(
             long id,
             byte[] content,
             @Nullable ZstdEntropy.HuffmanTable huffmanTable,
@@ -88,7 +85,7 @@ final class ZstdDictionary {
     }
 
     /// Parses configured dictionary bytes.
-    static ZstdDictionary parse(@Nullable CompressionDictionary dictionary) throws IOException {
+    static ZstdDictionaryContext parse(@Nullable ZstdDictionary dictionary) throws IOException {
         if (dictionary == null) {
             return NONE;
         }
@@ -96,9 +93,9 @@ final class ZstdDictionary {
         if (bytes.length < 8) {
             throw new IOException("Zstandard dictionaries must contain at least eight bytes");
         }
-        if (readUnsignedInt(bytes, 0) != MAGIC) {
-            return new ZstdDictionary(
-                    dictionary.id(),
+        if (!dictionary.isFullDictionary()) {
+            return new ZstdDictionaryContext(
+                    ZstdDictionary.NO_DICTIONARY_ID,
                     bytes,
                     null,
                     null,
@@ -111,13 +108,7 @@ final class ZstdDictionary {
             );
         }
 
-        long id = readUnsignedInt(bytes, 4);
-        if (dictionary.id() != CompressionDictionary.UNKNOWN_ID && dictionary.id() != id) {
-            throw new IOException("Zstandard dictionary identifier metadata does not match its contents");
-        }
-        if (id == 0L) {
-            throw new IOException("Formatted Zstandard dictionary has identifier zero");
-        }
+        long id = dictionary.dictionaryId();
         int offset = 8;
         ZstdEntropy.HuffmanParseResult huffman = ZstdEntropy.readHuffmanTable(bytes, offset, bytes.length);
         offset += huffman.bytesRead();
@@ -139,7 +130,7 @@ final class ZstdDictionary {
                 || repeat1 > contentSize || repeat2 > contentSize || repeat3 > contentSize) {
             throw new IOException("Invalid Zstandard dictionary repeated offsets");
         }
-        return new ZstdDictionary(
+        return new ZstdDictionaryContext(
                 id,
                 Arrays.copyOfRange(bytes, offset, bytes.length),
                 huffman.table(),

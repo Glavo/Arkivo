@@ -342,10 +342,10 @@ final class DirectByteBufferCodecSupport {
             int targetPosition
     ) throws IOException {
         if (outcome == CodecOutcome.NEEDS_DICTIONARY) {
-            long dictionaryId = decoder instanceof CompressionDecoder.DictionaryAware dictionaryDecoder
-                    ? dictionaryDecoder.requiredDictionaryId()
-                    : CompressionCodec.UNKNOWN_SIZE;
-            throw new IOException("Compression decoder requires dictionary " + dictionaryId);
+            String request = decoder instanceof CompressionDecoder.DictionaryAware<?, ?> dictionaryDecoder
+                    ? dictionaryDecoder.dictionaryRequest().toString()
+                    : "unspecified";
+            throw new IOException("Compression decoder requires dictionary: " + request);
         }
         if (outcome == CodecOutcome.NEEDS_INPUT) {
             if (source.hasRemaining()) {

@@ -6,7 +6,8 @@ package org.glavo.arkivo.codec.zstd.internal;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.zstd.ZstdDictionary;
+import org.glavo.arkivo.codec.zstd.ZstdDictionaryRequest;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.zstd.ZstdFrameInfo;
 import org.glavo.arkivo.codec.zstd.ZstdSkippableFrameInfo;
@@ -21,7 +22,8 @@ import java.util.Objects;
 
 /// Incrementally decodes one Zstandard frame without retaining caller-owned buffers.
 @NotNullByDefault
-public final class ZstdDecoder implements CompressionDecoder.Framed, CompressionDecoder.DictionaryAware {
+public final class ZstdDecoder implements CompressionDecoder.Framed,
+        CompressionDecoder.DictionaryAware<ZstdDictionary, ZstdDictionaryRequest> {
     /// Empty decoded output.
     private static final ByteBuffer EMPTY_OUTPUT = ByteBuffer.allocate(0).asReadOnlyBuffer();
 
@@ -29,7 +31,7 @@ public final class ZstdDecoder implements CompressionDecoder.Framed, Compression
     private static final int MAXIMUM_HEADER_SIZE = 18;
 
     /// Initially configured dictionary, or null.
-    private final @Nullable CompressionDictionary initialDictionary;
+    private final @Nullable ZstdDictionary initialDictionary;
 
     /// Maximum permitted frame window, or the unknown-size sentinel.
     private final long maximumWindowSize;
@@ -50,7 +52,7 @@ public final class ZstdDecoder implements CompressionDecoder.Framed, Compression
     private final ByteBuffer checksumBytes = ByteBuffer.allocate(Integer.BYTES);
 
     /// Dictionary used by the current decoding session.
-    private ZstdDictionary dictionary;
+    private ZstdDictionaryContext dictionary;
 
     /// Current standard-frame block decoder, or null outside a standard frame.
     private @Nullable ZstdBlockDecoder blockDecoder;
@@ -83,7 +85,7 @@ public final class ZstdDecoder implements CompressionDecoder.Framed, Compression
     private long skippableBytes;
 
     /// Dictionary identifier requested by the current frame.
-    private long requiredDictionaryId = CompressionDictionary.UNKNOWN_ID;
+    private long requiredDictionaryId = ZstdDictionary.NO_DICTIONARY_ID;
 
     /// Current decoder lifecycle state.
     private State state = State.HEADER;
@@ -95,7 +97,7 @@ public final class ZstdDecoder implements CompressionDecoder.Framed, Compression
     /// @param magicless whether standard frame magic is omitted
     /// @param verifyChecksums whether present frame checksums are verified
     public ZstdDecoder(
-            @Nullable CompressionDictionary dictionary,
+            @Nullable ZstdDictionary dictionary,
             long maximumWindowSize,
             boolean magicless,
             boolean verifyChecksums
@@ -104,7 +106,7 @@ public final class ZstdDecoder implements CompressionDecoder.Framed, Compression
         this.maximumWindowSize = maximumWindowSize;
         this.magicless = magicless;
         this.verifyChecksums = verifyChecksums;
-        this.dictionary = ZstdDictionary.parse(dictionary);
+        this.dictionary = ZstdDictionaryContext.parse(dictionary);
     }
 
     /// Decodes source bytes until input, output space, a dictionary, or the frame boundary stops progress.
@@ -196,25 +198,25 @@ public final class ZstdDecoder implements CompressionDecoder.Framed, Compression
         }
     }
 
-    /// Returns the dictionary identifier requested by the current frame.
+    /// Returns the dictionary request from the current Zstandard frame.
     @Override
-    public long requiredDictionaryId() {
-        return requiredDictionaryId;
+    public ZstdDictionaryRequest dictionaryRequest() {
+        if (state != State.NEEDS_DICTIONARY) {
+            throw new IllegalStateException("Zstandard decoder is not waiting for a dictionary");
+        }
+        return new ZstdDictionaryRequest(requiredDictionaryId);
     }
 
     /// Supplies the dictionary requested by the parsed frame header.
     @Override
-    public void provideDictionary(CompressionDictionary dictionary) throws IOException {
+    public void provideDictionary(ZstdDictionary dictionary) throws IOException {
         Objects.requireNonNull(dictionary, "dictionary");
         requireOpen();
-        if (state != State.NEEDS_DICTIONARY) {
-            throw new IllegalStateException("Zstandard decoder is not waiting for a dictionary");
+        ZstdDictionaryRequest request = dictionaryRequest();
+        if (!request.matches(dictionary)) {
+            throw new IOException("Configured Zstandard dictionary does not satisfy " + request);
         }
-        ZstdDictionary selected = ZstdDictionary.parse(dictionary);
-        if (selected.id() != requiredDictionaryId) {
-            throw new IOException("Zstandard frame requires dictionary " + requiredDictionaryId);
-        }
-        this.dictionary = selected;
+        this.dictionary = ZstdDictionaryContext.parse(dictionary);
         beginStandardFrame(Objects.requireNonNull(frameInfo));
     }
 
@@ -223,7 +225,7 @@ public final class ZstdDecoder implements CompressionDecoder.Framed, Compression
     public void reset() {
         requireOpen();
         try {
-            dictionary = ZstdDictionary.parse(initialDictionary);
+            dictionary = ZstdDictionaryContext.parse(initialDictionary);
         } catch (IOException exception) {
             throw new IllegalStateException("Configured Zstandard dictionary became invalid", exception);
         }
@@ -284,7 +286,7 @@ public final class ZstdDecoder implements CompressionDecoder.Framed, Compression
         }
         CompressionDecoderSupport.requireWindowSize(maximumWindowSize, standard.windowSize());
         long dictionaryId = standard.dictionaryId();
-        if (dictionaryId != CompressionDictionary.UNKNOWN_ID && dictionary.id() != dictionaryId) {
+        if (dictionaryId != ZstdDictionary.NO_DICTIONARY_ID && dictionary.id() != dictionaryId) {
             frameInfo = standard;
             requiredDictionaryId = dictionaryId;
             state = State.NEEDS_DICTIONARY;
@@ -296,7 +298,7 @@ public final class ZstdDecoder implements CompressionDecoder.Framed, Compression
     /// Initializes standard-frame block, history, and checksum state.
     private void beginStandardFrame(ZstdStandardFrameInfo standard) throws IOException {
         frameInfo = standard;
-        requiredDictionaryId = CompressionDictionary.UNKNOWN_ID;
+        requiredDictionaryId = ZstdDictionary.NO_DICTIONARY_ID;
         blockDecoder = new ZstdBlockDecoder(standard.windowSize(), dictionary);
         checksum = standard.checksum() && verifyChecksums ? new ZstdXXHash64() : null;
         blockHeader.clear();
@@ -440,7 +442,7 @@ public final class ZstdDecoder implements CompressionDecoder.Framed, Compression
         payloadSize = 0;
         output = EMPTY_OUTPUT;
         skippableBytes = 0L;
-        requiredDictionaryId = CompressionDictionary.UNKNOWN_ID;
+        requiredDictionaryId = ZstdDictionary.NO_DICTIONARY_ID;
     }
 
     /// Requires this decoder to remain open.

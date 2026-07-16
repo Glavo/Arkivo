@@ -150,7 +150,7 @@ final class CompressionChannelContextTest {
     void exposesConfigurationOnlyThroughTypedSubinterfaces() {
         assertFalse(CODEC instanceof CompressionCodec.LevelConfigurable<?>);
         assertFalse(CODEC instanceof CompressionCodec.StrategyConfigurable<?>);
-        assertFalse(CODEC instanceof CompressionCodec.DictionaryConfigurable<?>);
+        assertFalse(CODEC instanceof CompressionCodec.DictionaryConfigurable<?, ?>);
         assertFalse(CODEC instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?>);
     }
 

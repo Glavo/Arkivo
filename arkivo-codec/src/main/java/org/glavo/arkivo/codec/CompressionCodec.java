@@ -280,16 +280,20 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         C withCompressionStrategy(CompressionStrategy compressionStrategy);
     }
 
-    /// Describes an immutable codec configuration with an optional shared compression dictionary.
+    /// Describes an immutable codec configuration with an optional format-specific compression dictionary.
     ///
     /// @param <C> the concrete immutable codec type returned by configuration methods
+    /// @param <D> the format-specific dictionary type accepted by this codec
     @NotNullByDefault
-    interface DictionaryConfigurable<C extends CompressionCodec<C>> extends CompressionCodec<C> {
+    interface DictionaryConfigurable<
+            C extends CompressionCodec<C>,
+            D extends CompressionDictionary
+    > extends CompressionCodec<C> {
         /// Returns the configured dictionary, or `null` when dictionary-free operation is selected.
-        @Nullable CompressionDictionary dictionary();
+        @Nullable D dictionary();
 
         /// Returns an immutable codec configured with the requested dictionary.
-        C withDictionary(CompressionDictionary dictionary);
+        C withDictionary(D dictionary);
 
         /// Returns an immutable codec configured without a dictionary.
         C withoutDictionary();

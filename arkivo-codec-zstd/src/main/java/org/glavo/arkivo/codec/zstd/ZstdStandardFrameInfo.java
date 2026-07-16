@@ -4,7 +4,6 @@
 package org.glavo.arkivo.codec.zstd;
 
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 
 /// Describes one standard or explicitly selected magicless Zstandard frame header.
@@ -13,7 +12,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 /// @param contentSize declared decompressed content size, CompressionCodec.UNKNOWN_SIZE when absent, or
 /// CONTENT_SIZE_OVERFLOW when the unsigned field exceeds Long.MAX_VALUE
 /// @param windowSize required decoding window, saturated to Long.MAX_VALUE
-/// @param dictionaryId dictionary identifier, or CompressionDictionary.UNKNOWN_ID when absent
+/// @param dictionaryId dictionary identifier, or `ZstdDictionary.NO_DICTIONARY_ID` when absent
 /// @param checksum whether a four-byte content checksum follows the final block
 @NotNullByDefault
 public record ZstdStandardFrameInfo(
@@ -37,7 +36,7 @@ public record ZstdStandardFrameInfo(
         if (windowSize < 0L) {
             throw new IllegalArgumentException("windowSize must not be negative");
         }
-        if (dictionaryId < CompressionDictionary.UNKNOWN_ID) {
+        if (dictionaryId < ZstdDictionary.NO_DICTIONARY_ID || dictionaryId > 0xffff_ffffL) {
             throw new IllegalArgumentException("dictionaryId is out of range");
         }
         if (contentSize == CompressionCodec.UNKNOWN_SIZE && windowSize == 0L) {

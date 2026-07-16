@@ -6,7 +6,6 @@ package org.glavo.arkivo.codec.zstd;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
@@ -90,18 +89,21 @@ public final class ZstdBufferEngineTest {
         }
     }
 
-    /// Verifies late dictionary binding through a frame dictionary identifier.
+    /// Verifies late dictionary binding through a formatted dictionary identifier.
     @Test
     public void requestsAndAcceptsDictionary() throws IOException {
-        byte[] dictionaryBytes = testData(4096);
-        CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes, 77L);
-        byte[] input = Arrays.copyOfRange(dictionaryBytes, 1024, 3072);
+        byte[] samples = testData(8192);
+        ZstdDictionaryTrainer trainer = new ZstdDictionaryTrainer(samples.length, 1024);
+        trainer.addSample(ByteBuffer.wrap(samples));
+        ZstdDictionary dictionary = trainer.train();
+        byte[] input = Arrays.copyOfRange(samples, 1024, 3072);
         ZstdCodec encoderCodec = CODEC.withDictionary(dictionary);
         byte[] encoded = encode(input, encoderCodec.newEncoder(input.length), 31, 3, false);
         ByteBuffer source = ByteBuffer.wrap(encoded);
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
 
-        try (CompressionDecoder.DictionaryAware decoder = CODEC.newDecoder()) {
+        try (CompressionDecoder.DictionaryAware<ZstdDictionary, ZstdDictionaryRequest> decoder =
+                     CODEC.newDecoder(DecompressionLimits.ofMaximumOutputSize(input.length))) {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocate(7);
@@ -109,7 +111,7 @@ public final class ZstdBufferEngineTest {
                 drain(target, decoded);
             } while (outcome == CodecOutcome.NEEDS_OUTPUT);
             assertEquals(CodecOutcome.NEEDS_DICTIONARY, outcome);
-            assertEquals(77L, decoder.requiredDictionaryId());
+            assertEquals(dictionary.dictionaryId(), decoder.dictionaryRequest().dictionaryId());
             decoder.provideDictionary(dictionary);
             do {
                 ByteBuffer target = ByteBuffer.allocate(7);

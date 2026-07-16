@@ -4,10 +4,11 @@
 package org.glavo.arkivo.codec.zstd;
 
 import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.CodecOutcome;
+import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
-import org.glavo.arkivo.codec.CompressionDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -146,28 +147,24 @@ public final class ZstdPureJavaDecoderTest {
         assertArrayEquals(new byte[]{0x7a}, decompress(LARGE_WINDOW_FRAME));
     }
 
-    /// Uses dictionary metadata identifiers for raw-content dictionaries.
+    /// Distinguishes raw dictionary content from a frame's formatted dictionary request.
     @Test
-    public void validatesRawDictionaryIdentifierMetadata() throws IOException {
-        CompressionDictionary dictionary = CompressionDictionary.of(
-                "raw dictionary content".getBytes(StandardCharsets.US_ASCII),
-                127L
+    public void exposesTypedDictionaryRequest() throws IOException {
+        ZstdDictionary rawDictionary = ZstdDictionary.rawContent(
+                "raw dictionary content".getBytes(StandardCharsets.US_ASCII)
         );
-        ZstdCodec codec = new ZstdCodec().withDictionary(dictionary);
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        codec.decompress(
-                Channels.newChannel(new ByteArrayInputStream(DICTIONARY_ID_FRAME)),
-                Channels.newChannel(output)
-        );
-        assertArrayEquals("abc".getBytes(StandardCharsets.US_ASCII), output.toByteArray());
+        ByteBuffer source = ByteBuffer.wrap(DICTIONARY_ID_FRAME);
+        try (CompressionDecoder.DictionaryAware<ZstdDictionary, ZstdDictionaryRequest> decoder =
+                     new ZstdCodec().newDecoder()) {
+            CodecOutcome outcome = decoder.decode(source, ByteBuffer.allocate(8), true);
 
-        ZstdCodec wrongCodec = new ZstdCodec().withDictionary(
-                CompressionDictionary.of(dictionary.bytes(), 126L)
-        );
-        assertThrows(IOException.class, () -> wrongCodec.decompress(
-                Channels.newChannel(new ByteArrayInputStream(DICTIONARY_ID_FRAME)),
-                Channels.newChannel(new ByteArrayOutputStream())
-        ));
+            assertEquals(CodecOutcome.NEEDS_DICTIONARY, outcome);
+            ZstdDictionaryRequest request = decoder.dictionaryRequest();
+            assertEquals(127L, request.dictionaryId());
+            assertEquals(false, request.matches(rawDictionary));
+            assertThrows(IOException.class, () -> decoder.provideDictionary(rawDictionary));
+            assertEquals(request, decoder.dictionaryRequest());
+        }
     }
 
     /// Reports a skippable frame boundary and preserves a prefetched standard frame.

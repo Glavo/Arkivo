@@ -5,7 +5,6 @@ package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.CompressionDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -125,7 +124,7 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
     ///
     /// @param format selected bitstream semantics
     /// @param dictionary initial history content, or null
-    public DeflateDecoderEngine(Format format, @Nullable CompressionDictionary dictionary) {
+    public DeflateDecoderEngine(Format format, byte @Nullable [] dictionary) {
         this(format, dictionary, Objects.requireNonNull(format, "format").windowSize());
     }
 
@@ -138,7 +137,7 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
     /// @param windowSize effective history-window size
     public DeflateDecoderEngine(
             Format format,
-            @Nullable CompressionDictionary dictionary,
+            byte @Nullable [] dictionary,
             int windowSize
     ) {
         this.format = Objects.requireNonNull(format, "format");
@@ -150,7 +149,7 @@ public final class DeflateDecoderEngine implements CompressionDecoder {
                             + format.windowSize()
             );
         }
-        this.dictionary = dictionary != null ? dictionary.bytes() : null;
+        this.dictionary = dictionary != null ? dictionary.clone() : null;
         this.window = new byte[windowSize];
         this.windowMask = windowSize - 1;
         restoreDictionary();

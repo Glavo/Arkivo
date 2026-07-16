@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.RawCompressionDictionary;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -104,7 +104,7 @@ public final class DeflateCodecTest {
                 "Arkivo raw Deflate preset dictionary common phrase 0123456789;"
         ).repeat(128).getBytes(StandardCharsets.UTF_8);
         byte[] input = Arrays.copyOfRange(dictionaryBytes, dictionaryBytes.length - 512, dictionaryBytes.length);
-        CompressionDictionary dictionary = CompressionDictionary.of(dictionaryBytes);
+        RawCompressionDictionary dictionary = RawCompressionDictionary.of(dictionaryBytes);
         DeflateCodec codec = new DeflateCodec().withDictionary(dictionary);
 
         assertEquals(dictionary, codec.dictionary());

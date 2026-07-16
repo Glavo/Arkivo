@@ -5,7 +5,6 @@ package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionFormat;
-import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.glavo.arkivo.codec.DecompressionLimits;
@@ -24,7 +23,7 @@ import java.util.Objects;
 public final class ZlibCodec
         implements CompressionCodec.LevelConfigurable<ZlibCodec>,
         CompressionCodec.StrategyConfigurable<ZlibCodec>,
-        CompressionCodec.DictionaryConfigurable<ZlibCodec> {
+        CompressionCodec.DictionaryConfigurable<ZlibCodec, ZlibDictionary> {
     /// The stable zlib compression format name.
     public static final String NAME = "zlib";
 
@@ -48,7 +47,7 @@ public final class ZlibCodec
     private final CompressionStrategy compressionStrategy;
 
     /// The configured preset dictionary, or null.
-    private final @Nullable CompressionDictionary dictionary;
+    private final @Nullable ZlibDictionary dictionary;
 
     /// Creates the default zlib codec configuration.
     public ZlibCodec() {
@@ -59,7 +58,7 @@ public final class ZlibCodec
     private ZlibCodec(
             long compressionLevel,
             CompressionStrategy compressionStrategy,
-            @Nullable CompressionDictionary dictionary
+            @Nullable ZlibDictionary dictionary
     ) {
         if (compressionLevel < MINIMUM_COMPRESSION_LEVEL
                 || compressionLevel > MAXIMUM_COMPRESSION_LEVEL) {
@@ -128,13 +127,13 @@ public final class ZlibCodec
 
     /// Returns the configured preset dictionary, or null.
     @Override
-    public @Nullable CompressionDictionary dictionary() {
+    public @Nullable ZlibDictionary dictionary() {
         return dictionary;
     }
 
     /// Returns an immutable zlib codec with the requested preset dictionary.
     @Override
-    public ZlibCodec withDictionary(CompressionDictionary dictionary) {
+    public ZlibCodec withDictionary(ZlibDictionary dictionary) {
         Objects.requireNonNull(dictionary, "dictionary");
         return dictionary == this.dictionary
                 ? this
@@ -156,9 +155,17 @@ public final class ZlibCodec
         return new ZlibEncoder(compressionLevel, dictionary, compressionStrategy);
     }
 
-    /// Creates a transport-independent zlib stream decoder with operation-scoped limits.
+    /// Creates an unrestricted dictionary-aware zlib stream decoder.
     @Override
-    public CompressionDecoder newDecoder(DecompressionLimits limits) {
+    public CompressionDecoder.DictionaryAware<ZlibDictionary, ZlibDictionaryRequest> newDecoder() {
+        return newDecoder(DecompressionLimits.UNLIMITED);
+    }
+
+    /// Creates a dictionary-aware zlib stream decoder with operation-scoped limits.
+    @Override
+    public CompressionDecoder.DictionaryAware<ZlibDictionary, ZlibDictionaryRequest> newDecoder(
+            DecompressionLimits limits
+    ) {
         Objects.requireNonNull(limits, "limits");
         return CompressionDecoderSupport.limitEngineOutput(
                 new ZlibDecoder(limits.maximumWindowSize(), dictionary),

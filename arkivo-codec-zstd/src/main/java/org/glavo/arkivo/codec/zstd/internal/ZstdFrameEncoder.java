@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
-import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.zstd.ZstdDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -104,7 +104,7 @@ final class ZstdFrameEncoder {
 
     /// Selects the dictionary-identifier flag for one header.
     private static int dictionaryFlag(long dictionaryId) {
-        if (dictionaryId == CompressionDictionary.UNKNOWN_ID) {
+        if (dictionaryId == ZstdDictionary.NO_DICTIONARY_ID) {
             return 0;
         }
         if (dictionaryId <= 0xffL) {

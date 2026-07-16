@@ -3,9 +3,7 @@
 
 package org.glavo.arkivo.codec.zstd;
 
-import org.glavo.arkivo.codec.CompressionDictionary;
 import org.glavo.arkivo.codec.zstd.internal.ZstdDictionaryBuilder;
-import org.glavo.arkivo.codec.zstd.internal.ZstdDictionarySupport;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.EOFException;
@@ -154,7 +152,7 @@ public final class ZstdDictionaryTrainer {
     }
 
     /// Trains a dictionary using frequency-ranked reusable sample segments.
-    public synchronized CompressionDictionary train() {
+    public synchronized ZstdDictionary train() {
         return train(false);
     }
 
@@ -163,7 +161,7 @@ public final class ZstdDictionaryTrainer {
     /// Legacy mode selects the packed sample suffix. Both modes produce standard formatted Zstandard dictionaries;
     /// both derive initial Huffman and sequence FSE tables from the accepted samples. They are not intended to
     /// reproduce byte-identical output from the native training implementations.
-    public synchronized CompressionDictionary train(boolean legacy) {
+    public synchronized ZstdDictionary train(boolean legacy) {
         if (sampleCount == 0) {
             throw new IllegalStateException("At least one sample is required");
         }
@@ -204,8 +202,7 @@ public final class ZstdDictionaryTrainer {
                     exception
             );
         }
-        long id = ZstdDictionarySupport.dictionaryId(ByteBuffer.wrap(dictionary));
-        return CompressionDictionary.of(dictionary, id);
+        return ZstdDictionary.fullDictionary(dictionary);
     }
 
     /// Expands the sample-size array before accepting another sample.

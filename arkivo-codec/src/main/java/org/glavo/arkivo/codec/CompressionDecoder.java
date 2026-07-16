@@ -40,16 +40,21 @@ public interface CompressionDecoder extends AutoCloseable {
     interface Framed extends CompressionDecoder {
     }
 
-    /// Decodes a format that can request and accept a dictionary after decoding has started.
+    /// Decodes a format that can request and accept a format-specific dictionary after decoding has started.
+    ///
+    /// @param <D> the format-specific dictionary type accepted by this decoder
+    /// @param <R> the format-specific request type exposed by this decoder
     @NotNullByDefault
-    interface DictionaryAware extends CompressionDecoder {
-        /// Returns the format-specific identifier of the requested dictionary.
+    interface DictionaryAware<
+            D extends CompressionDictionary,
+            R extends DictionaryRequest
+    > extends CompressionDecoder {
+        /// Returns the dictionary request produced by the most recent decode operation.
         ///
-        /// This method is valid after `CodecOutcome.NEEDS_DICTIONARY`. Formats without an available identifier return
-        /// `CompressionDictionary.UNKNOWN_ID`.
-        long requiredDictionaryId();
+        /// This method is valid only after `CodecOutcome.NEEDS_DICTIONARY`.
+        R dictionaryRequest();
 
-        /// Supplies the dictionary requested by the most recent decode operation.
-        void provideDictionary(CompressionDictionary dictionary) throws IOException;
+        /// Supplies a dictionary in response to the most recent request.
+        void provideDictionary(D dictionary) throws IOException;
     }
 }

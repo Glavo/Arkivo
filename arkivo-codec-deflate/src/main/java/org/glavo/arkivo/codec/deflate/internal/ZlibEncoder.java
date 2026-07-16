@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.deflate.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
-import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.deflate.ZlibDictionary;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionStrategy;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -26,7 +26,10 @@ public final class ZlibEncoder implements CompressionEncoder.Flushable {
     /// Configured compression level restored by reset.
     private final int compressionLevel;
 
-    /// Adler-32 dictionary identifier, or the unknown sentinel when no dictionary is configured.
+    /// Whether a preset dictionary is configured.
+    private final boolean dictionaryConfigured;
+
+    /// Adler-32 dictionary identifier when a dictionary is configured.
     private final long dictionaryId;
 
     /// Shared raw Deflate encoder used for the stream body.
@@ -51,17 +54,16 @@ public final class ZlibEncoder implements CompressionEncoder.Flushable {
     /// @param strategy compression strategy
     public ZlibEncoder(
             int compressionLevel,
-            @Nullable CompressionDictionary dictionary,
+            @Nullable ZlibDictionary dictionary,
             CompressionStrategy strategy
     ) {
         this.compressionLevel = compressionLevel;
-        this.dictionaryId = dictionary != null
-                ? validatedDictionaryIdentifier(dictionary)
-                : CompressionDictionary.UNKNOWN_ID;
+        this.dictionaryConfigured = dictionary != null;
+        this.dictionaryId = dictionary != null ? dictionary.adler32() : 0L;
         this.body = new DeflateEncoderEngine(
                 DeflateEncoderEngine.Format.DEFLATE,
                 compressionLevel,
-                dictionary,
+                dictionary != null ? dictionary.bytes() : null,
                 Objects.requireNonNull(strategy, "strategy")
         );
         this.pendingHeader = createHeader();
@@ -179,17 +181,17 @@ public final class ZlibEncoder implements CompressionEncoder.Flushable {
                 ? 0
                 : compressionLevel <= 5 ? 1 : compressionLevel == 6 ? 2 : 3;
         int flags = compressionLevelFlags << 6;
-        if (dictionaryId != CompressionDictionary.UNKNOWN_ID) {
+        if (dictionaryConfigured) {
             flags |= 0x20;
         }
         flags |= (31 - ((compressionMethodAndInfo << 8 | flags) % 31)) % 31;
 
         ByteBuffer header = ByteBuffer.allocate(
-                dictionaryId == CompressionDictionary.UNKNOWN_ID ? 2 : 6
+                dictionaryConfigured ? 6 : 2
         ).order(ByteOrder.BIG_ENDIAN);
         header.put((byte) compressionMethodAndInfo);
         header.put((byte) flags);
-        if (dictionaryId != CompressionDictionary.UNKNOWN_ID) {
+        if (dictionaryConfigured) {
             header.putInt((int) dictionaryId);
         }
         return header.flip();
@@ -200,20 +202,6 @@ public final class ZlibEncoder implements CompressionEncoder.Flushable {
         ByteBuffer trailer = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN);
         trailer.putInt((int) checksum.getValue());
         return trailer.flip();
-    }
-
-    /// Returns dictionary bytes' Adler-32 after validating an optional known identifier.
-    private static long validatedDictionaryIdentifier(CompressionDictionary dictionary) {
-        byte[] bytes = dictionary.bytes();
-        Adler32 adler32 = new Adler32();
-        adler32.update(bytes);
-        long identifier = adler32.getValue();
-        if (dictionary.id() != CompressionDictionary.UNKNOWN_ID && dictionary.id() != identifier) {
-            throw new IllegalArgumentException(
-                    "Zlib dictionary identifier does not match its Adler-32 checksum"
-            );
-        }
-        return identifier;
     }
 
     /// Updates the stream checksum for the source range consumed by the Deflate engine.

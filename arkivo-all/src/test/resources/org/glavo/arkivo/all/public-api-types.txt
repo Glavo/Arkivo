@@ -107,12 +107,16 @@ org.glavo.arkivo.codec.DecompressingReadableByteChannel$Directive
 org.glavo.arkivo.codec.DecompressionLimitException
 org.glavo.arkivo.codec.DecompressionLimits
 org.glavo.arkivo.codec.DecompressionWindowLimitException
+org.glavo.arkivo.codec.DictionaryRequest
+org.glavo.arkivo.codec.RawCompressionDictionary
 org.glavo.arkivo.codec.bcj.BCJTransforms
 org.glavo.arkivo.codec.bzip2.BZip2Codec
 org.glavo.arkivo.codec.deflate.Deflate64Codec
 org.glavo.arkivo.codec.deflate.DeflateCodec
 org.glavo.arkivo.codec.deflate.GzipCodec
 org.glavo.arkivo.codec.deflate.ZlibCodec
+org.glavo.arkivo.codec.deflate.ZlibDictionary
+org.glavo.arkivo.codec.deflate.ZlibDictionaryRequest
 org.glavo.arkivo.codec.delta.DeltaTransform
 org.glavo.arkivo.codec.lzma.LZMA2Codec
 org.glavo.arkivo.codec.lzma.LZMACodec
@@ -142,6 +146,9 @@ org.glavo.arkivo.codec.xz.XZFilter
 org.glavo.arkivo.codec.xz.XZFilterChain
 org.glavo.arkivo.codec.zstd.ZstdCodec
 org.glavo.arkivo.codec.zstd.ZstdCodec$Builder
+org.glavo.arkivo.codec.zstd.ZstdDictionary
+org.glavo.arkivo.codec.zstd.ZstdDictionary$ContentType
+org.glavo.arkivo.codec.zstd.ZstdDictionaryRequest
 org.glavo.arkivo.codec.zstd.ZstdDictionaryTrainer
 org.glavo.arkivo.codec.zstd.ZstdDictionaryTrainingException
 org.glavo.arkivo.codec.zstd.ZstdFrameFormat

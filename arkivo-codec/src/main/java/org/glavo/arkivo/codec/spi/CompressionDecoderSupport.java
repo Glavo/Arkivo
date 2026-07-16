@@ -5,6 +5,8 @@ package org.glavo.arkivo.codec.spi;
 
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressionDecoder;
+import org.glavo.arkivo.codec.CompressionDictionary;
+import org.glavo.arkivo.codec.DictionaryRequest;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel.Directive;
 import org.glavo.arkivo.codec.DecompressionLimitException;
@@ -52,6 +54,24 @@ public final class CompressionDecoderSupport {
             return decoder;
         }
         return OutputLimitingCompressionDecoder.create(decoder, maximumOutputSize);
+    }
+
+    /// Applies a maximum decoded-output size while preserving typed late dictionary binding.
+    ///
+    /// A negative value leaves the decoder unchanged.
+    ///
+    /// @param <D> the format-specific dictionary type
+    /// @param <R> the format-specific dictionary request type
+    public static <D extends CompressionDictionary, R extends DictionaryRequest>
+            CompressionDecoder.DictionaryAware<D, R> limitEngineOutput(
+            CompressionDecoder.DictionaryAware<D, R> decoder,
+            long maximumOutputSize
+    ) {
+        Objects.requireNonNull(decoder, "decoder");
+        if (maximumOutputSize < 0L) {
+            return decoder;
+        }
+        return OutputLimitingCompressionDecoder.createDictionaryAware(decoder, maximumOutputSize);
     }
 
     /// Applies a maximum decoded-output size across a complete channel decoding session.
