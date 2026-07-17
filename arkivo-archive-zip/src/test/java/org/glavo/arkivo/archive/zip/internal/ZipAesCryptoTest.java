@@ -27,7 +27,7 @@ public final class ZipAesCryptoTest {
     /// Verifies that a closed WinZip AES decrypting stream rejects further reads.
     @Test
     public void decryptingStreamReadAfterCloseIsRejected() throws IOException {
-        ZipAesExtraField aes = ZipAesExtraField.forEncryption(ZipEncryption.winZipAes256(), ZipConstants.STORED_METHOD);
+        ZipAesExtraField aes = ZipAesExtraField.forEncryption(ZipEncryption.WINZIP_AES_256, ZipConstants.STORED_METHOD);
         byte[] content = "authenticated content".getBytes(StandardCharsets.UTF_8);
         byte[] encrypted = encrypt(aes, content);
 
@@ -48,7 +48,7 @@ public final class ZipAesCryptoTest {
     /// Verifies that authentication failure during close still marks the decrypting stream as closed.
     @Test
     public void decryptingStreamFailedCloseMarksStreamClosed() throws IOException {
-        ZipAesExtraField aes = ZipAesExtraField.forEncryption(ZipEncryption.winZipAes256(), ZipConstants.STORED_METHOD);
+        ZipAesExtraField aes = ZipAesExtraField.forEncryption(ZipEncryption.WINZIP_AES_256, ZipConstants.STORED_METHOD);
         byte[] encrypted = encrypt(aes, "tampered content".getBytes(StandardCharsets.UTF_8));
         encrypted[encrypted.length - 1] ^= 1;
 
@@ -68,7 +68,7 @@ public final class ZipAesCryptoTest {
     /// Verifies that authentication failure is preserved when the wrapped stream also fails to close.
     @Test
     public void decryptingStreamCloseFailureIsSuppressedAfterAuthenticationFailure() throws IOException {
-        ZipAesExtraField aes = ZipAesExtraField.forEncryption(ZipEncryption.winZipAes256(), ZipConstants.STORED_METHOD);
+        ZipAesExtraField aes = ZipAesExtraField.forEncryption(ZipEncryption.WINZIP_AES_256, ZipConstants.STORED_METHOD);
         byte[] encrypted = encrypt(aes, "tampered close failure".getBytes(StandardCharsets.UTF_8));
         encrypted[encrypted.length - 1] ^= 1;
         CloseFailingOnceInputStream delegate = new CloseFailingOnceInputStream(encrypted);
@@ -98,7 +98,7 @@ public final class ZipAesCryptoTest {
     /// Verifies that close failures still mark the decrypting stream closed and allow cleanup retry.
     @Test
     public void decryptingStreamCloseFailureAllowsCleanupRetry() throws IOException {
-        ZipAesExtraField aes = ZipAesExtraField.forEncryption(ZipEncryption.winZipAes256(), ZipConstants.STORED_METHOD);
+        ZipAesExtraField aes = ZipAesExtraField.forEncryption(ZipEncryption.WINZIP_AES_256, ZipConstants.STORED_METHOD);
         byte[] content = "authenticated close failure".getBytes(StandardCharsets.UTF_8);
         byte[] encrypted = encrypt(aes, content);
         CloseFailingOnceInputStream delegate = new CloseFailingOnceInputStream(encrypted);
@@ -127,7 +127,7 @@ public final class ZipAesCryptoTest {
     /// Verifies that authentication code write failures can be retried on close.
     @Test
     public void encryptingStreamAuthenticationCodeWriteFailureAllowsCloseRetry() throws IOException {
-        ZipAesExtraField aes = ZipAesExtraField.forEncryption(ZipEncryption.winZipAes256(), ZipConstants.STORED_METHOD);
+        ZipAesExtraField aes = ZipAesExtraField.forEncryption(ZipEncryption.WINZIP_AES_256, ZipConstants.STORED_METHOD);
         byte[] content = "retry authentication code".getBytes(StandardCharsets.UTF_8);
         AuthenticationWriteFailingOutputStream delegate = new AuthenticationWriteFailingOutputStream();
         OutputStream output = ZipAesCrypto.openEncryptingStream(delegate, aes, PASSWORD);
@@ -156,7 +156,7 @@ public final class ZipAesCryptoTest {
     /// Verifies that runtime drain failures still close the wrapped stream.
     @Test
     public void decryptingStreamRuntimeDrainFailureClosesWrappedStream() throws IOException {
-        ZipAesExtraField aes = ZipAesExtraField.forEncryption(ZipEncryption.winZipAes256(), ZipConstants.STORED_METHOD);
+        ZipAesExtraField aes = ZipAesExtraField.forEncryption(ZipEncryption.WINZIP_AES_256, ZipConstants.STORED_METHOD);
         byte[] encrypted = encrypt(aes, "runtime drain failure".getBytes(StandardCharsets.UTF_8));
         ReadFailingCloseTrackingInputStream delegate = new ReadFailingCloseTrackingInputStream(
                 encrypted,

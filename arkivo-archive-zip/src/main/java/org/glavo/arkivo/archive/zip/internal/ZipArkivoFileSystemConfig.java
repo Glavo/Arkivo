@@ -82,7 +82,7 @@ public final class ZipArkivoFileSystemConfig {
     public static final ZipArkivoFileSystemConfig DEFAULTS = new ZipArkivoFileSystemConfig(
             DEFAULT_READ_OPEN_OPTIONS,
             null,
-            ZipEncryption.none(),
+            ZipEncryption.NONE,
             NO_SPLIT_SIZE,
             DEFAULT_LEGACY_CHARSET_DETECTOR,
             ArkivoFileSystemThreadSafety.CONCURRENT_READ,
@@ -208,7 +208,7 @@ public final class ZipArkivoFileSystemConfig {
         ArkivoPasswordProvider passwordProvider = passwordProvider(options);
         Set<OpenOption> openOptions = openOptions(options, defaultOpenOptions);
         ZipEncryption defaultEncryption =
-                options.getOrDefault(DEFAULT_ENCRYPTION, ZipEncryption.none());
+                options.getOrDefault(DEFAULT_ENCRYPTION, ZipEncryption.NONE);
         long splitSize = splitSize(options);
         ArchiveMetadataCharsetDetector legacyCharsetDetector =
                 options.getOrDefault(
@@ -244,7 +244,7 @@ public final class ZipArkivoFileSystemConfig {
         return new ZipArkivoFileSystemConfig(
                 DEFAULT_READ_OPEN_OPTIONS,
                 options.passwordProvider(),
-                ZipEncryption.none(),
+                ZipEncryption.NONE,
                 NO_SPLIT_SIZE,
                 options.legacyCharsetDetector(),
                 options.common().threadSafety(),
@@ -372,7 +372,7 @@ public final class ZipArkivoFileSystemConfig {
             return encryption;
         }
         if (value instanceof String name) {
-            return ZipEncryption.of(name);
+            return ZipEncryption.parse(name);
         }
         throw new IllegalArgumentException("Expected ZipEncryption or String for key: arkivo.zip.defaultEncryption");
     }

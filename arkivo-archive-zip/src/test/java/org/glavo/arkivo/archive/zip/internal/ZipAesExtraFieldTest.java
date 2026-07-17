@@ -45,8 +45,43 @@ public final class ZipAesExtraFieldTest {
         ZipAesExtraField aes = ZipAesExtraField.readValidated(extraData);
 
         assertNotNull(aes);
-        assertEquals(ZipEncryption.winZipAes256(), aes.encryption());
+        assertEquals(ZipEncryption.WINZIP_AES_256, aes.encryption());
         assertEquals(ZipConstants.DEFLATED_METHOD, aes.compressionMethod());
+    }
+
+    /// Verifies that encryption metadata distinguishes known methods from unrecognized encrypted entries.
+    @Test
+    public void encryptionRecognizesOnlySupportedMethods() {
+        assertEquals(
+                ZipEncryption.NONE,
+                ZipAesExtraField.encryption(0, ZipConstants.STORED_METHOD, new byte[0])
+        );
+        assertEquals(
+                ZipEncryption.ZIP_CRYPTO,
+                ZipAesExtraField.encryption(
+                        ZipConstants.ENCRYPTED_FLAG,
+                        ZipConstants.STORED_METHOD,
+                        new byte[0]
+                )
+        );
+        assertEquals(
+                ZipEncryption.WINZIP_AES_256,
+                ZipAesExtraField.encryption(
+                        ZipConstants.ENCRYPTED_FLAG,
+                        ZipConstants.WINZIP_AES_METHOD,
+                        aesExtraField(2, 3, ZipConstants.DEFLATED_METHOD)
+                )
+        );
+        assertNull(ZipAesExtraField.encryption(
+                ZipConstants.ENCRYPTED_FLAG | ZipConstants.STRONG_ENCRYPTION_FLAG,
+                ZipConstants.STORED_METHOD,
+                new byte[0]
+        ));
+        assertNull(ZipAesExtraField.encryption(
+                ZipConstants.ENCRYPTED_FLAG,
+                ZipConstants.WINZIP_AES_METHOD,
+                new byte[0]
+        ));
     }
 
     /// Creates one WinZip AES extra field record.

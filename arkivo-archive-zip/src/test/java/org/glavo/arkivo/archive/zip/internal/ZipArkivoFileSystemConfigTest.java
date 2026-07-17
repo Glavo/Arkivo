@@ -38,19 +38,28 @@ public final class ZipArkivoFileSystemConfigTest {
     public void stringValues() throws Exception {
         Map<String, Object> environment = new HashMap<>();
         environment.put("arkivo.threadSafety", "strict");
-        environment.put("arkivo.zip.defaultEncryption", "winzip-aes-256");
+        environment.put("arkivo.zip.defaultEncryption", "zipcrypto");
         environment.put("arkivo.zip.splitSize", "65536");
         environment.put("arkivo.zip.legacyCharsetDetector", "gb18030");
 
         ZipArkivoFileSystemConfig config = fromEnvironment(environment);
 
-        assertEquals(ZipEncryption.winZipAes256(), config.defaultEncryption());
+        assertEquals(ZipEncryption.ZIP_CRYPTO, config.defaultEncryption());
         assertEquals(65536L, config.splitSize());
         assertEquals(
                 Charset.forName("GB18030"),
                 config.legacyCharsetDetector().detect(ByteBuffer.allocate(0))
         );
         assertEquals(ArkivoFileSystemThreadSafety.STRICT, config.threadSafety());
+    }
+
+    /// Verifies that ZIP encryption configuration rejects unrecognized identifiers.
+    @Test
+    public void unrecognizedEncryptionValue() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> fromEnvironment(Map.of("arkivo.zip.defaultEncryption", "traditional"))
+        );
     }
 
     /// Verifies that split size accepts compatible integral environment values.

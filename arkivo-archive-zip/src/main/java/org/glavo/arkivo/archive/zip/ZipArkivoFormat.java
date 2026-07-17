@@ -320,7 +320,7 @@ public final class ZipArkivoFormat implements
 
     /// Applies ZIP defaults to format-independent creation options.
     private static ZipArchiveOptions.Create createOptions(ArchiveCreateOptions options) {
-        return new ZipArchiveOptions.Create(options, null, ZipEncryption.none());
+        return new ZipArchiveOptions.Create(options, null, ZipEncryption.NONE);
     }
 
     /// Applies ZIP defaults to format-independent update options.
@@ -328,7 +328,7 @@ public final class ZipArkivoFormat implements
         return new ZipArchiveOptions.Update(
                 options,
                 null,
-                ZipEncryption.none(),
+                ZipEncryption.NONE,
                 ZipArchiveOptions.DEFAULT_LEGACY_CHARSET_DETECTOR
         );
     }

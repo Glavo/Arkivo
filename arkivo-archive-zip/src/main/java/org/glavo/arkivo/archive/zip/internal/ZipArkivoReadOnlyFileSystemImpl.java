@@ -1568,7 +1568,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         if (entry.compressedSize < ZipTraditionalCrypto.HEADER_SIZE) {
             throw new IOException("Encrypted ZIP entry is missing its encryption header: " + path);
         }
-        byte[] password = passwordForEntry(path, ZipEncryption.traditional());
+        byte[] password = passwordForEntry(path, ZipEncryption.ZIP_CRYPTO);
         try {
             return ZipTraditionalCrypto.openDecryptingStream(input, password, encryptionVerificationByte(entry));
         } finally {
@@ -2773,7 +2773,7 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         }
 
         /// Returns the ZIP encryption method for this entry.
-        private ZipEncryption encryption() {
+        private @Nullable ZipEncryption encryption() {
             return ZipAesExtraField.encryption(generalPurposeFlags, method, centralDirectoryExtraData);
         }
 
@@ -2949,11 +2949,11 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             return record != null ? ZipMethod.of(record.compressionMethod()) : ZipMethod.stored();
         }
 
-        /// Returns the ZIP encryption method.
+        /// Returns the recognized ZIP encryption method, or `null` when encrypted metadata is unrecognized or malformed.
         @Override
-        public ZipEncryption encryption() {
+        public @Nullable ZipEncryption encryption() {
             ZipEntryRecord record = entry;
-            return record != null ? record.encryption() : ZipEncryption.none();
+            return record != null ? record.encryption() : ZipEncryption.NONE;
         }
 
         /// Returns a copy of the raw local file header extra data bytes.

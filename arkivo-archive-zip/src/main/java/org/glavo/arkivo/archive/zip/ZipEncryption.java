@@ -4,93 +4,55 @@
 package org.glavo.arkivo.archive.zip;
 
 import org.jetbrains.annotations.NotNullByDefault;
-import org.jetbrains.annotations.Nullable;
 
+import java.util.Locale;
 import java.util.Objects;
 
 /// Identifies a ZIP encryption method.
 @NotNullByDefault
-public final class ZipEncryption {
-    /// The unencrypted ZIP method.
-    private static final ZipEncryption NONE = new ZipEncryption("none");
+public enum ZipEncryption {
+    /// Leaves the entry data unencrypted.
+    NONE("none"),
 
-    /// The traditional PKWARE ZIP encryption method.
-    private static final ZipEncryption TRADITIONAL = new ZipEncryption("traditional");
+    /// Encrypts the entry with the traditional PKWARE ZipCrypto scheme.
+    ZIP_CRYPTO("zipcrypto"),
 
-    /// The WinZip AES-128 encryption method.
-    private static final ZipEncryption WINZIP_AES_128 = new ZipEncryption("winzip-aes-128");
+    /// Encrypts the entry with the WinZip AES format and a 128-bit key.
+    WINZIP_AES_128("winzip-aes-128"),
 
-    /// The WinZip AES-192 encryption method.
-    private static final ZipEncryption WINZIP_AES_192 = new ZipEncryption("winzip-aes-192");
+    /// Encrypts the entry with the WinZip AES format and a 192-bit key.
+    WINZIP_AES_192("winzip-aes-192"),
 
-    /// The WinZip AES-256 encryption method.
-    private static final ZipEncryption WINZIP_AES_256 = new ZipEncryption("winzip-aes-256");
+    /// Encrypts the entry with the WinZip AES format and a 256-bit key.
+    WINZIP_AES_256("winzip-aes-256");
 
-    /// The stable display name for the encryption method.
-    private final String name;
+    /// The stable external identifier for the encryption method.
+    private final String id;
 
-    /// Creates a ZIP encryption method.
-    private ZipEncryption(String name) {
-        this.name = name;
+    /// Creates an encryption method with its stable external identifier.
+    ZipEncryption(String id) {
+        this.id = id;
     }
 
-    /// Returns the unencrypted ZIP method.
-    public static ZipEncryption none() {
-        return NONE;
+    /// Parses a stable case-insensitive encryption method identifier.
+    public static ZipEncryption parse(String value) {
+        String normalized = Objects.requireNonNull(value, "value").trim().toLowerCase(Locale.ROOT);
+        for (ZipEncryption encryption : values()) {
+            if (encryption.id.equals(normalized)) {
+                return encryption;
+            }
+        }
+        throw new IllegalArgumentException("Unknown ZIP encryption method: " + value);
     }
 
-    /// Returns the traditional PKWARE ZIP encryption method.
-    public static ZipEncryption traditional() {
-        return TRADITIONAL;
+    /// Returns the stable external identifier for the encryption method.
+    public String id() {
+        return id;
     }
 
-    /// Returns the WinZip AES-128 encryption method.
-    public static ZipEncryption winZipAes128() {
-        return WINZIP_AES_128;
-    }
-
-    /// Returns the WinZip AES-192 encryption method.
-    public static ZipEncryption winZipAes192() {
-        return WINZIP_AES_192;
-    }
-
-    /// Returns the WinZip AES-256 encryption method.
-    public static ZipEncryption winZipAes256() {
-        return WINZIP_AES_256;
-    }
-
-    /// Returns a ZIP encryption method with the given stable display name.
-    public static ZipEncryption of(String name) {
-        return switch (name) {
-            case "none" -> NONE;
-            case "traditional" -> TRADITIONAL;
-            case "winzip-aes-128" -> WINZIP_AES_128;
-            case "winzip-aes-192" -> WINZIP_AES_192;
-            case "winzip-aes-256" -> WINZIP_AES_256;
-            default -> new ZipEncryption(name);
-        };
-    }
-
-    /// Returns the stable display name for the encryption method.
-    public String name() {
-        return name;
-    }
-
-    /// Compares this encryption method with another object.
-    @Override
-    public boolean equals(@Nullable Object object) {
-        return object instanceof ZipEncryption that && name.equals(that.name);
-    }
-
-    /// Returns the hash code for this encryption method.
-    @Override
-    public int hashCode() {
-        return Objects.hash(name);
-    }
-
-    /// Returns the stable display name for this encryption method.
+    /// Returns the stable external identifier for this encryption method.
     @Override
     public String toString() {
-        return name;
+        return id;
     }
 }

@@ -2700,7 +2700,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             FileTime lastModifiedTime
     ) {
         int updatedDosTime = dosTime(lastModifiedTime);
-        if (attributes.encryption().equals(ZipEncryption.traditional())
+        if (attributes.encryption() == ZipEncryption.ZIP_CRYPTO
                 && (attributes.generalPurposeFlags() & DATA_DESCRIPTOR_FLAG) != 0
                 && (currentDosTime >>> 8) != (updatedDosTime >>> 8)) {
             throw new UnsupportedOperationException(
@@ -4822,9 +4822,9 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             ));
         }
 
-        /// Returns the ZIP encryption method.
+        /// Returns the recognized ZIP encryption method, or `null` when encrypted metadata is unrecognized or malformed.
         @Override
-        public ZipEncryption encryption() {
+        public @Nullable ZipEncryption encryption() {
             return ZipAesExtraField.encryption(generalPurposeFlags, method, centralDirectoryExtraData);
         }
 
@@ -5341,7 +5341,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         private static EntryMetadata directory() {
             return new EntryMetadata(
                     STORED_METHOD,
-                    ZipEncryption.none(),
+                    ZipEncryption.NONE,
                     null,
                     VERSION_NEEDED,
                     0,
@@ -5402,12 +5402,12 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
         /// Returns whether this entry is encrypted.
         private boolean encrypted() {
-            return !encryption.equals(ZipEncryption.none());
+            return encryption != ZipEncryption.NONE;
         }
 
         /// Returns whether this entry uses traditional ZIP encryption.
         private boolean traditionalEncrypted() {
-            return encryption.equals(ZipEncryption.traditional());
+            return encryption == ZipEncryption.ZIP_CRYPTO;
         }
 
         /// Returns whether this entry uses WinZip AES encryption.
@@ -5509,11 +5509,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
                     && method != XZ_METHOD
                     && !isZstandardMethod(method)) {
                 throw new UnsupportedOperationException("Unsupported ZIP compression method: " + method);
-            }
-            if (!encryption.equals(ZipEncryption.none())
-                    && !encryption.equals(ZipEncryption.traditional())
-                    && !ZipAesExtraField.isAesEncryption(encryption)) {
-                throw new UnsupportedOperationException("Unsupported ZIP encryption method: " + encryption);
             }
             requireUInt16(versionMadeBy, "version made by");
             requireUInt16(internalAttributes, "internal attributes");

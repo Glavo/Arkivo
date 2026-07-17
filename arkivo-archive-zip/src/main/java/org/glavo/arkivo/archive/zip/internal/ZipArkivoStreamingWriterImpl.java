@@ -171,7 +171,6 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             entry.ensurePending();
             switch (entry.type) {
                 case FILE -> {
-                    entry.attributes.requireSupportedFile();
                     try (OutputStream ignored = entrySink.openFile(
                             entry.entryPath,
                             entry.attributes.metadata(entry, true)
@@ -217,7 +216,6 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             if (entry.type != EntryType.FILE) {
                 throw new IllegalStateException("Only ZIP file entries can open a body channel");
             }
-            entry.attributes.requireSupportedFile();
             OutputStream output = entrySink.openFile(
                     entry.entryPath,
                     entry.attributes.metadata(entry, false)
@@ -696,7 +694,6 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
 
         /// Requires the configured metadata to be supported for the current streaming directory writer.
         private void requireSupportedDirectory() {
-            requireCommonSupportedMetadata();
             if (!method().equals(ZipMethod.stored())) {
                 throw new UnsupportedOperationException("ZIP directory entries must use the stored method");
             }
@@ -704,24 +701,8 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
 
         /// Requires the configured metadata to be supported for the current streaming symbolic link writer.
         private void requireSupportedSymbolicLink() {
-            requireCommonSupportedMetadata();
             if (!method().equals(ZipMethod.stored())) {
                 throw new UnsupportedOperationException("ZIP symbolic link entries must use the stored method");
-            }
-        }
-
-        /// Requires the configured metadata to be supported for the current streaming file writer.
-        private void requireSupportedFile() {
-            requireCommonSupportedMetadata();
-        }
-
-        /// Requires the configured metadata to be supported by the current streaming ZIP implementation.
-        private void requireCommonSupportedMetadata() {
-            ZipEncryption effectiveEncryption = encryption();
-            if (!effectiveEncryption.equals(ZipEncryption.none())
-                    && !effectiveEncryption.equals(ZipEncryption.traditional())
-                    && !ZipAesExtraField.isAesEncryption(effectiveEncryption)) {
-                throw new UnsupportedOperationException("Unsupported ZIP encryption method: " + effectiveEncryption);
             }
         }
 
@@ -736,7 +717,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
 
         /// Returns the effective ZIP encryption method.
         private ZipEncryption encryption() {
-            return entry.type == EntryType.DIRECTORY ? ZipEncryption.none() : encryption;
+            return entry.type == EntryType.DIRECTORY ? ZipEncryption.NONE : encryption;
         }
 
         /// Returns write metadata for the pending entry.
@@ -901,7 +882,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             if (method.id() == ZipMethod.LZMA_ID) {
                 flags |= ZipConstants.LZMA_EOS_MARKER_FLAG;
             }
-            if (!encryption.equals(ZipEncryption.none())) {
+            if (encryption != ZipEncryption.NONE) {
                 flags |= ZipConstants.ENCRYPTED_FLAG;
             }
             return flags;

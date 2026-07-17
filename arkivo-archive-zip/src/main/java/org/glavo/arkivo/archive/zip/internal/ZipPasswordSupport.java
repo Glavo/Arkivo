@@ -23,21 +23,17 @@ final class ZipPasswordSupport {
     static PasswordRequest entryRequest(String entryPath, ZipEncryption encryption) {
         Objects.requireNonNull(entryPath, "entryPath");
         Objects.requireNonNull(encryption, "encryption");
-        int keyLengthBits;
-        if (encryption.equals(ZipEncryption.winZipAes128())) {
-            keyLengthBits = 128;
-        } else if (encryption.equals(ZipEncryption.winZipAes192())) {
-            keyLengthBits = 192;
-        } else if (encryption.equals(ZipEncryption.winZipAes256())) {
-            keyLengthBits = 256;
-        } else {
-            keyLengthBits = PasswordEncryption.UNKNOWN_KEY_LENGTH;
-        }
+        int keyLengthBits = switch (encryption) {
+            case WINZIP_AES_128 -> 128;
+            case WINZIP_AES_192 -> 192;
+            case WINZIP_AES_256 -> 256;
+            default -> PasswordEncryption.UNKNOWN_KEY_LENGTH;
+        };
         return new PasswordRequest(
                 ZipArkivoFormat.instance(),
                 PasswordPurpose.ENTRY_CONTENT,
                 entryPath,
-                PasswordEncryption.of(encryption.name(), keyLengthBits),
+                PasswordEncryption.of(encryption.id(), keyLengthBits),
                 0
         );
     }

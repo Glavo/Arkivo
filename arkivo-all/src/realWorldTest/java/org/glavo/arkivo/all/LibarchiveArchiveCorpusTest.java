@@ -659,28 +659,28 @@ public final class LibarchiveArchiveCorpusTest {
                 Arguments.of(
                         "test_read_format_zip_traditional_encryption_data.zip.uu",
                         "12345678",
-                        ZipEncryption.traditional(),
+                        ZipEncryption.ZIP_CRYPTO,
                         ZipMethod.deflated(),
                         Map.of("bar.txt", 495L, "foo.txt", 495L)
                 ),
                 Arguments.of(
                         "test_read_format_zip_winzip_aes128.zip.uu",
                         "password",
-                        ZipEncryption.winZipAes128(),
+                        ZipEncryption.WINZIP_AES_128,
                         ZipMethod.deflated(),
                         Map.of("README", 6818L)
                 ),
                 Arguments.of(
                         "test_read_format_zip_winzip_aes256.zip.uu",
                         "password",
-                        ZipEncryption.winZipAes256(),
+                        ZipEncryption.WINZIP_AES_256,
                         ZipMethod.deflated(),
                         Map.of("README", 6818L)
                 ),
                 Arguments.of(
                         "test_read_format_zip_winzip_aes256_large.zip.uu",
                         "password",
-                        ZipEncryption.winZipAes256(),
+                        ZipEncryption.WINZIP_AES_256,
                         ZipMethod.deflated(),
                         Map.of(
                                 "Makefile", 1_456_747L,
@@ -692,7 +692,7 @@ public final class LibarchiveArchiveCorpusTest {
                 Arguments.of(
                         "test_read_format_zip_winzip_aes256_stored.zip.uu",
                         "password",
-                        ZipEncryption.winZipAes256(),
+                        ZipEncryption.WINZIP_AES_256,
                         ZipMethod.stored(),
                         Map.of("README", 6818L)
                 )

@@ -51,8 +51,9 @@ public interface ZipArkivoEntryAttributes extends PosixFileAttributes, ArchiveEn
     /// Returns the ZIP compression method.
     ZipMethod method();
 
-    /// Returns the ZIP encryption method.
-    ZipEncryption encryption();
+    /// Returns [ZipEncryption#NONE] for an unencrypted entry, a recognized encryption method otherwise, or `null`
+    /// when encrypted metadata is unrecognized or malformed.
+    @Nullable ZipEncryption encryption();
 
     /// Returns a copy of the raw local file header extra data bytes.
     byte[] localExtraData();

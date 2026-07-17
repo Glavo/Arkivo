@@ -91,25 +91,22 @@ final class ZipAesExtraField {
     /// Creates WinZip AES metadata for a requested encryption method.
     static ZipAesExtraField forEncryption(ZipEncryption encryption, int compressionMethod) {
         Objects.requireNonNull(encryption, "encryption");
-        int strength;
-        if (encryption.equals(ZipEncryption.winZipAes128())) {
-            strength = AES_128_STRENGTH;
-        } else if (encryption.equals(ZipEncryption.winZipAes192())) {
-            strength = AES_192_STRENGTH;
-        } else if (encryption.equals(ZipEncryption.winZipAes256())) {
-            strength = AES_256_STRENGTH;
-        } else {
-            throw new IllegalArgumentException("encryption is not a WinZip AES method: " + encryption);
-        }
+        int strength = switch (encryption) {
+            case WINZIP_AES_128 -> AES_128_STRENGTH;
+            case WINZIP_AES_192 -> AES_192_STRENGTH;
+            case WINZIP_AES_256 -> AES_256_STRENGTH;
+            default -> throw new IllegalArgumentException("encryption is not a WinZip AES method: " + encryption);
+        };
         return new ZipAesExtraField(AE_1_VENDOR_VERSION, encryption, strength, compressionMethod);
     }
 
     /// Returns whether the encryption method is a WinZip AES method.
     static boolean isAesEncryption(ZipEncryption encryption) {
         Objects.requireNonNull(encryption, "encryption");
-        return encryption.equals(ZipEncryption.winZipAes128())
-                || encryption.equals(ZipEncryption.winZipAes192())
-                || encryption.equals(ZipEncryption.winZipAes256());
+        return switch (encryption) {
+            case WINZIP_AES_128, WINZIP_AES_192, WINZIP_AES_256 -> true;
+            default -> false;
+        };
     }
 
     /// Appends this WinZip AES extra field to existing extra data.
@@ -122,10 +119,13 @@ final class ZipAesExtraField {
         return result;
     }
 
-    /// Returns the encryption method described by the given metadata.
-    static ZipEncryption encryption(int generalPurposeFlags, int method, byte[] extraData) {
+    /// Returns the recognized encryption method, or `null` when encrypted metadata is unrecognized or malformed.
+    static @Nullable ZipEncryption encryption(int generalPurposeFlags, int method, byte[] extraData) {
         if ((generalPurposeFlags & ZipConstants.ENCRYPTED_FLAG) == 0) {
-            return ZipEncryption.none();
+            return ZipEncryption.NONE;
+        }
+        if ((generalPurposeFlags & ZipConstants.STRONG_ENCRYPTION_FLAG) != 0) {
+            return null;
         }
 
         ZipAesExtraField aes = read(extraData);
@@ -133,9 +133,9 @@ final class ZipAesExtraField {
             return aes.encryption;
         }
         if (method == ZipConstants.WINZIP_AES_METHOD) {
-            return ZipEncryption.of("winzip-aes-unknown");
+            return null;
         }
-        return ZipEncryption.traditional();
+        return ZipEncryption.ZIP_CRYPTO;
     }
 
     /// Returns the actual compression method after considering encrypted WinZip AES metadata.
@@ -148,11 +148,6 @@ final class ZipAesExtraField {
     /// Returns whether the method and extra data describe a WinZip AES entry.
     static boolean isAes(int method, byte[] extraData) {
         return method == ZipConstants.WINZIP_AES_METHOD || read(extraData) != null;
-    }
-
-    /// Returns the vendor version field.
-    int vendorVersion() {
-        return vendorVersion;
     }
 
     /// Returns the AES encryption method.
@@ -245,9 +240,9 @@ final class ZipAesExtraField {
             return null;
         }
         ZipEncryption encryption = switch (strength) {
-            case AES_128_STRENGTH -> ZipEncryption.winZipAes128();
-            case AES_192_STRENGTH -> ZipEncryption.winZipAes192();
-            case AES_256_STRENGTH -> ZipEncryption.winZipAes256();
+            case AES_128_STRENGTH -> ZipEncryption.WINZIP_AES_128;
+            case AES_192_STRENGTH -> ZipEncryption.WINZIP_AES_192;
+            case AES_256_STRENGTH -> ZipEncryption.WINZIP_AES_256;
             default -> throw new AssertionError(strength);
         };
 

@@ -32,14 +32,14 @@ public final class ZipArchiveOptions {
     public static final Create CREATE_DEFAULTS = new Create(
             ArchiveCreateOptions.DEFAULT,
             null,
-            ZipEncryption.none()
+            ZipEncryption.NONE
     );
 
     /// The default update configuration.
     public static final Update UPDATE_DEFAULTS = new Update(
             ArchiveUpdateOptions.DEFAULT,
             null,
-            ZipEncryption.none(),
+            ZipEncryption.NONE,
             DEFAULT_LEGACY_CHARSET_DETECTOR
     );
 

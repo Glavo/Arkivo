@@ -144,9 +144,9 @@ final class StreamingZipEntryAttributes implements ZipArkivoEntryAttributes {
         return ZipMethod.of(ZipAesExtraField.compressionMethod(generalPurposeFlags, method, localExtraData));
     }
 
-    /// Returns the ZIP encryption method.
+    /// Returns the recognized ZIP encryption method, or `null` when encrypted metadata is unrecognized or malformed.
     @Override
-    public ZipEncryption encryption() {
+    public @Nullable ZipEncryption encryption() {
         return ZipAesExtraField.encryption(generalPurposeFlags, method, localExtraData);
     }
 

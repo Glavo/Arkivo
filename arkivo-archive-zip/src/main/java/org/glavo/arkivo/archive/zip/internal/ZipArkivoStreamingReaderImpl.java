@@ -1483,7 +1483,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         if (entry.compressedSize < ZipTraditionalCrypto.HEADER_SIZE) {
             throw new IOException("Encrypted ZIP entry is missing its encryption header: " + entry.path);
         }
-        byte[] password = passwordForEntry(entry, ZipEncryption.traditional());
+        byte[] password = passwordForEntry(entry, ZipEncryption.ZIP_CRYPTO);
         try {
             return ZipTraditionalCrypto.openDecryptingStream(input, password, encryptionVerificationByte(entry));
         } finally {
@@ -1506,7 +1506,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             LocalEntry entry,
             InputStream input
     ) throws IOException {
-        byte[] password = passwordForEntry(entry, ZipEncryption.traditional());
+        byte[] password = passwordForEntry(entry, ZipEncryption.ZIP_CRYPTO);
         try {
             return ZipTraditionalCrypto.openDecryptor(input, password, encryptionVerificationByte(entry));
         } finally {
