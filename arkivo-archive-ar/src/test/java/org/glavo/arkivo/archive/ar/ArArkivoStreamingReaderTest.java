@@ -3,10 +3,11 @@
 
 package org.glavo.arkivo.archive.ar;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
 import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -71,10 +72,10 @@ public final class ArArkivoStreamingReaderTest {
         ArrayList<String> paths = new ArrayList<>();
 
         try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            ArArkivoEntryAttributes firstAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
-            BasicFileAttributes firstBasicAttributes = reader.readAttributes(BasicFileAttributes.class);
-            PosixFileAttributes firstPosixAttributes = reader.readAttributes(PosixFileAttributes.class);
+            var readerEntry75 = java.util.Objects.requireNonNull(reader.nextEntry());
+            ArArkivoEntryAttributes firstAttributes = readerEntry75.attributes(ArArkivoEntryAttributes.class);
+            BasicFileAttributes firstBasicAttributes = readerEntry75.attributes(BasicFileAttributes.class);
+            PosixFileAttributes firstPosixAttributes = readerEntry75.attributes(PosixFileAttributes.class);
             paths.add(firstAttributes.path());
             assertEquals("hello.txt", firstAttributes.path());
             assertEquals("hello.txt/", firstAttributes.identifier());
@@ -95,20 +96,20 @@ public final class ArArkivoStreamingReaderTest {
                     ),
                     firstPosixAttributes.permissions()
             );
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry75.openInputStream()) {
                 assertArrayEquals(first, input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            ArArkivoEntryAttributes secondAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            var readerEntry103 = java.util.Objects.requireNonNull(reader.nextEntry());
+            ArArkivoEntryAttributes secondAttributes = readerEntry103.attributes(ArArkivoEntryAttributes.class);
             paths.add(secondAttributes.path());
             assertEquals("dir/file.bin", secondAttributes.path());
             assertEquals(second.length, secondAttributes.size());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry103.openInputStream()) {
                 assertArrayEquals(second, input.readAllBytes());
             }
 
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
 
         assertEquals(List.of("hello.txt", "dir/file.bin"), paths);
@@ -124,27 +125,27 @@ public final class ArArkivoStreamingReaderTest {
         );
 
         try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            ArArkivoEntryAttributes linkAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            var readerEntry128 = java.util.Objects.requireNonNull(reader.nextEntry());
+            ArArkivoEntryAttributes linkAttributes = readerEntry128.attributes(ArArkivoEntryAttributes.class);
             assertEquals("link", linkAttributes.path());
             assertEquals(false, linkAttributes.isRegularFile());
             assertEquals(false, linkAttributes.isDirectory());
             assertEquals(true, linkAttributes.isSymbolicLink());
             assertEquals(false, linkAttributes.isOther());
             assertEquals(target.length, linkAttributes.size());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry128.openInputStream()) {
                 assertArrayEquals(target, input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            ArArkivoEntryAttributes fifoAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            var readerEntry140 = java.util.Objects.requireNonNull(reader.nextEntry());
+            ArArkivoEntryAttributes fifoAttributes = readerEntry140.attributes(ArArkivoEntryAttributes.class);
             assertEquals("fifo", fifoAttributes.path());
             assertEquals(false, fifoAttributes.isRegularFile());
             assertEquals(false, fifoAttributes.isDirectory());
             assertEquals(false, fifoAttributes.isSymbolicLink());
             assertEquals(true, fifoAttributes.isOther());
 
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -158,53 +159,53 @@ public final class ArArkivoStreamingReaderTest {
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
-            writer.beginFile("hello.txt");
-            try (OutputStream body = writer.openOutputStream()) {
+            var writerEntry162 = writer.beginFile("hello.txt");
+            try (OutputStream body = writerEntry162.openOutputStream()) {
                 body.write(first);
             }
 
-            writer.beginFile(longPath);
-            try (OutputStream body = writer.openOutputStream()) {
+            var writerEntry167 = writer.beginFile(longPath);
+            try (OutputStream body = writerEntry167.openOutputStream()) {
                 body.write(second);
             }
 
-            writer.beginFile(unicodePath);
-            writer.endEntry();
+            var writerEntry172 = writer.beginFile(unicodePath);
+            writerEntry172.close();
         }
 
         try (ArArkivoStreamingReader reader =
                      ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            ArArkivoEntryAttributes firstAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            var readerEntry178 = java.util.Objects.requireNonNull(reader.nextEntry());
+            ArArkivoEntryAttributes firstAttributes = readerEntry178.attributes(ArArkivoEntryAttributes.class);
             assertEquals("hello.txt", firstAttributes.path());
             assertEquals("hello.txt/", firstAttributes.identifier());
             assertEquals(0, firstAttributes.userId());
             assertEquals(0, firstAttributes.groupId());
             assertEquals(0100644, firstAttributes.mode());
             assertEquals(FileTime.fromMillis(0L), firstAttributes.lastModifiedTime());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry178.openInputStream()) {
                 assertArrayEquals(first, input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            ArArkivoEntryAttributes secondAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            var readerEntry190 = java.util.Objects.requireNonNull(reader.nextEntry());
+            ArArkivoEntryAttributes secondAttributes = readerEntry190.attributes(ArArkivoEntryAttributes.class);
             assertEquals(longPath, secondAttributes.path());
             assertEquals("#1/" + longPath.getBytes(StandardCharsets.UTF_8).length, secondAttributes.identifier());
             assertEquals(second.length, secondAttributes.size());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry190.openInputStream()) {
                 assertArrayEquals(second, input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            ArArkivoEntryAttributes unicodeAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            var readerEntry199 = java.util.Objects.requireNonNull(reader.nextEntry());
+            ArArkivoEntryAttributes unicodeAttributes = readerEntry199.attributes(ArArkivoEntryAttributes.class);
             assertEquals(unicodePath, unicodeAttributes.path());
             assertEquals("#1/" + unicodePath.getBytes(StandardCharsets.UTF_8).length, unicodeAttributes.identifier());
             assertEquals(0L, unicodeAttributes.size());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry199.openInputStream()) {
                 assertArrayEquals(new byte[0], input.readAllBytes());
             }
 
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -216,33 +217,33 @@ public final class ArArkivoStreamingReaderTest {
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
-            writer.beginSymbolicLink("link", target);
+            var writerEntry220 = writer.beginSymbolicLink("link", target);
             ArArkivoEntryAttributeView attributes =
-                    Objects.requireNonNull(writer.attributeView(ArArkivoEntryAttributeView.class));
+                    Objects.requireNonNull(writerEntry220.attributeView(ArArkivoEntryAttributeView.class));
             ArArkivoEntryAttributes pendingAttributes = attributes.readAttributes();
             assertEquals("link", pendingAttributes.path());
             assertEquals(0120777, pendingAttributes.mode());
             assertEquals(targetBytes.length, pendingAttributes.size());
             assertEquals(false, pendingAttributes.isRegularFile());
             assertEquals(true, pendingAttributes.isSymbolicLink());
-            assertThrows(IllegalStateException.class, writer::openOutputStream);
-            writer.endEntry();
+            assertThrows(IllegalStateException.class, writerEntry220::openOutputStream);
+            writerEntry220.close();
         }
 
         try (ArArkivoStreamingReader reader =
                      ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            ArArkivoEntryAttributes attributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            var readerEntry235 = java.util.Objects.requireNonNull(reader.nextEntry());
+            ArArkivoEntryAttributes attributes = readerEntry235.attributes(ArArkivoEntryAttributes.class);
             assertEquals("link", attributes.path());
             assertEquals("link/", attributes.identifier());
             assertEquals(0120777, attributes.mode());
             assertEquals(targetBytes.length, attributes.size());
             assertEquals(false, attributes.isRegularFile());
             assertEquals(true, attributes.isSymbolicLink());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry235.openInputStream()) {
                 assertArrayEquals(targetBytes, input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -251,9 +252,9 @@ public final class ArArkivoStreamingReaderTest {
     public void writesDirectoryMembers() throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
-            writer.beginDirectory("dir");
+            var writerEntry255 = writer.beginDirectory("dir");
             ArArkivoEntryAttributeView attributes =
-                    Objects.requireNonNull(writer.attributeView(ArArkivoEntryAttributeView.class));
+                    Objects.requireNonNull(writerEntry255.attributeView(ArArkivoEntryAttributeView.class));
             ArArkivoEntryAttributes pendingAttributes = attributes.readAttributes();
             assertEquals("dir", pendingAttributes.path());
             assertEquals("dir/", pendingAttributes.identifier());
@@ -262,23 +263,23 @@ public final class ArArkivoStreamingReaderTest {
             assertEquals(false, pendingAttributes.isRegularFile());
             assertEquals(true, pendingAttributes.isDirectory());
             assertEquals(false, pendingAttributes.isSymbolicLink());
-            assertThrows(IllegalStateException.class, writer::openOutputStream);
-            writer.endEntry();
+            assertThrows(IllegalStateException.class, writerEntry255::openOutputStream);
+            writerEntry255.close();
 
-            writer.beginDirectory("configured");
+            var writerEntry269 = writer.beginDirectory("configured");
             ArArkivoEntryAttributeView configuredAttributes =
-                    Objects.requireNonNull(writer.attributeView(ArArkivoEntryAttributeView.class));
+                    Objects.requireNonNull(writerEntry269.attributeView(ArArkivoEntryAttributeView.class));
             assertThrows(IllegalArgumentException.class, () -> configuredAttributes.setMode(0100644));
             assertThrows(IOException.class, () -> configuredAttributes.setSize(1L));
             configuredAttributes.setMode(040700);
             configuredAttributes.setSize(0L);
-            writer.endEntry();
+            writerEntry269.close();
         }
 
         try (ArArkivoStreamingReader reader =
                      ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            ArArkivoEntryAttributes directoryAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            var readerEntry281 = java.util.Objects.requireNonNull(reader.nextEntry());
+            ArArkivoEntryAttributes directoryAttributes = readerEntry281.attributes(ArArkivoEntryAttributes.class);
             assertEquals("dir", directoryAttributes.path());
             assertEquals("dir/", directoryAttributes.identifier());
             assertEquals(040755, directoryAttributes.mode());
@@ -286,19 +287,19 @@ public final class ArArkivoStreamingReaderTest {
             assertEquals(false, directoryAttributes.isRegularFile());
             assertEquals(true, directoryAttributes.isDirectory());
             assertEquals(false, directoryAttributes.isSymbolicLink());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry281.openInputStream()) {
                 assertArrayEquals(new byte[0], input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            ArArkivoEntryAttributes configuredAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            var readerEntry294 = java.util.Objects.requireNonNull(reader.nextEntry());
+            ArArkivoEntryAttributes configuredAttributes = readerEntry294.attributes(ArArkivoEntryAttributes.class);
             assertEquals("configured", configuredAttributes.path());
             assertEquals(040700, configuredAttributes.mode());
             assertEquals(true, configuredAttributes.isDirectory());
             assertEquals(false, configuredAttributes.isRegularFile());
             assertEquals(false, configuredAttributes.isOther());
 
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -312,12 +313,12 @@ public final class ArArkivoStreamingReaderTest {
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
-            writer.beginFile("known.txt");
+            var writerEntry316 = writer.beginFile("known.txt");
             ArArkivoEntryAttributeView firstAttributes =
-                    Objects.requireNonNull(writer.attributeView(ArArkivoEntryAttributeView.class));
+                    Objects.requireNonNull(writerEntry316.attributeView(ArArkivoEntryAttributeView.class));
             firstAttributes.setSize(first.length);
             assertEquals(first.length, firstAttributes.readAttributes().size());
-            try (OutputStream body = writer.openOutputStream()) {
+            try (OutputStream body = writerEntry316.openOutputStream()) {
                 int bodyStart = output.size();
                 assertEquals(68, bodyStart);
                 body.write(first, 0, 2);
@@ -325,12 +326,12 @@ public final class ArArkivoStreamingReaderTest {
                 body.write(first, 2, first.length - 2);
             }
 
-            writer.beginFile(longPath);
+            var writerEntry329 = writer.beginFile(longPath);
             ArArkivoEntryAttributeView secondAttributes =
-                    Objects.requireNonNull(writer.attributeView(ArArkivoEntryAttributeView.class));
+                    Objects.requireNonNull(writerEntry329.attributeView(ArArkivoEntryAttributeView.class));
             secondAttributes.setSize(second.length);
             int beforeSecond = output.size();
-            try (OutputStream body = writer.openOutputStream()) {
+            try (OutputStream body = writerEntry329.openOutputStream()) {
                 int bodyStart = output.size();
                 assertEquals(beforeSecond + 60 + longPathBytes.length, bodyStart);
                 body.write(second[0]);
@@ -341,24 +342,24 @@ public final class ArArkivoStreamingReaderTest {
 
         try (ArArkivoStreamingReader reader =
                      ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            ArArkivoEntryAttributes firstAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            var readerEntry345 = java.util.Objects.requireNonNull(reader.nextEntry());
+            ArArkivoEntryAttributes firstAttributes = readerEntry345.attributes(ArArkivoEntryAttributes.class);
             assertEquals("known.txt", firstAttributes.path());
             assertEquals(first.length, firstAttributes.size());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry345.openInputStream()) {
                 assertArrayEquals(first, input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            ArArkivoEntryAttributes secondAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            var readerEntry353 = java.util.Objects.requireNonNull(reader.nextEntry());
+            ArArkivoEntryAttributes secondAttributes = readerEntry353.attributes(ArArkivoEntryAttributes.class);
             assertEquals(longPath, secondAttributes.path());
             assertEquals("#1/" + longPathBytes.length, secondAttributes.identifier());
             assertEquals(second.length, secondAttributes.size());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry353.openInputStream()) {
                 assertArrayEquals(second, input.readAllBytes());
             }
 
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -367,11 +368,11 @@ public final class ArArkivoStreamingReaderTest {
     public void knownSizeMemberRejectsShortBody() throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output);
-        writer.beginFile("short.txt");
+        var writerEntry371 = writer.beginFile("short.txt");
         ArArkivoEntryAttributeView attributes =
-                Objects.requireNonNull(writer.attributeView(ArArkivoEntryAttributeView.class));
+                Objects.requireNonNull(writerEntry371.attributeView(ArArkivoEntryAttributeView.class));
         attributes.setSize(5);
-        OutputStream body = writer.openOutputStream();
+        OutputStream body = writerEntry371.openOutputStream();
         body.write(new byte[]{1, 2});
 
         IOException bodyException = assertThrows(IOException.class, body::close);
@@ -386,11 +387,11 @@ public final class ArArkivoStreamingReaderTest {
     public void knownSizeMemberRejectsOversizedBody() throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
-            writer.beginFile("one-byte.txt");
+            var writerEntry390 = writer.beginFile("one-byte.txt");
             ArArkivoEntryAttributeView attributes =
-                    Objects.requireNonNull(writer.attributeView(ArArkivoEntryAttributeView.class));
+                    Objects.requireNonNull(writerEntry390.attributeView(ArArkivoEntryAttributeView.class));
             attributes.setSize(1);
-            try (OutputStream body = writer.openOutputStream()) {
+            try (OutputStream body = writerEntry390.openOutputStream()) {
                 body.write('a');
                 IOException exception = assertThrows(IOException.class, () -> body.write('b'));
                 assertEquals(true, exception.getMessage().contains("exceeds configured size"));
@@ -399,11 +400,11 @@ public final class ArArkivoStreamingReaderTest {
 
         try (ArArkivoStreamingReader reader =
                      ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            try (var input = reader.openInputStream()) {
+            var readerEntry403 = java.util.Objects.requireNonNull(reader.nextEntry());
+            try (var input = readerEntry403.openInputStream()) {
                 assertArrayEquals(new byte[]{'a'}, input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -415,39 +416,39 @@ public final class ArArkivoStreamingReaderTest {
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(output)) {
-            writer.beginFile("metadata.txt");
+            var writerEntry419 = writer.beginFile("metadata.txt");
             ArArkivoEntryAttributeView attributes =
-                    Objects.requireNonNull(writer.attributeView(ArArkivoEntryAttributeView.class));
+                    Objects.requireNonNull(writerEntry419.attributeView(ArArkivoEntryAttributeView.class));
             attributes.setTimes(lastModifiedTime, null, null);
             attributes.setUserId(321);
             attributes.setGroupId(654);
             attributes.setMode(0100600);
-            try (OutputStream body = writer.openOutputStream()) {
+            try (OutputStream body = writerEntry419.openOutputStream()) {
                 body.write(content);
             }
         }
 
         try (ArArkivoStreamingReader reader =
                      ArArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            ArArkivoEntryAttributes attributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            var readerEntry433 = java.util.Objects.requireNonNull(reader.nextEntry());
+            ArArkivoEntryAttributes attributes = readerEntry433.attributes(ArArkivoEntryAttributes.class);
             assertEquals("metadata.txt", attributes.path());
             assertEquals("metadata.txt/", attributes.identifier());
             assertEquals(lastModifiedTime, attributes.lastModifiedTime());
             assertEquals(321, attributes.userId());
             assertEquals(654, attributes.groupId());
             assertEquals(0100600, attributes.mode());
-            PosixFileAttributes posixAttributes = reader.readAttributes(PosixFileAttributes.class);
+            PosixFileAttributes posixAttributes = readerEntry433.attributes(PosixFileAttributes.class);
             assertEquals("321", posixAttributes.owner().getName());
             assertEquals("654", posixAttributes.group().getName());
             assertEquals(
                     Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
                     posixAttributes.permissions()
             );
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry433.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -466,20 +467,20 @@ public final class ArArkivoStreamingReaderTest {
         Path existingFile = archivePath.getParent().resolve("existing-file");
         try {
             try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
-                writer.beginFile("dir/hello.txt");
+                var writerEntry470 = writer.beginFile("dir/hello.txt");
                 ArArkivoEntryAttributeView attributes =
-                        Objects.requireNonNull(writer.attributeView(ArArkivoEntryAttributeView.class));
+                        Objects.requireNonNull(writerEntry470.attributeView(ArArkivoEntryAttributeView.class));
                 attributes.setTimes(FileTime.fromMillis(1_700_000_000_000L), null, null);
                 attributes.setUserId(1000);
                 attributes.setGroupId(1001);
                 attributes.setMode(0100640);
-                try (OutputStream body = writer.openOutputStream()) {
+                try (OutputStream body = writerEntry470.openOutputStream()) {
                     body.write(content);
                 }
-                writer.beginFile("root.bin");
-                writer.endEntry();
-                writer.beginSymbolicLink("dir/link", "hello.txt");
-                writer.endEntry();
+                var writerEntry480 = writer.beginFile("root.bin");
+                writerEntry480.close();
+                var writerEntry482 = writer.beginSymbolicLink("dir/link", "hello.txt");
+                writerEntry482.close();
             }
 
             ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath);
@@ -636,17 +637,8 @@ public final class ArArkivoStreamingReaderTest {
         Set<PosixFilePermission> directoryPermissions = PosixFilePermissions.fromString("rwxr-x---");
         Set<PosixFilePermission> channelFilePermissions = PosixFilePermissions.fromString("rw-r-----");
         Set<PosixFilePermission> linkPermissions = PosixFilePermissions.fromString("rwxr-xr--");
-        Map<String, Object> environment = Map.of(
-                ArkivoFileSystem.OPEN_OPTIONS.key(),
-                Set.of(
-                        StandardOpenOption.CREATE,
-                        StandardOpenOption.TRUNCATE_EXISTING,
-                        StandardOpenOption.WRITE
-                )
-        );
-
         try {
-            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.create(archivePath)) {
                 assertEquals(false, fileSystem.isReadOnly());
 
                 Path directory = fileSystem.getPath("/dir");
@@ -743,8 +735,8 @@ public final class ArArkivoStreamingReaderTest {
         Path archivePath = createTemporaryArchivePath("ar-provider-");
         try {
             try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
-                writer.beginFile("dir/provider.txt");
-                try (OutputStream body = writer.openOutputStream()) {
+                var writerEntry747 = writer.beginFile("dir/provider.txt");
+                try (OutputStream body = writerEntry747.openOutputStream()) {
                     body.write(content);
                 }
             }
@@ -787,23 +779,19 @@ public final class ArArkivoStreamingReaderTest {
             try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
                 writeStreamingMember(writer, "keep.txt", keepContent);
                 writeStreamingMember(writer, "remove.txt", "remove".getBytes(StandardCharsets.UTF_8));
-                writer.beginDirectory("dir");
-                writer.endEntry();
+                var writerEntry791 = writer.beginDirectory("dir");
+                writerEntry791.close();
                 writeStreamingMember(writer, "dir/child.txt", "child".getBytes(StandardCharsets.UTF_8));
-                writer.beginSymbolicLink("link", "keep.txt");
-                writer.endEntry();
+                var writerEntry794 = writer.beginSymbolicLink("link", "keep.txt");
+                writerEntry794.close();
                 writeStreamingMember(writer, longName, "long".getBytes(StandardCharsets.UTF_8));
                 writeStreamingMember(writer, "target.txt", "old-target".getBytes(StandardCharsets.UTF_8));
                 writeStreamingMember(writer, "replacement.txt", "new-target".getBytes(StandardCharsets.UTF_8));
                 writeStreamingMember(writer, "resize.bin", new byte[]{1, 2, 3});
             }
 
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
-            );
             FileTime modifiedTime = FileTime.from(Instant.parse("2032-03-04T05:06:07Z"));
-            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.update(archivePath)) {
                 assertEquals(false, fileSystem.isReadOnly());
                 Path keep = fileSystem.getPath("/keep.txt");
                 assertArrayEquals(keepContent, Files.readAllBytes(keep));
@@ -884,8 +872,8 @@ public final class ArArkivoStreamingReaderTest {
 
             ArrayList<String> physicalMembers = new ArrayList<>();
             try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(Files.newInputStream(archivePath))) {
-                while (reader.next()) {
-                    physicalMembers.add(reader.readAttributes(ArArkivoEntryAttributes.class).path());
+                for (var readerEntry888 = reader.nextEntry(); readerEntry888 != null; readerEntry888 = reader.nextEntry()) {
+                    physicalMembers.add(readerEntry888.attributes(ArArkivoEntryAttributes.class).path());
                 }
             }
             assertEquals(
@@ -916,13 +904,10 @@ public final class ArArkivoStreamingReaderTest {
             try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
                 writeStreamingMember(writer, "value.txt", "before".getBytes(StandardCharsets.UTF_8));
             }
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
-                    ArkivoFileSystem.COMMIT_TARGET.key(),
-                    ArkivoCommitTarget.writeTo(derivedPath)
+            ArArchiveOptions.Update options = ArArchiveOptions.UPDATE_DEFAULTS.withCommon(
+                    ArchiveUpdateOptions.DEFAULT.withCommitTarget(ArkivoCommitTarget.writeTo(derivedPath))
             );
-            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.update(archivePath, options)) {
                 Files.writeString(fileSystem.getPath("/value.txt"), "after", StandardCharsets.UTF_8);
             }
 
@@ -949,14 +934,11 @@ public final class ArArkivoStreamingReaderTest {
             ArkivoCommitTarget failingTarget = sourcePath -> {
                 throw new IOException("commit target failed");
             };
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
-                    ArkivoFileSystem.COMMIT_TARGET.key(),
-                    failingTarget
+            ArArchiveOptions.Update options = ArArchiveOptions.UPDATE_DEFAULTS.withCommon(
+                    ArchiveUpdateOptions.DEFAULT.withCommitTarget(failingTarget)
             );
 
-            ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment));
+            ArArkivoFileSystem fileSystem = ArArkivoFileSystem.update(archivePath, options);
             Files.writeString(fileSystem.getPath("/value.txt"), "after", StandardCharsets.UTF_8);
             IOException exception = assertThrows(IOException.class, fileSystem::close);
             assertEquals("commit target failed", exception.getMessage());
@@ -975,11 +957,7 @@ public final class ArArkivoStreamingReaderTest {
                 writeStreamingMember(writer, "value.txt", "value".getBytes(StandardCharsets.UTF_8));
             }
             byte[] originalArchive = Files.readAllBytes(archivePath);
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
-            );
-            try (ArArkivoFileSystem ignored = ArArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
+            try (ArArkivoFileSystem ignored = ArArkivoFileSystem.update(archivePath)) {
             }
             assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
         } finally {
@@ -993,11 +971,7 @@ public final class ArArkivoStreamingReaderTest {
         Path archivePath = createTemporaryArchivePath("ar-update-create-");
         Files.deleteIfExists(archivePath);
         try {
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
-            );
-            try (ArArkivoFileSystem ignored = ArArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
+            try (ArArkivoFileSystem ignored = ArArkivoFileSystem.create(archivePath)) {
             }
             assertEquals(true, Files.exists(archivePath));
             try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath);
@@ -1021,11 +995,7 @@ public final class ArArkivoStreamingReaderTest {
                     member("#1/" + extendedSymbolName.length, 0, 0, 0, 0, extendedSymbolName),
                     member("value.txt/", 1, 2, 3, 0100644, content)
             ));
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
-            );
-            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
+            try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.update(archivePath)) {
                 assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/value.txt")));
                 Files.writeString(fileSystem.getPath("/new.txt"), "new", StandardCharsets.UTF_8);
             }
@@ -1033,11 +1003,11 @@ public final class ArArkivoStreamingReaderTest {
             String rewritten = new String(Files.readAllBytes(archivePath), StandardCharsets.ISO_8859_1);
             assertEquals(false, rewritten.contains("__.SYMDEF"));
             try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(Files.newInputStream(archivePath))) {
-                assertEquals(true, reader.next());
-                assertEquals("value.txt", reader.readAttributes(ArArkivoEntryAttributes.class).path());
-                assertEquals(true, reader.next());
-                assertEquals("new.txt", reader.readAttributes(ArArkivoEntryAttributes.class).path());
-                assertEquals(false, reader.next());
+                var readerEntry1037 = java.util.Objects.requireNonNull(reader.nextEntry());
+                assertEquals("value.txt", readerEntry1037.attributes(ArArkivoEntryAttributes.class).path());
+                var readerEntry1039 = java.util.Objects.requireNonNull(reader.nextEntry());
+                assertEquals("new.txt", readerEntry1039.attributes(ArArkivoEntryAttributes.class).path());
+                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -1075,13 +1045,10 @@ public final class ArArkivoStreamingReaderTest {
 
         try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArchiveOptions.fromEnvironment(Map.of(
-                        ArArkivoFileSystem.METADATA_CHARSET_DETECTOR.key(),
-                        detector
-                ))
+                ArArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(detector)
         )) {
-            assertEquals(true, reader.next());
-            ArArkivoEntryAttributes attributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            var readerEntry1084 = java.util.Objects.requireNonNull(reader.nextEntry());
+            ArArkivoEntryAttributes attributes = readerEntry1084.attributes(ArArkivoEntryAttributes.class);
             assertEquals(path, attributes.path());
             assertEquals(path + "/", attributes.identifier());
         }
@@ -1101,23 +1068,23 @@ public final class ArArkivoStreamingReaderTest {
         );
 
         try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            ArArkivoEntryAttributes firstAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            var readerEntry1105 = java.util.Objects.requireNonNull(reader.nextEntry());
+            ArArkivoEntryAttributes firstAttributes = readerEntry1105.attributes(ArArkivoEntryAttributes.class);
             assertEquals("very-long-file-name.txt", firstAttributes.path());
             assertEquals("/0", firstAttributes.identifier());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry1105.openInputStream()) {
                 assertArrayEquals(first, input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            ArArkivoEntryAttributes secondAttributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            var readerEntry1113 = java.util.Objects.requireNonNull(reader.nextEntry());
+            ArArkivoEntryAttributes secondAttributes = readerEntry1113.attributes(ArArkivoEntryAttributes.class);
             assertEquals("second-long-name.bin", secondAttributes.path());
             assertEquals("/25", secondAttributes.identifier());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry1113.openInputStream()) {
                 assertArrayEquals(second, input.readAllBytes());
             }
 
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1132,14 +1099,14 @@ public final class ArArkivoStreamingReaderTest {
         byte[] archive = archive(member("#1/" + path.length, 20, 10, 11, 0100644, body));
 
         try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            ArArkivoEntryAttributes attributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+            var readerEntry1136 = java.util.Objects.requireNonNull(reader.nextEntry());
+            ArArkivoEntryAttributes attributes = readerEntry1136.attributes(ArArkivoEntryAttributes.class);
             assertEquals("bsd-long-name.txt", attributes.path());
             assertEquals(content.length, attributes.size());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry1136.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1183,15 +1150,12 @@ public final class ArArkivoStreamingReaderTest {
 
         try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArchiveOptions.fromEnvironment(Map.of(
-                        ArArkivoFileSystem.METADATA_CHARSET_DETECTOR.key(),
-                        detector
-                ))
+                ArArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(detector)
         )) {
-            assertEquals(true, reader.next());
-            assertEquals(bsdPath, reader.readAttributes(ArArkivoEntryAttributes.class).path());
-            assertEquals(true, reader.next());
-            assertEquals(gnuPath, reader.readAttributes(ArArkivoEntryAttributes.class).path());
+            var readerEntry1192 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals(bsdPath, readerEntry1192.attributes(ArArkivoEntryAttributes.class).path());
+            var readerEntry1194 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals(gnuPath, readerEntry1194.attributes(ArArkivoEntryAttributes.class).path());
             assertEquals(1, calls[0]);
             assertEquals(1, calls[1]);
         }
@@ -1206,15 +1170,19 @@ public final class ArArkivoStreamingReaderTest {
 
         try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.MAX_METADATA_SIZE.key(), maximum))
+                ArArchiveOptions.READ_DEFAULTS.withCommon(
+                        ArchiveReadOptions.DEFAULT.withLimits(
+                                ArchiveReadLimits.builder().maximumMetadataSize(maximum).build()
+                        )
+                )
         )) {
-            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
+            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::nextEntry);
             assertEquals(ArkivoReadLimitKind.METADATA_SIZE, exception.kind());
             assertEquals(maximum, exception.maximum());
             assertEquals(maximum + path.length, exception.actual());
             assertNull(exception.entryPath());
 
-            ArkivoReadLimitException repeated = assertThrows(ArkivoReadLimitException.class, reader::next);
+            ArkivoReadLimitException repeated = assertThrows(ArkivoReadLimitException.class, reader::nextEntry);
             assertEquals(exception.kind(), repeated.kind());
             assertEquals(exception.maximum(), repeated.maximum());
             assertEquals(exception.actual(), repeated.actual());
@@ -1227,7 +1195,7 @@ public final class ArArkivoStreamingReaderTest {
         byte[] archive = archive(member("../evil.txt/", 0, 0, 0, 0100644, new byte[0]));
 
         try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            IOException exception = assertThrows(IOException.class, reader::next);
+            IOException exception = assertThrows(IOException.class, reader::nextEntry);
 
             assertEquals(true, exception.getMessage().contains("must not contain .."));
         }
@@ -1239,7 +1207,7 @@ public final class ArArkivoStreamingReaderTest {
         byte[] archive = archive(member("C:/evil.txt/", 0, 0, 0, 0100644, new byte[0]));
 
         try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            IOException exception = assertThrows(IOException.class, reader::next);
+            IOException exception = assertThrows(IOException.class, reader::nextEntry);
 
             assertEquals(true, exception.getMessage().contains("must be relative"));
         }
@@ -1252,11 +1220,12 @@ public final class ArArkivoStreamingReaderTest {
         byte[] archive = archive(member("hello.txt/", 0, 0, 0, 0100644, content));
 
         try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
+            var readerEntry1259 = java.util.Objects.requireNonNull(reader.nextEntry());
 
-            try (var channel = reader.openChannel()) {
-                IOException exception = assertThrows(IOException.class, reader::openChannel);
-                assertEquals(true, exception.getMessage().contains("already been opened"));
+            try (var channel = readerEntry1259.openChannel()) {
+                IllegalStateException exception =
+                        assertThrows(IllegalStateException.class, readerEntry1259::openChannel);
+                assertEquals(true, exception.getMessage().contains("already open"));
 
                 ByteBuffer buffer = ByteBuffer.allocate(content.length);
                 assertEquals(content.length, channel.read(buffer));
@@ -1264,7 +1233,7 @@ public final class ArArkivoStreamingReaderTest {
                 assertEquals("hello", StandardCharsets.UTF_8.decode(buffer).toString());
             }
 
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1275,11 +1244,11 @@ public final class ArArkivoStreamingReaderTest {
                 member("hello.txt/", 0, 0, 0, 0100644, "hello".getBytes(StandardCharsets.UTF_8))
         ));
         ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(source);
-        assertEquals(true, reader.next());
+        var readerEntry1282 = java.util.Objects.requireNonNull(reader.nextEntry());
 
         IOException exception = assertThrows(IOException.class, reader::close);
         assertEquals("close failed", exception.getMessage());
-        assertThrows(IOException.class, reader::next);
+        assertThrows(IOException.class, reader::nextEntry);
         assertEquals(1, source.closeCount());
 
         reader.close();
@@ -1294,8 +1263,8 @@ public final class ArArkivoStreamingReaderTest {
             String path,
             byte @Unmodifiable [] content
     ) throws IOException {
-        writer.beginFile(path);
-        try (OutputStream output = writer.openOutputStream()) {
+        var writerEntry1301 = writer.beginFile(path);
+        try (OutputStream output = writerEntry1301.openOutputStream()) {
             output.write(content);
         }
     }

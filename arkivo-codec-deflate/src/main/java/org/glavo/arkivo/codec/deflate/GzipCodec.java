@@ -21,7 +21,7 @@ import java.util.Objects;
 public final class GzipCodec
         implements CompressionCodec.LevelConfigurable<GzipCodec>,
         CompressionCodec.StrategyConfigurable<GzipCodec>,
-        CompressionCodec.FlushableFramed<GzipCodec> {
+        CompressionCodec.FlushableFramed {
     /// The minimum gzip Deflate match-search level.
     public static final int MINIMUM_COMPRESSION_LEVEL = 0;
 

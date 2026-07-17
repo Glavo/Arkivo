@@ -22,7 +22,7 @@ import java.util.Objects;
 public interface ArkivoStreamingReaderFormat extends ArkivoFormat {
     /// Opens a streaming reader from a path and takes ownership of the opened channel when successful.
     default ArkivoStreamingReader openStreamingReader(Path path) throws IOException {
-        return openStreamingReader(path, ArchiveOptions.EMPTY);
+        return openStreamingReader(path, ArchiveReadOptions.DEFAULT);
     }
 
     /// Opens a configured streaming reader from a path and takes ownership of the opened channel when successful.
@@ -31,7 +31,7 @@ public interface ArkivoStreamingReaderFormat extends ArkivoFormat {
     /// volume associated with the path.
     default ArkivoStreamingReader openStreamingReader(
             Path path,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
@@ -52,13 +52,13 @@ public interface ArkivoStreamingReaderFormat extends ArkivoFormat {
 
     /// Opens a streaming reader and takes ownership of the input stream when successful.
     default ArkivoStreamingReader openStreamingReader(InputStream source) throws IOException {
-        return openStreamingReader(source, ArchiveOptions.EMPTY);
+        return openStreamingReader(source, ArchiveReadOptions.DEFAULT);
     }
 
     /// Opens a streaming reader with options and takes ownership of the input stream when successful.
     default ArkivoStreamingReader openStreamingReader(
             InputStream source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
@@ -67,12 +67,12 @@ public interface ArkivoStreamingReaderFormat extends ArkivoFormat {
 
     /// Opens a streaming reader and takes ownership of the readable channel when successful.
     default ArkivoStreamingReader openStreamingReader(ReadableByteChannel source) throws IOException {
-        return openStreamingReader(source, ArchiveOptions.EMPTY);
+        return openStreamingReader(source, ArchiveReadOptions.DEFAULT);
     }
 
     /// Opens a streaming reader with options and takes ownership of the channel when successful.
     ArkivoStreamingReader openStreamingReader(
             ReadableByteChannel source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) throws IOException;
 }

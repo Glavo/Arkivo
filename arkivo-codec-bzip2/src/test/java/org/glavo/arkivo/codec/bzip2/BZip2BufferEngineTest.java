@@ -43,7 +43,7 @@ public final class BZip2BufferEngineTest {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocateDirect(2);
-                outcome = decoder.decode(source, target, false);
+                outcome = decoder.decode(source, target);
                 drain(target, decoded);
             } while (outcome == CodecOutcome.NEEDS_OUTPUT);
             assertEquals(CodecOutcome.FINISHED, outcome);
@@ -72,7 +72,9 @@ public final class BZip2BufferEngineTest {
                 ByteBuffer source = ByteBuffer.wrap(encoded, offset, length).slice();
                 ByteBuffer target = ByteBuffer.allocateDirect(17);
                 boolean endOfInput = offset + length == encoded.length;
-                outcome = decoder.decode(source, target, endOfInput);
+                outcome = endOfInput
+                        ? decoder.finish(source, target)
+                        : decoder.decode(source, target);
                 offset += source.position();
                 drain(target, decoded);
                 assertTrue(
@@ -108,7 +110,7 @@ public final class BZip2BufferEngineTest {
             ByteBuffer firstSource = ByteBuffer.wrap(firstFrame);
             ByteBuffer firstTarget = ByteBuffer.allocate(first.length + 1);
             try (CompressionDecoder decoder = CODEC.newDecoder()) {
-                assertEquals(CodecOutcome.FINISHED, decoder.decode(firstSource, firstTarget, true));
+                assertEquals(CodecOutcome.FINISHED, decoder.finish(firstSource, firstTarget));
             }
             firstTarget.flip();
             byte[] restoredFirst = new byte[firstTarget.remaining()];

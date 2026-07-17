@@ -49,7 +49,18 @@ public final class LZMADecoder implements CompressionDecoder {
 
     /// Collects the header and delegates the range-coded payload to the raw engine.
     @Override
-    public CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
+    public CodecOutcome decode(ByteBuffer source, ByteBuffer target) throws IOException {
+        return decodeInternal(source, target, false);
+    }
+
+    /// Finishes decoding after all source bytes have been supplied.
+    @Override
+    public CodecOutcome finish(ByteBuffer source, ByteBuffer target) throws IOException {
+        return decodeInternal(source, target, true);
+    }
+
+    /// Implements decoding with the selected source-completion state.
+    private CodecOutcome decodeInternal(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
         requireOpen();
@@ -69,7 +80,9 @@ public final class LZMADecoder implements CompressionDecoder {
         }
 
         LZMARawDecoder decoder = initializeRawDecoder();
-        CodecOutcome outcome = decoder.decode(source, target, endOfInput);
+        CodecOutcome outcome = endOfInput
+                ? decoder.finish(source, target)
+                : decoder.decode(source, target);
         if (outcome == CodecOutcome.FINISHED) {
             finished = true;
         }

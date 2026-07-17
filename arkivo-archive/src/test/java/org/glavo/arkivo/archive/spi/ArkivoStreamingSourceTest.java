@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class ArkivoStreamingSourceTest {
     /// Verifies taking a channel transfers cleanup responsibility exactly once.
     @Test
-    void transfersChannelOwnershipExactlyOnce() throws IOException {
+    void transfersResourceOwnershipExactlyOnce() throws IOException {
         ReadableByteChannel channel = Channels.newChannel(new ByteArrayInputStream(new byte[]{1}));
         ArkivoStreamingSource source = new ArkivoStreamingSource(false, channel);
 

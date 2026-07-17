@@ -6,68 +6,53 @@ package org.glavo.arkivo.archive;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
-import java.util.Objects;
 
 /// Describes an archive format that can expose multiple physical volumes as one file system.
 @NotNullByDefault
 public interface ArkivoVolumeFileSystemFormat extends ArkivoFileSystemFormat {
     /// Opens a read-only file system from an owned volume source.
     default ArkivoFileSystem open(ArkivoVolumeSource source) throws IOException {
-        return open(source, ArchiveOptions.EMPTY);
+        return open(source, ArchiveReadOptions.DEFAULT);
     }
 
     /// Opens a file system from an owned volume source with options.
     ArkivoFileSystem open(
             ArkivoVolumeSource source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) throws IOException;
 
-    /// Opens a complete-rewrite update from an owned volume source to a transactional volume target.
-    default ArkivoFileSystem update(
-            ArkivoVolumeSource source,
-            ArkivoVolumeTarget target,
-            long splitSize
-    ) throws IOException {
-        return update(source, target, splitSize, ArchiveOptions.EMPTY);
-    }
-
-    /// Opens a complete-rewrite update with options.
-    ///
-    /// Formats without multi-volume update support reject the operation without opening the target or taking source
-    /// ownership. Supporting formats own the source after successful setup and publish through the target on close.
-    default ArkivoFileSystem update(
-            ArkivoVolumeSource source,
-            ArkivoVolumeTarget target,
-            long splitSize,
-            ArchiveOptions options
-    ) throws IOException {
-        Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(options, "options");
-        if (splitSize <= 0L) {
-            throw new IllegalArgumentException("splitSize must be positive");
+    /// Describes a format that supports multi-volume creation and complete-rewrite updates.
+    @NotNullByDefault
+    interface Writable extends ArkivoVolumeFileSystemFormat {
+        /// Opens a complete-rewrite update from an owned volume source to a transactional volume target.
+        default ArkivoFileSystem update(
+                ArkivoVolumeSource source,
+                ArkivoVolumeTarget target,
+                long splitSize
+        ) throws IOException {
+            return update(source, target, splitSize, ArchiveUpdateOptions.DEFAULT);
         }
-        throw new UnsupportedOperationException("Multi-volume updates are not supported by " + name());
-    }
 
-    /// Creates a writable file system over a transactional volume target.
-    default ArkivoFileSystem create(ArkivoVolumeTarget target, long splitSize) throws IOException {
-        return create(target, splitSize, ArchiveOptions.EMPTY);
-    }
+        /// Opens a complete-rewrite update with options.
+        ///
+        /// The format owns the source after successful setup and publishes through the target on close.
+        ArkivoFileSystem update(
+                ArkivoVolumeSource source,
+                ArkivoVolumeTarget target,
+                long splitSize,
+                ArchiveUpdateOptions options
+        ) throws IOException;
 
-    /// Creates a writable file system over a transactional volume target with options.
-    ///
-    /// Formats without multi-volume creation support reject the operation without opening the target.
-    default ArkivoFileSystem create(
-            ArkivoVolumeTarget target,
-            long splitSize,
-            ArchiveOptions options
-    ) throws IOException {
-        Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(options, "options");
-        if (splitSize <= 0L) {
-            throw new IllegalArgumentException("splitSize must be positive");
+        /// Creates a writable file system over a transactional volume target.
+        default ArkivoFileSystem create(ArkivoVolumeTarget target, long splitSize) throws IOException {
+            return create(target, splitSize, ArchiveCreateOptions.DEFAULT);
         }
-        throw new UnsupportedOperationException("Multi-volume creation is not supported by " + name());
+
+        /// Creates a writable file system over a transactional volume target with options.
+        ArkivoFileSystem create(
+                ArkivoVolumeTarget target,
+                long splitSize,
+                ArchiveCreateOptions options
+        ) throws IOException;
     }
 }

@@ -3,7 +3,9 @@
 
 package org.glavo.arkivo.archive.tar;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveCreateOptions;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStreamingReaderFormat;
@@ -24,7 +26,7 @@ import java.util.List;
 /// Describes TAR archive streaming support provided by Arkivo.
 @NotNullByDefault
 public final class TarArkivoFormat implements
-        ArkivoFileSystemFormat,
+        ArkivoFileSystemFormat.Writable,
         ArkivoStreamingReaderFormat,
         ArkivoStreamingWriterFormat {
     /// The size of one TAR header or padding block.
@@ -45,8 +47,13 @@ public final class TarArkivoFormat implements
     /// The shared TAR format instance.
     private static final TarArkivoFormat INSTANCE = new TarArkivoFormat();
 
-    /// Creates a TAR format descriptor.
+    /// Creates a classpath-discoverable TAR format descriptor.
     public TarArkivoFormat() {
+    }
+
+    /// Returns the canonical TAR service provider.
+    public static TarArkivoFormat provider() {
+        return INSTANCE;
     }
 
     /// Returns the shared TAR format descriptor.
@@ -124,8 +131,24 @@ public final class TarArkivoFormat implements
 
     /// Opens a TAR archive as a file system with provider options.
     @Override
-    public TarArkivoFileSystem open(Path path, ArchiveOptions options) throws IOException {
-        return TarArkivoFileSystem.open(path, options);
+    public TarArkivoFileSystem open(Path path, ArchiveReadOptions options) throws IOException {
+        return TarArkivoFileSystem.open(path, readOptions(options));
+    }
+
+    /// Creates a new path-backed TAR archive file system.
+    @Override
+    public TarArkivoFileSystem create(Path path, ArchiveCreateOptions options) throws IOException {
+        return TarArkivoFileSystem.create(path, new TarArchiveOptions.Create(options, null));
+    }
+
+    /// Opens a complete-rewrite update of a path-backed TAR archive.
+    @Override
+    public TarArkivoFileSystem update(Path path, ArchiveUpdateOptions options) throws IOException {
+        return TarArkivoFileSystem.update(path, new TarArchiveOptions.Update(
+                options,
+                null,
+                TarArchiveOptions.DEFAULT_METADATA_CHARSET_DETECTOR
+        ));
     }
 
     /// Opens a read-only TAR archive file system directly from one owned seekable channel.
@@ -136,8 +159,8 @@ public final class TarArkivoFormat implements
 
     /// Opens a TAR archive file system directly from one owned seekable channel with options.
     @Override
-    public TarArkivoFileSystem open(SeekableByteChannel source, ArchiveOptions options) throws IOException {
-        return TarArkivoFileSystem.open(source, options);
+    public TarArkivoFileSystem open(SeekableByteChannel source, ArchiveReadOptions options) throws IOException {
+        return TarArkivoFileSystem.open(source, readOptions(options));
     }
 
     /// Opens a read-only TAR archive file system from a repeatable seekable channel source.
@@ -150,9 +173,9 @@ public final class TarArkivoFormat implements
     @Override
     public TarArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) throws IOException {
-        return TarArkivoFileSystem.open(source, options);
+        return TarArkivoFileSystem.open(source, readOptions(options));
     }
 
     /// Opens a streaming TAR reader from an input stream.
@@ -165,9 +188,9 @@ public final class TarArkivoFormat implements
     @Override
     public TarArkivoStreamingReader openStreamingReader(
             InputStream source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) throws IOException {
-        return TarArkivoStreamingReader.open(source, options);
+        return TarArkivoStreamingReader.open(source, readOptions(options));
     }
 
     /// Opens a streaming TAR reader from a readable channel.
@@ -180,9 +203,9 @@ public final class TarArkivoFormat implements
     @Override
     public TarArkivoStreamingReader openStreamingReader(
             ReadableByteChannel source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) throws IOException {
-        return TarArkivoStreamingReader.open(source, options);
+        return TarArkivoStreamingReader.open(source, readOptions(options));
     }
 
     /// Opens a streaming TAR writer over an output stream.
@@ -195,9 +218,9 @@ public final class TarArkivoFormat implements
     @Override
     public TarArkivoStreamingWriter openStreamingWriter(
             OutputStream output,
-            ArchiveOptions options
+            ArchiveCreateOptions options
     ) throws IOException {
-        return TarArkivoStreamingWriter.open(output, options);
+        return TarArkivoStreamingWriter.open(output, new TarArchiveOptions.Create(options, null));
     }
 
     /// Opens a streaming TAR writer over a writable channel.
@@ -210,9 +233,9 @@ public final class TarArkivoFormat implements
     @Override
     public TarArkivoStreamingWriter openStreamingWriter(
             WritableByteChannel output,
-            ArchiveOptions options
+            ArchiveCreateOptions options
     ) throws IOException {
-        return TarArkivoStreamingWriter.open(output, options);
+        return TarArkivoStreamingWriter.open(output, new TarArchiveOptions.Create(options, null));
     }
 
     /// Returns whether the given absolute block is filled with zero bytes.
@@ -245,5 +268,14 @@ public final class TarArkivoFormat implements
             index++;
         }
         return index == limit ? value : INVALID_CHECKSUM;
+    }
+
+    /// Applies TAR defaults to format-independent read options.
+    private static TarArchiveOptions.Read readOptions(ArchiveReadOptions options) {
+        return new TarArchiveOptions.Read(
+                options,
+                null,
+                TarArchiveOptions.DEFAULT_METADATA_CHARSET_DETECTOR
+        );
     }
 }

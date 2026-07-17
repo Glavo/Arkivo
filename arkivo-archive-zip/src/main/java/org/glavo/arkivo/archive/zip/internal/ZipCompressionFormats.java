@@ -3,8 +3,9 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
+import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
@@ -19,6 +20,7 @@ import org.jetbrains.annotations.Nullable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.Objects;
 
 /// Resolves compression formats and adapts their immutable codecs to ZIP entry streams.
 @NotNullByDefault
@@ -38,25 +40,38 @@ final class ZipCompressionFormats {
         return CompressionFormats.newWritableByteChannel(
                 formatName,
                 StreamChannelAdapters.writableChannel(target),
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         );
     }
 
     /// Creates a default decompressing channel for a named format and owns the compressed entry stream.
     static DecompressingReadableByteChannel newReadableByteChannel(
             String formatName,
-            InputStream source
+            InputStream source,
+            long decodedSize,
+            ArchiveReadLimits readLimits
     ) throws IOException {
         return CompressionFormats.newReadableByteChannel(
                 formatName,
                 StreamChannelAdapters.readableChannel(source),
-                ChannelOwnership.CLOSE
+                decompressionLimits(decodedSize, readLimits),
+                ResourceOwnership.OWNED
         );
     }
 
-    /// Creates an input-stream view over the owning default decoder for a named format.
-    static InputStream newInputStream(String formatName, InputStream source) throws IOException {
-        return StreamChannelAdapters.inputStream(newReadableByteChannel(formatName, source));
+    /// Creates a limited input-stream view over the owning default decoder for a named format.
+    static InputStream newInputStream(
+            String formatName,
+            InputStream source,
+            long decodedSize,
+            ArchiveReadLimits readLimits
+    ) throws IOException {
+        return StreamChannelAdapters.inputStream(newReadableByteChannel(
+                formatName,
+                source,
+                decodedSize,
+                readLimits
+        ));
     }
 
     /// Opens a raw LZMA encoder that retains the compressed entry target.
@@ -65,7 +80,7 @@ final class ZipCompressionFormats {
             boolean endMarker,
             OutputStream target
     ) throws IOException {
-        CompressionCodec<?> codec = requireDefaultCodec(RAW_LZMA_NAME);
+        CompressionCodec codec = requireDefaultCodec(RAW_LZMA_NAME);
         if (!(codec instanceof RawLZMACodec rawCodec)) {
             throw incompatibleCodec(RAW_LZMA_NAME);
         }
@@ -74,7 +89,7 @@ final class ZipCompressionFormats {
                 .withEndMarker(endMarker);
         CompressingWritableByteChannel encoder = configured.newWritableByteChannel(
                 StreamChannelAdapters.writableChannel(target),
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         );
         return StreamChannelAdapters.outputStream(encoder);
     }
@@ -84,13 +99,17 @@ final class ZipCompressionFormats {
             InputStream source,
             int property,
             long dictionarySize,
-            long decodedSize
+            long expectedDecodedSize,
+            long entryDecodedSize,
+            ArchiveReadLimits readLimits
     ) throws IOException {
         return StreamChannelAdapters.inputStream(openRawLZMADecoderContext(
                 source,
                 property,
                 dictionarySize,
-                decodedSize
+                expectedDecodedSize,
+                entryDecodedSize,
+                readLimits
         ));
     }
 
@@ -99,9 +118,11 @@ final class ZipCompressionFormats {
             InputStream source,
             int property,
             long dictionarySize,
-            long decodedSize
+            long expectedDecodedSize,
+            long entryDecodedSize,
+            ArchiveReadLimits readLimits
     ) throws IOException {
-        CompressionCodec<?> codec = requireDefaultCodec(RAW_LZMA_NAME);
+        CompressionCodec codec = requireDefaultCodec(RAW_LZMA_NAME);
         if (!(codec instanceof RawLZMACodec rawCodec)) {
             throw incompatibleCodec(RAW_LZMA_NAME);
         }
@@ -110,20 +131,31 @@ final class ZipCompressionFormats {
                 Math.toIntExact(dictionarySize)
         );
         RawLZMACodec configured = rawCodec.withProperties(properties);
-        DecompressionLimits limits = DecompressionLimits.UNLIMITED;
-        if (decodedSize >= 0L) {
-            configured = configured.withDecodedSize(decodedSize);
-            limits = DecompressionLimits.ofMaximumOutputSize(decodedSize);
+        if (expectedDecodedSize >= 0L) {
+            configured = configured.withDecodedSize(expectedDecodedSize);
         }
         return configured.newReadableByteChannel(
                 StreamChannelAdapters.readableChannel(source),
-                limits,
-                ChannelOwnership.CLOSE
+                decompressionLimits(entryDecodedSize, readLimits),
+                ResourceOwnership.OWNED
+        );
+    }
+
+    /// Maps archive read limits to one codec decoder operation.
+    static DecompressionLimits decompressionLimits(long decodedSize, ArchiveReadLimits readLimits) {
+        Objects.requireNonNull(readLimits, "readLimits");
+        if (decodedSize < DecompressionLimits.UNLIMITED_SIZE) {
+            throw new IllegalArgumentException("decodedSize must be non-negative or UNLIMITED_SIZE");
+        }
+        return new DecompressionLimits(
+                decodedSize,
+                readLimits.effectiveCompressionWindowSize(),
+                readLimits.maximumDecoderMemorySize()
         );
     }
 
     /// Returns the default codec for an installed optional format or reports the stable missing-format diagnostic.
-    private static CompressionCodec<?> requireDefaultCodec(String formatName) throws IOException {
+    private static CompressionCodec requireDefaultCodec(String formatName) throws IOException {
         @Nullable CompressionFormat format = CompressionFormats.find(formatName);
         if (format == null) {
             throw new IOException("Unknown compression format: " + formatName);

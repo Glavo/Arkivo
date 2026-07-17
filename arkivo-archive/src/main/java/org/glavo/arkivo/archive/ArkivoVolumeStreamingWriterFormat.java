@@ -15,7 +15,7 @@ public interface ArkivoVolumeStreamingWriterFormat extends ArkivoStreamingWriter
             ArkivoVolumeTarget target,
             long splitSize
     ) throws IOException {
-        return openStreamingWriter(target, splitSize, ArchiveOptions.EMPTY);
+        return openStreamingWriter(target, splitSize, ArchiveCreateOptions.DEFAULT);
     }
 
     /// Opens a configured multi-volume streaming writer with the requested maximum physical volume size.
@@ -25,6 +25,6 @@ public interface ArkivoVolumeStreamingWriterFormat extends ArkivoStreamingWriter
     ArkivoStreamingWriter openStreamingWriter(
             ArkivoVolumeTarget target,
             long splitSize,
-            ArchiveOptions options
+            ArchiveCreateOptions options
     ) throws IOException;
 }

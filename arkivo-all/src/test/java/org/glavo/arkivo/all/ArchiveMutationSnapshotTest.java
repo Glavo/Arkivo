@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.all;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
@@ -200,14 +199,7 @@ final class ArchiveMutationSnapshotTest {
 
     /// Opens one complete-rewrite update session.
     private static ArkivoFileSystem openUpdate(FormatCase format, Path archive) throws IOException {
-        return ArkivoFormats.openFileSystem(
-                format.name(),
-                archive,
-                ArchiveOptions.of(
-                        ArkivoFileSystem.OPEN_OPTIONS,
-                        Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
-                )
-        );
+        return ArkivoFormats.updateFileSystem(format.name(), archive);
     }
 
     /// Creates one archive through the generic streaming-writer API.
@@ -215,8 +207,8 @@ final class ArchiveMutationSnapshotTest {
         try (ArkivoStreamingWriter writer =
                      ArkivoFormats.openStreamingWriter(format, Files.newOutputStream(archive))) {
             for (Map.Entry<String, byte[]> entry : entries.entrySet()) {
-                writer.beginFile(entry.getKey());
-                try (OutputStream output = writer.openOutputStream()) {
+                var writerEntry218 = writer.beginFile(entry.getKey());
+                try (OutputStream output = writerEntry218.openOutputStream()) {
                     output.write(entry.getValue());
                 }
             }
@@ -267,8 +259,8 @@ final class ArchiveMutationSnapshotTest {
 
     /// Describes one writable format and its active-writer read behavior.
     ///
-    /// @param name installed format name
-    /// @param extension fixture archive extension
+    /// @param name                installed format name
+    /// @param extension           fixture archive extension
     /// @param readsActiveOldState whether new reads observe the old state during an active replacement
     private record FormatCase(String name, String extension, boolean readsActiveOldState) {
     }

@@ -159,7 +159,6 @@ ArkivoEditStorage
 ArkivoStoredContent
 ArkivoCommitTarget
 ArkivoCommitOutput
-ArkivoSourceMutationPolicy
 CompressionCodec
 CompressionFormat
 CompressionFormatRegistry
@@ -193,9 +192,9 @@ operation-scoped `DecompressionLimits` follow the same validation and exception 
 Codec factories use `newEncoder()` and `newDecoder()` for transport-independent engines,
 `newWritableByteChannel()` and `newReadableByteChannel()` for channel contexts, and `newOutputStream()` and
 `newInputStream()` for stream adapters. Decoder factories should automatically detect streams with reliable signatures.
-Adapter factories should apply explicit channel ownership consistently during lookup, detection, setup, and close.
+Adapter factories should apply explicit resource ownership consistently during lookup, detection, setup, and close.
 Channel and stream adapters retain caller endpoints by default and transfer ownership only when
-`ChannelOwnership.CLOSE` is selected explicitly.
+`ResourceOwnership.OWNED` is selected explicitly.
 
 Zstandard signature detection recognizes the standard frame magic and all sixteen skippable-frame identifiers without
 changing the probe buffer. Generic decoder factories accept streams beginning with skippable frames, and framed decoder
@@ -588,7 +587,7 @@ source release and stages only its license and reviewed uuencoded fixtures. Runt
 and symbolic links without committing decoded archives. ZIP optional-codec fixtures cover BZip2, LZMA, XZ, and
 Zstandard through both random-access and forward-only readers, including malformed-stream hang and leak regressions.
 Traditional PKWARE and WinZip AES-128/256 fixtures verify absent, incorrect, and correct passwords, stored and
-Deflate payloads, large multi-entry authentication, and channel ownership in both reader modes.
+Deflate payloads, large multi-entry authentication, and resource ownership in both reader modes.
 The 7z set exercises Copy, LZMA1, LZMA2, BZip2, Deflate, PPMd7, Zstandard,
 Delta, BCJ, BCJ2, ARM, ARM64, RISC-V, PowerPC, and SPARC graphs, mixed and solid folders, and all supported AES header
 and data combinations. The same corpus verifies unified random-access detection over arbitrary in-memory seekable

@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.all;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
@@ -54,9 +54,9 @@ final class MalformedCodecRobustnessTest {
     @Timeout(value = 120, unit = TimeUnit.SECONDS)
     void boundsAndNormalizesMalformedCodecFailures() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec<?> codec = format.defaultCodec();
+            CompressionCodec codec = format.defaultCodec();
             byte[] validFrame = compress(codec);
-            CompressionCodec<?> decoderCodec =
+            CompressionCodec decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
             DecompressionLimits limits = boundedLimits();
             assertArrayEquals(CONTENT, decodeNamed(decoderCodec, validFrame, limits), codec.format().name());
@@ -79,7 +79,7 @@ final class MalformedCodecRobustnessTest {
     }
 
     /// Compresses the shared plaintext with one codec's default encoder.
-    private static byte[] compress(CompressionCodec<?> codec) throws IOException {
+    private static byte[] compress(CompressionCodec codec) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         codec.compress(
                 Channels.newChannel(new ByteArrayInputStream(CONTENT)),
@@ -90,13 +90,13 @@ final class MalformedCodecRobustnessTest {
 
     /// Returns the defensive limits applied to every damaged-frame decoder.
     private static DecompressionLimits boundedLimits() {
-        return new DecompressionLimits(MAX_OUTPUT_SIZE, MAX_WINDOW_SIZE);
+        return new DecompressionLimits(MAX_OUTPUT_SIZE, MAX_WINDOW_SIZE, MAX_WINDOW_SIZE);
     }
 
     /// Exercises signature detection and every applicable decoder factory for one damaged frame.
     private static void exerciseMalformedFrame(
-            CompressionCodec<?> codec,
-            CompressionCodec<?> decoderCodec,
+            CompressionCodec codec,
+            CompressionCodec decoderCodec,
             byte[] frame,
             DecompressionLimits limits,
             boolean detectable,
@@ -121,14 +121,14 @@ final class MalformedCodecRobustnessTest {
 
     /// Decodes a frame through its explicit provider.
     private static byte[] decodeNamed(
-            CompressionCodec<?> codec,
+            CompressionCodec codec,
             byte[] frame,
             DecompressionLimits limits
     ) throws IOException {
         try (DecompressingReadableByteChannel decoder = codec.newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(frame)),
                 limits,
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         )) {
             return consumeDecoder(decoder);
         }

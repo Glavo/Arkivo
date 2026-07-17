@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.bzip2;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
@@ -37,7 +37,7 @@ public final class BZip2CodecTest {
         BZip2Codec codec = new BZip2Codec();
         byte[] input = "hello bzip2".getBytes(StandardCharsets.UTF_8);
 
-        assertEquals(true, codec instanceof CompressionCodec<?>);
+        assertEquals(true, codec instanceof CompressionCodec);
         assertEquals(BZip2Format.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
@@ -72,7 +72,7 @@ public final class BZip2CodecTest {
 
         CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                 compressedTarget,
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         );
         assertEquals(input.length, encoder.write(source));
         encoder.finish();
@@ -86,7 +86,7 @@ public final class BZip2CodecTest {
         WritableByteChannel ownedTarget = Channels.newChannel(new ByteArrayOutputStream());
         CompressingWritableByteChannel owningEncoder = new BZip2Codec().newWritableByteChannel(
                 ownedTarget,
-                ChannelOwnership.CLOSE
+                ResourceOwnership.OWNED
         );
         owningEncoder.finish();
         assertFalse(owningEncoder.isOpen());
@@ -97,7 +97,7 @@ public final class BZip2CodecTest {
         );
         DecompressingReadableByteChannel decoder = new BZip2Codec().newReadableByteChannel(
                 compressedSource,
-                ChannelOwnership.CLOSE
+                ResourceOwnership.OWNED
         );
         ByteBuffer decoded = ByteBuffer.allocateDirect(input.length);
         while (decoded.hasRemaining()) {
@@ -126,7 +126,7 @@ public final class BZip2CodecTest {
     }
 
     /// Compresses and decompresses the given bytes.
-    private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
+    private static byte[] roundTrip(CompressionCodec codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
         try (OutputStream output = codec.newOutputStream(compressed)) {
             output.write(input);

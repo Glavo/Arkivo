@@ -3,7 +3,10 @@
 
 package org.glavo.arkivo.archive.zip;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveCreateOptions;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArchiveUpdateOptions;
+import org.glavo.arkivo.archive.ArkivoFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoPathVolumeFormat;
 import org.glavo.arkivo.archive.ArkivoVolumeFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
@@ -31,7 +34,8 @@ import java.util.Objects;
 @NotNullByDefault
 public final class ZipArkivoFormat implements
         ArkivoPathVolumeFormat,
-        ArkivoVolumeFileSystemFormat,
+        ArkivoFileSystemFormat.Writable,
+        ArkivoVolumeFileSystemFormat.Writable,
         ArkivoVolumeStreamingReaderFormat,
         ArkivoVolumeStreamingWriterFormat {
     /// The stable ZIP format name.
@@ -40,8 +44,13 @@ public final class ZipArkivoFormat implements
     /// The shared ZIP format instance.
     private static final ZipArkivoFormat INSTANCE = new ZipArkivoFormat();
 
-    /// Creates a ZIP format descriptor.
+    /// Creates a classpath-discoverable ZIP format descriptor.
     public ZipArkivoFormat() {
+    }
+
+    /// Returns the canonical ZIP service provider.
+    public static ZipArkivoFormat provider() {
+        return INSTANCE;
     }
 
     /// Returns the shared ZIP format descriptor.
@@ -98,8 +107,20 @@ public final class ZipArkivoFormat implements
 
     /// Opens a ZIP archive file system with options.
     @Override
-    public ZipArkivoFileSystem open(Path path, ArchiveOptions options) throws IOException {
-        return ZipArkivoFileSystem.open(path, options);
+    public ZipArkivoFileSystem open(Path path, ArchiveReadOptions options) throws IOException {
+        return ZipArkivoFileSystem.open(path, readOptions(options));
+    }
+
+    /// Creates a new path-backed ZIP archive file system with default ZIP behavior.
+    @Override
+    public ZipArkivoFileSystem create(Path path, ArchiveCreateOptions options) throws IOException {
+        return ZipArkivoFileSystem.create(path, createOptions(options));
+    }
+
+    /// Opens a complete-rewrite update of an existing path-backed ZIP archive.
+    @Override
+    public ZipArkivoFileSystem update(Path path, ArchiveUpdateOptions options) throws IOException {
+        return ZipArkivoFileSystem.update(path, updateOptions(options));
     }
 
     /// Opens a read-only ZIP archive file system directly from one owned seekable channel.
@@ -110,8 +131,8 @@ public final class ZipArkivoFormat implements
 
     /// Opens a ZIP archive file system directly from one owned seekable channel with options.
     @Override
-    public ZipArkivoFileSystem open(SeekableByteChannel source, ArchiveOptions options) throws IOException {
-        return ZipArkivoFileSystem.open(source, options);
+    public ZipArkivoFileSystem open(SeekableByteChannel source, ArchiveReadOptions options) throws IOException {
+        return ZipArkivoFileSystem.open(source, readOptions(options));
     }
 
     /// Opens a read-only ZIP archive file system from a repeatable seekable channel source.
@@ -126,8 +147,8 @@ public final class ZipArkivoFormat implements
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
     @Override
-    public ZipArkivoFileSystem open(ArkivoSeekableChannelSource source, ArchiveOptions options) throws IOException {
-        return ZipArkivoFileSystem.open(source, options);
+    public ZipArkivoFileSystem open(ArkivoSeekableChannelSource source, ArchiveReadOptions options) throws IOException {
+        return ZipArkivoFileSystem.open(source, readOptions(options));
     }
 
     /// Opens a split ZIP archive file system.
@@ -138,8 +159,8 @@ public final class ZipArkivoFormat implements
 
     /// Opens a split ZIP archive file system with options.
     @Override
-    public ZipArkivoFileSystem open(ArkivoVolumeSource volumes, ArchiveOptions options) throws IOException {
-        return ZipArkivoFileSystem.open(volumes, options);
+    public ZipArkivoFileSystem open(ArkivoVolumeSource volumes, ArchiveReadOptions options) throws IOException {
+        return ZipArkivoFileSystem.open(volumes, readOptions(options));
     }
 
     /// Opens a complete-rewrite update over multi-volume input and transactional output.
@@ -158,9 +179,9 @@ public final class ZipArkivoFormat implements
             ArkivoVolumeSource source,
             ArkivoVolumeTarget target,
             long splitSize,
-            ArchiveOptions options
+            ArchiveUpdateOptions options
     ) throws IOException {
-        return ZipArkivoFileSystem.update(source, target, splitSize, options);
+        return ZipArkivoFileSystem.update(source, target, splitSize, updateOptions(options));
     }
 
     /// Creates a writable ZIP file system over a transactional volume target.
@@ -174,9 +195,9 @@ public final class ZipArkivoFormat implements
     public ZipArkivoFileSystem create(
             ArkivoVolumeTarget target,
             long splitSize,
-            ArchiveOptions options
+            ArchiveCreateOptions options
     ) throws IOException {
-        return ZipArkivoFileSystem.create(target, splitSize, options);
+        return ZipArkivoFileSystem.create(target, splitSize, createOptions(options));
     }
 
     /// Opens a streaming ZIP writer over an output stream.
@@ -189,9 +210,9 @@ public final class ZipArkivoFormat implements
     @Override
     public ZipArkivoStreamingWriter openStreamingWriter(
             OutputStream output,
-            ArchiveOptions options
+            ArchiveCreateOptions options
     ) {
-        return ZipArkivoStreamingWriter.open(output, options);
+        return ZipArkivoStreamingWriter.open(output, createOptions(options));
     }
 
     /// Opens a streaming ZIP writer over a writable channel.
@@ -204,9 +225,9 @@ public final class ZipArkivoFormat implements
     @Override
     public ZipArkivoStreamingWriter openStreamingWriter(
             WritableByteChannel output,
-            ArchiveOptions options
+            ArchiveCreateOptions options
     ) {
-        return ZipArkivoStreamingWriter.open(output, options);
+        return ZipArkivoStreamingWriter.open(output, createOptions(options));
     }
 
     /// Opens a split streaming ZIP writer over a transactional volume target.
@@ -223,9 +244,9 @@ public final class ZipArkivoFormat implements
     public ZipArkivoStreamingWriter openStreamingWriter(
             ArkivoVolumeTarget target,
             long splitSize,
-            ArchiveOptions options
+            ArchiveCreateOptions options
     ) throws IOException {
-        return ZipArkivoStreamingWriter.open(target, splitSize, options);
+        return ZipArkivoStreamingWriter.open(target, splitSize, createOptions(options));
     }
 
     /// Opens a streaming ZIP reader from a path and discovers conventional split storage.
@@ -238,9 +259,9 @@ public final class ZipArkivoFormat implements
     @Override
     public ZipArkivoStreamingReader openStreamingReader(
             Path path,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) throws IOException {
-        return ZipArkivoStreamingReader.open(path, options);
+        return ZipArkivoStreamingReader.open(path, readOptions(options));
     }
 
     /// Opens a streaming ZIP reader from a multi-volume source.
@@ -253,9 +274,9 @@ public final class ZipArkivoFormat implements
     @Override
     public ZipArkivoStreamingReader openStreamingReader(
             ArkivoVolumeSource source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) throws IOException {
-        return ZipArkivoStreamingReader.open(source, options);
+        return ZipArkivoStreamingReader.open(source, readOptions(options));
     }
 
     /// Opens a streaming ZIP reader from an input stream.
@@ -268,9 +289,9 @@ public final class ZipArkivoFormat implements
     @Override
     public ZipArkivoStreamingReader openStreamingReader(
             InputStream source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) {
-        return ZipArkivoStreamingReader.open(source, options);
+        return ZipArkivoStreamingReader.open(source, readOptions(options));
     }
 
     /// Opens a streaming ZIP reader from a readable channel.
@@ -283,8 +304,32 @@ public final class ZipArkivoFormat implements
     @Override
     public ZipArkivoStreamingReader openStreamingReader(
             ReadableByteChannel source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) {
-        return ZipArkivoStreamingReader.open(source, options);
+        return ZipArkivoStreamingReader.open(source, readOptions(options));
+    }
+
+    /// Applies ZIP defaults to format-independent read options.
+    private static ZipArchiveOptions.Read readOptions(ArchiveReadOptions options) {
+        return new ZipArchiveOptions.Read(
+                options,
+                null,
+                ZipArchiveOptions.DEFAULT_LEGACY_CHARSET_DETECTOR
+        );
+    }
+
+    /// Applies ZIP defaults to format-independent creation options.
+    private static ZipArchiveOptions.Create createOptions(ArchiveCreateOptions options) {
+        return new ZipArchiveOptions.Create(options, null, ZipEncryption.none());
+    }
+
+    /// Applies ZIP defaults to format-independent update options.
+    private static ZipArchiveOptions.Update updateOptions(ArchiveUpdateOptions options) {
+        return new ZipArchiveOptions.Update(
+                options,
+                null,
+                ZipEncryption.none(),
+                ZipArchiveOptions.DEFAULT_LEGACY_CHARSET_DETECTOR
+        );
     }
 }

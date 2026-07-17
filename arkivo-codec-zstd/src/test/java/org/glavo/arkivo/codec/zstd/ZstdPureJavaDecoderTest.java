@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.zstd;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CodecResult;
@@ -121,7 +121,7 @@ public final class ZstdPureJavaDecoderTest {
         ByteBuffer output = ByteBuffer.allocate(8);
         try (DecompressingReadableByteChannel.Framed decoder = codec.newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(frames)),
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         )) {
             CodecResult first = decoder.decodeFrame(output);
             assertEquals(CodecResult.Status.FRAME_FINISHED, first.status());
@@ -155,7 +155,7 @@ public final class ZstdPureJavaDecoderTest {
         ByteBuffer source = ByteBuffer.wrap(DICTIONARY_ID_FRAME);
         try (CompressionDecoder.DictionaryAware<ZstdDictionary, ZstdDictionaryRequest> decoder =
                      new ZstdCodec().newDecoder()) {
-            CodecOutcome outcome = decoder.decode(source, ByteBuffer.allocate(8), true);
+            CodecOutcome outcome = decoder.finish(source, ByteBuffer.allocate(8));
 
             assertEquals(CodecOutcome.NEEDS_DICTIONARY, outcome);
             ZstdDictionaryRequest request = decoder.dictionaryRequest();
@@ -173,7 +173,7 @@ public final class ZstdPureJavaDecoderTest {
         ByteBuffer output = ByteBuffer.allocate(16);
         try (DecompressingReadableByteChannel.Framed decoder = new ZstdCodec().newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(encoded)),
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         )) {
             CodecResult skipped = decoder.decodeFrame(output);
 
@@ -203,7 +203,7 @@ public final class ZstdPureJavaDecoderTest {
         ByteBuffer output = ByteBuffer.allocate(16);
         try (DecompressingReadableByteChannel.Framed decoder = new ZstdCodec().newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(encoded)),
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         )) {
             CodecResult result = decoder.decodeFrame(output);
 

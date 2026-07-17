@@ -23,7 +23,7 @@ final class CompressionCodecBufferTest {
     /// Verifies heap-buffer copying, bounds, and position updates.
     @Test
     void adaptsChannelOperationsToHeapBuffers() throws IOException {
-        CompressionCodec<?> codec = new IdentityCodec();
+        CompressionCodec codec = new IdentityCodec();
         ByteBuffer source = ByteBuffer.wrap(new byte[]{9, 1, 2, 3, 8});
         source.position(1);
         source.limit(4);
@@ -53,7 +53,7 @@ final class CompressionCodecBufferTest {
     /// Verifies allocating one-shot operations, dynamic growth, and bounded decompression.
     @Test
     void allocatesOneShotBuffersWithStrictOutputLimits() throws IOException {
-        CompressionCodec<?> codec = new IdentityCodec();
+        CompressionCodec codec = new IdentityCodec();
         byte[] content = new byte[(1 << 20) + 12_345];
         for (int index = 0; index < content.length; index++) {
             content[index] = (byte) (index * 31 + index / 257);
@@ -105,7 +105,7 @@ final class CompressionCodecBufferTest {
     /// Verifies one-shot operations preserve trailing input and failed decoder construction.
     @Test
     void restoresReadAheadSourcePositions() throws IOException {
-        CompressionCodec<?> codec = new ReadAheadCodec(3, false);
+        CompressionCodec codec = new ReadAheadCodec(3, false);
 
         ByteBuffer fixedSource = ByteBuffer.wrap(new byte[]{1, 2, 3, 9});
         ByteBuffer fixedTarget = ByteBuffer.allocate(3);
@@ -118,7 +118,7 @@ final class CompressionCodecBufferTest {
         assertEquals(3, allocatingSource.position());
         assertArrayEquals(new byte[]{4, 5, 6}, bufferBytes(allocated, 0, allocated.limit()));
 
-        CompressionCodec<?> failing = new ReadAheadCodec(0, true);
+        CompressionCodec failing = new ReadAheadCodec(0, true);
         ByteBuffer failingSource = ByteBuffer.wrap(new byte[]{7, 8, 9});
         assertThrows(
                 IOException.class,
@@ -130,7 +130,7 @@ final class CompressionCodecBufferTest {
     /// Verifies deterministic failures for invalid targets and insufficient capacity.
     @Test
     void reportsInvalidOrInsufficientTargets() {
-        CompressionCodec<?> codec = new IdentityCodec();
+        CompressionCodec codec = new IdentityCodec();
 
         ByteBuffer same = ByteBuffer.allocate(4);
         assertThrows(IllegalArgumentException.class, () -> codec.compress(same, same));
@@ -162,7 +162,7 @@ final class CompressionCodecBufferTest {
 
     /// Provides identity encoding and decoding of one logical source prefix.
     @NotNullByDefault
-    private static final class ReadAheadCodec implements CompressionCodec<ReadAheadCodec>, CompressionFormat {
+    private static final class ReadAheadCodec implements CompressionCodec, CompressionFormat {
         /// The logical decoded prefix length.
         private final int decodedSize;
 
@@ -189,7 +189,7 @@ final class CompressionCodecBufferTest {
 
         /// Returns this test object as the default codec configuration.
         @Override
-        public CompressionCodec<?> defaultCodec() {
+        public CompressionCodec defaultCodec() {
             return this;
         }
 
@@ -214,7 +214,7 @@ final class CompressionCodecBufferTest {
 
     /// Implements an identity transformation through buffer engines.
     @NotNullByDefault
-    private static final class IdentityCodec implements CompressionCodec<IdentityCodec>, CompressionFormat {
+    private static final class IdentityCodec implements CompressionCodec, CompressionFormat {
         /// Creates an identity codec.
         private IdentityCodec() {
         }
@@ -233,7 +233,7 @@ final class CompressionCodecBufferTest {
 
         /// Returns this test object as the default codec configuration.
         @Override
-        public CompressionCodec<?> defaultCodec() {
+        public CompressionCodec defaultCodec() {
             return this;
         }
 
@@ -289,7 +289,18 @@ final class CompressionCodecBufferTest {
     private static final class IdentityDecoder implements CompressionDecoder {
         /// Copies available bytes and finishes when physical input has ended.
         @Override
-        public CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) {
+        public CodecOutcome decode(ByteBuffer source, ByteBuffer target) {
+            return decodeInternal(source, target, false);
+        }
+
+        /// Finishes decoding after all source bytes have been supplied.
+        @Override
+        public CodecOutcome finish(ByteBuffer source, ByteBuffer target) {
+            return decodeInternal(source, target, true);
+        }
+
+        /// Implements decoding with the selected source-completion state.
+        private CodecOutcome decodeInternal(ByteBuffer source, ByteBuffer target, boolean endOfInput) {
             int count = Math.min(source.remaining(), target.remaining());
             ByteBuffer chunk = source.slice();
             chunk.limit(count);
@@ -333,6 +344,23 @@ final class CompressionCodecBufferTest {
         /// Copies logical payload bytes without consuming the following suffix.
         @Override
         public CodecOutcome decode(
+                ByteBuffer source,
+                ByteBuffer target
+        ) throws IOException {
+            return decodeInternal(source, target, false);
+        }
+
+        /// Finishes the logical prefix after all source bytes have been supplied.
+        @Override
+        public CodecOutcome finish(
+                ByteBuffer source,
+                ByteBuffer target
+        ) throws IOException {
+            return decodeInternal(source, target, true);
+        }
+
+        /// Copies logical payload bytes with the selected source-completion state.
+        private CodecOutcome decodeInternal(
                 ByteBuffer source,
                 ByteBuffer target,
                 boolean endOfInput

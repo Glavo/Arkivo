@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -101,7 +101,7 @@ public final class ZstdChannelEncoder implements CompressingWritableByteChannel.
     /// @param magicless whether standard frame magic is omitted
     public ZstdChannelEncoder(
             WritableByteChannel target,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             ZstdEncoderParameters parameters,
             boolean magicless
     ) {

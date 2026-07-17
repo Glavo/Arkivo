@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.zstd;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
@@ -27,8 +27,8 @@ import java.util.Objects;
 public final class ZstdCodec
         implements CompressionCodec.LevelConfigurable<ZstdCodec>,
         CompressionCodec.DictionaryConfigurable<ZstdCodec, ZstdDictionary>,
-        CompressionCodec.PledgedSourceSizeEncoderFactory<ZstdCodec, CompressionEncoder.FlushableFramed>,
-        CompressionCodec.FlushableFramed<ZstdCodec> {
+        CompressionCodec.PledgedSourceSizeEncoderFactory<CompressionEncoder.FlushableFramed>,
+        CompressionCodec.FlushableFramed {
     /// The minimum compression level accepted by Zstandard 1.x.
     public static final int MINIMUM_COMPRESSION_LEVEL = -131_072;
 
@@ -440,7 +440,7 @@ public final class ZstdCodec
     public CompressingWritableByteChannel.FlushableFramed newWritableByteChannel(
             WritableByteChannel target,
             long pledgedSourceSize,
-            ChannelOwnership ownership
+            ResourceOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(ownership, "ownership");
@@ -451,13 +451,13 @@ public final class ZstdCodec
         );
     }
 
-    /// Creates a frame- and flush-capable compressing channel with exact source-size metadata and retained ownership.
+    /// Creates a frame- and flush-capable compressing channel with exact source-size metadata and a borrowed target.
     @Override
     public CompressingWritableByteChannel.FlushableFramed newWritableByteChannel(
             WritableByteChannel target,
             long pledgedSourceSize
     ) throws IOException {
-        return newWritableByteChannel(target, pledgedSourceSize, ChannelOwnership.RETAIN);
+        return newWritableByteChannel(target, pledgedSourceSize, ResourceOwnership.BORROWED);
     }
 
     /// Creates an unrestricted dictionary-aware framed decoder.
@@ -475,7 +475,7 @@ public final class ZstdCodec
         return CompressionDecoderSupport.limitEngineOutput(
                 new ZstdDecoder(
                         dictionary,
-                        limits.maximumWindowSize(),
+                        limits.effectiveMaximumWindowSize(),
                         frameFormat == ZstdFrameFormat.MAGICLESS,
                         verifyChecksums
                 ),

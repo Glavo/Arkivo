@@ -5,7 +5,7 @@ package org.glavo.arkivo.archive.sevenzip.internal;
 
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFormat;
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.sevenzip.internal.SevenZipArkivoFileSystemConfig;
@@ -92,6 +92,13 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
     public SevenZipArkivoFileSystem openPath(Path path, ArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
         SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromOptions(options);
+        return openPath(path, config);
+    }
+
+    /// Opens a 7z path from an already validated strongly typed configuration.
+    public SevenZipArkivoFileSystem openPath(Path path, SevenZipArkivoFileSystemConfig config) throws IOException {
+        Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(config, "config");
         return new SevenZipArkivoFileSystemImpl(this, path, null, config);
     }
 

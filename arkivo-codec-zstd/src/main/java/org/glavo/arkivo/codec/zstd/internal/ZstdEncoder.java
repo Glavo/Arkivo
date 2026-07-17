@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -179,7 +179,7 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
 
     /// Creates a fresh frame encoder targeting the internal queue.
     private ZstdChannelEncoder createEncoder() {
-        return new ZstdChannelEncoder(output, ChannelOwnership.RETAIN, parameters, magicless);
+        return new ZstdChannelEncoder(output, ResourceOwnership.BORROWED, parameters, magicless);
     }
 
     /// Copies queued encoded bytes into the caller's target buffer.

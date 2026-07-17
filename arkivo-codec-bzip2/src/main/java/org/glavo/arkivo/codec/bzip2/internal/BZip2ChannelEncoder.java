@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.bzip2.internal;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -91,7 +91,7 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
     /// Creates an encoder over a compressed channel with explicit ownership and block size.
     public BZip2ChannelEncoder(
             WritableByteChannel target,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             int blockSize
     ) throws IOException {
         Objects.requireNonNull(target, "target");

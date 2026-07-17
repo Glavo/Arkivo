@@ -264,7 +264,7 @@ public class DeflateComparisonBenchmark {
         arkivoDecoded.clear();
 
         while (true) {
-            CodecOutcome outcome = decoder.decode(compressedInput, arkivoDecoded, true);
+            CodecOutcome outcome = decoder.finish(compressedInput, arkivoDecoded);
             if (outcome == CodecOutcome.FINISHED) {
                 if (compressedInput.hasRemaining()) {
                     throw new IOException("Arkivo Deflate decoder left trailing input");

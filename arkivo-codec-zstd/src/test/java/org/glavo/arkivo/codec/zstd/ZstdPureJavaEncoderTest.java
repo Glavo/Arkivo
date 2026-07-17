@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.zstd;
 
 import com.github.luben.zstd.Zstd;
 import com.github.luben.zstd.ZstdDecompressCtx;
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -299,7 +299,7 @@ public final class ZstdPureJavaEncoderTest {
         try (CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(
                 Channels.newChannel(encoded),
                 input.length,
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         )) {
             encoder.write(ByteBuffer.wrap(input));
             encoder.finishFrame();
@@ -383,7 +383,7 @@ public final class ZstdPureJavaEncoderTest {
         ZstdCodec codec = new ZstdCodec();
         try (CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(
                 Channels.newChannel(encoded),
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         )) {
             encoder.write(ByteBuffer.wrap(first));
             encoder.flush();
@@ -420,7 +420,7 @@ public final class ZstdPureJavaEncoderTest {
                 .build();
         try (CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(
                 Channels.newChannel(encoded),
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         )) {
             encoder.write(ByteBuffer.wrap(first));
             encoder.flush();

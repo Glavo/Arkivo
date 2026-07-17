@@ -3,9 +3,7 @@
 
 package org.glavo.arkivo.archive.internal;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -33,7 +31,9 @@ final class StoredContentSupportTest {
     @Test
     void storesAndCopiesIndexedContent() throws IOException {
         ArkivoEditStorage storage = ArkivoEditStorage.memory();
-        assertSame(storage, StoredContentSupport.selectStorage(ArchiveOptions.of(ArkivoFileSystem.EDIT_STORAGE, storage)));
+        assertSame(storage, StoredContentSupport.selectStorage(
+                ArchiveOptions.of(ArchiveEnvironmentOptions.EDIT_STORAGE, storage)
+        ));
 
         Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
         ArkivoStoredContent source = StoredContentSupport.storeInput(

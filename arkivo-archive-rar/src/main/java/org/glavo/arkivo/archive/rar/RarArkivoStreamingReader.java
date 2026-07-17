@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.archive.rar;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
@@ -24,7 +23,7 @@ import java.util.Objects;
 /// Both formats preserve solid decompression state and can span split entry data across physical volumes. Legacy RAR 1.3,
 /// 1.5, and 2.x file-data encryption, RAR 3.x AES-128 encryption, and RAR5 AES-256 encryption are readable for otherwise
 /// supported entries. Encrypted headers are supported for RAR 3.x and RAR5. Encryption uses the archive-level password
-/// from `RarArkivoFileSystem.PASSWORD_PROVIDER`. Legacy RAR 1.3 through 2.x treats provider bytes as a raw single-byte
+/// from [RarArchiveOptions.Read#passwordProvider()]. Legacy RAR 1.3 through 2.x treats provider bytes as a raw single-byte
 /// password terminated by the first zero byte; RAR 3.x AES treats them as UTF-16LE, and RAR5 treats them as UTF-8.
 /// Advancing past a compressed entry in a solid archive decodes and discards its body when possible to preserve the
 /// dictionary required by later entries.
@@ -42,13 +41,13 @@ public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingRea
 
     /// Opens a streaming RAR reader from its first path and discovers conventional split volumes.
     public static RarArkivoStreamingReader open(Path path) throws IOException {
-        return open(path, ArchiveOptions.EMPTY);
+        return open(path, RarArchiveOptions.READ_DEFAULTS);
     }
 
     /// Opens a configured streaming RAR reader from its first path and discovers conventional split volumes.
     public static RarArkivoStreamingReader open(
             Path path,
-            ArchiveOptions options
+            RarArchiveOptions.Read options
     ) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
@@ -57,7 +56,7 @@ public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingRea
 
     /// Opens a streaming RAR reader from a multi-volume source.
     public static RarArkivoStreamingReader open(ArkivoVolumeSource source) {
-        return open(source, ArchiveOptions.EMPTY);
+        return open(source, RarArchiveOptions.READ_DEFAULTS);
     }
 
     /// Opens a streaming RAR reader from a multi-volume source with options.
@@ -65,49 +64,49 @@ public abstract sealed class RarArkivoStreamingReader extends ArkivoStreamingRea
     /// The returned reader owns the source and every physical volume channel it opens.
     public static RarArkivoStreamingReader open(
             ArkivoVolumeSource source,
-            ArchiveOptions options
+            RarArchiveOptions.Read options
     ) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
         return new RarArkivoStreamingReaderImpl(
                 source,
-                options.get(RarArkivoFileSystem.PASSWORD_PROVIDER),
-                options
+                options.passwordProvider(),
+                RarArkivoFileSystem.toLegacyOptions(options)
         );
     }
 
     /// Opens a streaming RAR reader from an input stream.
     public static RarArkivoStreamingReader open(InputStream source) {
-        return open(source, ArchiveOptions.EMPTY);
+        return open(source, RarArchiveOptions.READ_DEFAULTS);
     }
 
     /// Opens a streaming RAR reader from an input stream with options.
-    public static RarArkivoStreamingReader open(InputStream source, ArchiveOptions options) {
+    public static RarArkivoStreamingReader open(InputStream source, RarArchiveOptions.Read options) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
         return new RarArkivoStreamingReaderImpl(
                 source,
-                options.get(RarArkivoFileSystem.PASSWORD_PROVIDER),
-                options
+                options.passwordProvider(),
+                RarArkivoFileSystem.toLegacyOptions(options)
         );
     }
 
     /// Opens a streaming RAR reader from a readable channel.
     public static RarArkivoStreamingReader open(ReadableByteChannel source) {
-        return open(source, ArchiveOptions.EMPTY);
+        return open(source, RarArchiveOptions.READ_DEFAULTS);
     }
 
     /// Opens a streaming RAR reader from a readable channel with options.
     public static RarArkivoStreamingReader open(
             ReadableByteChannel source,
-            ArchiveOptions options
+            RarArchiveOptions.Read options
     ) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
         return new RarArkivoStreamingReaderImpl(
                 StreamChannelAdapters.inputStream(source),
-                options.get(RarArkivoFileSystem.PASSWORD_PROVIDER),
-                options
+                options.passwordProvider(),
+                RarArkivoFileSystem.toLegacyOptions(options)
         );
     }
 }

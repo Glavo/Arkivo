@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.internal;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecTransferResult;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
@@ -29,7 +29,7 @@ public final class CodecTransferSupport {
 
     /// Compresses bytes between channels without taking ownership of either channel.
     public static CodecTransferResult compress(
-            CompressionCodec<?> codec,
+            CompressionCodec codec,
             ReadableByteChannel source,
             WritableByteChannel target
     ) throws IOException {
@@ -38,7 +38,7 @@ public final class CodecTransferSupport {
         Objects.requireNonNull(target, "target");
 
         try (CompressingWritableByteChannel encoder =
-                     codec.newWritableByteChannel(target, ChannelOwnership.RETAIN)) {
+                     codec.newWritableByteChannel(target, ResourceOwnership.BORROWED)) {
             transferIntoEncoder(source, encoder);
             encoder.finish();
             return new CodecTransferResult(encoder.inputBytes(), encoder.outputBytes());
@@ -47,7 +47,7 @@ public final class CodecTransferSupport {
 
     /// Decompresses bytes between channels without taking ownership of either channel.
     public static CodecTransferResult decompress(
-            CompressionCodec<?> codec,
+            CompressionCodec codec,
             ReadableByteChannel source,
             WritableByteChannel target,
             DecompressionLimits limits
@@ -58,7 +58,7 @@ public final class CodecTransferSupport {
         Objects.requireNonNull(limits, "limits");
 
         try (DecompressingReadableByteChannel decoder =
-                     codec.newReadableByteChannel(source, limits, ChannelOwnership.RETAIN)) {
+                     codec.newReadableByteChannel(source, limits, ResourceOwnership.BORROWED)) {
             return decompress(decoder, target);
         }
     }

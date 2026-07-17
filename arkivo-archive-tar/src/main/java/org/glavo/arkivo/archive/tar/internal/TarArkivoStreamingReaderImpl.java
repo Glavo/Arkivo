@@ -4,7 +4,8 @@
 package org.glavo.arkivo.archive.tar.internal;
 
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.internal.ArchiveOptions;
+import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
@@ -40,6 +41,13 @@ import java.util.Objects;
 /// Implements the public forward-only TAR streaming reader API.
 @NotNullByDefault
 public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader {
+    /// The internal NIO environment key for metadata charset detection.
+    private static final ArchiveOption<ArchiveMetadataCharsetDetector> METADATA_CHARSET_DETECTOR =
+            ArchiveOption.of(
+                    "arkivo.tar",
+                    "metadataCharsetDetector",
+                    ArchiveMetadataCharsetDetector.class
+            );
     /// The TAR record size.
     private static final int RECORD_SIZE = 512;
 
@@ -122,7 +130,7 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
         ArchiveOptions checkedOptions = Objects.requireNonNull(options, "options");
         this.readLimits = ArkivoReadLimitTracker.fromOptions(checkedOptions);
         this.metadataCharsetDetector = checkedOptions.getOrDefault(
-                TarArkivoFileSystem.METADATA_CHARSET_DETECTOR,
+                METADATA_CHARSET_DETECTOR,
                 DEFAULT_METADATA_CHARSET_DETECTOR
         );
     }

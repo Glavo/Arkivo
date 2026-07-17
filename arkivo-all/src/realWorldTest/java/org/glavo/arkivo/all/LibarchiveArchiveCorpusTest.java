@@ -3,19 +3,21 @@
 
 package org.glavo.arkivo.all;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArchiveOptions;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCoderGraph;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCoderMethod;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
+import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
+import org.glavo.arkivo.archive.zip.ZipArkivoStreamingReader;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.glavo.arkivo.archive.zip.ZipMethod;
 import org.apache.commons.compress.utils.SeekableInMemoryByteChannel;
@@ -173,8 +175,8 @@ public final class LibarchiveArchiveCorpusTest {
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(archiveBytes));
         Set<String> streamedEntries = new HashSet<>();
         try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(source)) {
-            while (reader.next()) {
-                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+            for (var readerEntry176 = reader.nextEntry(); readerEntry176 != null; readerEntry176 = reader.nextEntry()) {
+                ZipArkivoEntryAttributes attributes = readerEntry176.attributes(ZipArkivoEntryAttributes.class);
                 if (!attributes.isRegularFile()) {
                     continue;
                 }
@@ -182,7 +184,7 @@ public final class LibarchiveArchiveCorpusTest {
                 assertTrue(expectedCrc32 != null, attributes.path());
                 assertEquals(expectedMethod, attributes.method());
                 assertEquals(expectedCrc32.longValue(), attributes.crc32());
-                try (InputStream input = reader.openInputStream()) {
+                try (InputStream input = readerEntry176.openInputStream()) {
                     assertEquals(expectedCrc32.longValue(), crc32(input.readAllBytes()));
                 }
                 streamedEntries.add(attributes.path());
@@ -214,10 +216,10 @@ public final class LibarchiveArchiveCorpusTest {
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(archiveBytes));
         assertThrows(IOException.class, () -> {
             try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(source)) {
-                while (reader.next()) {
-                    BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);
+                for (var readerEntry217 = reader.nextEntry(); readerEntry217 != null; readerEntry217 = reader.nextEntry()) {
+                    BasicFileAttributes attributes = readerEntry217.attributes(BasicFileAttributes.class);
                     if (attributes.isRegularFile()) {
-                        try (InputStream input = reader.openInputStream()) {
+                        try (InputStream input = readerEntry217.openInputStream()) {
                             input.readAllBytes();
                         }
                     }
@@ -242,11 +244,11 @@ public final class LibarchiveArchiveCorpusTest {
         Path archive = temporaryDirectory.resolve(fixtureName.substring(0, fixtureName.length() - 3));
         Files.write(archive, archiveBytes);
 
-        for (ArchiveOptions options : List.of(
-                ArchiveOptions.EMPTY,
-                ArchiveOptions.of(ZipArkivoFileSystem.PASSWORD_PROVIDER, WRONG_ZIP_PASSWORD)
+        for (ZipArchiveOptions.Read options : List.of(
+                ZipArchiveOptions.READ_DEFAULTS,
+                ZipArchiveOptions.READ_DEFAULTS.withPasswordProvider(WRONG_ZIP_PASSWORD)
         )) {
-            try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive, options)) {
+            try (ArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive, options)) {
                 for (Map.Entry<String, Long> expectedEntry : expectedEntries.entrySet()) {
                     Path entry = fileSystem.getPath("/" + expectedEntry.getKey());
                     ZipArkivoEntryAttributes attributes = Files.readAttributes(entry, ZipArkivoEntryAttributes.class);
@@ -258,11 +260,10 @@ public final class LibarchiveArchiveCorpusTest {
             }
         }
 
-        ArchiveOptions correctOptions = ArchiveOptions.of(
-                ZipArkivoFileSystem.PASSWORD_PROVIDER,
+        ZipArchiveOptions.Read correctOptions = ZipArchiveOptions.READ_DEFAULTS.withPasswordProvider(
                 ArkivoPasswordProvider.fixed(password.toCharArray(), StandardCharsets.UTF_8)
         );
-        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive, correctOptions)) {
+        try (ArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive, correctOptions)) {
             for (Map.Entry<String, Long> expectedEntry : expectedEntries.entrySet()) {
                 Path entry = fileSystem.getPath("/" + expectedEntry.getKey());
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(entry, ZipArkivoEntryAttributes.class);
@@ -275,10 +276,10 @@ public final class LibarchiveArchiveCorpusTest {
         ReadableByteChannel missingPasswordSource = Channels.newChannel(new ByteArrayInputStream(archiveBytes));
         assertThrows(IOException.class, () -> {
             try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(missingPasswordSource)) {
-                while (reader.next()) {
-                    BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);
+                for (var readerEntry278 = reader.nextEntry(); readerEntry278 != null; readerEntry278 = reader.nextEntry()) {
+                    BasicFileAttributes attributes = readerEntry278.attributes(BasicFileAttributes.class);
                     if (attributes.isRegularFile()) {
-                        try (InputStream input = reader.openInputStream()) {
+                        try (InputStream input = readerEntry278.openInputStream()) {
                             input.readAllBytes();
                         }
                     }
@@ -289,9 +290,9 @@ public final class LibarchiveArchiveCorpusTest {
 
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(archiveBytes));
         Set<String> streamedEntries = new HashSet<>();
-        try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(source, correctOptions)) {
-            while (reader.next()) {
-                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+        try (ArkivoStreamingReader reader = ZipArkivoStreamingReader.open(source, correctOptions)) {
+            for (var readerEntry293 = reader.nextEntry(); readerEntry293 != null; readerEntry293 = reader.nextEntry()) {
+                ZipArkivoEntryAttributes attributes = readerEntry293.attributes(ZipArkivoEntryAttributes.class);
                 if (!attributes.isRegularFile()) {
                     continue;
                 }
@@ -299,7 +300,7 @@ public final class LibarchiveArchiveCorpusTest {
                 assertTrue(expectedSize != null, attributes.path());
                 assertEquals(expectedEncryption, attributes.encryption());
                 assertEquals(expectedMethod, attributes.method());
-                try (InputStream input = reader.openInputStream()) {
+                try (InputStream input = readerEntry293.openInputStream()) {
                     assertEquals(expectedSize.longValue(), input.readAllBytes().length);
                 }
                 streamedEntries.add(attributes.path());
@@ -470,10 +471,8 @@ public final class LibarchiveArchiveCorpusTest {
     /// Verifies data-only, header, and partially encrypted 7z archives with the password-provider API.
     @Test
     public void readsEncryptedSevenZipArchives(@TempDir Path temporaryDirectory) throws IOException {
-        ArchiveOptions options = ArchiveOptions.of(
-                SevenZipArkivoFileSystem.PASSWORD_PROVIDER,
-                SEVEN_ZIP_PASSWORD
-        );
+        SevenZipArchiveOptions.Read options = SevenZipArchiveOptions.READ_DEFAULTS
+                .withPasswordProvider(SEVEN_ZIP_PASSWORD);
         byte[] expected = "foo\n".getBytes(StandardCharsets.US_ASCII);
 
         Path encryptedData = decodeFixture(
@@ -481,7 +480,7 @@ public final class LibarchiveArchiveCorpusTest {
                 "encrypted-data.7z",
                 temporaryDirectory
         );
-        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(encryptedData, options)) {
+        try (ArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(encryptedData, options)) {
             assertArrayEquals(expected, Files.readAllBytes(fileSystem.getPath("/bar.txt")));
         }
 
@@ -490,7 +489,7 @@ public final class LibarchiveArchiveCorpusTest {
                 "encrypted-header.7z",
                 temporaryDirectory
         );
-        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(encryptedHeader, options)) {
+        try (ArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(encryptedHeader, options)) {
             assertArrayEquals(expected, Files.readAllBytes(fileSystem.getPath("/bar.txt")));
         }
 
@@ -506,7 +505,7 @@ public final class LibarchiveArchiveCorpusTest {
                     () -> Files.readAllBytes(fileSystem.getPath("/bar_encrypted.txt"))
             );
         }
-        try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(partiallyEncrypted, options)) {
+        try (ArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(partiallyEncrypted, options)) {
             assertArrayEquals(expected, Files.readAllBytes(fileSystem.getPath("/bar_encrypted.txt")));
         }
     }
@@ -536,12 +535,12 @@ public final class LibarchiveArchiveCorpusTest {
         );
         boolean matched = false;
         try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(source)) {
-            while (reader.next()) {
-                BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);
+            for (var readerEntry539 = reader.nextEntry(); readerEntry539 != null; readerEntry539 = reader.nextEntry()) {
+                BasicFileAttributes attributes = readerEntry539.attributes(BasicFileAttributes.class);
                 if (!attributes.isRegularFile()) {
                     continue;
                 }
-                try (InputStream input = reader.openInputStream()) {
+                try (InputStream input = readerEntry539.openInputStream()) {
                     if (Arrays.equals(expectedContent, input.readAllBytes())) {
                         matched = true;
                         break;

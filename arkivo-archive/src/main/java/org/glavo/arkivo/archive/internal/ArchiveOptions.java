@@ -1,7 +1,11 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.archive;
+package org.glavo.arkivo.archive.internal;
+
+import org.glavo.arkivo.archive.ArchiveCreateOptions;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -49,6 +53,43 @@ public final class ArchiveOptions {
             }
         });
         return values.isEmpty() ? EMPTY : new ArchiveOptions(values);
+    }
+
+    /// Converts format-independent read options for legacy internal adapters.
+    public static ArchiveOptions fromReadOptions(ArchiveReadOptions options) {
+        Objects.requireNonNull(options, "options");
+        Builder builder = builder()
+                .set(ArchiveEnvironmentOptions.THREAD_SAFETY, options.threadSafety())
+                .set(ArchiveEnvironmentOptions.READ_LIMITS, options.limits());
+        if (options.editStorage() != null) {
+            builder.set(ArchiveEnvironmentOptions.EDIT_STORAGE, options.editStorage());
+        }
+        return builder.build();
+    }
+
+    /// Converts format-independent creation options for legacy internal adapters.
+    public static ArchiveOptions fromCreateOptions(ArchiveCreateOptions options) {
+        Objects.requireNonNull(options, "options");
+        Builder builder = builder().set(ArchiveEnvironmentOptions.THREAD_SAFETY, options.threadSafety());
+        if (options.editStorage() != null) {
+            builder.set(ArchiveEnvironmentOptions.EDIT_STORAGE, options.editStorage());
+        }
+        return builder.build();
+    }
+
+    /// Converts format-independent update options for legacy internal adapters.
+    public static ArchiveOptions fromUpdateOptions(ArchiveUpdateOptions options) {
+        Objects.requireNonNull(options, "options");
+        Builder builder = builder()
+                .set(ArchiveEnvironmentOptions.THREAD_SAFETY, options.threadSafety())
+                .set(ArchiveEnvironmentOptions.READ_LIMITS, options.limits());
+        if (options.editStorage() != null) {
+            builder.set(ArchiveEnvironmentOptions.EDIT_STORAGE, options.editStorage());
+        }
+        if (options.commitTarget() != null) {
+            builder.set(ArchiveEnvironmentOptions.COMMIT_TARGET, options.commitTarget());
+        }
+        return builder.build();
     }
 
     /// Creates an option set containing one typed value.

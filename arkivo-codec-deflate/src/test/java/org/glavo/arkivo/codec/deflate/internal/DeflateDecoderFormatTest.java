@@ -78,7 +78,7 @@ final class DeflateDecoderFormatTest {
         source.put(compressed).put(trailing).flip();
         ByteBuffer target = ByteBuffer.allocateDirect(content.length + 1);
         try (CompressionDecoder decoder = new DeflateDecoder(null)) {
-            assertEquals(CodecOutcome.FINISHED, decoder.decode(source, target, false));
+            assertEquals(CodecOutcome.FINISHED, decoder.decode(source, target));
         }
 
         assertEquals(compressed.length, source.position());
@@ -128,7 +128,7 @@ final class DeflateDecoderFormatTest {
         ByteBuffer source = ByteBuffer.wrap(compressed);
         ByteBuffer target = ByteBuffer.allocate(expectedSize + 1);
         try (CompressionDecoder decoder = new DeflateDecoder(null)) {
-            assertEquals(CodecOutcome.FINISHED, decoder.decode(source, target, true));
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(source, target));
         }
         assertEquals(compressed.length, source.position());
         return Arrays.copyOf(target.array(), target.position());
@@ -143,7 +143,9 @@ final class DeflateDecoderFormatTest {
                 int offered = Math.min(1, compressed.length - offset);
                 ByteBuffer source = ByteBuffer.wrap(compressed, offset, offered).slice();
                 ByteBuffer target = ByteBuffer.allocateDirect(7);
-                CodecOutcome outcome = decoder.decode(source, target, offset + offered == compressed.length);
+                CodecOutcome outcome = offset + offered == compressed.length
+                        ? decoder.finish(source, target)
+                        : decoder.decode(source, target);
                 offset += source.position();
                 target.flip();
                 while (target.hasRemaining()) {

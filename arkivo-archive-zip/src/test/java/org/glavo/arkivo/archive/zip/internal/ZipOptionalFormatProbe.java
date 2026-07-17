@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
+import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -32,7 +33,9 @@ public final class ZipOptionalFormatProbe {
         for (String formatName : OPTIONAL_FORMAT_NAMES) {
             requireMissingFormat(formatName, () -> ZipCompressionFormats.newReadableByteChannel(
                     formatName,
-                    new ByteArrayInputStream(new byte[0])
+                    new ByteArrayInputStream(new byte[0]),
+                    0L,
+                    ArchiveReadLimits.UNLIMITED
             ));
             requireMissingFormat(formatName, () -> ZipCompressionFormats.newWritableByteChannel(
                     formatName,
@@ -43,7 +46,9 @@ public final class ZipOptionalFormatProbe {
                 new ByteArrayInputStream(new byte[0]),
                 0x5d,
                 1L << 20,
-                0L
+                0L,
+                0L,
+                ArchiveReadLimits.UNLIMITED
         ));
         requireMissingFormat("lzma-raw", () -> ZipCompressionFormats.openRawLZMAEncoder(
                 1L << 20,
@@ -62,7 +67,9 @@ public final class ZipOptionalFormatProbe {
     private static void requireBundledFormat(String formatName) throws IOException {
         try (DecompressingReadableByteChannel ignoredDecoder = ZipCompressionFormats.newReadableByteChannel(
                 formatName,
-                new ByteArrayInputStream(new byte[0])
+                new ByteArrayInputStream(new byte[0]),
+                0L,
+                ArchiveReadLimits.UNLIMITED
         ); CompressingWritableByteChannel ignoredEncoder = ZipCompressionFormats.newWritableByteChannel(
                 formatName,
                 new ByteArrayOutputStream()

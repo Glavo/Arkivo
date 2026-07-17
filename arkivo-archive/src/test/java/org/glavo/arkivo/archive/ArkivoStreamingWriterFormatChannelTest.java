@@ -29,12 +29,12 @@ public final class ArkivoStreamingWriterFormatChannelTest {
         Method channelMethod = ArkivoStreamingWriterFormat.class.getMethod(
                 "openStreamingWriter",
                 WritableByteChannel.class,
-                ArchiveOptions.class
+                ArchiveCreateOptions.class
         );
         Method streamMethod = ArkivoStreamingWriterFormat.class.getMethod(
                 "openStreamingWriter",
                 OutputStream.class,
-                ArchiveOptions.class
+                ArchiveCreateOptions.class
         );
 
         assertTrue(Modifier.isAbstract(channelMethod.getModifiers()));
@@ -48,7 +48,7 @@ public final class ArkivoStreamingWriterFormatChannelTest {
         TestStreamingWriterFormat format = new TestStreamingWriterFormat();
         ByteArrayOutputStream target = new ByteArrayOutputStream();
 
-        ArkivoStreamingWriter writer = format.openStreamingWriter(target, ArchiveOptions.EMPTY);
+        ArkivoStreamingWriter writer = format.openStreamingWriter(target, ArchiveCreateOptions.DEFAULT);
         WritableByteChannel openedChannel = Objects.requireNonNull(format.openedChannel);
         assertSame(openedChannel, ((TestStreamingWriter) writer).target);
         assertTrue(openedChannel.isOpen());
@@ -73,7 +73,7 @@ public final class ArkivoStreamingWriterFormatChannelTest {
         @Override
         public ArkivoStreamingWriter openStreamingWriter(
                 WritableByteChannel target,
-                ArchiveOptions options
+                ArchiveCreateOptions options
         ) {
             openedChannel = target;
             return new TestStreamingWriter(target);

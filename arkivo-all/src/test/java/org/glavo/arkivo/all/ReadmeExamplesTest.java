@@ -3,10 +3,8 @@
 
 package org.glavo.arkivo.all;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
-import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
@@ -19,8 +17,6 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -34,7 +30,7 @@ final class ReadmeExamplesTest {
         byte[] input = "Arkivo buffer example".getBytes(StandardCharsets.UTF_8);
 
         CompressionFormat format = CompressionFormats.require("zstd");
-        CompressionCodec<?> codec = format.defaultCodec();
+        CompressionCodec codec = format.defaultCodec();
         ByteBuffer compressed = codec.compress(ByteBuffer.wrap(input));
         ByteBuffer decoded = codec.decompress(compressed, input.length);
 
@@ -47,16 +43,7 @@ final class ReadmeExamplesTest {
     @Test
     void createsAndReadsZipFileSystem(@TempDir Path temporaryDirectory) throws IOException {
         Path archive = temporaryDirectory.resolve("example.zip");
-        ArchiveOptions writable = ArchiveOptions.of(
-                ArkivoFileSystem.OPEN_OPTIONS,
-                Set.of(
-                        StandardOpenOption.CREATE,
-                        StandardOpenOption.TRUNCATE_EXISTING,
-                        StandardOpenOption.WRITE
-                )
-        );
-
-        try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive, writable)) {
+        try (ArkivoFileSystem fileSystem = ArkivoFormats.createFileSystem("zip", archive)) {
             Files.createDirectories(fileSystem.getPath("/docs"));
             Files.writeString(fileSystem.getPath("/docs/readme.txt"), "Hello from Arkivo");
         }

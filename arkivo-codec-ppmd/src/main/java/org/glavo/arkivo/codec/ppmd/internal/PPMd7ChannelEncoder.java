@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.ppmd.internal;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -42,7 +42,7 @@ public final class PPMd7ChannelEncoder implements CompressingWritableByteChannel
     /// Creates an initialized raw PPMd7 encoder.
     public PPMd7ChannelEncoder(
             WritableByteChannel target,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             int maximumOrder,
             long memorySize
     ) throws IOException {

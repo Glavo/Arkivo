@@ -3,12 +3,11 @@
 
 package org.glavo.arkivo.archive.tar;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.tar.internal.TarArkivoStreamingReaderImpl;
 import org.glavo.arkivo.archive.tar.internal.TarCompressionStreams;
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.CompressionProbeResult;
@@ -35,7 +34,7 @@ public abstract sealed class TarArkivoStreamingReader extends ArkivoStreamingRea
     /// Opens a streaming TAR reader from an input stream with automatic compression detection.
     public static TarArkivoStreamingReader open(InputStream source) throws IOException {
         Objects.requireNonNull(source, "source");
-        return open(StreamChannelAdapters.readableChannel(source), ArchiveOptions.EMPTY);
+        return open(StreamChannelAdapters.readableChannel(source), TarArchiveOptions.READ_DEFAULTS);
     }
 
     /// Opens a streaming TAR reader from an input stream with options.
@@ -44,7 +43,7 @@ public abstract sealed class TarArkivoStreamingReader extends ArkivoStreamingRea
     /// codecs with reliable signatures are detected without discarding bytes from the forward-only source.
     public static TarArkivoStreamingReader open(
             InputStream source,
-            ArchiveOptions options
+            TarArchiveOptions.Read options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
@@ -53,7 +52,7 @@ public abstract sealed class TarArkivoStreamingReader extends ArkivoStreamingRea
 
     /// Opens a streaming TAR reader from a readable channel with automatic compression detection.
     public static TarArkivoStreamingReader open(ReadableByteChannel source) throws IOException {
-        return open(source, ArchiveOptions.EMPTY);
+        return open(source, TarArchiveOptions.READ_DEFAULTS);
     }
 
     /// Opens a streaming TAR reader from a readable channel with options.
@@ -62,17 +61,17 @@ public abstract sealed class TarArkivoStreamingReader extends ArkivoStreamingRea
     /// setup fails.
     public static TarArkivoStreamingReader open(
             ReadableByteChannel source,
-            ArchiveOptions options
+            TarArchiveOptions.Read options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
-        @Nullable CompressionCodec<?> compressionCodec = options.get(TarArkivoFileSystem.COMPRESSION);
+        @Nullable CompressionCodec compressionCodec = options.compression();
         ReadableByteChannel archiveSource = source;
         if (compressionCodec == null) {
             try (CompressionProbeResult probe = CompressionFormats.probe(
                     source,
                     TarArkivoFormat.instance().probeSize(),
-                    ChannelOwnership.CLOSE
+                    ResourceOwnership.OWNED
             )) {
                 compressionCodec = TarArkivoFormat.instance().matches(probe.prefix())
                         ? null
@@ -82,9 +81,13 @@ public abstract sealed class TarArkivoStreamingReader extends ArkivoStreamingRea
         }
         return new TarArkivoStreamingReaderImpl(
                 StreamChannelAdapters.inputStream(
-                        TarCompressionStreams.openArchiveInput(archiveSource, compressionCodec)
+                        TarCompressionStreams.openArchiveInput(
+                                archiveSource,
+                                compressionCodec,
+                                options.common().limits()
+                        )
                 ),
-                options
+                TarArkivoFileSystem.toLegacyOptions(options)
         );
     }
 }

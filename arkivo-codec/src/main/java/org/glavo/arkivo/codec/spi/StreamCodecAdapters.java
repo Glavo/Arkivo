@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.spi;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.internal.StreamChannelAdapters;
@@ -31,7 +31,7 @@ public final class StreamCodecAdapters {
     /// Creates an encoding channel around a stream-based codec implementation.
     public static CompressingWritableByteChannel newWritableByteChannel(
             WritableByteChannel target,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             OutputStreamFactory factory
     ) throws IOException {
         Objects.requireNonNull(target, "target");
@@ -59,7 +59,7 @@ public final class StreamCodecAdapters {
     /// Creates a decoding channel around a stream-based codec implementation.
     public static DecompressingReadableByteChannel newReadableByteChannel(
             ReadableByteChannel source,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             InputStreamFactory factory
     ) throws IOException {
         Objects.requireNonNull(source, "source");

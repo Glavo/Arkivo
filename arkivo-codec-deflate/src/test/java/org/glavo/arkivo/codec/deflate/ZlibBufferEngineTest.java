@@ -49,7 +49,7 @@ public final class ZlibBufferEngineTest {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocateDirect(1);
-                outcome = decoder.decode(source, target, false);
+                outcome = decoder.decode(source, target);
                 drain(target, decoded);
                 assertTrue(outcome == CodecOutcome.NEEDS_OUTPUT || outcome == CodecOutcome.FINISHED);
             } while (outcome != CodecOutcome.FINISHED);
@@ -78,7 +78,9 @@ public final class ZlibBufferEngineTest {
                 boolean endOfInput = offset + length == encoded.length;
                 do {
                     ByteBuffer target = ByteBuffer.allocate(2);
-                    outcome = decoder.decode(source, target, endOfInput);
+                    outcome = endOfInput
+                            ? decoder.finish(source, target)
+                            : decoder.decode(source, target);
                     drain(target, decoded);
                 } while (outcome == CodecOutcome.NEEDS_OUTPUT);
                 offset += source.position();
@@ -108,7 +110,7 @@ public final class ZlibBufferEngineTest {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocate(5);
-                outcome = decoder.decode(source, target, true);
+                outcome = decoder.finish(source, target);
                 drain(target, decoded);
             } while (outcome == CodecOutcome.NEEDS_OUTPUT);
             assertEquals(CodecOutcome.NEEDS_DICTIONARY, outcome);
@@ -123,7 +125,7 @@ public final class ZlibBufferEngineTest {
 
             do {
                 ByteBuffer target = ByteBuffer.allocate(5);
-                outcome = decoder.decode(source, target, true);
+                outcome = decoder.finish(source, target);
                 drain(target, decoded);
             } while (outcome == CodecOutcome.NEEDS_OUTPUT);
             assertEquals(CodecOutcome.FINISHED, outcome);
@@ -306,7 +308,7 @@ public final class ZlibBufferEngineTest {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocate(targetSize);
-                outcome = decoder.decode(source, target, true);
+                outcome = decoder.finish(source, target);
                 drain(target, decoded);
             } while (outcome == CodecOutcome.NEEDS_OUTPUT);
             assertEquals(CodecOutcome.FINISHED, outcome);

@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.zstd;
 
 import com.github.luben.zstd.Zstd;
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
@@ -40,7 +40,7 @@ public final class ZstdCodecTest {
         ZstdCodec codec = new ZstdCodec().withCompressionLevel(1);
         byte[] input = "hello zstd".getBytes(StandardCharsets.UTF_8);
 
-        assertEquals(true, codec instanceof CompressionCodec<?>);
+        assertEquals(true, codec instanceof CompressionCodec);
         assertEquals(ZstdFormat.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
@@ -259,7 +259,7 @@ public final class ZstdCodecTest {
         CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(
                 Channels.newChannel(compressed),
                 frame.length,
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         );
         encoder.finishFrame(ByteBuffer.wrap(frame));
         int firstFrameSize = compressed.size();
@@ -456,7 +456,7 @@ public final class ZstdCodecTest {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         try (CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(
                 Channels.newChannel(encoded),
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         )) {
             encoder.write(ByteBuffer.wrap(first));
             encoder.finishFrame();
@@ -620,7 +620,7 @@ public final class ZstdCodecTest {
     }
 
     /// Compresses and decompresses the given bytes.
-    private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
+    private static byte[] roundTrip(CompressionCodec codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
         try (OutputStream output = codec.newOutputStream(compressed)) {
             output.write(input);

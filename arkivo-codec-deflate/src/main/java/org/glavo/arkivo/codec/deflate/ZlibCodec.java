@@ -22,7 +22,7 @@ public final class ZlibCodec
         implements CompressionCodec.LevelConfigurable<ZlibCodec>,
         CompressionCodec.StrategyConfigurable<ZlibCodec>,
         CompressionCodec.DictionaryConfigurable<ZlibCodec, ZlibDictionary>,
-        CompressionCodec.Flushable<ZlibCodec> {
+        CompressionCodec.Flushable {
     /// The minimum zlib Deflate match-search level.
     public static final int MINIMUM_COMPRESSION_LEVEL = 0;
 
@@ -164,7 +164,7 @@ public final class ZlibCodec
     ) {
         Objects.requireNonNull(limits, "limits");
         return CompressionDecoderSupport.limitEngineOutput(
-                new ZlibDecoder(limits.maximumWindowSize(), dictionary),
+                new ZlibDecoder(limits.effectiveMaximumWindowSize(), dictionary),
                 limits.maximumOutputSize()
         );
     }

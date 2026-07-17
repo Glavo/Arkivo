@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.lzma.internal;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -64,7 +64,7 @@ public final class LZMA2ChannelDecoder implements DecompressingReadableByteChann
     /// Creates a raw LZMA2 decoder with the externally declared dictionary size.
     public LZMA2ChannelDecoder(
             ReadableByteChannel source,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             int dictionarySize
     ) {
         this(source, ownership, dictionarySize, 8192);
@@ -73,7 +73,7 @@ public final class LZMA2ChannelDecoder implements DecompressingReadableByteChann
     /// Creates a raw LZMA2 decoder with an explicit compressed-input buffer size.
     public LZMA2ChannelDecoder(
             ReadableByteChannel source,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             int dictionarySize,
             int inputBufferSize
     ) {

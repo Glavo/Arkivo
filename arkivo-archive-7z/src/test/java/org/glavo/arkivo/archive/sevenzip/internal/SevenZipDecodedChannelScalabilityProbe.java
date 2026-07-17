@@ -3,10 +3,12 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveCreateOptions;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArchiveOptions;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
+import org.glavo.arkivo.archive.sevenzip.SevenZipFilterChain;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -15,7 +17,6 @@ import java.nio.ByteBuffer;
 import java.nio.channels.SeekableByteChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Map;
 
 /// Creates and verifies a decoded 7z channel whose logical size exceeds the verification heap.
 @NotNullByDefault
@@ -52,10 +53,17 @@ public final class SevenZipDecodedChannelScalabilityProbe {
         byte[] block = expectedBlock();
         try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
                 archive,
-                ArchiveOptions.fromEnvironment(Map.of(SevenZipArkivoFileSystem.COMPRESSION.key(), SevenZipCompression.deflate(1)))
+                new SevenZipArchiveOptions.Create(
+                        ArchiveCreateOptions.DEFAULT,
+                        null,
+                        SevenZipCompression.deflate(1),
+                        SevenZipFilterChain.EMPTY,
+                        SevenZipArchiveOptions.DEFAULT_SOLID_FILE_COUNT,
+                        false
+                )
         )) {
-            writer.beginFile(ENTRY_NAME);
-            try (OutputStream output = writer.openOutputStream()) {
+            var writerEntry57 = writer.beginFile(ENTRY_NAME);
+            try (OutputStream output = writerEntry57.openOutputStream()) {
                 long remaining = ENTRY_SIZE;
                 while (remaining > 0L) {
                     int count = (int) Math.min(remaining, block.length);

@@ -95,7 +95,18 @@ class OutputLimitingCompressionDecoder implements CompressionDecoder {
 
     /// Decodes without returning more than the configured output limit.
     @Override
-    public CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
+    public CodecOutcome decode(ByteBuffer source, ByteBuffer target) throws IOException {
+        return decodeInternal(source, target, false);
+    }
+
+    /// Finishes decoding after all source bytes have been supplied.
+    @Override
+    public CodecOutcome finish(ByteBuffer source, ByteBuffer target) throws IOException {
+        return decodeInternal(source, target, true);
+    }
+
+    /// Implements decoding with the selected source-completion state.
+    private CodecOutcome decodeInternal(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
         if (exceeded) {
@@ -117,7 +128,9 @@ class OutputLimitingCompressionDecoder implements CompressionDecoder {
         int targetStart = target.position();
         CodecOutcome outcome;
         try {
-            outcome = decoder.decode(source, target, endOfInput);
+            outcome = endOfInput
+                    ? decoder.finish(source, target)
+                    : decoder.decode(source, target);
         } finally {
             target.limit(originalLimit);
         }
@@ -144,7 +157,9 @@ class OutputLimitingCompressionDecoder implements CompressionDecoder {
     /// Decodes one hidden byte to determine whether the configured limit is exceeded.
     private CodecOutcome probeForExcess(ByteBuffer source, boolean endOfInput) throws IOException {
         probe.clear();
-        CodecOutcome outcome = decoder.decode(source, probe, endOfInput);
+        CodecOutcome outcome = endOfInput
+                ? decoder.finish(source, probe)
+                : decoder.decode(source, probe);
         if (probe.position() != 0) {
             exceeded = true;
             throw limitException();

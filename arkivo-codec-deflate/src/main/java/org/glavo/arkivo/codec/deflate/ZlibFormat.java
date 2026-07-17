@@ -17,8 +17,13 @@ public final class ZlibFormat implements CompressionFormat {
     /// The canonical zlib format instance.
     private static final ZlibFormat INSTANCE = new ZlibFormat();
 
-    /// Creates a stateless format descriptor for service discovery.
+    /// Creates a classpath-discoverable zlib format descriptor.
     public ZlibFormat() {
+    }
+
+    /// Returns the canonical zlib service provider.
+    public static ZlibFormat provider() {
+        return INSTANCE;
     }
 
     /// Returns the canonical zlib format instance.

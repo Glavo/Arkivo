@@ -3,9 +3,8 @@
 
 package org.glavo.arkivo.archive.zip;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -18,7 +17,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
-import java.util.Map;
 import java.util.Set;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
@@ -39,9 +37,7 @@ final class ZipDecodedEntryStorageTest {
         Path archive = directory.resolve("storage.zip");
         createArchive(archive, compressedBytes, storedBytes);
         TrackingStorage storage = new TrackingStorage(directory.resolve("staging"), false);
-        ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive, ArchiveOptions.fromEnvironment(Map.of(
-                ArkivoFileSystem.EDIT_STORAGE.key(), storage
-        )));
+        ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive, readOptions(storage));
 
         try (SeekableByteChannel compressed = Files.newByteChannel(fileSystem.getPath("/compressed.bin"))) {
             assertEquals(1, storage.createCount);
@@ -77,9 +73,7 @@ final class ZipDecodedEntryStorageTest {
         Path archive = directory.resolve("retry.zip");
         createArchive(archive, compressedBytes, new byte[]{1, 2, 3});
         TrackingStorage storage = new TrackingStorage(directory.resolve("retry-staging"), true);
-        ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive, ArchiveOptions.fromEnvironment(Map.of(
-                ArkivoFileSystem.EDIT_STORAGE.key(), storage
-        )));
+        ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archive, readOptions(storage));
         SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/compressed.bin"));
 
         assertThrows(IOException.class, channel::close);
@@ -110,6 +104,15 @@ final class ZipDecodedEntryStorageTest {
             output.write(storedBytes);
             output.closeEntry();
         }
+    }
+
+    /// Returns typed ZIP read options using the given decoded-entry storage.
+    private static ZipArchiveOptions.Read readOptions(ArkivoEditStorage storage) {
+        return new ZipArchiveOptions.Read(
+                ArchiveReadOptions.DEFAULT.withEditStorage(storage),
+                null,
+                ZipArchiveOptions.DEFAULT_LEGACY_CHARSET_DETECTOR
+        );
     }
 
     /// Records storage allocation and close behavior while delegating bytes to temporary files.

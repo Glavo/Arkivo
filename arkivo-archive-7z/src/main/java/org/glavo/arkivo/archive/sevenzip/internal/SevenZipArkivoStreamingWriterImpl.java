@@ -240,36 +240,12 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
         }
     }
 
-    /// Closes any active entry, finalizes the archive, publishes staged output, and closes owned output.
+    /// Finalizes the archive, publishes staged output, and closes owned output.
     @Override
     protected void closeWriter() throws IOException {
         lock();
         try {
-            @Nullable Throwable failure = null;
-            EntryBodyOutputStream body = currentBody;
-            if (body != null) {
-                try {
-                    body.close();
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = exception;
-                }
-            }
-
-            if (failure == null && pendingEntry != null && entrySink.isOpen()) {
-                try {
-                    finishCurrentEntry();
-                } catch (IOException | RuntimeException | Error exception) {
-                    failure = exception;
-                }
-            }
-
-            try {
-                entrySink.close();
-            } catch (IOException | RuntimeException | Error exception) {
-                failure = appendFailure(failure, exception);
-            }
-
-            throwFailure(failure);
+            entrySink.close();
         } finally {
             unlock();
         }
@@ -348,30 +324,6 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
             throw new IllegalArgumentException("7z streaming symbolic link target must not be empty");
         }
         return target.replace('\\', '/');
-    }
-
-    /// Adds a secondary failure to an existing primary failure.
-    private static Throwable appendFailure(@Nullable Throwable failure, Throwable exception) {
-        if (failure == null) {
-            return exception;
-        }
-        if (failure != exception) {
-            failure.addSuppressed(exception);
-        }
-        return failure;
-    }
-
-    /// Throws an accumulated close failure with its original category.
-    private static void throwFailure(@Nullable Throwable failure) throws IOException {
-        if (failure instanceof IOException exception) {
-            throw exception;
-        }
-        if (failure instanceof RuntimeException exception) {
-            throw exception;
-        }
-        if (failure instanceof Error exception) {
-            throw exception;
-        }
     }
 
     /// Stores one configurable pending 7z entry.

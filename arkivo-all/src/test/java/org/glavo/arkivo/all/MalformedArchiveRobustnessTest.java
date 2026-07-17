@@ -3,7 +3,8 @@
 
 package org.glavo.arkivo.all;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
@@ -54,12 +55,16 @@ final class MalformedArchiveRobustnessTest {
     ).getBytes(java.nio.charset.StandardCharsets.UTF_8);
 
     /// Common limits that bound every malformed archive attempt.
-    private static final ArchiveOptions READ_OPTIONS = ArchiveOptions.builder()
-            .set(ArkivoFileSystem.MAX_ENTRY_COUNT, 16L)
-            .set(ArkivoFileSystem.MAX_ENTRY_SIZE, 1L << 20)
-            .set(ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE, 1L << 20)
-            .set(ArkivoFileSystem.MAX_METADATA_SIZE, 1L << 20)
-            .build();
+    private static final ArchiveReadOptions READ_OPTIONS = ArchiveReadOptions.DEFAULT.withLimits(
+            ArchiveReadLimits.builder()
+                    .maximumEntryCount(16L)
+                    .maximumEntrySize(1L << 20)
+                    .maximumTotalEntrySize(1L << 20)
+                    .maximumMetadataSize(1L << 20)
+                    .maximumCompressionWindowSize(1L << 20)
+                    .maximumDecoderMemorySize(1L << 20)
+                    .build()
+    );
 
     /// Maximum bytes consumed defensively even when a parser accepts a mutation.
     private static final long MAX_CONSUMED_BYTES = 1L << 20;
@@ -107,8 +112,8 @@ final class MalformedArchiveRobustnessTest {
         }
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (ArkivoStreamingWriter writer = ArkivoFormats.openStreamingWriter(format, output)) {
-            writer.beginFile("payload.bin");
-            try (OutputStream body = writer.openOutputStream()) {
+            var writerEntry116 = writer.beginFile("payload.bin");
+            try (OutputStream body = writerEntry116.openOutputStream()) {
                 body.write(CONTENT);
             }
         }
@@ -187,10 +192,10 @@ final class MalformedArchiveRobustnessTest {
                 Channels.newChannel(new ByteArrayInputStream(archive)),
                 READ_OPTIONS
         )) {
-            while (reader.next()) {
-                BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);
+            for (var readerEntry196 = reader.nextEntry(); readerEntry196 != null; readerEntry196 = reader.nextEntry()) {
+                BasicFileAttributes attributes = readerEntry196.attributes(BasicFileAttributes.class);
                 if (attributes.isRegularFile()) {
-                    try (ReadableByteChannel channel = reader.openChannel()) {
+                    try (ReadableByteChannel channel = readerEntry196.openChannel()) {
                         total = Math.addExact(total, consumeChannel(channel));
                     }
                     requireBounded(total);

@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.spi;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -21,6 +21,6 @@ public interface ArkivoStreamingSourceProvider {
     /// Probes one outer source wrapper and returns its replacement channel.
     ArkivoStreamingSource probe(
             ReadableByteChannel source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) throws IOException;
 }

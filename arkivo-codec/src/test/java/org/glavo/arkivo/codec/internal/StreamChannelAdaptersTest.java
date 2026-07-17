@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.internal;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.StreamCodecAdapters;
 
@@ -117,7 +117,7 @@ final class StreamChannelAdaptersTest {
                 IOException.class,
                 () -> StreamCodecAdapters.newWritableByteChannel(
                         ownedTarget,
-                        ChannelOwnership.CLOSE,
+                        ResourceOwnership.OWNED,
                         output -> {
                             throw new IOException("encoder setup failed");
                         }
@@ -131,7 +131,7 @@ final class StreamChannelAdaptersTest {
                 IOException.class,
                 () -> StreamCodecAdapters.newReadableByteChannel(
                         retainedSource,
-                        ChannelOwnership.RETAIN,
+                        ResourceOwnership.BORROWED,
                         input -> {
                             throw new IOException("decoder setup failed");
                         }

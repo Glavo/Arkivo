@@ -4,14 +4,17 @@
 package org.glavo.arkivo.archive.zip.internal;
 
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.internal.ArchiveOption;
+import org.glavo.arkivo.archive.internal.ArchiveOptions;
+import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
-import org.glavo.arkivo.archive.ArkivoSourceMutationPolicy;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
+import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -27,6 +30,32 @@ import java.util.Set;
 /// Stores parsed ZIP file system configuration.
 @NotNullByDefault
 public final class ZipArkivoFileSystemConfig {
+    /// The legacy NIO environment key for a password provider.
+    private static final ArchiveOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
+            ArchiveOption.of("arkivo.zip", "passwordProvider", ArkivoPasswordProvider.class);
+
+    /// The legacy NIO environment key for default entry encryption.
+    private static final ArchiveOption<ZipEncryption> DEFAULT_ENCRYPTION =
+            ArchiveOption.of(
+                    "arkivo.zip",
+                    "defaultEncryption",
+                    ZipEncryption.class,
+                    ZipArkivoFileSystemConfig::encryptionValue
+            );
+
+    /// The legacy NIO environment key for split output size.
+    private static final ArchiveOption<Long> SPLIT_SIZE =
+            ArchiveOption.of("arkivo.zip", "splitSize", Long.class, ZipArkivoFileSystemConfig::longValue);
+
+    /// The legacy NIO environment key for name detection.
+    private static final ArchiveOption<ArchiveMetadataCharsetDetector> LEGACY_CHARSET_DETECTOR =
+            ArchiveOption.of(
+                    "arkivo.zip",
+                    "legacyCharsetDetector",
+                    ArchiveMetadataCharsetDetector.class,
+                    ZipArkivoFileSystemConfig::legacyCharsetDetectorValue
+            );
+
     /// The split size value used when split output is disabled.
     public static final long NO_SPLIT_SIZE = -1L;
 
@@ -59,11 +88,7 @@ public final class ZipArkivoFileSystemConfig {
             ArkivoFileSystemThreadSafety.CONCURRENT_READ,
             null,
             null,
-            null,
-            NO_READ_LIMIT,
-            NO_READ_LIMIT,
-            NO_READ_LIMIT,
-            NO_READ_LIMIT
+            ArchiveReadLimits.UNLIMITED
     );
 
     /// The open options used to open the backing archive path.
@@ -90,20 +115,8 @@ public final class ZipArkivoFileSystemConfig {
     /// The configured commit target override, or `null` when the file system should choose a default.
     private final @Nullable ArkivoCommitTarget commitTarget;
 
-    /// The configured source mutation policy override, or `null` when the file system should choose a default.
-    private final @Nullable ArkivoSourceMutationPolicy sourceMutationPolicy;
-
     /// The maximum accepted logical entry count, or NO_READ_LIMIT.
-    private final long maximumEntryCount;
-
-    /// The maximum accepted logical size of one entry, or NO_READ_LIMIT.
-    private final long maximumEntrySize;
-
-    /// The maximum accepted sum of logical entry sizes, or NO_READ_LIMIT.
-    private final long maximumTotalEntrySize;
-
-    /// The maximum cumulative archive metadata size, or NO_READ_LIMIT.
-    private final long maximumMetadataSize;
+    private final ArchiveReadLimits readLimits;
 
     /// Creates parsed ZIP file system configuration.
     public ZipArkivoFileSystemConfig(
@@ -114,8 +127,7 @@ public final class ZipArkivoFileSystemConfig {
             ArchiveMetadataCharsetDetector legacyCharsetDetector,
             ArkivoFileSystemThreadSafety threadSafety,
             @Nullable ArkivoEditStorage editStorage,
-            @Nullable ArkivoCommitTarget commitTarget,
-            @Nullable ArkivoSourceMutationPolicy sourceMutationPolicy
+            @Nullable ArkivoCommitTarget commitTarget
     ) {
         this(
                 openOptions,
@@ -126,11 +138,7 @@ public final class ZipArkivoFileSystemConfig {
                 threadSafety,
                 editStorage,
                 commitTarget,
-                sourceMutationPolicy,
-                NO_READ_LIMIT,
-                NO_READ_LIMIT,
-                NO_READ_LIMIT,
-                NO_READ_LIMIT
+                ArchiveReadLimits.UNLIMITED
         );
     }
 
@@ -144,11 +152,7 @@ public final class ZipArkivoFileSystemConfig {
             ArkivoFileSystemThreadSafety threadSafety,
             @Nullable ArkivoEditStorage editStorage,
             @Nullable ArkivoCommitTarget commitTarget,
-            @Nullable ArkivoSourceMutationPolicy sourceMutationPolicy,
-            long maximumEntryCount,
-            long maximumEntrySize,
-            long maximumTotalEntrySize,
-            long maximumMetadataSize
+            ArchiveReadLimits readLimits
     ) {
         Set<OpenOption> normalizedOpenOptions = normalizeOpenOptions(
                 Objects.requireNonNull(openOptions, "openOptions")
@@ -171,11 +175,7 @@ public final class ZipArkivoFileSystemConfig {
         this.threadSafety = Objects.requireNonNull(threadSafety, "threadSafety");
         this.editStorage = editStorage;
         this.commitTarget = commitTarget;
-        this.sourceMutationPolicy = sourceMutationPolicy;
-        this.maximumEntryCount = requireReadLimit(maximumEntryCount, "maximumEntryCount");
-        this.maximumEntrySize = requireReadLimit(maximumEntrySize, "maximumEntrySize");
-        this.maximumTotalEntrySize = requireReadLimit(maximumTotalEntrySize, "maximumTotalEntrySize");
-        this.maximumMetadataSize = requireReadLimit(maximumMetadataSize, "maximumMetadataSize");
+        this.readLimits = Objects.requireNonNull(readLimits, "readLimits");
     }
 
     /// Parses ZIP file system configuration from archive options.
@@ -208,22 +208,23 @@ public final class ZipArkivoFileSystemConfig {
         ArkivoPasswordProvider passwordProvider = passwordProvider(options);
         Set<OpenOption> openOptions = openOptions(options, defaultOpenOptions);
         ZipEncryption defaultEncryption =
-                options.getOrDefault(ZipArkivoFileSystem.DEFAULT_ENCRYPTION, ZipEncryption.none());
+                options.getOrDefault(DEFAULT_ENCRYPTION, ZipEncryption.none());
         long splitSize = splitSize(options);
         ArchiveMetadataCharsetDetector legacyCharsetDetector =
                 options.getOrDefault(
-                        ZipArkivoFileSystem.LEGACY_CHARSET_DETECTOR,
+                        LEGACY_CHARSET_DETECTOR,
                         DEFAULT_LEGACY_CHARSET_DETECTOR
                 );
         ArkivoFileSystemThreadSafety threadSafety =
                 options.getOrDefault(
-                        ArkivoFileSystem.THREAD_SAFETY,
+                        ArchiveEnvironmentOptions.THREAD_SAFETY,
                         ArkivoFileSystemThreadSafety.CONCURRENT_READ
                 );
-        ArkivoEditStorage editStorage = options.get(ArkivoFileSystem.EDIT_STORAGE);
-        ArkivoCommitTarget commitTarget = options.get(ArkivoFileSystem.COMMIT_TARGET);
-        ArkivoSourceMutationPolicy sourceMutationPolicy = options.get(ArkivoFileSystem.SOURCE_MUTATION_POLICY);
+        ArkivoEditStorage editStorage = options.get(ArchiveEnvironmentOptions.EDIT_STORAGE);
+        ArkivoCommitTarget commitTarget = options.get(ArchiveEnvironmentOptions.COMMIT_TARGET);
 
+        ArchiveReadLimits readLimits =
+                options.getOrDefault(ArchiveEnvironmentOptions.READ_LIMITS, ArchiveReadLimits.UNLIMITED);
         return new ZipArkivoFileSystemConfig(
                 openOptions,
                 passwordProvider,
@@ -233,11 +234,55 @@ public final class ZipArkivoFileSystemConfig {
                 threadSafety,
                 editStorage,
                 commitTarget,
-                sourceMutationPolicy,
-                options.getOrDefault(ArkivoFileSystem.MAX_ENTRY_COUNT, NO_READ_LIMIT),
-                options.getOrDefault(ArkivoFileSystem.MAX_ENTRY_SIZE, NO_READ_LIMIT),
-                options.getOrDefault(ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE, NO_READ_LIMIT),
-                options.getOrDefault(ArkivoFileSystem.MAX_METADATA_SIZE, NO_READ_LIMIT)
+                readLimits
+        );
+    }
+
+    /// Creates ZIP configuration from a strongly typed read operation.
+    public static ZipArkivoFileSystemConfig fromReadOptions(ZipArchiveOptions.Read options) {
+        Objects.requireNonNull(options, "options");
+        return new ZipArkivoFileSystemConfig(
+                DEFAULT_READ_OPEN_OPTIONS,
+                options.passwordProvider(),
+                ZipEncryption.none(),
+                NO_SPLIT_SIZE,
+                options.legacyCharsetDetector(),
+                options.common().threadSafety(),
+                options.common().editStorage(),
+                null,
+                options.common().limits()
+        );
+    }
+
+    /// Creates ZIP configuration from a strongly typed creation operation.
+    public static ZipArkivoFileSystemConfig fromCreateOptions(ZipArchiveOptions.Create options) {
+        Objects.requireNonNull(options, "options");
+        return new ZipArkivoFileSystemConfig(
+                DEFAULT_WRITE_OPEN_OPTIONS,
+                options.passwordProvider(),
+                options.defaultEncryption(),
+                NO_SPLIT_SIZE,
+                ZipArchiveOptions.DEFAULT_LEGACY_CHARSET_DETECTOR,
+                options.common().threadSafety(),
+                options.common().editStorage(),
+                null,
+                ArchiveReadLimits.UNLIMITED
+        );
+    }
+
+    /// Creates ZIP configuration from a strongly typed update operation.
+    public static ZipArkivoFileSystemConfig fromUpdateOptions(ZipArchiveOptions.Update options) {
+        Objects.requireNonNull(options, "options");
+        return new ZipArkivoFileSystemConfig(
+                DEFAULT_UPDATE_OPEN_OPTIONS,
+                options.passwordProvider(),
+                options.defaultEncryption(),
+                NO_SPLIT_SIZE,
+                options.legacyCharsetDetector(),
+                options.common().threadSafety(),
+                options.common().editStorage(),
+                options.common().commitTarget(),
+                options.common().limits()
         );
     }
 
@@ -286,47 +331,90 @@ public final class ZipArkivoFileSystemConfig {
         return commitTarget;
     }
 
-    /// Returns the configured source mutation policy override, or `null` when the file system should choose a default.
-    public @Nullable ArkivoSourceMutationPolicy sourceMutationPolicy() {
-        return sourceMutationPolicy;
-    }
-
     /// Returns the maximum accepted logical entry count, or NO_READ_LIMIT.
     public long maximumEntryCount() {
-        return maximumEntryCount;
+        return readLimits.maximumEntryCount();
     }
 
     /// Returns the maximum accepted logical size of one entry, or NO_READ_LIMIT.
     public long maximumEntrySize() {
-        return maximumEntrySize;
+        return readLimits.maximumEntrySize();
     }
 
     /// Returns the maximum accepted sum of logical entry sizes, or NO_READ_LIMIT.
     public long maximumTotalEntrySize() {
-        return maximumTotalEntrySize;
+        return readLimits.maximumTotalEntrySize();
     }
 
     /// Returns the maximum cumulative archive metadata size, or NO_READ_LIMIT.
     public long maximumMetadataSize() {
-        return maximumMetadataSize;
+        return readLimits.maximumMetadataSize();
+    }
+
+    /// Returns all resource limits for the archive read portion of this operation.
+    public ArchiveReadLimits readLimits() {
+        return readLimits;
     }
 
     /// Parses the password provider from an archive options.
     private static @Nullable ArkivoPasswordProvider passwordProvider(ArchiveOptions options) {
-        return options.get(ZipArkivoFileSystem.PASSWORD_PROVIDER);
+        return options.get(PASSWORD_PROVIDER);
     }
 
     /// Parses the split size from an archive options.
     private static long splitSize(ArchiveOptions options) {
-        return options.getOrDefault(ZipArkivoFileSystem.SPLIT_SIZE, NO_SPLIT_SIZE);
+        return options.getOrDefault(SPLIT_SIZE, NO_SPLIT_SIZE);
     }
 
-    /// Validates one primitive common read limit.
-    private static long requireReadLimit(long value, String name) {
-        if (value < NO_READ_LIMIT) {
-            throw new IllegalArgumentException(name + " must be -1 or non-negative");
+    /// Converts a raw NIO encryption value.
+    private static ZipEncryption encryptionValue(Object value) {
+        if (value instanceof ZipEncryption encryption) {
+            return encryption;
         }
-        return value;
+        if (value instanceof String name) {
+            return ZipEncryption.of(name);
+        }
+        throw new IllegalArgumentException("Expected ZipEncryption or String for key: arkivo.zip.defaultEncryption");
+    }
+
+    /// Converts a raw NIO integral value.
+    private static Long longValue(Object value) {
+        if (value instanceof Byte number) {
+            return number.longValue();
+        }
+        if (value instanceof Short number) {
+            return number.longValue();
+        }
+        if (value instanceof Integer number) {
+            return number.longValue();
+        }
+        if (value instanceof Long number) {
+            return number;
+        }
+        if (value instanceof String text) {
+            try {
+                return Long.parseLong(text);
+            } catch (NumberFormatException exception) {
+                throw new IllegalArgumentException("Expected integral value for key: arkivo.zip.splitSize", exception);
+            }
+        }
+        throw new IllegalArgumentException("Expected integral value for key: arkivo.zip.splitSize");
+    }
+
+    /// Converts a raw NIO legacy charset detector value.
+    private static ArchiveMetadataCharsetDetector legacyCharsetDetectorValue(Object value) {
+        if (value instanceof ArchiveMetadataCharsetDetector detector) {
+            return detector;
+        }
+        if (value instanceof Charset charset) {
+            return ArchiveMetadataCharsetDetector.fixed(charset);
+        }
+        if (value instanceof String name) {
+            return ArchiveMetadataCharsetDetector.fixed(Charset.forName(name));
+        }
+        throw new IllegalArgumentException(
+                "Expected ArchiveMetadataCharsetDetector, Charset, or String for key: arkivo.zip.legacyCharsetDetector"
+        );
     }
 
     /// Parses open options from archive options.
@@ -335,7 +423,7 @@ public final class ZipArkivoFileSystemConfig {
             Set<? extends OpenOption> defaultOpenOptions
     ) {
         Set<OpenOption> options = archiveOptions.getOrDefault(
-                ArkivoFileSystem.OPEN_OPTIONS,
+                ArchiveEnvironmentOptions.OPEN_OPTIONS,
                 Set.copyOf(defaultOpenOptions)
         );
         return normalizeOpenOptions(options);

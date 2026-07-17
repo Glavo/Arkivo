@@ -273,35 +273,10 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
         }
 
         IOException failure = null;
-        OutputStream body = currentBody;
-        if (body != null) {
-            try {
-                body.close();
-            } catch (IOException exception) {
-                failure = exception;
-            }
-        }
-
-        PendingMember member = pendingMember;
-        if (failure == null && member != null) {
-            pendingMember = null;
-            try {
-                member.ensurePending();
-                byte @Unmodifiable [] memberBody = member.fixedBodyOrEmpty();
-                ensureMemberBodySize(member, memberBody.length);
-                writeMember(member, memberBody);
-            } catch (IOException exception) {
-                pendingMember = member;
-                failure = exception;
-            }
-        }
-
-        if (failure == null) {
-            try {
-                ensureGlobalHeader();
-            } catch (IOException exception) {
-                failure = exception;
-            }
+        try {
+            ensureGlobalHeader();
+        } catch (IOException exception) {
+            failure = exception;
         }
 
         open = false;

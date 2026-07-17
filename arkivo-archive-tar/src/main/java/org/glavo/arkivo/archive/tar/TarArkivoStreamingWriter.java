@@ -3,10 +3,8 @@
 
 package org.glavo.arkivo.archive.tar;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.archive.tar.internal.TarCompressionStreams;
@@ -48,12 +46,12 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
     /// Creates a streaming TAR writer at an archive path with options.
     public static TarArkivoStreamingWriter create(
             Path path,
-            ArchiveOptions options
+            TarArchiveOptions.Create options
     ) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        @Nullable CompressionCodec<?> compressionCodec = options.get(TarArkivoFileSystem.COMPRESSION);
-        @Nullable ArkivoEditStorage bodyStorage = options.get(ArkivoFileSystem.EDIT_STORAGE);
+        @Nullable CompressionCodec compressionCodec = options.compression();
+        @Nullable ArkivoEditStorage bodyStorage = options.common().editStorage();
         WritableByteChannel archiveOutput = TarCompressionStreams.openArchiveOutput(
                 Files.newByteChannel(
                         path,
@@ -87,17 +85,17 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
     public static TarArkivoStreamingWriter create(
             Path path,
             ArkivoEditStorage bodyStorage,
-            ArchiveOptions options
+            TarArchiveOptions.Create options
     ) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(bodyStorage, "bodyStorage");
         Objects.requireNonNull(options, "options");
-        if (options.contains(ArkivoFileSystem.EDIT_STORAGE)) {
+        if (options.common().editStorage() != null) {
             throw new IllegalArgumentException(
                     "TAR body storage must be provided either as an argument or an option"
             );
         }
-        @Nullable CompressionCodec<?> compressionCodec = options.get(TarArkivoFileSystem.COMPRESSION);
+        @Nullable CompressionCodec compressionCodec = options.compression();
         return new TarArkivoStreamingWriterImpl(
                 StreamChannelAdapters.outputStream(TarCompressionStreams.openArchiveOutput(
                         Files.newByteChannel(
@@ -121,7 +119,7 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
     /// Opens a streaming TAR writer over an output stream with options.
     public static TarArkivoStreamingWriter open(
             OutputStream output,
-            ArchiveOptions options
+            TarArchiveOptions.Create options
     ) throws IOException {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(options, "options");
@@ -139,7 +137,7 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
     public static TarArkivoStreamingWriter open(
             OutputStream output,
             ArkivoEditStorage bodyStorage,
-            ArchiveOptions options
+            TarArchiveOptions.Create options
     ) throws IOException {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(bodyStorage, "bodyStorage");
@@ -156,12 +154,12 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
     /// Opens a streaming TAR writer over a writable channel with options.
     public static TarArkivoStreamingWriter open(
             WritableByteChannel output,
-            ArchiveOptions options
+            TarArchiveOptions.Create options
     ) throws IOException {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(options, "options");
-        @Nullable CompressionCodec<?> compressionCodec = options.get(TarArkivoFileSystem.COMPRESSION);
-        @Nullable ArkivoEditStorage bodyStorage = options.get(ArkivoFileSystem.EDIT_STORAGE);
+        @Nullable CompressionCodec compressionCodec = options.compression();
+        @Nullable ArkivoEditStorage bodyStorage = options.common().editStorage();
         WritableByteChannel archiveOutput = TarCompressionStreams.openArchiveOutput(output, compressionCodec);
         return bodyStorage == null
                 ? new TarArkivoStreamingWriterImpl(StreamChannelAdapters.outputStream(archiveOutput))
@@ -184,17 +182,17 @@ public abstract sealed class TarArkivoStreamingWriter extends ArkivoStreamingWri
     public static TarArkivoStreamingWriter open(
             WritableByteChannel output,
             ArkivoEditStorage bodyStorage,
-            ArchiveOptions options
+            TarArchiveOptions.Create options
     ) throws IOException {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(bodyStorage, "bodyStorage");
         Objects.requireNonNull(options, "options");
-        if (options.contains(ArkivoFileSystem.EDIT_STORAGE)) {
+        if (options.common().editStorage() != null) {
             throw new IllegalArgumentException(
                     "TAR body storage must be provided either as an argument or an option"
             );
         }
-        @Nullable CompressionCodec<?> compressionCodec = options.get(TarArkivoFileSystem.COMPRESSION);
+        @Nullable CompressionCodec compressionCodec = options.compression();
         return new TarArkivoStreamingWriterImpl(
                 StreamChannelAdapters.outputStream(TarCompressionStreams.openArchiveOutput(
                         output,

@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.all;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionProbeResult;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -33,7 +33,7 @@ final class CompressionChannelProbeTest {
                 0x1f, (byte) 0x8b, 0x08, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55
         };
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(bytes));
-        CompressionProbeResult probe = CompressionFormats.probe(source, 8, ChannelOwnership.RETAIN);
+        CompressionProbeResult probe = CompressionFormats.probe(source, 8, ResourceOwnership.BORROWED);
 
         assertTrue(probe.detected());
         assertNotNull(probe.format());
@@ -57,7 +57,7 @@ final class CompressionChannelProbeTest {
     void replaysUnmatchedPrefixAndClosesOwnedSource() throws IOException {
         byte[] bytes = {1, 2, 3, 4, 5, 6, 7};
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(bytes));
-        CompressionProbeResult probe = CompressionFormats.probe(source, ChannelOwnership.CLOSE);
+        CompressionProbeResult probe = CompressionFormats.probe(source, ResourceOwnership.OWNED);
 
         assertFalse(probe.detected());
         assertNull(probe.format());
@@ -73,7 +73,7 @@ final class CompressionChannelProbeTest {
     @Test
     void retriesOwnedSourceClosure() throws IOException {
         CloseFailingOnceChannel source = new CloseFailingOnceChannel(new byte[]{1, 2, 3});
-        CompressionProbeResult probe = CompressionFormats.probe(source, ChannelOwnership.CLOSE);
+        CompressionProbeResult probe = CompressionFormats.probe(source, ResourceOwnership.OWNED);
 
         assertThrows(IOException.class, probe::close);
         assertEquals(1, source.closeCount());
@@ -90,14 +90,14 @@ final class CompressionChannelProbeTest {
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(new byte[]{1}));
         assertThrows(
                 IllegalArgumentException.class,
-                () -> CompressionFormats.probe(source, -1L, ChannelOwnership.CLOSE)
+                () -> CompressionFormats.probe(source, -1L, ResourceOwnership.OWNED)
         );
         assertThrows(
                 IllegalArgumentException.class,
                 () -> CompressionFormats.probe(
                         source,
                         (long) Integer.MAX_VALUE + 1L,
-                        ChannelOwnership.CLOSE
+                        ResourceOwnership.OWNED
                 )
         );
         assertTrue(source.isOpen());
@@ -109,7 +109,7 @@ final class CompressionChannelProbeTest {
         ZeroProgressChannel source = new ZeroProgressChannel();
         IOException exception = assertThrows(
                 IOException.class,
-                () -> CompressionFormats.probe(source, ChannelOwnership.CLOSE)
+                () -> CompressionFormats.probe(source, ResourceOwnership.OWNED)
         );
         assertTrue(exception.getMessage().contains("made no progress"));
         assertFalse(source.isOpen());

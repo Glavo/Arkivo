@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.internal;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -22,7 +22,7 @@ public final class PrefixReplayReadableByteChannel implements ReadableByteChanne
     private final ReadableByteChannel source;
 
     /// Whether closing this channel closes the source.
-    private final ChannelOwnership ownership;
+    private final ResourceOwnership ownership;
 
     /// Whether this channel remains open.
     private boolean open = true;
@@ -31,7 +31,7 @@ public final class PrefixReplayReadableByteChannel implements ReadableByteChanne
     public PrefixReplayReadableByteChannel(
             ByteBuffer prefix,
             ReadableByteChannel source,
-            ChannelOwnership ownership
+            ResourceOwnership ownership
     ) {
         this.prefix = Objects.requireNonNull(prefix, "prefix").slice().asReadOnlyBuffer();
         this.source = Objects.requireNonNull(source, "source");
@@ -69,7 +69,7 @@ public final class PrefixReplayReadableByteChannel implements ReadableByteChanne
         if (!open) {
             return;
         }
-        if (ownership == ChannelOwnership.CLOSE) {
+        if (ownership == ResourceOwnership.OWNED) {
             source.close();
         }
         open = false;

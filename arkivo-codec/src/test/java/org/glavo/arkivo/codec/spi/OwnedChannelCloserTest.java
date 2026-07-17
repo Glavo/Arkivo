@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.spi;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -23,7 +23,7 @@ final class OwnedChannelCloserTest {
     @Test
     void suppressesAndRetriesCloseFailure() throws IOException {
         FailingOnceChannel channel = new FailingOnceChannel();
-        OwnedChannelCloser closer = new OwnedChannelCloser(channel, ChannelOwnership.CLOSE);
+        OwnedChannelCloser closer = new OwnedChannelCloser(channel, ResourceOwnership.OWNED);
         IOException primary = new IOException("codec finalization failed");
 
         IOException thrown = assertThrows(IOException.class, () -> closer.closeAfter(primary));
@@ -43,7 +43,7 @@ final class OwnedChannelCloserTest {
     @Test
     void retainsChannelAndRethrowsPrimaryFailure() {
         FailingOnceChannel channel = new FailingOnceChannel();
-        OwnedChannelCloser closer = new OwnedChannelCloser(channel, ChannelOwnership.RETAIN);
+        OwnedChannelCloser closer = new OwnedChannelCloser(channel, ResourceOwnership.BORROWED);
         IllegalStateException primary = new IllegalStateException("codec failed");
 
         IllegalStateException thrown = assertThrows(

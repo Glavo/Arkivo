@@ -3,9 +3,9 @@
 
 package org.glavo.arkivo.archive.ar;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveCreateOptions;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -19,7 +19,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -37,12 +36,12 @@ public final class ArIndexedStorageTest {
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
         TrackingEditStorage storage = new TrackingEditStorage(false);
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(archive, storage)) {
-            writer.beginFile("file.txt");
+            var writerEntry40 = writer.beginFile("file.txt");
             ArArkivoEntryAttributeView attributes = Objects.requireNonNull(
-                    writer.attributeView(ArArkivoEntryAttributeView.class)
+                    writerEntry40.attributeView(ArArkivoEntryAttributeView.class)
             );
             attributes.setSize(expected.length);
-            try (OutputStream output = writer.openOutputStream()) {
+            try (OutputStream output = writerEntry40.openOutputStream()) {
                 output.write(expected);
             }
         }
@@ -58,8 +57,8 @@ public final class ArIndexedStorageTest {
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
         TrackingEditStorage storage = new TrackingEditStorage(true);
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.open(archive, storage)) {
-            writer.beginFile("file.txt");
-            try (OutputStream output = writer.openOutputStream()) {
+            var writerEntry61 = writer.beginFile("file.txt");
+            try (OutputStream output = writerEntry61.openOutputStream()) {
                 output.write(expected);
             }
         }
@@ -68,8 +67,8 @@ public final class ArIndexedStorageTest {
         assertEquals(1, storage.closeCount());
         try (ArArkivoStreamingReader reader =
                      ArArkivoStreamingReader.open(new ByteArrayInputStream(archive.toByteArray()))) {
-            assertEquals(true, reader.next());
-            try (var input = reader.openInputStream()) {
+            var readerEntry71 = java.util.Objects.requireNonNull(reader.nextEntry());
+            try (var input = readerEntry71.openInputStream()) {
                 assertArrayEquals(expected, input.readAllBytes());
             }
         }
@@ -83,10 +82,10 @@ public final class ArIndexedStorageTest {
 
         try (ArArkivoStreamingWriter writer = ArArkivoFormat.instance().openStreamingWriter(
                 archive,
-                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
+                ArchiveCreateOptions.DEFAULT.withEditStorage(storage)
         )) {
-            writer.beginFile("file.txt");
-            try (OutputStream output = writer.openOutputStream()) {
+            var writerEntry88 = writer.beginFile("file.txt");
+            try (OutputStream output = writerEntry88.openOutputStream()) {
                 output.write("environment-storage".getBytes(StandardCharsets.UTF_8));
             }
         }
@@ -103,7 +102,9 @@ public final class ArIndexedStorageTest {
         try {
             try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(
                     archivePath,
-                    ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
+                    ArArchiveOptions.READ_DEFAULTS.withCommon(
+                            ArchiveReadOptions.DEFAULT.withEditStorage(storage)
+                    )
             )) {
                 assertArrayEquals(
                         "stored-content".getBytes(StandardCharsets.UTF_8),
@@ -125,7 +126,9 @@ public final class ArIndexedStorageTest {
         TrackingEditStorage storage = new TrackingEditStorage(true);
         ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(
                 archivePath,
-                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
+                ArArchiveOptions.READ_DEFAULTS.withCommon(
+                        ArchiveReadOptions.DEFAULT.withEditStorage(storage)
+                )
         );
         try {
             IOException failure = assertThrows(IOException.class, fileSystem::close);
@@ -152,8 +155,8 @@ public final class ArIndexedStorageTest {
         Files.createDirectories(directory);
         Path archivePath = Files.createTempFile(directory, "indexed-storage-", ".a");
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
-            writer.beginFile("file.txt");
-            try (OutputStream output = writer.openOutputStream()) {
+            var writerEntry155 = writer.beginFile("file.txt");
+            try (OutputStream output = writerEntry155.openOutputStream()) {
                 output.write("stored-content".getBytes(StandardCharsets.UTF_8));
             }
         }

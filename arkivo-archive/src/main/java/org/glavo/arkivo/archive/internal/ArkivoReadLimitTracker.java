@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.internal;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
 import org.glavo.arkivo.archive.ArkivoReadLimitKind;
@@ -64,11 +64,17 @@ public final class ArkivoReadLimitTracker {
     /// Creates a fresh tracker from common archive options.
     public static ArkivoReadLimitTracker fromOptions(ArchiveOptions options) {
         Objects.requireNonNull(options, "options");
+        return fromLimits(options.getOrDefault(ArchiveEnvironmentOptions.READ_LIMITS, ArchiveReadLimits.UNLIMITED));
+    }
+
+    /// Creates a fresh tracker from immutable archive read limits.
+    public static ArkivoReadLimitTracker fromLimits(ArchiveReadLimits limits) {
+        Objects.requireNonNull(limits, "limits");
         return new ArkivoReadLimitTracker(
-                options.getOrDefault(ArkivoFileSystem.MAX_ENTRY_COUNT, UNLIMITED),
-                options.getOrDefault(ArkivoFileSystem.MAX_ENTRY_SIZE, UNLIMITED),
-                options.getOrDefault(ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE, UNLIMITED),
-                options.getOrDefault(ArkivoFileSystem.MAX_METADATA_SIZE, UNLIMITED)
+                limits.maximumEntryCount(),
+                limits.maximumEntrySize(),
+                limits.maximumTotalEntrySize(),
+                limits.maximumMetadataSize()
         );
     }
 

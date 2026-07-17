@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.ppmd.internal;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -38,7 +38,7 @@ public final class PPMd7ChannelDecoder implements DecompressingReadableByteChann
     /// Creates an initialized raw PPMd7 decoder.
     public PPMd7ChannelDecoder(
             ReadableByteChannel source,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             int maximumOrder,
             long memorySize,
             long decodedSize

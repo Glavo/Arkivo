@@ -3,10 +3,11 @@
 
 package org.glavo.arkivo.archive.sevenzip;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveCreateOptions;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
 import org.apache.commons.compress.archivers.sevenz.SevenZFile;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -18,13 +19,11 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.zip.CRC32;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -52,9 +51,9 @@ public final class SevenZipSolidOutputTest {
         expected.put("second.bin", second);
         expected.put("third.bin", third);
 
-        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.create(
                 archive,
-                ArchiveOptions.fromEnvironment(writerEnvironment(2))
+                createOptions(2)
         )) {
             for (Map.Entry<String, byte[]> entry : expected.entrySet()) {
                 if ("empty.bin".equals(entry.getKey())) {
@@ -150,7 +149,7 @@ public final class SevenZipSolidOutputTest {
 
         try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
                 archive,
-                ArchiveOptions.fromEnvironment(writerEnvironment(10))
+                createOptions(10)
         )) {
             writeStreamingEntry(writer, "first.bin", first, null, null);
             writeStreamingEntry(writer, "second.bin", second, null, null);
@@ -190,10 +189,10 @@ public final class SevenZipSolidOutputTest {
         byte[] first = repeatedBytes(4_096, 23);
         byte[] second = repeatedBytes(3_072, 41);
         byte[] third = repeatedBytes(2_048, 59);
-        Map<String, Object> environment = new LinkedHashMap<>(writerEnvironment(3));
-        environment.put(SevenZipArkivoFileSystem.COMPRESSION.key(), SevenZipCompression.zstandard());
-
-        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archive, ArchiveOptions.fromEnvironment(environment))) {
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.create(
+                archive,
+                createOptions(3, SevenZipCompression.zstandard(), null, false)
+        )) {
             Files.write(fileSystem.getPath("/first.bin"), first);
             Files.write(fileSystem.getPath("/second.bin"), second);
             Files.write(fileSystem.getPath("/third.bin"), third);
@@ -219,25 +218,23 @@ public final class SevenZipSolidOutputTest {
         byte[] second = repeatedBytes(2_048, 31);
         byte[] updatedSecond = repeatedBytes(3_072, 37);
 
-        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.create(
                 archive,
-                ArchiveOptions.fromEnvironment(writerEnvironment(1))
+                createOptions(1)
         )) {
             Files.write(fileSystem.getPath("/first.bin"), first);
             Files.write(fileSystem.getPath("/second.bin"), second);
         }
 
-        Map<String, Object> updateEnvironment = new LinkedHashMap<>();
-        updateEnvironment.put(
-                ArkivoFileSystem.OPEN_OPTIONS.key(),
-                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
+        SevenZipArchiveOptions.Update updateOptions = new SevenZipArchiveOptions.Update(
+                ArchiveUpdateOptions.DEFAULT,
+                null,
+                SevenZipCompression.lzma2(SevenZipCompression.MIN_DICTIONARY_SIZE),
+                SevenZipFilterChain.EMPTY,
+                2,
+                false
         );
-        updateEnvironment.put(
-                SevenZipArkivoFileSystem.COMPRESSION.key(),
-                SevenZipCompression.lzma2(SevenZipCompression.MIN_DICTIONARY_SIZE)
-        );
-        updateEnvironment.put(SevenZipArkivoFileSystem.SOLID_FILE_COUNT.key(), 2);
-        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archive, ArchiveOptions.fromEnvironment(updateEnvironment))) {
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.update(archive, updateOptions)) {
             Files.write(fileSystem.getPath("/second.bin"), updatedSecond);
         }
 
@@ -259,14 +256,12 @@ public final class SevenZipSolidOutputTest {
         byte[] second = repeatedBytes(4_096, 71);
         byte[] third = repeatedBytes(4_096, 89);
 
-        Map<String, Object> environment = new LinkedHashMap<>(writerEnvironment(3));
-        environment.put(SevenZipArkivoFileSystem.SPLIT_SIZE.key(), 192L);
-        environment.put(
-                SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
-                ArkivoPasswordProvider.fixed(password)
-        );
-        environment.put(SevenZipArkivoFileSystem.ENCRYPT_HEADERS.key(), true);
-        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(firstVolume, ArchiveOptions.fromEnvironment(environment))) {
+        ArkivoPasswordProvider passwordProvider = ArkivoPasswordProvider.fixed(password);
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.create(
+                firstVolume,
+                192L,
+                createOptions(3, SevenZipCompression.lzma2(), passwordProvider, true)
+        )) {
             Files.write(fileSystem.getPath("/first.bin"), first);
             Files.write(fileSystem.getPath("/second.bin"), second);
             Files.write(fileSystem.getPath("/third.bin"), third);
@@ -277,10 +272,7 @@ public final class SevenZipSolidOutputTest {
         }
         try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
                 firstVolume,
-                ArchiveOptions.fromEnvironment(Map.of(
-                        SevenZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
-                        ArkivoPasswordProvider.fixed(password)
-                ))
+                new SevenZipArchiveOptions.Read(ArchiveReadOptions.DEFAULT, passwordProvider)
         )) {
             assertArrayEquals(first, Files.readAllBytes(fileSystem.getPath("/first.bin")));
             assertArrayEquals(second, Files.readAllBytes(fileSystem.getPath("/second.bin")));
@@ -296,23 +288,31 @@ public final class SevenZipSolidOutputTest {
         }
     }
 
-    /// Returns the standard forward-only writer environment with a solid file-count limit.
-    private static Map<String, Object> writerEnvironment(int solidFileCount) {
-        Map<String, Object> environment = new LinkedHashMap<>();
-        environment.put(
-                ArkivoFileSystem.OPEN_OPTIONS.key(),
-                Set.of(
-                        StandardOpenOption.CREATE,
-                        StandardOpenOption.TRUNCATE_EXISTING,
-                        StandardOpenOption.WRITE
-                )
+    /// Returns the standard creation options with a solid file-count limit.
+    private static SevenZipArchiveOptions.Create createOptions(int solidFileCount) {
+        return createOptions(
+                solidFileCount,
+                SevenZipCompression.lzma2(SevenZipCompression.MIN_DICTIONARY_SIZE),
+                null,
+                false
         );
-        environment.put(
-                SevenZipArkivoFileSystem.COMPRESSION.key(),
-                SevenZipCompression.lzma2(SevenZipCompression.MIN_DICTIONARY_SIZE)
+    }
+
+    /// Returns creation options with explicit compression and encryption settings.
+    private static SevenZipArchiveOptions.Create createOptions(
+            int solidFileCount,
+            SevenZipCompression compression,
+            @Nullable ArkivoPasswordProvider passwordProvider,
+            boolean encryptHeaders
+    ) {
+        return new SevenZipArchiveOptions.Create(
+                ArchiveCreateOptions.DEFAULT,
+                passwordProvider,
+                compression,
+                SevenZipFilterChain.EMPTY,
+                solidFileCount,
+                encryptHeaders
         );
-        environment.put(SevenZipArkivoFileSystem.SOLID_FILE_COUNT.key(), solidFileCount);
-        return environment;
     }
 
     /// Writes one streaming file entry with optional compression and filter overrides.
@@ -323,9 +323,9 @@ public final class SevenZipSolidOutputTest {
             @Nullable SevenZipCompression compression,
             @Nullable SevenZipFilterChain filters
     ) throws IOException {
-        writer.beginFile(name);
+        var writerEntry326 = writer.beginFile(name);
         SevenZipArkivoEntryAttributeView attributes = Objects.requireNonNull(
-                writer.attributeView(SevenZipArkivoEntryAttributeView.class)
+                writerEntry326.attributeView(SevenZipArkivoEntryAttributeView.class)
         );
         if (compression != null) {
             attributes.setCompression(compression);
@@ -333,7 +333,7 @@ public final class SevenZipSolidOutputTest {
         if (filters != null) {
             attributes.setFilters(filters);
         }
-        try (OutputStream output = writer.openOutputStream()) {
+        try (OutputStream output = writerEntry326.openOutputStream()) {
             output.write(content);
         }
     }

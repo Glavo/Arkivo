@@ -3,10 +3,11 @@
 
 package org.glavo.arkivo.archive.tar;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
 import org.glavo.arkivo.archive.ArkivoReadLimitKind;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -69,30 +70,30 @@ public final class TarArkivoStreamingReaderTest {
         ArrayList<String> paths = new ArrayList<>();
 
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes directory = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry73 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes directory = readerEntry73.attributes(TarArkivoEntryAttributes.class);
             paths.add(directory.path());
             assertEquals(true, directory.isDirectory());
             assertEquals(0755, directory.mode());
 
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
-            BasicFileAttributes basicFile = reader.readAttributes(BasicFileAttributes.class);
+            var readerEntry79 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes file = readerEntry79.attributes(TarArkivoEntryAttributes.class);
+            BasicFileAttributes basicFile = readerEntry79.attributes(BasicFileAttributes.class);
             paths.add(file.path());
             assertEquals(true, file.isRegularFile());
             assertEquals(5L, basicFile.size());
             assertEquals("user", file.userName());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry79.openInputStream()) {
                 assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes link = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry90 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes link = readerEntry90.attributes(TarArkivoEntryAttributes.class);
             paths.add(link.path());
             assertEquals(true, link.isSymbolicLink());
             assertEquals("dir/hello.txt", link.linkName());
 
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
 
         assertEquals(List.of("dir/", "dir/hello.txt", "link"), paths);
@@ -109,18 +110,18 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes original = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry113 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes original = readerEntry113.attributes(TarArkivoEntryAttributes.class);
             assertEquals("original.txt", original.path());
             assertEquals(true, original.isRegularFile());
             assertEquals(false, original.isHardLink());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry113.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes link = reader.readAttributes(TarArkivoEntryAttributes.class);
-            BasicFileAttributes basicLink = reader.readAttributes(BasicFileAttributes.class);
+            var readerEntry122 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes link = readerEntry122.attributes(TarArkivoEntryAttributes.class);
+            BasicFileAttributes basicLink = readerEntry122.attributes(BasicFileAttributes.class);
             assertEquals("copy.txt", link.path());
             assertEquals((byte) '1', link.typeFlag());
             assertEquals(true, link.isHardLink());
@@ -129,11 +130,11 @@ public final class TarArkivoStreamingReaderTest {
             assertEquals(false, link.isOther());
             assertEquals("original.txt", link.linkName());
             assertEquals(0L, basicLink.size());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry122.openInputStream()) {
                 assertArrayEquals(new byte[0], input.readAllBytes());
             }
 
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -143,58 +144,58 @@ public final class TarArkivoStreamingReaderTest {
         byte[] content = "hello".getBytes(StandardCharsets.UTF_8);
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output)) {
-            writer.beginDirectory("dir");
-            writer.endEntry();
+            var writerEntry147 = writer.beginDirectory("dir");
+            writerEntry147.close();
 
-            writer.beginFile("dir/hello.txt");
-            try (OutputStream body = writer.openOutputStream()) {
+            var writerEntry150 = writer.beginFile("dir/hello.txt");
+            try (OutputStream body = writerEntry150.openOutputStream()) {
                 body.write(content);
             }
 
-            writer.beginSymbolicLink("link", "dir/hello.txt");
-            writer.endEntry();
+            var writerEntry155 = writer.beginSymbolicLink("link", "dir/hello.txt");
+            writerEntry155.close();
 
-            writer.beginHardLink("hard-link", "dir/hello.txt");
-            writer.endEntry();
+            var writerEntry158 = writer.beginHardLink("hard-link", "dir/hello.txt");
+            writerEntry158.close();
         }
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes directory = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry164 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes directory = readerEntry164.attributes(TarArkivoEntryAttributes.class);
             assertEquals("dir/", directory.path());
             assertEquals(true, directory.isDirectory());
             assertEquals(0755, directory.mode());
 
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry170 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes file = readerEntry170.attributes(TarArkivoEntryAttributes.class);
             assertEquals("dir/hello.txt", file.path());
             assertEquals(true, file.isRegularFile());
             assertEquals(0644, file.mode());
             assertEquals(content.length, file.size());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry170.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes link = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry180 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes link = readerEntry180.attributes(TarArkivoEntryAttributes.class);
             assertEquals("link", link.path());
             assertEquals(true, link.isSymbolicLink());
             assertEquals(0777, link.mode());
             assertEquals("dir/hello.txt", link.linkName());
 
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes hardLink = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry187 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes hardLink = readerEntry187.attributes(TarArkivoEntryAttributes.class);
             assertEquals("hard-link", hardLink.path());
             assertEquals(true, hardLink.isHardLink());
             assertEquals(true, hardLink.isRegularFile());
             assertEquals(0644, hardLink.mode());
             assertEquals("dir/hello.txt", hardLink.linkName());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry187.openInputStream()) {
                 assertArrayEquals(new byte[0], input.readAllBytes());
             }
 
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -212,13 +213,13 @@ public final class TarArkivoStreamingReaderTest {
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output)) {
-            writer.beginFile("meta.txt");
+            var writerEntry216 = writer.beginFile("meta.txt");
             BasicFileAttributeView basicView =
-                    Objects.requireNonNull(writer.attributeView(BasicFileAttributeView.class));
+                    Objects.requireNonNull(writerEntry216.attributeView(BasicFileAttributeView.class));
             basicView.setTimes(lastModifiedTime, lastAccessTime, creationTime);
 
             PosixFileAttributeView posixView =
-                    Objects.requireNonNull(writer.attributeView(PosixFileAttributeView.class));
+                    Objects.requireNonNull(writerEntry216.attributeView(PosixFileAttributeView.class));
             posixView.setPermissions(Set.of(
                     PosixFilePermission.OWNER_READ,
                     PosixFilePermission.OWNER_WRITE,
@@ -226,23 +227,23 @@ public final class TarArkivoStreamingReaderTest {
             ));
 
             TarArkivoEntryAttributeView tarView =
-                    Objects.requireNonNull(writer.attributeView(TarArkivoEntryAttributeView.class));
+                    Objects.requireNonNull(writerEntry216.attributeView(TarArkivoEntryAttributeView.class));
             assertEquals("tar", tarView.name());
             tarView.setUserId(userId);
             tarView.setGroupId(groupId);
             tarView.setUserName(userName);
             tarView.setGroupName(groupName);
 
-            try (OutputStream body = writer.openOutputStream()) {
+            try (OutputStream body = writerEntry216.openOutputStream()) {
                 body.write(content);
             }
         }
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
-            PosixFileAttributes posixAttributes = reader.readAttributes(PosixFileAttributes.class);
+            var readerEntry244 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes attributes = readerEntry244.attributes(TarArkivoEntryAttributes.class);
+            PosixFileAttributes posixAttributes = readerEntry244.attributes(PosixFileAttributes.class);
             assertEquals("meta.txt", attributes.path());
             assertEquals(0640, attributes.mode());
             assertEquals(userId, attributes.userId());
@@ -262,10 +263,10 @@ public final class TarArkivoStreamingReaderTest {
             assertEquals(lastModifiedTime.toInstant(), attributes.lastModifiedTime().toInstant());
             assertEquals(lastAccessTime.toInstant(), attributes.lastAccessTime().toInstant());
             assertEquals(creationTime.toInstant(), attributes.creationTime().toInstant());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry244.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -284,29 +285,29 @@ public final class TarArkivoStreamingReaderTest {
         );
         try {
             try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
-                writer.beginDirectory("dir");
-                writer.endEntry();
+                var writerEntry288 = writer.beginDirectory("dir");
+                writerEntry288.close();
 
-                writer.beginFile("dir/hello.txt");
+                var writerEntry291 = writer.beginFile("dir/hello.txt");
                 BasicFileAttributeView basicView =
-                        Objects.requireNonNull(writer.attributeView(BasicFileAttributeView.class));
+                        Objects.requireNonNull(writerEntry291.attributeView(BasicFileAttributeView.class));
                 basicView.setTimes(FileTime.fromMillis(1_700_000_000_000L), null, null);
 
                 PosixFileAttributeView posixView =
-                        Objects.requireNonNull(writer.attributeView(PosixFileAttributeView.class));
+                        Objects.requireNonNull(writerEntry291.attributeView(PosixFileAttributeView.class));
                 posixView.setOwner(() -> "fs-user");
                 posixView.setGroup(() -> "fs-group");
                 posixView.setPermissions(filePermissions);
                 TarArkivoEntryAttributeView tarView =
-                        Objects.requireNonNull(writer.attributeView(TarArkivoEntryAttributeView.class));
+                        Objects.requireNonNull(writerEntry291.attributeView(TarArkivoEntryAttributeView.class));
                 tarView.setUserId(1234L);
                 tarView.setGroupId(5678L);
-                try (OutputStream body = writer.openOutputStream()) {
+                try (OutputStream body = writerEntry291.openOutputStream()) {
                     body.write(content);
                 }
 
-                writer.beginSymbolicLink("link", "dir/hello.txt");
-                writer.endEntry();
+                var writerEntry309 = writer.beginSymbolicLink("link", "dir/hello.txt");
+                writerEntry309.close();
             }
 
             TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath);
@@ -481,17 +482,9 @@ public final class TarArkivoStreamingReaderTest {
         Set<PosixFilePermission> directoryPermissions = PosixFilePermissions.fromString("rwxr-x---");
         Set<PosixFilePermission> channelFilePermissions = PosixFilePermissions.fromString("rw-r-----");
         Set<PosixFilePermission> linkPermissions = PosixFilePermissions.fromString("rwxr-xr--");
-        Map<String, Object> environment = Map.of(
-                ArkivoFileSystem.OPEN_OPTIONS.key(),
-                Set.of(
-                        StandardOpenOption.CREATE,
-                        StandardOpenOption.TRUNCATE_EXISTING,
-                        StandardOpenOption.WRITE
-                )
-        );
-
         try {
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
+            Files.deleteIfExists(archivePath);
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.create(archivePath)) {
                 assertEquals(false, fileSystem.isReadOnly());
 
                 Path directory = fileSystem.getPath("/dir");
@@ -597,27 +590,23 @@ public final class TarArkivoStreamingReaderTest {
         try {
             try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
                 writeStreamingFile(writer, "keep.txt", keepContent);
-                writer.beginSymbolicLink("link", "keep.txt");
-                writer.endEntry();
+                var writerEntry601 = writer.beginSymbolicLink("link", "keep.txt");
+                writerEntry601.close();
                 writeStreamingFile(writer, "remove.txt", "remove".getBytes(StandardCharsets.UTF_8));
-                writer.beginDirectory("dir");
-                writer.endEntry();
+                var writerEntry604 = writer.beginDirectory("dir");
+                writerEntry604.close();
                 writeStreamingFile(writer, "dir/child.txt", "child".getBytes(StandardCharsets.UTF_8));
                 writeStreamingFile(writer, "source.txt", linkedContent);
-                writer.beginHardLink("hard.txt", "source.txt");
-                writer.endEntry();
+                var writerEntry608 = writer.beginHardLink("hard.txt", "source.txt");
+                writerEntry608.close();
                 writeStreamingFile(writer, "target.txt", "old-target".getBytes(StandardCharsets.UTF_8));
-                writer.beginHardLink("target-hard.txt", "target.txt");
-                writer.endEntry();
+                var writerEntry611 = writer.beginHardLink("target-hard.txt", "target.txt");
+                writerEntry611.close();
                 writeStreamingFile(writer, "replacement.txt", "new-target".getBytes(StandardCharsets.UTF_8));
             }
 
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
-            );
             FileTime modifiedTime = FileTime.from(Instant.parse("2032-03-04T05:06:07.125Z"));
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.update(archivePath)) {
                 assertEquals(false, fileSystem.isReadOnly());
                 Path keep = fileSystem.getPath("/keep.txt");
                 assertArrayEquals(keepContent, Files.readAllBytes(keep));
@@ -718,8 +707,8 @@ public final class TarArkivoStreamingReaderTest {
             ArrayList<String> physicalEntries = new ArrayList<>();
             try (TarArkivoStreamingReader reader =
                          TarArkivoStreamingReader.open(Files.newInputStream(archivePath))) {
-                while (reader.next()) {
-                    physicalEntries.add(reader.readAttributes(TarArkivoEntryAttributes.class).path());
+                for (var readerEntry722 = reader.nextEntry(); readerEntry722 != null; readerEntry722 = reader.nextEntry()) {
+                    physicalEntries.add(readerEntry722.attributes(TarArkivoEntryAttributes.class).path());
                 }
             }
             assertEquals(
@@ -750,13 +739,10 @@ public final class TarArkivoStreamingReaderTest {
             try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
                 writeStreamingFile(writer, "value.txt", "before".getBytes(StandardCharsets.UTF_8));
             }
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
-                    ArkivoFileSystem.COMMIT_TARGET.key(),
-                    ArkivoCommitTarget.writeTo(derivedPath)
+            TarArchiveOptions.Update options = TarArchiveOptions.UPDATE_DEFAULTS.withCommon(
+                    ArchiveUpdateOptions.DEFAULT.withCommitTarget(ArkivoCommitTarget.writeTo(derivedPath))
             );
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.update(archivePath, options)) {
                 Files.writeString(fileSystem.getPath("/value.txt"), "after", StandardCharsets.UTF_8);
             }
 
@@ -789,14 +775,11 @@ public final class TarArkivoStreamingReaderTest {
             ArkivoCommitTarget failingTarget = sourcePath -> {
                 throw new IOException("commit target failed");
             };
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
-                    ArkivoFileSystem.COMMIT_TARGET.key(),
-                    failingTarget
+            TarArchiveOptions.Update options = TarArchiveOptions.UPDATE_DEFAULTS.withCommon(
+                    ArchiveUpdateOptions.DEFAULT.withCommitTarget(failingTarget)
             );
 
-            TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment));
+            TarArkivoFileSystem fileSystem = TarArkivoFileSystem.update(archivePath, options);
             Files.writeString(fileSystem.getPath("/value.txt"), "after", StandardCharsets.UTF_8);
             IOException exception = assertThrows(IOException.class, fileSystem::close);
             assertEquals("commit target failed", exception.getMessage());
@@ -815,11 +798,7 @@ public final class TarArkivoStreamingReaderTest {
                 writeStreamingFile(writer, "value.txt", "value".getBytes(StandardCharsets.UTF_8));
             }
             byte[] originalArchive = Files.readAllBytes(archivePath);
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
-            );
-            try (TarArkivoFileSystem ignored = TarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
+            try (TarArkivoFileSystem ignored = TarArkivoFileSystem.update(archivePath)) {
             }
             assertArrayEquals(originalArchive, Files.readAllBytes(archivePath));
         } finally {
@@ -827,17 +806,13 @@ public final class TarArkivoStreamingReaderTest {
         }
     }
 
-    /// Verifies that update mode with CREATE publishes a valid empty archive for a missing source.
+    /// Verifies that the create lifecycle publishes a valid empty archive for a missing path.
     @Test
-    public void updateCreateModeCreatesMissingArchive() throws IOException {
+    public void createModeCreatesMissingArchive() throws IOException {
         Path archivePath = createTemporaryArchivePath("tar-update-create-");
         Files.deleteIfExists(archivePath);
         try {
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE, StandardOpenOption.CREATE)
-            );
-            try (TarArkivoFileSystem ignored = TarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
+            try (TarArkivoFileSystem ignored = TarArkivoFileSystem.create(archivePath)) {
             }
             assertEquals(true, Files.exists(archivePath));
             try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath);
@@ -861,23 +836,19 @@ public final class TarArkivoStreamingReaderTest {
         Path archivePath = createTemporaryArchivePath("tar-update-extension-");
         try {
             Files.write(archivePath, archive.toByteArray());
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
-            );
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.update(archivePath)) {
                 Files.writeString(fileSystem.getPath("/new.txt"), "new", StandardCharsets.UTF_8);
             }
 
             try (TarArkivoStreamingReader reader =
                          TarArkivoStreamingReader.open(Files.newInputStream(archivePath))) {
-                assertEquals(true, reader.next());
-                TarArkivoEntryAttributes extension = reader.readAttributes(TarArkivoEntryAttributes.class);
+                var readerEntry875 = java.util.Objects.requireNonNull(reader.nextEntry());
+                TarArkivoEntryAttributes extension = readerEntry875.attributes(TarArkivoEntryAttributes.class);
                 assertEquals(true, extension.isOther());
-                assertArrayEquals(extensionBody, reader.openInputStream().readAllBytes());
-                assertEquals(true, reader.next());
-                assertEquals("new.txt", reader.readAttributes(TarArkivoEntryAttributes.class).path());
-                assertEquals(false, reader.next());
+                assertArrayEquals(extensionBody, readerEntry875.openInputStream().readAllBytes());
+                var readerEntry879 = java.util.Objects.requireNonNull(reader.nextEntry());
+                assertEquals("new.txt", readerEntry879.attributes(TarArkivoEntryAttributes.class).path());
+                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -892,8 +863,8 @@ public final class TarArkivoStreamingReaderTest {
         Path archivePath = createTemporaryArchivePath("tar-provider-");
         try {
             try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
-                writer.beginFile("dir/provider.txt");
-                try (OutputStream body = writer.openOutputStream()) {
+                var writerEntry896 = writer.beginFile("dir/provider.txt");
+                try (OutputStream body = writerEntry896.openOutputStream()) {
                     body.write(content);
                 }
             }
@@ -983,40 +954,40 @@ public final class TarArkivoStreamingReaderTest {
                 + "-cannot-store-this-single-segment-without-an-extension.txt";
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output)) {
-            writer.beginFile(path);
-            try (OutputStream body = writer.openOutputStream()) {
+            var writerEntry987 = writer.beginFile(path);
+            try (OutputStream body = writerEntry987.openOutputStream()) {
                 body.write(content);
             }
 
-            writer.beginSymbolicLink("long-link", target);
-            writer.endEntry();
+            var writerEntry992 = writer.beginSymbolicLink("long-link", target);
+            writerEntry992.close();
 
-            writer.beginHardLink("long-hard-link", path);
-            writer.endEntry();
+            var writerEntry995 = writer.beginHardLink("long-hard-link", path);
+            writerEntry995.close();
         }
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1001 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes file = readerEntry1001.attributes(TarArkivoEntryAttributes.class);
             assertEquals(path, file.path());
             assertEquals(content.length, file.size());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry1001.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes link = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1009 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes link = readerEntry1009.attributes(TarArkivoEntryAttributes.class);
             assertEquals("long-link", link.path());
             assertEquals(target, link.linkName());
 
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes hardLink = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1014 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes hardLink = readerEntry1014.attributes(TarArkivoEntryAttributes.class);
             assertEquals("long-hard-link", hardLink.path());
             assertEquals(true, hardLink.isHardLink());
             assertEquals(path, hardLink.linkName());
 
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1036,16 +1007,16 @@ public final class TarArkivoStreamingReaderTest {
     @Test
     public void readerOperationsAfterCloseAreRejectedAsClosed() throws IOException {
         TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(tarArchive()));
-        assertEquals(true, reader.next());
+        var readerEntry1040 = java.util.Objects.requireNonNull(reader.nextEntry());
 
         reader.close();
 
-        assertThrows(ClosedChannelException.class, reader::next);
+        assertThrows(ClosedChannelException.class, reader::nextEntry);
         assertThrows(
                 ClosedChannelException.class,
-                () -> reader.readAttributes(TarArkivoEntryAttributes.class)
+                () -> readerEntry1040.attributes(TarArkivoEntryAttributes.class)
         );
-        assertThrows(ClosedChannelException.class, reader::openChannel);
+        assertThrows(ClosedChannelException.class, readerEntry1040::openChannel);
     }
 
     /// Verifies that source cleanup can be retried after a close failure.
@@ -1053,11 +1024,11 @@ public final class TarArkivoStreamingReaderTest {
     public void readerCloseRetriesSourceCleanupAfterFailure() throws IOException {
         CloseFailingOnceInputStream source = new CloseFailingOnceInputStream(tarArchive());
         TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(source);
-        assertEquals(true, reader.next());
+        var readerEntry1057 = java.util.Objects.requireNonNull(reader.nextEntry());
 
         IOException exception = assertThrows(IOException.class, reader::close);
         assertEquals("close failed", exception.getMessage());
-        assertThrows(ClosedChannelException.class, reader::next);
+        assertThrows(ClosedChannelException.class, reader::nextEntry);
         assertEquals(1, source.closeCount());
 
         reader.close();
@@ -1070,16 +1041,16 @@ public final class TarArkivoStreamingReaderTest {
     @Test
     public void entryChannelOperationsAfterCloseAreRejectedAsClosed() throws IOException {
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(new ByteArrayInputStream(tarArchive()))) {
-            assertEquals(true, reader.next());
-            assertEquals(true, reader.next());
+            var readerEntry1074 = java.util.Objects.requireNonNull(reader.nextEntry());
+            var readerEntry1075 = java.util.Objects.requireNonNull(reader.nextEntry());
 
-            ReadableByteChannel channel = reader.openChannel();
+            ReadableByteChannel channel = readerEntry1075.openChannel();
             channel.close();
 
             assertEquals(false, channel.isOpen());
             assertThrows(ClosedChannelException.class, () -> channel.read(ByteBuffer.allocate(1)));
-            assertEquals(true, reader.next());
-            assertEquals("link", reader.readAttributes(TarArkivoEntryAttributes.class).path());
+            var readerEntry1082 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals("link", readerEntry1082.attributes(TarArkivoEntryAttributes.class).path());
         }
     }
 
@@ -1103,18 +1074,18 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1107 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes file = readerEntry1107.attributes(TarArkivoEntryAttributes.class);
             assertEquals(path, file.path());
             assertEquals(5L, file.size());
             assertEquals("pax-user", file.userName());
             assertEquals(Instant.ofEpochSecond(1_893_456_000L, 250_000_000L), file.lastModifiedTime().toInstant());
             assertEquals(Instant.ofEpochSecond(1_893_456_001L, 500_000_000L), file.lastAccessTime().toInstant());
             assertEquals(Instant.ofEpochSecond(1_893_456_002L, 750_000_000L), file.creationTime().toInstant());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry1107.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1138,14 +1109,11 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                 new ByteArrayInputStream(output.toByteArray()),
-                ArchiveOptions.fromEnvironment(Map.of(
-                        TarArkivoFileSystem.METADATA_CHARSET_DETECTOR.key(),
-                        detector
-                ))
+                TarArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(detector)
         )) {
-            assertEquals(true, reader.next());
-            assertEquals(path, reader.readAttributes(TarArkivoEntryAttributes.class).path());
-            assertEquals(false, reader.next());
+            var readerEntry1147 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals(path, readerEntry1147.attributes(TarArkivoEntryAttributes.class).path());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1175,13 +1143,10 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                 new ByteArrayInputStream(output.toByteArray()),
-                ArchiveOptions.fromEnvironment(Map.of(
-                        TarArkivoFileSystem.METADATA_CHARSET_DETECTOR.key(),
-                        detector
-                ))
+                TarArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(detector)
         )) {
-            assertEquals(true, reader.next());
-            assertEquals(path, reader.readAttributes(TarArkivoEntryAttributes.class).path());
+            var readerEntry1184 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals(path, readerEntry1184.attributes(TarArkivoEntryAttributes.class).path());
             assertEquals(1, paxDetectorCalls[0]);
         }
     }
@@ -1204,13 +1169,10 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                 new ByteArrayInputStream(output.toByteArray()),
-                ArchiveOptions.fromEnvironment(Map.of(
-                        TarArkivoFileSystem.METADATA_CHARSET_DETECTOR.key(),
-                        detector
-                ))
+                TarArchiveOptions.READ_DEFAULTS.withMetadataCharsetDetector(detector)
         )) {
-            assertEquals(true, reader.next());
-            assertEquals(path, reader.readAttributes(TarArkivoEntryAttributes.class).path());
+            var readerEntry1213 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals(path, readerEntry1213.attributes(TarArkivoEntryAttributes.class).path());
             assertEquals(0, paxDetectorCalls[0]);
         }
     }
@@ -1225,15 +1187,19 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                 new ByteArrayInputStream(output.toByteArray()),
-                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.MAX_METADATA_SIZE.key(), maximum))
+                TarArchiveOptions.READ_DEFAULTS.withCommon(
+                        ArchiveReadOptions.DEFAULT.withLimits(
+                                ArchiveReadLimits.builder().maximumMetadataSize(maximum).build()
+                        )
+                )
         )) {
-            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
+            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::nextEntry);
             assertEquals(ArkivoReadLimitKind.METADATA_SIZE, exception.kind());
             assertEquals(maximum, exception.maximum());
             assertEquals(maximum + body.length, exception.actual());
             assertEquals("PaxHeaders/entry", exception.entryPath());
 
-            ArkivoReadLimitException repeated = assertThrows(ArkivoReadLimitException.class, reader::next);
+            ArkivoReadLimitException repeated = assertThrows(ArkivoReadLimitException.class, reader::nextEntry);
             assertEquals(exception.kind(), repeated.kind());
             assertEquals(exception.maximum(), repeated.maximum());
             assertEquals(exception.actual(), repeated.actual());
@@ -1250,7 +1216,7 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            IOException exception = assertThrows(IOException.class, reader::next);
+            IOException exception = assertThrows(IOException.class, reader::nextEntry);
             assertEquals(true, exception.getMessage().contains("TAR entry path must not contain .."));
         }
     }
@@ -1264,7 +1230,7 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            IOException exception = assertThrows(IOException.class, reader::next);
+            IOException exception = assertThrows(IOException.class, reader::nextEntry);
             assertEquals(true, exception.getMessage().contains("TAR entry path must be relative"));
         }
     }
@@ -1278,7 +1244,7 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            IOException exception = assertThrows(IOException.class, reader::next);
+            IOException exception = assertThrows(IOException.class, reader::nextEntry);
             assertEquals(true, exception.getMessage().contains("TAR entry path must not contain .."));
         }
     }
@@ -1293,7 +1259,7 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            IOException exception = assertThrows(IOException.class, reader::next);
+            IOException exception = assertThrows(IOException.class, reader::nextEntry);
             assertEquals(true, exception.getMessage().contains("TAR entry is missing a path"));
         }
     }
@@ -1323,8 +1289,8 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes first = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1330 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes first = readerEntry1330.attributes(TarArkivoEntryAttributes.class);
             assertEquals("first.txt", first.path());
             assertEquals(111L, first.userId());
             assertEquals(222L, first.groupId());
@@ -1333,12 +1299,12 @@ public final class TarArkivoStreamingReaderTest {
             assertEquals(Instant.ofEpochSecond(1_893_456_000L, 125_000_000L), first.lastModifiedTime().toInstant());
             assertEquals(Instant.ofEpochSecond(1_893_456_010L, 250_000_000L), first.lastAccessTime().toInstant());
             assertEquals(Instant.ofEpochSecond(1_893_456_020L, 500_000_000L), first.creationTime().toInstant());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry1330.openInputStream()) {
                 assertArrayEquals(firstContent, input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes second = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1344 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes second = readerEntry1344.attributes(TarArkivoEntryAttributes.class);
             assertEquals("second.txt", second.path());
             assertEquals(111L, second.userId());
             assertEquals(222L, second.groupId());
@@ -1347,10 +1313,10 @@ public final class TarArkivoStreamingReaderTest {
             assertEquals(Instant.ofEpochSecond(1_893_456_030L, 750_000_000L), second.lastModifiedTime().toInstant());
             assertEquals(Instant.ofEpochSecond(1_893_456_010L, 250_000_000L), second.lastAccessTime().toInstant());
             assertEquals(Instant.ofEpochSecond(1_893_456_020L, 500_000_000L), second.creationTime().toInstant());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry1344.openInputStream()) {
                 assertArrayEquals(secondContent, input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1369,14 +1335,14 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1376 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes file = readerEntry1376.attributes(TarArkivoEntryAttributes.class);
             assertEquals("global-path.txt", file.path());
             assertEquals(content.length, file.size());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry1376.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1390,11 +1356,11 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes link = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1397 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes link = readerEntry1397.attributes(TarArkivoEntryAttributes.class);
             assertEquals(true, link.isSymbolicLink());
             assertEquals("global-target.txt", link.linkName());
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1410,14 +1376,14 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1417 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes file = readerEntry1417.attributes(TarArkivoEntryAttributes.class);
             assertEquals("file.txt", file.path());
             assertEquals("user", file.userName());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry1417.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1439,15 +1405,15 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1446 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes file = readerEntry1446.attributes(TarArkivoEntryAttributes.class);
             assertEquals("file.txt", file.path());
             assertNull(file.userName());
             assertNull(file.groupName());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry1446.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1462,11 +1428,11 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes link = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1469 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes link = readerEntry1469.attributes(TarArkivoEntryAttributes.class);
             assertEquals(true, link.isSymbolicLink());
             assertNull(link.linkName());
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1485,16 +1451,16 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1492 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes file = readerEntry1492.attributes(TarArkivoEntryAttributes.class);
             assertEquals("negative-time.txt", file.path());
             assertEquals(Instant.ofEpochSecond(-2L, 500_000_000L), file.lastModifiedTime().toInstant());
             assertEquals(Instant.ofEpochSecond(-1L, 750_000_000L), file.lastAccessTime().toInstant());
             assertEquals(Instant.ofEpochSecond(-2L), file.creationTime().toInstant());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry1492.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1510,7 +1476,7 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            IOException exception = assertThrows(IOException.class, reader::next);
+            IOException exception = assertThrows(IOException.class, reader::nextEntry);
             assertEquals(true, exception.getMessage().contains("TAR PAX mtime is out of range"));
         }
     }
@@ -1524,7 +1490,7 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            IOException exception = assertThrows(IOException.class, reader::next);
+            IOException exception = assertThrows(IOException.class, reader::nextEntry);
             assertEquals(true, exception.getMessage().contains("Invalid TAR PAX record boundary"));
         }
     }
@@ -1541,20 +1507,20 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1548 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes file = readerEntry1548.attributes(TarArkivoEntryAttributes.class);
             assertEquals(" leading-and-trailing.txt ", file.path());
             assertEquals(" user ", file.userName());
             assertEquals(" group ", file.groupName());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry1548.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes link = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1557 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes link = readerEntry1557.attributes(TarArkivoEntryAttributes.class);
             assertEquals(" link-with-spaces ", link.path());
             assertEquals(" target-with-spaces ", link.linkName());
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1573,17 +1539,17 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1580 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes file = readerEntry1580.attributes(TarArkivoEntryAttributes.class);
             assertEquals(path, file.path());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry1580.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes link = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1587 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes link = readerEntry1587.attributes(TarArkivoEntryAttributes.class);
             assertEquals(target, link.linkName());
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1601,8 +1567,8 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1608 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes file = readerEntry1608.attributes(TarArkivoEntryAttributes.class);
 
             assertEquals("binary-numbers.txt", file.path());
             assertEquals(0640, file.mode());
@@ -1610,10 +1576,10 @@ public final class TarArkivoStreamingReaderTest {
             assertEquals(groupId, file.groupId());
             assertEquals(content.length, file.size());
             assertEquals(Instant.ofEpochSecond(modificationTime), file.lastModifiedTime().toInstant());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry1608.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1626,7 +1592,7 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            IOException exception = assertThrows(IOException.class, reader::next);
+            IOException exception = assertThrows(IOException.class, reader::nextEntry);
             assertEquals(true, exception.getMessage().contains("TAR modification time is out of range"));
         }
     }
@@ -1642,15 +1608,15 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            TarArkivoEntryAttributes file = reader.readAttributes(TarArkivoEntryAttributes.class);
+            var readerEntry1649 = java.util.Objects.requireNonNull(reader.nextEntry());
+            TarArkivoEntryAttributes file = readerEntry1649.attributes(TarArkivoEntryAttributes.class);
 
             assertEquals("signed-checksum.txt", file.path());
             assertEquals("u\u00ff", file.userName());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry1649.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1663,7 +1629,7 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            IOException exception = assertThrows(IOException.class, reader::next);
+            IOException exception = assertThrows(IOException.class, reader::nextEntry);
             assertEquals(true, exception.getMessage().contains("entry size must not be negative"));
         }
     }
@@ -1681,7 +1647,7 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            IOException exception = assertThrows(IOException.class, reader::next);
+            IOException exception = assertThrows(IOException.class, reader::nextEntry);
             assertEquals(true, exception.getMessage().contains("TAR PAX uid must not be negative"));
         }
     }
@@ -1695,10 +1661,10 @@ public final class TarArkivoStreamingReaderTest {
 
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(output.toByteArray()))) {
-            assertEquals(true, reader.next());
-            assertEquals(Long.MAX_VALUE, reader.readAttributes(TarArkivoEntryAttributes.class).size());
+            var readerEntry1702 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals(Long.MAX_VALUE, readerEntry1702.attributes(TarArkivoEntryAttributes.class).size());
 
-            IOException exception = assertThrows(IOException.class, reader::next);
+            IOException exception = assertThrows(IOException.class, reader::nextEntry);
             assertEquals(true, exception.getMessage().contains("Unexpected end of TAR entry body"));
         }
     }
@@ -1720,8 +1686,8 @@ public final class TarArkivoStreamingReaderTest {
             String path,
             byte @Unmodifiable [] content
     ) throws IOException {
-        writer.beginFile(path);
-        try (OutputStream output = writer.openOutputStream()) {
+        var writerEntry1727 = writer.beginFile(path);
+        try (OutputStream output = writerEntry1727.openOutputStream()) {
             output.write(content);
         }
     }

@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.spi;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -21,13 +21,13 @@ public final class OwnedChannelCloser {
     private final Channel channel;
 
     /// Whether this context owns the backing channel.
-    private final ChannelOwnership ownership;
+    private final ResourceOwnership ownership;
 
     /// Whether the ownership obligation has completed.
     private boolean complete;
 
     /// Creates a close tracker for a backing channel and ownership policy.
-    public OwnedChannelCloser(Channel channel, ChannelOwnership ownership) {
+    public OwnedChannelCloser(Channel channel, ResourceOwnership ownership) {
         this.channel = Objects.requireNonNull(channel, "channel");
         this.ownership = Objects.requireNonNull(ownership, "ownership");
     }
@@ -43,7 +43,7 @@ public final class OwnedChannelCloser {
     /// a later call can retry the endpoint close without repeating codec finalization.
     public synchronized void closeAfter(@Nullable Throwable primaryFailure) throws IOException {
         if (!complete) {
-            if (ownership == ChannelOwnership.RETAIN) {
+            if (ownership == ResourceOwnership.BORROWED) {
                 complete = true;
             } else {
                 try {

@@ -60,13 +60,13 @@ public final class CompressionFormats {
     /// The result owns a replay channel until `takeChannel()` transfers it into the caller's read pipeline. Closing the
     /// replay channel leaves the original channel open.
     public static CompressionProbeResult probe(ReadableByteChannel source) throws IOException {
-        return probe(source, 0L, ChannelOwnership.RETAIN);
+        return probe(source, 0L, ResourceOwnership.BORROWED);
     }
 
     /// Detects an installed format from a forward-only channel with explicit source ownership.
     public static CompressionProbeResult probe(
             ReadableByteChannel source,
-            ChannelOwnership ownership
+            ResourceOwnership ownership
     ) throws IOException {
         return probe(source, 0L, ownership);
     }
@@ -75,12 +75,12 @@ public final class CompressionFormats {
     ///
     /// The result owns a channel that replays all retained bytes before continuing from the source. A larger prefix
     /// allows a container parser to reject signature collisions without reading the original channel twice. Call
-    /// `takeChannel()` to transfer the replay channel; otherwise close the result. With CLOSE, the source is closed when
+    /// `takeChannel()` to transfer the replay channel; otherwise close the result. With OWNED, the source is closed when
     /// the owning result or transferred replay channel closes, or when probing fails after argument validation.
     public static CompressionProbeResult probe(
             ReadableByteChannel source,
             long minimumPrefixSize,
-            ChannelOwnership ownership
+            ResourceOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(ownership, "ownership");
@@ -110,7 +110,7 @@ public final class CompressionFormats {
                     new PrefixReplayReadableByteChannel(prefix, source, ownership)
             );
         } catch (IOException | RuntimeException | Error exception) {
-            if (ownership == ChannelOwnership.CLOSE) {
+            if (ownership == ResourceOwnership.OWNED) {
                 closeAfterProbeFailure(source, exception);
             }
             throw exception;
@@ -160,16 +160,16 @@ public final class CompressionFormats {
             String formatName,
             WritableByteChannel target
     ) throws IOException {
-        return newWritableByteChannel(formatName, target, ChannelOwnership.RETAIN);
+        return newWritableByteChannel(formatName, target, ResourceOwnership.BORROWED);
     }
 
     /// Creates a compressing writable channel for the named format with explicit target ownership.
     ///
-    /// After argument validation, CLOSE transfers ownership before codec lookup and setup.
+    /// After argument validation, OWNED transfers ownership before codec lookup and setup.
     public static CompressingWritableByteChannel newWritableByteChannel(
             String formatName,
             WritableByteChannel target,
-            ChannelOwnership ownership
+            ResourceOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(target, "target");
@@ -177,7 +177,7 @@ public final class CompressionFormats {
         try {
             return requireDefaultCodec(formatName).newWritableByteChannel(target, ownership);
         } catch (IOException | RuntimeException | Error exception) {
-            if (ownership == ChannelOwnership.CLOSE) {
+            if (ownership == ResourceOwnership.OWNED) {
                 closeAfterOpenFailure(target, exception);
             }
             throw exception;
@@ -193,7 +193,7 @@ public final class CompressionFormats {
                 formatName,
                 source,
                 DecompressionLimits.UNLIMITED,
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         );
     }
 
@@ -201,7 +201,7 @@ public final class CompressionFormats {
     public static DecompressingReadableByteChannel newReadableByteChannel(
             String formatName,
             ReadableByteChannel source,
-            ChannelOwnership ownership
+            ResourceOwnership ownership
     ) throws IOException {
         return newReadableByteChannel(formatName, source, DecompressionLimits.UNLIMITED, ownership);
     }
@@ -212,18 +212,18 @@ public final class CompressionFormats {
             ReadableByteChannel source,
             DecompressionLimits limits
     ) throws IOException {
-        return newReadableByteChannel(formatName, source, limits, ChannelOwnership.RETAIN);
+        return newReadableByteChannel(formatName, source, limits, ResourceOwnership.BORROWED);
     }
 
     /// Creates a limited decompressing readable channel for the named format with explicit source ownership.
     ///
-    /// This method bypasses signature detection. After argument validation, CLOSE transfers ownership before codec
+    /// This method bypasses signature detection. After argument validation, OWNED transfers ownership before codec
     /// lookup and setup.
     public static DecompressingReadableByteChannel newReadableByteChannel(
             String formatName,
             ReadableByteChannel source,
             DecompressionLimits limits,
-            ChannelOwnership ownership
+            ResourceOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(source, "source");
@@ -232,7 +232,7 @@ public final class CompressionFormats {
         try {
             return requireDefaultCodec(formatName).newReadableByteChannel(source, limits, ownership);
         } catch (IOException | RuntimeException | Error exception) {
-            if (ownership == ChannelOwnership.CLOSE) {
+            if (ownership == ResourceOwnership.OWNED) {
                 closeAfterOpenFailure(source, exception);
             }
             throw exception;
@@ -243,7 +243,7 @@ public final class CompressionFormats {
     public static DecompressingReadableByteChannel newReadableByteChannel(
             ReadableByteChannel source
     ) throws IOException {
-        return newReadableByteChannel(source, DecompressionLimits.UNLIMITED, ChannelOwnership.RETAIN);
+        return newReadableByteChannel(source, DecompressionLimits.UNLIMITED, ResourceOwnership.BORROWED);
     }
 
     /// Detects a signed stream and creates a limited decompressing channel while retaining the source channel.
@@ -251,13 +251,13 @@ public final class CompressionFormats {
             ReadableByteChannel source,
             DecompressionLimits limits
     ) throws IOException {
-        return newReadableByteChannel(source, limits, ChannelOwnership.RETAIN);
+        return newReadableByteChannel(source, limits, ResourceOwnership.BORROWED);
     }
 
     /// Detects a signed stream and creates an unlimited decompressing channel with explicit source ownership.
     public static DecompressingReadableByteChannel newReadableByteChannel(
             ReadableByteChannel source,
-            ChannelOwnership ownership
+            ResourceOwnership ownership
     ) throws IOException {
         return newReadableByteChannel(source, DecompressionLimits.UNLIMITED, ownership);
     }
@@ -270,7 +270,7 @@ public final class CompressionFormats {
     public static DecompressingReadableByteChannel newReadableByteChannel(
             ReadableByteChannel source,
             DecompressionLimits limits,
-            ChannelOwnership ownership
+            ResourceOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(limits, "limits");
@@ -283,7 +283,7 @@ public final class CompressionFormats {
             if (format == null) {
                 throw new IOException("Unrecognized compression format");
             }
-            return format.defaultCodec().newReadableByteChannel(replay, limits, ChannelOwnership.CLOSE);
+            return format.defaultCodec().newReadableByteChannel(replay, limits, ResourceOwnership.OWNED);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterOpenFailure(replay, exception);
             throw exception;
@@ -343,21 +343,21 @@ public final class CompressionFormats {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(limits, "limits");
         try (DecompressingReadableByteChannel decoder =
-                     newReadableByteChannel(source, limits, ChannelOwnership.RETAIN)) {
+                     newReadableByteChannel(source, limits, ResourceOwnership.BORROWED)) {
             return CodecTransferSupport.decompress(decoder, target);
         }
     }
 
     /// Creates a compressing output stream for the named format while retaining the target stream.
     public static OutputStream newOutputStream(String formatName, OutputStream target) throws IOException {
-        return newOutputStream(formatName, target, ChannelOwnership.RETAIN);
+        return newOutputStream(formatName, target, ResourceOwnership.BORROWED);
     }
 
     /// Creates a compressing output stream for the named format with explicit target ownership.
     public static OutputStream newOutputStream(
             String formatName,
             OutputStream target,
-            ChannelOwnership ownership
+            ResourceOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(target, "target");
@@ -369,7 +369,7 @@ public final class CompressionFormats {
 
     /// Creates an unlimited decompressing input stream for the named format while retaining the source stream.
     public static InputStream newInputStream(String formatName, InputStream source) throws IOException {
-        return newInputStream(formatName, source, DecompressionLimits.UNLIMITED, ChannelOwnership.RETAIN);
+        return newInputStream(formatName, source, DecompressionLimits.UNLIMITED, ResourceOwnership.BORROWED);
     }
 
     /// Creates a limited decompressing input stream for the named format while retaining the source stream.
@@ -378,14 +378,14 @@ public final class CompressionFormats {
             InputStream source,
             DecompressionLimits limits
     ) throws IOException {
-        return newInputStream(formatName, source, limits, ChannelOwnership.RETAIN);
+        return newInputStream(formatName, source, limits, ResourceOwnership.BORROWED);
     }
 
     /// Creates an unlimited decompressing input stream for the named format with explicit source ownership.
     public static InputStream newInputStream(
             String formatName,
             InputStream source,
-            ChannelOwnership ownership
+            ResourceOwnership ownership
     ) throws IOException {
         return newInputStream(formatName, source, DecompressionLimits.UNLIMITED, ownership);
     }
@@ -395,7 +395,7 @@ public final class CompressionFormats {
             String formatName,
             InputStream source,
             DecompressionLimits limits,
-            ChannelOwnership ownership
+            ResourceOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(source, "source");
@@ -413,7 +413,7 @@ public final class CompressionFormats {
 
     /// Detects a signed stream and creates an unlimited decompressing input stream while retaining the source stream.
     public static InputStream newInputStream(InputStream source) throws IOException {
-        return newInputStream(source, DecompressionLimits.UNLIMITED, ChannelOwnership.RETAIN);
+        return newInputStream(source, DecompressionLimits.UNLIMITED, ResourceOwnership.BORROWED);
     }
 
     /// Detects a signed stream and creates a limited decompressing input stream while retaining the source stream.
@@ -421,13 +421,13 @@ public final class CompressionFormats {
             InputStream source,
             DecompressionLimits limits
     ) throws IOException {
-        return newInputStream(source, limits, ChannelOwnership.RETAIN);
+        return newInputStream(source, limits, ResourceOwnership.BORROWED);
     }
 
     /// Detects a signed stream and creates an unlimited decompressing input stream with explicit source ownership.
     public static InputStream newInputStream(
             InputStream source,
-            ChannelOwnership ownership
+            ResourceOwnership ownership
     ) throws IOException {
         return newInputStream(source, DecompressionLimits.UNLIMITED, ownership);
     }
@@ -436,7 +436,7 @@ public final class CompressionFormats {
     public static InputStream newInputStream(
             InputStream source,
             DecompressionLimits limits,
-            ChannelOwnership ownership
+            ResourceOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(limits, "limits");
@@ -447,7 +447,7 @@ public final class CompressionFormats {
     }
 
     /// Returns the named format's installed default codec.
-    private static CompressionCodec<?> requireDefaultCodec(String formatName) throws IOException {
+    private static CompressionCodec requireDefaultCodec(String formatName) throws IOException {
         @Nullable CompressionFormat format = find(formatName);
         if (format == null) {
             throw new IOException("Unknown compression format: " + formatName);

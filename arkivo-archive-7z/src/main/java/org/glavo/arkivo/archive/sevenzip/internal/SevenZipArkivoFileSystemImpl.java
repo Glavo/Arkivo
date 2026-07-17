@@ -12,6 +12,7 @@ import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.glavo.arkivo.archive.ArkivoVolumeChannel;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
+import org.glavo.arkivo.archive.PasswordPurpose;
 import org.glavo.arkivo.archive.internal.ArkivoPathMatchers;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
@@ -1180,7 +1181,10 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
                 metadata.packedStreams().stream().mapToLong(SevenZipPackedStream::size).toArray(),
                 metadata.method(),
                 checkedDecodedLimit(metadata),
-                config.passwordProvider()
+                config.passwordProvider(),
+                PasswordPurpose.ARCHIVE_CONTENT,
+                pathText,
+                config.readLimits()
         );
         boolean completed = false;
         Throwable failure = null;
@@ -2914,7 +2918,8 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
             SevenZipArchiveMetadata metadata = SevenZipHeaderReader.readArchiveMetadata(
                     channel,
                     config.passwordProvider(),
-                    readLimits
+                    readLimits,
+                    config.readLimits()
             );
             for (SevenZipEntryMetadata entry : metadata.entries()) {
                 readLimits.acceptEntry(entry.path(), entry.size());

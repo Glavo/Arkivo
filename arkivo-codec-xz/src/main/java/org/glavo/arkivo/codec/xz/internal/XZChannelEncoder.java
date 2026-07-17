@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.xz.internal;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
@@ -101,7 +101,7 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
     /// Creates an XZ encoder with explicit dictionary and integrity-check settings.
     public XZChannelEncoder(
             WritableByteChannel target,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             int dictionarySize,
             int checkType
     ) throws IOException {
@@ -117,7 +117,7 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
     /// Creates an XZ encoder with complete LZMA2 model and integrity-check settings.
     public XZChannelEncoder(
             WritableByteChannel target,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             LZMAProperties properties,
             int checkType
     ) throws IOException {
@@ -127,7 +127,7 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
     /// Creates an XZ encoder with complete LZMA2, integrity-check, and preprocessing settings.
     public XZChannelEncoder(
             WritableByteChannel target,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             LZMAProperties properties,
             int checkType,
             XZFilterChain filterChain
@@ -138,7 +138,7 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
     /// Creates an XZ encoder with complete filter and Block-layout settings.
     public XZChannelEncoder(
             WritableByteChannel target,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             LZMAProperties properties,
             int checkType,
             XZFilterChain filterChain,
@@ -305,7 +305,7 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
         compressedCounter = counter;
         LZMA2ChannelEncoder encoder = new LZMA2ChannelEncoder(
                 counter,
-                ChannelOwnership.RETAIN,
+                ResourceOwnership.BORROWED,
                 properties
         );
         blockEncoder = encoder;
@@ -316,7 +316,7 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
             input = new TransformingWritableByteChannel(
                     input,
                     createEncodingTransform(filters.get(index)),
-                    ChannelOwnership.CLOSE
+                    ResourceOwnership.OWNED
             );
         }
         blockInput = input;

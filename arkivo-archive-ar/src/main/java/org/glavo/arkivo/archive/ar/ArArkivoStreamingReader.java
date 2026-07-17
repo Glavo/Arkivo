@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.archive.ar;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ar.internal.ArArkivoStreamingReaderImpl;
@@ -23,11 +22,11 @@ public abstract sealed class ArArkivoStreamingReader extends ArkivoStreamingRead
 
     /// Opens a streaming AR reader from an input stream.
     public static ArArkivoStreamingReader open(InputStream source) {
-        return open(source, ArchiveOptions.EMPTY);
+        return open(source, ArArchiveOptions.READ_DEFAULTS);
     }
 
     /// Opens a streaming AR reader from an input stream with common archive read options.
-    public static ArArkivoStreamingReader open(InputStream source, ArchiveOptions options) {
+    public static ArArkivoStreamingReader open(InputStream source, ArArchiveOptions.Read options) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
         return open(StreamChannelAdapters.readableChannel(source), options);
@@ -35,16 +34,16 @@ public abstract sealed class ArArkivoStreamingReader extends ArkivoStreamingRead
 
     /// Opens a streaming AR reader from a readable channel.
     public static ArArkivoStreamingReader open(ReadableByteChannel source) {
-        return open(source, ArchiveOptions.EMPTY);
+        return open(source, ArArchiveOptions.READ_DEFAULTS);
     }
 
     /// Opens a streaming AR reader from a readable channel with common archive read options.
-    public static ArArkivoStreamingReader open(ReadableByteChannel source, ArchiveOptions options) {
+    public static ArArkivoStreamingReader open(ReadableByteChannel source, ArArchiveOptions.Read options) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
         return new ArArkivoStreamingReaderImpl(
                 StreamChannelAdapters.inputStream(source),
-                options
+                ArArkivoFileSystem.toLegacyOptions(options)
         );
     }
 }

@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.xz.internal;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
@@ -78,14 +78,14 @@ public final class XZChannelDecoder implements DecompressingReadableByteChannel.
     private boolean open = true;
 
     /// Creates a decoder accepting concatenated XZ streams and stream padding.
-    public XZChannelDecoder(ReadableByteChannel source, ChannelOwnership ownership) throws IOException {
+    public XZChannelDecoder(ReadableByteChannel source, ResourceOwnership ownership) throws IOException {
         this(source, ownership, true, CompressionCodec.UNKNOWN_SIZE, true);
     }
 
     /// Creates a decoder with explicit concatenated-stream behavior.
     public XZChannelDecoder(
             ReadableByteChannel source,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             boolean concatenated
     ) throws IOException {
         this(source, ownership, concatenated, CompressionCodec.UNKNOWN_SIZE, true);
@@ -94,7 +94,7 @@ public final class XZChannelDecoder implements DecompressingReadableByteChannel.
     /// Creates a decoder with explicit concatenation and maximum-window behavior.
     public XZChannelDecoder(
             ReadableByteChannel source,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             boolean concatenated,
             long maximumWindowSize
     ) throws IOException {
@@ -104,7 +104,7 @@ public final class XZChannelDecoder implements DecompressingReadableByteChannel.
     /// Creates a decoder with explicit concatenation, window, and block-check behavior.
     public XZChannelDecoder(
             ReadableByteChannel source,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             boolean concatenated,
             long maximumWindowSize,
             boolean verifyChecksums
@@ -572,7 +572,7 @@ public final class XZChannelDecoder implements DecompressingReadableByteChannel.
                 CompressionDecoderSupport.requireWindowSize(maximumWindowSize, dictionarySize);
                 return new LZMA2ChannelDecoder(
                         downstream,
-                        ChannelOwnership.RETAIN,
+                        ResourceOwnership.BORROWED,
                         dictionarySize,
                         1
                 );

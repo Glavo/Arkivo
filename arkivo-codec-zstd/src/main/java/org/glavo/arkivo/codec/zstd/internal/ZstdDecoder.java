@@ -111,7 +111,18 @@ public final class ZstdDecoder
 
     /// Decodes source bytes until input, output space, a dictionary, or the frame boundary stops progress.
     @Override
-    public CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
+    public CodecOutcome decode(ByteBuffer source, ByteBuffer target) throws IOException {
+        return decodeInternal(source, target, false);
+    }
+
+    /// Finishes decoding after all source bytes have been supplied.
+    @Override
+    public CodecOutcome finish(ByteBuffer source, ByteBuffer target) throws IOException {
+        return decodeInternal(source, target, true);
+    }
+
+    /// Implements decoding with the selected source-completion state.
+    private CodecOutcome decodeInternal(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
         requireOpen();

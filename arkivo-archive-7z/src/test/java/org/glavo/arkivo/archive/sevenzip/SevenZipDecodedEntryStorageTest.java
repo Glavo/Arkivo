@@ -3,9 +3,8 @@
 
 package org.glavo.arkivo.archive.sevenzip;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -19,7 +18,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
-import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -36,9 +34,10 @@ final class SevenZipDecodedEntryStorageTest {
         Path archive = directory.resolve("storage.7z");
         createCompressedArchive(archive, content);
         TrackingStorage storage = new TrackingStorage(directory.resolve("staging"), false);
-        SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archive, ArchiveOptions.fromEnvironment(Map.of(
-                ArkivoFileSystem.EDIT_STORAGE.key(), storage
-        )));
+        SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                archive,
+                readOptions(storage)
+        );
 
         try (SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/compressed.bin"))) {
             assertEquals(1, storage.createCount);
@@ -70,7 +69,7 @@ final class SevenZipDecodedEntryStorageTest {
                 IOException.class,
                 () -> SevenZipArkivoFileSystem.open(
                         archive,
-                        ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
+                        readOptions(storage)
                 )
         );
         assertEquals(1, storage.storageCloseCount);
@@ -83,9 +82,10 @@ final class SevenZipDecodedEntryStorageTest {
         Path archive = directory.resolve("retry.7z");
         createCompressedArchive(archive, content);
         TrackingStorage storage = new TrackingStorage(directory.resolve("retry-staging"), true);
-        SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archive, ArchiveOptions.fromEnvironment(Map.of(
-                ArkivoFileSystem.EDIT_STORAGE.key(), storage
-        )));
+        SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(
+                archive,
+                readOptions(storage)
+        );
         SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/compressed.bin"));
 
         assertThrows(IOException.class, channel::close);
@@ -102,13 +102,28 @@ final class SevenZipDecodedEntryStorageTest {
     private static void createCompressedArchive(Path archive, byte[] content) throws IOException {
         try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
                 archive,
-                ArchiveOptions.fromEnvironment(Map.of(SevenZipArkivoFileSystem.COMPRESSION.key(), SevenZipCompression.deflate(1)))
+                new SevenZipArchiveOptions.Create(
+                        org.glavo.arkivo.archive.ArchiveCreateOptions.DEFAULT,
+                        null,
+                        SevenZipCompression.deflate(1),
+                        SevenZipFilterChain.EMPTY,
+                        SevenZipArchiveOptions.DEFAULT_SOLID_FILE_COUNT,
+                        false
+                )
         )) {
-            writer.beginFile("compressed.bin");
-            try (OutputStream output = writer.openOutputStream()) {
+            var writerEntry107 = writer.beginFile("compressed.bin");
+            try (OutputStream output = writerEntry107.openOutputStream()) {
                 output.write(content);
             }
         }
+    }
+
+    /// Returns read options using the requested decoded-content storage.
+    private static SevenZipArchiveOptions.Read readOptions(ArkivoEditStorage storage) {
+        return new SevenZipArchiveOptions.Read(
+                ArchiveReadOptions.DEFAULT.withEditStorage(storage),
+                null
+        );
     }
 
     /// Records storage allocation and close behavior while delegating bytes to temporary files.

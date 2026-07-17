@@ -24,7 +24,7 @@ final class DirectByteBufferCodecSupportTest {
     /// Verifies allocating and fixed operations never open channel adapters.
     @Test
     void drivesBufferEnginesWithoutChannelAdapters() throws IOException {
-        CompressionCodec.FlushableFramed<LengthPrefixedCodec> codec = new LengthPrefixedCodec();
+        CompressionCodec.FlushableFramed codec = new LengthPrefixedCodec();
         byte[] content = new byte[200];
         for (int index = 0; index < content.length; index++) {
             content[index] = (byte) (index * 31);
@@ -84,7 +84,7 @@ final class DirectByteBufferCodecSupportTest {
     /// Verifies concatenated decoding and one-frame decoding use distinct direct-engine loops.
     @Test
     void preservesDirectFrameBoundaries() throws IOException {
-        CompressionCodec.FlushableFramed<LengthPrefixedCodec> codec = new LengthPrefixedCodec();
+        CompressionCodec.FlushableFramed codec = new LengthPrefixedCodec();
         byte[] first = new byte[]{1, 2, 3};
         byte[] second = new byte[]{4, 5};
         byte[] firstEncoded = bufferBytes(codec.compress(ByteBuffer.wrap(first)));
@@ -133,7 +133,7 @@ final class DirectByteBufferCodecSupportTest {
     /// Provides a length-prefixed identity format exclusively through buffer engines.
     @NotNullByDefault
     private static final class LengthPrefixedCodec
-            implements CompressionCodec.FlushableFramed<LengthPrefixedCodec>, CompressionFormat {
+            implements CompressionCodec.FlushableFramed, CompressionFormat {
         /// Returns the test compression format name.
         @Override
         public String name() {
@@ -148,7 +148,7 @@ final class DirectByteBufferCodecSupportTest {
 
         /// Returns this test object as the default codec configuration.
         @Override
-        public CompressionCodec<?> defaultCodec() {
+        public CompressionCodec defaultCodec() {
             return this;
         }
 
@@ -171,7 +171,7 @@ final class DirectByteBufferCodecSupportTest {
         @Override
         public CompressingWritableByteChannel.FlushableFramed newWritableByteChannel(
                 WritableByteChannel target,
-                ChannelOwnership ownership
+                ResourceOwnership ownership
         ) {
             throw new AssertionError("Channel encoder path must not be used");
         }
@@ -181,7 +181,7 @@ final class DirectByteBufferCodecSupportTest {
         public DecompressingReadableByteChannel.Framed newReadableByteChannel(
                 ReadableByteChannel source,
                 DecompressionLimits limits,
-                ChannelOwnership ownership
+                ResourceOwnership ownership
         ) {
             throw new AssertionError("Channel decoder path must not be used");
         }
@@ -294,7 +294,18 @@ final class DirectByteBufferCodecSupportTest {
 
         /// Copies exactly the payload size declared by the one-byte frame header.
         @Override
-        public CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
+        public CodecOutcome decode(ByteBuffer source, ByteBuffer target) throws IOException {
+            return decodeInternal(source, target, false);
+        }
+
+        /// Finishes decoding after all source bytes have been supplied.
+        @Override
+        public CodecOutcome finish(ByteBuffer source, ByteBuffer target) throws IOException {
+            return decodeInternal(source, target, true);
+        }
+
+        /// Implements decoding with the selected source-completion state.
+        private CodecOutcome decodeInternal(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
             Objects.requireNonNull(source, "source");
             Objects.requireNonNull(target, "target");
             if (finished) {

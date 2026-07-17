@@ -3,9 +3,8 @@
 
 package org.glavo.arkivo.archive.rar;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -19,7 +18,6 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.util.Map;
 import java.util.zip.CRC32;
 
 /// Verifies that a RAR file system lazily caches a large stored entry outside the Java heap.
@@ -95,11 +93,10 @@ public final class RarLowHeapStorageProbe {
 
     /// Opens the archive with explicit temporary storage and verifies random access to the large entry.
     private static void verifyArchive(Path archivePath, Path storageDirectory) throws IOException {
-        Map<String, Object> environment = Map.of(
-                ArkivoFileSystem.EDIT_STORAGE.key(),
-                ArkivoEditStorage.temporaryFiles(storageDirectory)
+        RarArchiveOptions.Read options = RarArchiveOptions.READ_DEFAULTS.withCommon(
+                ArchiveReadOptions.DEFAULT.withEditStorage(ArkivoEditStorage.temporaryFiles(storageDirectory))
         );
-        try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
+        try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archivePath, options)) {
             Path entry = fileSystem.getPath("/large.bin");
             BasicFileAttributes attributes = Files.readAttributes(entry, BasicFileAttributes.class);
             if (attributes.size() != ENTRY_SIZE) {

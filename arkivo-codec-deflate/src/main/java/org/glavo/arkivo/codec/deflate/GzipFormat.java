@@ -19,8 +19,13 @@ public final class GzipFormat implements CompressionFormat {
     /// The canonical gzip format instance.
     private static final GzipFormat INSTANCE = new GzipFormat();
 
-    /// Creates a stateless format descriptor for service discovery.
+    /// Creates a classpath-discoverable Gzip format descriptor.
     public GzipFormat() {
+    }
+
+    /// Returns the canonical Gzip service provider.
+    public static GzipFormat provider() {
+        return INSTANCE;
     }
 
     /// Returns the canonical gzip format instance.

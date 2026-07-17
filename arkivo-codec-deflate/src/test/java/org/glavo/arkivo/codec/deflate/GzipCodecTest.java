@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.deflate;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
@@ -38,7 +38,7 @@ public final class GzipCodecTest {
         GzipCodec codec = new GzipCodec();
         byte[] input = "hello gzip".getBytes(StandardCharsets.UTF_8);
 
-        assertEquals(true, codec instanceof CompressionCodec<?>);
+        assertEquals(true, codec instanceof CompressionCodec);
         assertEquals(GzipFormat.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
@@ -114,7 +114,7 @@ public final class GzipCodecTest {
 
         CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(
                 Channels.newChannel(compressed),
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         );
         encoder.finishFrame(ByteBuffer.wrap(first));
         int firstMemberSize = compressed.size();
@@ -204,7 +204,7 @@ public final class GzipCodecTest {
     }
 
     /// Compresses and decompresses the given bytes.
-    private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
+    private static byte[] roundTrip(CompressionCodec codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
         try (OutputStream output = codec.newOutputStream(compressed)) {
             output.write(input);

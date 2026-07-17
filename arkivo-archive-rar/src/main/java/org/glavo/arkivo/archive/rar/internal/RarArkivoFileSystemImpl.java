@@ -3,11 +3,15 @@
 
 package org.glavo.arkivo.archive.rar.internal;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.internal.ArchiveOptions;
+import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
+import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
+import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
+import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
@@ -72,6 +76,9 @@ import java.util.Set;
 /// Implements a read-only RAR archive file system backed by an in-memory entry index.
 @NotNullByDefault
 public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
+    /// The internal NIO environment key for a password provider.
+    private static final ArchiveOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
+            ArchiveOption.of("arkivo.rar", "passwordProvider", ArkivoPasswordProvider.class);
     /// The supported file attribute view names.
     private static final @Unmodifiable Set<String> SUPPORTED_ATTRIBUTE_VIEWS =
             Set.of("basic", "owner", "posix", "rar");
@@ -165,9 +172,9 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
             Runnable closeAction
     ) throws IOException {
         Objects.requireNonNull(options, "options");
-        ArkivoFileSystemThreadSafety threadSafety = options.getOrDefault(ArkivoFileSystem.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
+        ArkivoFileSystemThreadSafety threadSafety = options.getOrDefault(ArchiveEnvironmentOptions.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
         );
-        Set<OpenOption> openOptions = options.getOrDefault(ArkivoFileSystem.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
+        Set<OpenOption> openOptions = options.getOrDefault(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
         );
         for (OpenOption option : openOptions) {
             if (option != StandardOpenOption.READ) {
@@ -213,9 +220,9 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     ) throws IOException {
         Objects.requireNonNull(volumes, "volumes");
         Objects.requireNonNull(options, "options");
-        ArkivoFileSystemThreadSafety threadSafety = options.getOrDefault(ArkivoFileSystem.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
+        ArkivoFileSystemThreadSafety threadSafety = options.getOrDefault(ArchiveEnvironmentOptions.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
         );
-        Set<OpenOption> openOptions = options.getOrDefault(ArkivoFileSystem.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
+        Set<OpenOption> openOptions = options.getOrDefault(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
         );
         for (OpenOption option : openOptions) {
             if (option != StandardOpenOption.READ) {
@@ -827,34 +834,40 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         try (InputStream input = new RarVolumeInputStream(volumes);
              RarArkivoStreamingReader reader = new RarArkivoStreamingReaderImpl(
                      input,
-                     options.get(RarArkivoFileSystem.PASSWORD_PROVIDER),
+                     options.get(PASSWORD_PROVIDER),
                      options,
                      false
-             )) {
+            )) {
             RarArkivoStreamingReaderImpl readerImpl = (RarArkivoStreamingReaderImpl) reader;
-            while (reader.next()) {
-                RarEntryAttributes attributes =
-                        (RarEntryAttributes) reader.readAttributes(RarArkivoEntryAttributes.class);
-                String path = normalizeEntryPath(attributes.path());
-                if (!node.path().equals(path)) {
-                    continue;
+            while (true) {
+                @Nullable ArkivoStreamingReader.Entry entry = reader.nextEntry();
+                if (entry == null) {
+                    break;
                 }
-                requireMatchingContentMetadata(node.attributes(), attributes);
-                if (!readerImpl.isCurrentBodyReadable()) {
-                    throw new IOException("RAR entry content is no longer readable: " + node.path());
+                try (entry) {
+                    RarEntryAttributes attributes =
+                            (RarEntryAttributes) entry.attributes(RarArkivoEntryAttributes.class);
+                    String path = normalizeEntryPath(attributes.path());
+                    if (!node.path().equals(path)) {
+                        continue;
+                    }
+                    requireMatchingContentMetadata(node.attributes(), attributes);
+                    if (!readerImpl.isCurrentBodyReadable()) {
+                        throw new IOException("RAR entry content is no longer readable: " + node.path());
+                    }
+                    ArkivoStoredContent content;
+                    try (InputStream entryInput = entry.openInputStream()) {
+                        content = StoredContentSupport.storeInput(
+                                editStorage,
+                                ownedContents,
+                                node.path(),
+                                node.attributes().unpackedSize(),
+                                entryInput
+                        );
+                    }
+                    node.setContent(content);
+                    return content;
                 }
-                ArkivoStoredContent content;
-                try (InputStream entryInput = reader.openInputStream()) {
-                    content = StoredContentSupport.storeInput(
-                            editStorage,
-                            ownedContents,
-                            node.path(),
-                            node.attributes().unpackedSize(),
-                            entryInput
-                    );
-                }
-                node.setContent(content);
-                return content;
             }
         }
         throw new IOException("RAR entry disappeared while materializing content: " + node.path());
@@ -913,35 +926,41 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
         LinkedHashMap<String, Node> nodes = new LinkedHashMap<>();
         Node root = new Node("", rootAttributes(), true, false, null);
         nodes.put("", root);
-        boolean encryptedContentAvailable = options.get(RarArkivoFileSystem.PASSWORD_PROVIDER) != null;
+        boolean encryptedContentAvailable = options.get(PASSWORD_PROVIDER) != null;
 
         try (RarArkivoStreamingReader reader = new RarArkivoStreamingReaderImpl(
                 input,
-                options.get(RarArkivoFileSystem.PASSWORD_PROVIDER),
+                options.get(PASSWORD_PROVIDER),
                 options,
                 false
         )) {
             RarArkivoStreamingReaderImpl readerImpl = (RarArkivoStreamingReaderImpl) reader;
-            while (reader.next()) {
-                RarEntryAttributes attributes =
-                        (RarEntryAttributes) reader.readAttributes(RarArkivoEntryAttributes.class);
-                String path = normalizeEntryPath(attributes.path());
-                ensureParents(nodes, path);
-                @Nullable String redirectionTarget = isContentRedirection(attributes)
-                        ? normalizeRedirectionTargetPath(attributes.redirectionTarget())
-                        : null;
-                boolean bodyReadable = redirectionTarget == null
-                        && attributes.isRegularFile()
-                        && readerImpl.isCurrentBodyReadable()
-                        && (!attributes.isEncrypted() || encryptedContentAvailable)
-                        && !attributes.continuesFromPreviousVolume();
-                putNode(nodes, new Node(
-                        path,
-                        attributes,
-                        attributes.isDirectory(),
-                        bodyReadable,
-                        redirectionTarget
-                ));
+            while (true) {
+                @Nullable ArkivoStreamingReader.Entry entry = reader.nextEntry();
+                if (entry == null) {
+                    break;
+                }
+                try (entry) {
+                    RarEntryAttributes attributes =
+                            (RarEntryAttributes) entry.attributes(RarArkivoEntryAttributes.class);
+                    String path = normalizeEntryPath(attributes.path());
+                    ensureParents(nodes, path);
+                    @Nullable String redirectionTarget = isContentRedirection(attributes)
+                            ? normalizeRedirectionTargetPath(attributes.redirectionTarget())
+                            : null;
+                    boolean bodyReadable = redirectionTarget == null
+                            && attributes.isRegularFile()
+                            && readerImpl.isCurrentBodyReadable()
+                            && (!attributes.isEncrypted() || encryptedContentAvailable)
+                            && !attributes.continuesFromPreviousVolume();
+                    putNode(nodes, new Node(
+                            path,
+                            attributes,
+                            attributes.isDirectory(),
+                            bodyReadable,
+                            redirectionTarget
+                    ));
+                }
             }
         }
         resolveRedirectionSizes(nodes);

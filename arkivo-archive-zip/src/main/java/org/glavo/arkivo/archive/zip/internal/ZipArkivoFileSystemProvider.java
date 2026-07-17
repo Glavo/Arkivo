@@ -5,7 +5,7 @@ package org.glavo.arkivo.archive.zip.internal;
 
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.archive.zip.ZipArkivoFormat;
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -100,6 +100,13 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
         return config.archiveWritable()
                 ? new ZipArkivoWritableFileSystemImpl(this, path, config, null, true)
                 : new ZipArkivoReadOnlyFileSystemImpl(this, path, null, config);
+    }
+
+    /// Opens a read-only ZIP archive path from an already validated strongly typed configuration.
+    public ZipArkivoFileSystem openReadPath(Path path, ZipArkivoFileSystemConfig config) throws IOException {
+        Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(config, "config");
+        return new ZipArkivoReadOnlyFileSystemImpl(this, path, null, config);
     }
 
     /// Returns an open ZIP archive file system for a provider URI.

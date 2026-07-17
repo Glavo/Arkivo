@@ -19,13 +19,13 @@ import java.util.Objects;
 public interface ArkivoStreamingWriterFormat extends ArkivoFormat {
     /// Opens a streaming writer and takes ownership of the output stream when successful.
     default ArkivoStreamingWriter openStreamingWriter(OutputStream target) throws IOException {
-        return openStreamingWriter(target, ArchiveOptions.EMPTY);
+        return openStreamingWriter(target, ArchiveCreateOptions.DEFAULT);
     }
 
     /// Opens a streaming writer with options and takes ownership of the output stream when successful.
     default ArkivoStreamingWriter openStreamingWriter(
             OutputStream target,
-            ArchiveOptions options
+            ArchiveCreateOptions options
     ) throws IOException {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(options, "options");
@@ -34,12 +34,12 @@ public interface ArkivoStreamingWriterFormat extends ArkivoFormat {
 
     /// Opens a streaming writer and takes ownership of the writable channel when successful.
     default ArkivoStreamingWriter openStreamingWriter(WritableByteChannel target) throws IOException {
-        return openStreamingWriter(target, ArchiveOptions.EMPTY);
+        return openStreamingWriter(target, ArchiveCreateOptions.DEFAULT);
     }
 
     /// Opens a streaming writer with options and takes ownership of the channel when successful.
     ArkivoStreamingWriter openStreamingWriter(
             WritableByteChannel target,
-            ArchiveOptions options
+            ArchiveCreateOptions options
     ) throws IOException;
 }

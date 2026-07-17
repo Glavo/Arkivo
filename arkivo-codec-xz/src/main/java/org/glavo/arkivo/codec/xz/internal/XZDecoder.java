@@ -110,7 +110,18 @@ public final class XZDecoder implements CompressionDecoder.Framed {
 
     /// Decodes one XZ Stream until input, output space, or its Footer boundary stops progress.
     @Override
-    public CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
+    public CodecOutcome decode(ByteBuffer source, ByteBuffer target) throws IOException {
+        return decodeInternal(source, target, false);
+    }
+
+    /// Finishes decoding after all source bytes have been supplied.
+    @Override
+    public CodecOutcome finish(ByteBuffer source, ByteBuffer target) throws IOException {
+        return decodeInternal(source, target, true);
+    }
+
+    /// Implements decoding with the selected source-completion state.
+    private CodecOutcome decodeInternal(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
         requireOpen();
@@ -684,7 +695,9 @@ public final class XZDecoder implements CompressionDecoder.Framed {
                 ByteBuffer compressed = boundedCompressedSource(source);
                 boolean compressedEnd = compressedEnd(compressed, source, endOfInput);
                 int inputStart = compressed.position();
-                CodecOutcome outcome = decoder.decode(compressed, decodedBuffer, compressedEnd);
+                CodecOutcome outcome = compressedEnd
+                        ? decoder.finish(compressed, decodedBuffer)
+                        : decoder.decode(compressed, decodedBuffer);
                 int consumed = compressed.position() - inputStart;
                 source.position(source.position() + consumed);
                 addCompressedBytes(consumed);

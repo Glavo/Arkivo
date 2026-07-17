@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.archive.zip;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
@@ -28,13 +27,13 @@ public abstract sealed class ZipArkivoStreamingReader extends ArkivoStreamingRea
 
     /// Opens a streaming ZIP reader from a final archive path and discovers conventional split volumes.
     public static ZipArkivoStreamingReader open(Path path) throws IOException {
-        return open(path, ArchiveOptions.EMPTY);
+        return open(path, ZipArchiveOptions.READ_DEFAULTS);
     }
 
     /// Opens a configured streaming ZIP reader from a final archive path and discovers conventional split volumes.
     public static ZipArkivoStreamingReader open(
             Path path,
-            ArchiveOptions options
+            ZipArchiveOptions.Read options
     ) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
@@ -43,7 +42,7 @@ public abstract sealed class ZipArkivoStreamingReader extends ArkivoStreamingRea
 
     /// Opens a streaming ZIP reader from a multi-volume source.
     public static ZipArkivoStreamingReader open(ArkivoVolumeSource source) throws IOException {
-        return open(source, ArchiveOptions.EMPTY);
+        return open(source, ZipArchiveOptions.READ_DEFAULTS);
     }
 
     /// Opens a streaming ZIP reader from a multi-volume source with options.
@@ -51,11 +50,11 @@ public abstract sealed class ZipArkivoStreamingReader extends ArkivoStreamingRea
     /// The returned reader owns the source and every physical volume channel it opens.
     public static ZipArkivoStreamingReader open(
             ArkivoVolumeSource source,
-            ArchiveOptions options
+            ZipArchiveOptions.Read options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
-        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromOptions(options);
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromReadOptions(options);
         ZipVolumeReadableByteChannel channel = new ZipVolumeReadableByteChannel(source);
         try {
             return new ZipArkivoStreamingReaderImpl(channel, config);
@@ -73,11 +72,11 @@ public abstract sealed class ZipArkivoStreamingReader extends ArkivoStreamingRea
 
     /// Opens a streaming ZIP reader from an input stream.
     public static ZipArkivoStreamingReader open(InputStream source) {
-        return open(source, ArchiveOptions.EMPTY);
+        return open(source, ZipArchiveOptions.READ_DEFAULTS);
     }
 
     /// Opens a streaming ZIP reader from an input stream with options.
-    public static ZipArkivoStreamingReader open(InputStream source, ArchiveOptions options) {
+    public static ZipArkivoStreamingReader open(InputStream source, ZipArchiveOptions.Read options) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
         return open(StreamChannelAdapters.readableChannel(source), options);
@@ -85,17 +84,17 @@ public abstract sealed class ZipArkivoStreamingReader extends ArkivoStreamingRea
 
     /// Opens a streaming ZIP reader from a readable channel.
     public static ZipArkivoStreamingReader open(ReadableByteChannel source) {
-        return open(source, ArchiveOptions.EMPTY);
+        return open(source, ZipArchiveOptions.READ_DEFAULTS);
     }
 
     /// Opens a streaming ZIP reader from a readable channel with options.
     public static ZipArkivoStreamingReader open(
             ReadableByteChannel source,
-            ArchiveOptions options
+            ZipArchiveOptions.Read options
     ) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
-        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromOptions(options);
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromReadOptions(options);
         return new ZipArkivoStreamingReaderImpl(source, config);
     }
 }

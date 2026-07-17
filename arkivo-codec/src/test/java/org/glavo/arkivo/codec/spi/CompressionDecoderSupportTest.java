@@ -8,6 +8,7 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -27,35 +28,73 @@ final class CompressionDecoderSupportTest {
     /// Verifies immutable limit factories, withers, and validation.
     @Test
     void validatesDecompressionLimits() {
-        DecompressionLimits limits = new DecompressionLimits(3L, 4_096L);
+        DecompressionLimits limits = new DecompressionLimits(3L, 4_096L, 8_192L);
 
         assertEquals(3L, limits.maximumOutputSize());
         assertEquals(4_096L, limits.maximumWindowSize());
+        assertEquals(8_192L, limits.maximumMemorySize());
         assertSame(limits, limits.withMaximumOutputSize(3L));
         assertSame(limits, limits.withMaximumWindowSize(4_096L));
+        assertSame(limits, limits.withMaximumMemorySize(8_192L));
         assertEquals(
-                new DecompressionLimits(8L, 4_096L),
+                new DecompressionLimits(8L, 4_096L, 8_192L),
                 limits.withMaximumOutputSize(8L)
         );
         assertEquals(
-                new DecompressionLimits(3L, 8_192L),
+                new DecompressionLimits(3L, 8_192L, 8_192L),
                 limits.withMaximumWindowSize(8_192L)
         );
         assertEquals(
-                new DecompressionLimits(7L, DecompressionLimits.UNLIMITED_SIZE),
+                new DecompressionLimits(3L, 4_096L, 16_384L),
+                limits.withMaximumMemorySize(16_384L)
+        );
+        assertEquals(
+                new DecompressionLimits(
+                        7L,
+                        DecompressionLimits.UNLIMITED_SIZE,
+                        DecompressionLimits.UNLIMITED_SIZE
+                ),
                 DecompressionLimits.ofMaximumOutputSize(7L)
         );
         assertEquals(
-                new DecompressionLimits(DecompressionLimits.UNLIMITED_SIZE, 7L),
+                new DecompressionLimits(
+                        DecompressionLimits.UNLIMITED_SIZE,
+                        7L,
+                        DecompressionLimits.UNLIMITED_SIZE
+                ),
                 DecompressionLimits.ofMaximumWindowSize(7L)
         );
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> new DecompressionLimits(-2L, DecompressionLimits.UNLIMITED_SIZE)
+        assertEquals(
+                new DecompressionLimits(
+                        DecompressionLimits.UNLIMITED_SIZE,
+                        DecompressionLimits.UNLIMITED_SIZE,
+                        7L
+                ),
+                DecompressionLimits.ofMaximumMemorySize(7L)
         );
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new DecompressionLimits(DecompressionLimits.UNLIMITED_SIZE, -2L)
+                () -> new DecompressionLimits(
+                        -2L,
+                        DecompressionLimits.UNLIMITED_SIZE,
+                        DecompressionLimits.UNLIMITED_SIZE
+                )
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new DecompressionLimits(
+                        DecompressionLimits.UNLIMITED_SIZE,
+                        -2L,
+                        DecompressionLimits.UNLIMITED_SIZE
+                )
+        );
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new DecompressionLimits(
+                        DecompressionLimits.UNLIMITED_SIZE,
+                        DecompressionLimits.UNLIMITED_SIZE,
+                        -2L
+                )
         );
     }
 
@@ -63,6 +102,7 @@ final class CompressionDecoderSupportTest {
     @Test
     void validatesMaximumWindowSize() throws IOException {
         DecompressionLimits.ofMaximumWindowSize(4_096L).requireWindowSize(4_096L);
+        DecompressionLimits.ofMaximumMemorySize(4_096L).requireWindowSize(4_096L);
         DecompressionLimits.UNLIMITED.requireWindowSize(Long.MAX_VALUE);
         CompressionDecoderSupport.requireWindowSize(4_096L, 4_096L);
         CompressionDecoderSupport.requireWindowSize(
@@ -76,9 +116,42 @@ final class CompressionDecoderSupportTest {
         );
         assertEquals(4_095L, exception.maximumWindowSize());
         assertEquals(4_096L, exception.requiredWindowSize());
+        assertEquals(
+                4_095L,
+                new DecompressionLimits(
+                        DecompressionLimits.UNLIMITED_SIZE,
+                        8_192L,
+                        4_095L
+                )
+                        .effectiveMaximumWindowSize()
+        );
+        DecompressionWindowLimitException memoryBoundException = assertThrows(
+                DecompressionWindowLimitException.class,
+                () -> DecompressionLimits.ofMaximumMemorySize(4_095L).requireWindowSize(4_096L)
+        );
+        assertEquals(4_095L, memoryBoundException.maximumWindowSize());
         assertThrows(
                 IllegalArgumentException.class,
                 () -> CompressionDecoderSupport.requireWindowSize(0L, -1L)
+        );
+    }
+
+    /// Verifies decoder working-memory enforcement and structured diagnostics.
+    @Test
+    void validatesMaximumMemorySize() throws IOException {
+        DecompressionLimits.ofMaximumMemorySize(4_096L).requireMemorySize(4_096L);
+        DecompressionLimits.UNLIMITED.requireMemorySize(Long.MAX_VALUE);
+
+        DecompressionMemoryLimitException exception = assertThrows(
+                DecompressionMemoryLimitException.class,
+                () -> DecompressionLimits.ofMaximumMemorySize(4_095L).requireMemorySize(4_096L)
+        );
+        assertEquals(4_095L, exception.maximumMemorySize());
+        assertEquals(4_096L, exception.requiredMemorySize());
+        assertEquals(DecompressionLimitException.Kind.MEMORY_SIZE, exception.kind());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> DecompressionLimits.UNLIMITED.requireMemorySize(-1L)
         );
     }
 
@@ -167,7 +240,18 @@ final class CompressionDecoderSupportTest {
     private static final class NoOpDecoder implements CompressionDecoder {
         /// Immediately reports the end of an empty stream.
         @Override
-        public CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) {
+        public CodecOutcome decode(ByteBuffer source, ByteBuffer target) {
+            return decodeInternal(source, target, false);
+        }
+
+        /// Finishes decoding after all source bytes have been supplied.
+        @Override
+        public CodecOutcome finish(ByteBuffer source, ByteBuffer target) {
+            return decodeInternal(source, target, true);
+        }
+
+        /// Implements decoding with the selected source-completion state.
+        private CodecOutcome decodeInternal(ByteBuffer source, ByteBuffer target, boolean endOfInput) {
             return endOfInput ? CodecOutcome.FINISHED : CodecOutcome.NEEDS_INPUT;
         }
 

@@ -13,6 +13,7 @@ import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 
 
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributes;
+import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.glavo.arkivo.archive.zip.ZipLegacyCharsetDetector;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingReader;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -28,6 +29,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.Objects;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.zip.CRC32;
@@ -312,7 +314,20 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             throw new IOException("Current ZIP entry input stream is already open");
         }
 
-        CurrentEntryInputStream entryInput = new CurrentEntryInputStream(this, trackedEntryInputStream(entry));
+        InputStream decoded;
+        try {
+            decoded = trackedEntryInputStream(entry);
+        } catch (IOException | RuntimeException | Error exception) {
+            // Known-size setup paths clear currentEntry only after their bounded body has been drained successfully.
+            // Other setup failures may have consumed an unknown prefix, so the forward-only reader cannot recover.
+            if (currentEntry != null) {
+                open = false;
+                currentEntry = null;
+            }
+            currentAttributes = null;
+            throw exception;
+        }
+        CurrentEntryInputStream entryInput = new CurrentEntryInputStream(this, decoded);
         currentInput = entryInput;
         return StreamChannelAdapters.readableChannel(entryInput);
     }
@@ -888,7 +903,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             }
             if (compressionMethod == BZIP2_METHOD) {
                 return new KnownSizeEntryInputStream(
-                        openBzip2InputStream(decryptedData),
+                        openBzip2InputStream(decryptedData, entry.uncompressedSize),
                         ZipArkivoEntryAttributes.UNKNOWN_CRC32,
                         entry.uncompressedSize
                 );
@@ -902,21 +917,21 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             }
             if (compressionMethod == XZ_METHOD) {
                 return new KnownSizeEntryInputStream(
-                        openXzInputStream(decryptedData),
+                        openXzInputStream(decryptedData, entry.uncompressedSize),
                         ZipArkivoEntryAttributes.UNKNOWN_CRC32,
                         entry.uncompressedSize
                 );
             }
             if (compressionMethod == DEFLATE64_METHOD) {
                 return new KnownSizeEntryInputStream(
-                        openDeflate64InputStream(decryptedData),
+                        openDeflate64InputStream(decryptedData, entry.uncompressedSize),
                         ZipArkivoEntryAttributes.UNKNOWN_CRC32,
                         entry.uncompressedSize
                 );
             }
             if (isZstandardMethod(compressionMethod)) {
                 return new KnownSizeEntryInputStream(
-                        openZstandardInputStream(decryptedData),
+                        openZstandardInputStream(decryptedData, entry.uncompressedSize),
                         ZipArkivoEntryAttributes.UNKNOWN_CRC32,
                         entry.uncompressedSize
                 );
@@ -1016,7 +1031,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 compressed = openTraditionalKnownSizeDecryptingStream(entry, compressed);
             }
             return new KnownSizeEntryInputStream(
-                    openBzip2InputStream(compressed),
+                    openBzip2InputStream(compressed, entry.uncompressedSize),
                     entry.crc32,
                     entry.uncompressedSize
             );
@@ -1090,7 +1105,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 compressed = openTraditionalKnownSizeDecryptingStream(entry, compressed);
             }
             return new KnownSizeEntryInputStream(
-                    openXzInputStream(compressed),
+                    openXzInputStream(compressed, entry.uncompressedSize),
                     entry.crc32,
                     entry.uncompressedSize
             );
@@ -1126,7 +1141,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 compressed = openTraditionalKnownSizeDecryptingStream(entry, compressed);
             }
             return new KnownSizeEntryInputStream(
-                    openZstandardInputStream(compressed),
+                    openZstandardInputStream(compressed, entry.uncompressedSize),
                     entry.crc32,
                     entry.uncompressedSize
             );
@@ -1162,7 +1177,7 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                 compressed = openTraditionalKnownSizeDecryptingStream(entry, compressed);
             }
             return new KnownSizeEntryInputStream(
-                    openDeflate64InputStream(compressed),
+                    openDeflate64InputStream(compressed, entry.uncompressedSize),
                     entry.crc32,
                     entry.uncompressedSize
             );
@@ -1171,22 +1186,22 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     }
 
     /// Opens a Deflate64 decoding stream and owns the compressed stream.
-    private static InputStream openDeflate64InputStream(InputStream input) throws IOException {
-        return ZipCompressionFormats.newInputStream("deflate64", input);
+    private InputStream openDeflate64InputStream(InputStream input, long decodedSize) throws IOException {
+        return ZipCompressionFormats.newInputStream("deflate64", input, decodedSize, config.readLimits());
     }
 
     /// Opens a BZip2 decoding stream and owns the compressed stream.
-    private static InputStream openBzip2InputStream(InputStream input) throws IOException {
-        return ZipCompressionFormats.newInputStream("bzip2", input);
+    private InputStream openBzip2InputStream(InputStream input, long decodedSize) throws IOException {
+        return ZipCompressionFormats.newInputStream("bzip2", input, decodedSize, config.readLimits());
     }
 
     /// Opens a Zstandard decoding stream and owns the compressed stream.
-    private static InputStream openZstandardInputStream(InputStream input) throws IOException {
-        return ZipCompressionFormats.newInputStream("zstd", input);
+    private InputStream openZstandardInputStream(InputStream input, long decodedSize) throws IOException {
+        return ZipCompressionFormats.newInputStream("zstd", input, decodedSize, config.readLimits());
     }
 
     /// Opens a ZIP LZMA decoding stream and closes the compressed stream if setup fails.
-    private static InputStream openLzmaInputStream(
+    private InputStream openLzmaInputStream(
             InputStream input,
             long uncompressedSize,
             int flags
@@ -1197,7 +1212,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                     input,
                     parameters.property(),
                     parameters.dictionarySize(),
-                    parameters.expectedUncompressedSize()
+                    parameters.expectedUncompressedSize(),
+                    uncompressedSize,
+                    config.readLimits()
             );
         } catch (IOException | RuntimeException | Error exception) {
             try {
@@ -1238,12 +1255,12 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     }
 
     /// Opens an XZ decoding stream and owns the compressed stream.
-    private static InputStream openXzInputStream(InputStream input) throws IOException {
-        return ZipCompressionFormats.newInputStream("xz", input);
+    private InputStream openXzInputStream(InputStream input, long decodedSize) throws IOException {
+        return ZipCompressionFormats.newInputStream("xz", input, decodedSize, config.readLimits());
     }
 
     /// Opens a raw Deflate decoder for an entry with known metadata.
-    private static InputStream openDeflateKnownSizeInputStream(
+    private InputStream openDeflateKnownSizeInputStream(
             InputStream compressedInput,
             long compressedSizeOffset,
             long expectedCompressedSize,
@@ -1252,7 +1269,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     ) throws IOException {
         DecompressingReadableByteChannel decoder = ZipCompressionFormats.newReadableByteChannel(
                 "deflate",
-                compressedInput
+                compressedInput,
+                expectedUncompressedSize,
+                config.readLimits()
         );
         return new KnownSizeEntryInputStream(
                 decoder,
@@ -1370,7 +1389,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                     dataDescriptorDecoderSource(compressedInput, pushbackSourceRemainder),
                     parameters.property(),
                     parameters.dictionarySize(),
-                    parameters.expectedUncompressedSize()
+                    parameters.expectedUncompressedSize(),
+                    ZipArkivoEntryAttributes.UNKNOWN_SIZE,
+                    config.readLimits()
             );
             return new CodecDataDescriptorInputStream(
                     "LZMA",
@@ -1432,7 +1453,12 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         if ((entry.flags & STRONG_ENCRYPTION_FLAG) != 0) {
             throw new IOException("Unsupported ZIP encryption method: " + entry.path);
         }
-        return ZipAesCrypto.openDecryptingStream(input, aes, passwordForEntry(entry), entry.compressedSize);
+        byte[] password = passwordForEntry(entry, aes.encryption());
+        try {
+            return ZipAesCrypto.openDecryptingStream(input, aes, password, entry.compressedSize);
+        } finally {
+            Arrays.fill(password, (byte) 0);
+        }
     }
 
     /// Opens a WinZip AES decryptor after consuming salt and password verifier bytes.
@@ -1444,7 +1470,12 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         if ((entry.flags & STRONG_ENCRYPTION_FLAG) != 0) {
             throw new IOException("Unsupported ZIP encryption method: " + entry.path);
         }
-        return ZipAesCrypto.openDecryptor(input, aes, passwordForEntry(entry));
+        byte[] password = passwordForEntry(entry, aes.encryption());
+        try {
+            return ZipAesCrypto.openDecryptor(input, aes, password);
+        } finally {
+            Arrays.fill(password, (byte) 0);
+        }
     }
 
     /// Opens a traditional ZIP decrypting stream for an entry with known compressed size.
@@ -1452,11 +1483,12 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
         if (entry.compressedSize < ZipTraditionalCrypto.HEADER_SIZE) {
             throw new IOException("Encrypted ZIP entry is missing its encryption header: " + entry.path);
         }
-        return ZipTraditionalCrypto.openDecryptingStream(
-                input,
-                passwordForEntry(entry),
-                encryptionVerificationByte(entry)
-        );
+        byte[] password = passwordForEntry(entry, ZipEncryption.traditional());
+        try {
+            return ZipTraditionalCrypto.openDecryptingStream(input, password, encryptionVerificationByte(entry));
+        } finally {
+            Arrays.fill(password, (byte) 0);
+        }
     }
 
     /// Opens a traditional ZIP decrypting stream and drains known-size raw data if setup fails.
@@ -1474,11 +1506,12 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             LocalEntry entry,
             InputStream input
     ) throws IOException {
-        return ZipTraditionalCrypto.openDecryptor(
-                input,
-                passwordForEntry(entry),
-                encryptionVerificationByte(entry)
-        );
+        byte[] password = passwordForEntry(entry, ZipEncryption.traditional());
+        try {
+            return ZipTraditionalCrypto.openDecryptor(input, password, encryptionVerificationByte(entry));
+        } finally {
+            Arrays.fill(password, (byte) 0);
+        }
     }
 
     /// Requires an encrypted entry to use the traditional ZIP encryption method.
@@ -1489,12 +1522,12 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     }
 
     /// Returns the password for an encrypted entry.
-    private byte[] passwordForEntry(LocalEntry entry) throws IOException {
+    private byte[] passwordForEntry(LocalEntry entry, ZipEncryption encryption) throws IOException {
         ArkivoPasswordProvider passwordProvider = config.passwordProvider();
         if (passwordProvider == null) {
             throw new IOException("ZIP entry requires a password: " + entry.path);
         }
-        byte[] password = passwordProvider.passwordForEntry("/" + entry.path);
+        byte[] password = passwordProvider.password(ZipPasswordSupport.entryRequest("/" + entry.path, encryption));
         if (password == null) {
             throw new IOException("ZIP entry requires a password: " + entry.path);
         }
@@ -1742,7 +1775,12 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
             if (length == 0) {
                 return 0;
             }
-            int read = input.read(bytes, offset, length);
+            int read;
+            try {
+                read = input.read(bytes, offset, length);
+            } catch (EOFException exception) {
+                throw new IOException("ZIP entry data does not match local header", exception);
+            }
             if (read > 0) {
                 crc32.update(bytes, offset, read);
                 uncompressedSize += read;
@@ -2015,7 +2053,9 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
                     input,
                     ZipCompressionFormats.newReadableByteChannel(
                             formatName,
-                            dataDescriptorDecoderSource(compressedInput, pushbackSourceRemainder)
+                            dataDescriptorDecoderSource(compressedInput, pushbackSourceRemainder),
+                            ZipArkivoEntryAttributes.UNKNOWN_SIZE,
+                            config.readLimits()
                     ),
                     compressedSizeOffset,
                     aesDecryptor,

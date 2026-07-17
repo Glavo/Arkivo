@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.sevenzip.internal;
 
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.PasswordPurpose;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -33,7 +34,9 @@ final class SevenZipWritePassword implements AutoCloseable {
         if (passwordProvider == null) {
             return new SevenZipWritePassword(null);
         }
-        byte @Nullable [] password = passwordProvider.passwordForArchive();
+        byte @Nullable [] password = passwordProvider.password(
+                SevenZipPasswordSupport.request(PasswordPurpose.ARCHIVE, null)
+        );
         if (password == null) {
             throw new IOException("7z encrypted archive write requires a password");
         }

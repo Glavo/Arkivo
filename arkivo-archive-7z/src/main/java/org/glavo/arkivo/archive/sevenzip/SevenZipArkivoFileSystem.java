@@ -3,10 +3,10 @@
 
 package org.glavo.arkivo.archive.sevenzip;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.SeekableChannelSources;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
-import org.glavo.arkivo.archive.ArchiveOption;
+import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
@@ -25,11 +25,12 @@ import java.util.Objects;
 
 /// Opens 7z archives as NIO file systems.
 ///
-/// Path-backed `READ` and `WRITE` open a complete-rewrite update session. Closing a changed session atomically
-/// replaces the source by default; `ArkivoFileSystem.COMMIT_TARGET` can publish a single-volume derivative. Existing
-/// path-backed split archives preserve their first-volume size unless `SPLIT_SIZE` selects another output split size.
+/// Path-backed `update` opens a complete-rewrite session. Closing a changed session atomically replaces the source by
+/// default; [org.glavo.arkivo.archive.ArchiveUpdateOptions#commitTarget()] can publish a single-volume derivative.
+/// Existing path-backed split archives preserve their first-volume size unless an explicit split size selects another
+/// output layout.
 ///
-/// Modified decoded bodies and compressed random-read snapshots are staged through `ArkivoFileSystem.EDIT_STORAGE`.
+/// Modified decoded bodies and compressed random-read snapshots are staged through the configured edit storage.
 /// Each file system owns and closes configured storage. Read-only sessions keep decoded bodies up to 1 MiB in memory
 /// and use temporary files for larger bodies by default; update sessions always use temporary files by default.
 /// Path-backed temporary files are placed beside the archive, while explicit volume sessions use the platform
@@ -43,7 +44,7 @@ import java.util.Objects;
 /// with the configured output compression, filter chain, solid file-count policy, password, and header-encryption
 /// policy.
 ///
-/// Single-volume channel-source updates require an explicit `ArkivoFileSystem.COMMIT_TARGET` because no source path is
+/// Single-volume channel-source updates require an explicit commit target because no source path is
 /// available for replacement. General volume sources remain read-only through `open`; use `update` with an explicit
 /// transactional volume target when preserving or changing a multi-volume layout.
 @NotNullByDefault
@@ -53,7 +54,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     /// Read operations use the provider to decrypt encrypted data and headers. Write operations request one archive
     /// password, strictly interpret its bytes as UTF-16LE, and encrypt every non-empty entry data stream with
     /// 7z AES-256/SHA-256. Content encryption does not hide entry names or other header metadata.
-    public static final ArchiveOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
+    private static final ArchiveOption<ArkivoPasswordProvider> PASSWORD_PROVIDER =
             ArchiveOption.of("arkivo.7z", "passwordProvider", ArkivoPasswordProvider.class);
 
     /// The option for the default `SevenZipCompression` used by non-empty output entries.
@@ -62,7 +63,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     ///
     /// Values may be a complete compression object, a `SevenZipCompressionMethod`, or a stable method name string.
     /// The default remains `SevenZipCompression.copy()`.
-    public static final ArchiveOption<SevenZipCompression> COMPRESSION =
+    private static final ArchiveOption<SevenZipCompression> COMPRESSION =
             ArchiveOption.of(
                     "arkivo.7z",
                     "compression",
@@ -78,7 +79,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     /// Values may be a complete filter object, a `SevenZipFilterMethod`, or a stable method name string. BCJ2 creates
     /// four physical folder streams whose MAIN, CALL, and JUMP branches use the selected compression. No filter is
     /// applied by default.
-    public static final ArchiveOption<SevenZipFilter> FILTER =
+    private static final ArchiveOption<SevenZipFilter> FILTER =
             ArchiveOption.of(
                     "arkivo.7z",
                     "filter",
@@ -93,7 +94,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     /// attribute view overrides it. Values may be a SevenZipFilterChain, a list of SevenZipFilter values, or any
     /// single value accepted by FILTER. An empty chain disables preprocessing. BCJ2 must be the sole chain element.
     /// FILTER and FILTERS are mutually exclusive.
-    public static final ArchiveOption<SevenZipFilterChain> FILTERS =
+    private static final ArchiveOption<SevenZipFilterChain> FILTERS =
             ArchiveOption.of(
                     "arkivo.7z",
                     "filters",
@@ -107,7 +108,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     /// A value of `1` disables solid grouping and preserves independent compression streams. Larger values let
     /// consecutive files with equal compression and filter settings share one coder pipeline. A setting change starts
     /// a new folder even before this limit is reached. The default is `1`.
-    public static final ArchiveOption<Integer> SOLID_FILE_COUNT =
+    private static final ArchiveOption<Integer> SOLID_FILE_COUNT =
             ArchiveOption.of(
                     "arkivo.7z",
                     "solidFileCount",
@@ -120,7 +121,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     /// Path-backed split output requires a conventional first-volume path such as `archive.7z.001`. Updates preserve
     /// an existing split archive's first-volume size when this option is absent; `-1` explicitly rewrites it as a
     /// single-volume archive.
-    public static final ArchiveOption<Long> SPLIT_SIZE =
+    private static final ArchiveOption<Long> SPLIT_SIZE =
             ArchiveOption.of(
                     "arkivo.7z",
                     "splitSize",
@@ -133,7 +134,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     ///
     /// Header encryption requires `PASSWORD_PROVIDER` and hides entry names and other metadata in an AES-encrypted
     /// encoded header. Non-empty entry data remains encrypted by the same password provider.
-    public static final ArchiveOption<Boolean> ENCRYPT_HEADERS =
+    private static final ArchiveOption<Boolean> ENCRYPT_HEADERS =
             ArchiveOption.of(
                     "arkivo.7z",
                     "encryptHeaders",
@@ -150,17 +151,109 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
 
     /// Opens a 7z archive file system.
     public static SevenZipArkivoFileSystem open(Path path) throws IOException {
-        return open(path, ArchiveOptions.EMPTY);
+        return open(path, SevenZipArchiveOptions.READ_DEFAULTS);
     }
 
 
-    /// Opens a 7z archive file system with options.
-    ///
-    /// `READ` and `WRITE` select complete-rewrite update mode. `CREATE` additionally allows a missing source path.
-    public static SevenZipArkivoFileSystem open(Path path, ArchiveOptions options) throws IOException {
+    /// Opens a 7z archive file system with read options.
+    public static SevenZipArkivoFileSystem open(Path path, SevenZipArchiveOptions.Read options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        return SevenZipArkivoFileSystemProvider.instance().openPath(path, options);
+        return SevenZipArkivoFileSystemProvider.instance().openPath(
+                path,
+                SevenZipArkivoFileSystemConfig.fromReadOptions(options)
+        );
+    }
+
+    /// Creates or replaces a path-backed 7z archive with default creation options.
+    public static SevenZipArkivoFileSystem create(Path path) throws IOException {
+        return create(path, SevenZipArchiveOptions.CREATE_DEFAULTS);
+    }
+
+    /// Creates or replaces a path-backed 7z archive with explicit creation options.
+    public static SevenZipArkivoFileSystem create(
+            Path path,
+            SevenZipArchiveOptions.Create options
+    ) throws IOException {
+        Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(options, "options");
+        return SevenZipArkivoFileSystemProvider.instance().openPath(
+                path,
+                SevenZipArkivoFileSystemConfig.fromCreateOptions(options)
+        );
+    }
+
+    /// Creates or replaces a split path-backed 7z archive with explicit creation options.
+    public static SevenZipArkivoFileSystem create(
+            Path firstVolume,
+            long splitSize,
+            SevenZipArchiveOptions.Create options
+    ) throws IOException {
+        Objects.requireNonNull(firstVolume, "firstVolume");
+        Objects.requireNonNull(options, "options");
+        if (splitSize <= 0L) {
+            throw new IllegalArgumentException("splitSize must be positive");
+        }
+        return SevenZipArkivoFileSystemProvider.instance().openPath(
+                firstVolume,
+                SevenZipArkivoFileSystemConfig.fromCreateOptions(options, splitSize)
+        );
+    }
+
+    /// Opens a path-backed 7z archive for complete-rewrite update with default options.
+    public static SevenZipArkivoFileSystem update(Path path) throws IOException {
+        return update(path, SevenZipArchiveOptions.UPDATE_DEFAULTS);
+    }
+
+    /// Opens a path-backed 7z archive for complete-rewrite update with explicit options.
+    public static SevenZipArkivoFileSystem update(
+            Path path,
+            SevenZipArchiveOptions.Update options
+    ) throws IOException {
+        Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(options, "options");
+        return SevenZipArkivoFileSystemProvider.instance().openPath(
+                path,
+                SevenZipArkivoFileSystemConfig.fromUpdateOptions(options)
+        );
+    }
+
+    /// Opens a path-backed 7z archive for complete-rewrite update into one output file.
+    public static SevenZipArkivoFileSystem updateSingleVolume(Path path) throws IOException {
+        return updateSingleVolume(path, SevenZipArchiveOptions.UPDATE_DEFAULTS);
+    }
+
+    /// Opens a path-backed 7z archive for complete-rewrite update into one output file with explicit options.
+    public static SevenZipArkivoFileSystem updateSingleVolume(
+            Path path,
+            SevenZipArchiveOptions.Update options
+    ) throws IOException {
+        Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(options, "options");
+        return SevenZipArkivoFileSystemProvider.instance().openPath(
+                path,
+                SevenZipArkivoFileSystemConfig.fromUpdateOptions(
+                        options,
+                        SevenZipArkivoFileSystemConfig.NO_SPLIT_SIZE
+                )
+        );
+    }
+
+    /// Opens a path-backed 7z archive for complete-rewrite update with explicit split output.
+    public static SevenZipArkivoFileSystem update(
+            Path path,
+            long splitSize,
+            SevenZipArchiveOptions.Update options
+    ) throws IOException {
+        Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(options, "options");
+        if (splitSize <= 0L) {
+            throw new IllegalArgumentException("splitSize must be positive");
+        }
+        return SevenZipArkivoFileSystemProvider.instance().openPath(
+                path,
+                SevenZipArkivoFileSystemConfig.fromUpdateOptions(options, splitSize)
+        );
     }
 
 
@@ -169,61 +262,98 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     /// The channel's current position is the logical archive start. The returned file system owns and closes the
     /// channel.
     public static SevenZipArkivoFileSystem open(SeekableByteChannel source) throws IOException {
-        return open(source, ArchiveOptions.EMPTY);
+        return open(source, SevenZipArchiveOptions.READ_DEFAULTS);
     }
 
 
-    /// Opens a 7z archive file system directly from one owned seekable channel with options.
-    ///
-    /// `READ` and `WRITE` select complete-rewrite update mode and require an explicit
-    /// `ArkivoFileSystem.COMMIT_TARGET`. The returned file system owns and closes the channel in all modes.
+    /// Opens a read-only 7z archive file system directly from one owned seekable channel with options.
     public static SevenZipArkivoFileSystem open(
             SeekableByteChannel source,
-            ArchiveOptions options
+            SevenZipArchiveOptions.Read options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
         return SeekableChannelSources.open(source, channelSource -> open(channelSource, options));
     }
 
+    /// Creates a 7z archive in one owned seekable channel with default creation options.
+    public static SevenZipArkivoFileSystem create(SeekableByteChannel target) throws IOException {
+        return create(target, SevenZipArchiveOptions.CREATE_DEFAULTS);
+    }
+
+    /// Creates a 7z archive in one owned seekable channel with explicit creation options.
+    public static SevenZipArkivoFileSystem create(
+            SeekableByteChannel target,
+            SevenZipArchiveOptions.Create options
+    ) throws IOException {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(options, "options");
+        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromCreateOptions(options);
+        return SeekableChannelSources.open(target, source -> openConfiguredSource(source, config));
+    }
+
+    /// Opens one owned seekable channel for complete-rewrite update with explicit publication options.
+    public static SevenZipArkivoFileSystem update(
+            SeekableByteChannel source,
+            SevenZipArchiveOptions.Update options
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(options, "options");
+        return SeekableChannelSources.open(source, channelSource -> update(channelSource, options));
+    }
+
     /// Opens a read-only 7z archive file system from a repeatable seekable channel source.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
     public static SevenZipArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
-        return open(source, ArchiveOptions.EMPTY);
+        return open(source, SevenZipArchiveOptions.READ_DEFAULTS);
     }
 
 
-    /// Opens a 7z archive file system from a repeatable seekable channel source with options.
+    /// Opens a read-only 7z archive file system from a repeatable seekable channel source with options.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
-    /// `READ` and `WRITE` select complete-rewrite update mode and require an explicit
-    /// `ArkivoFileSystem.COMMIT_TARGET`.
     public static SevenZipArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
-            ArchiveOptions options
+            SevenZipArchiveOptions.Read options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
         SevenZipArkivoFileSystemConfig config;
         try {
-            config = SevenZipArkivoFileSystemConfig.fromOptions(options);
-            if (config.archiveWritable()) {
-                if (!config.archiveUpdate()) {
-                    throw new UnsupportedOperationException(
-                            "7z channel sources support writes only through read/write update mode"
-                    );
-                }
-                if (config.commitTarget() == null) {
-                    throw new IllegalArgumentException(
-                            "7z channel-source update mode requires ArkivoFileSystem.COMMIT_TARGET"
-                    );
-                }
-            }
+            config = SevenZipArkivoFileSystemConfig.fromReadOptions(options);
         } catch (RuntimeException | Error exception) {
             closeSourceAfterOpenFailure(source, exception);
             throw exception;
         }
+        return openConfiguredSource(source, config);
+    }
+
+    /// Opens a repeatable channel source for complete-rewrite update with explicit publication options.
+    public static SevenZipArkivoFileSystem update(
+            ArkivoSeekableChannelSource source,
+            SevenZipArchiveOptions.Update options
+    ) throws IOException {
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(options, "options");
+        SevenZipArkivoFileSystemConfig config;
+        try {
+            if (options.common().commitTarget() == null) {
+                throw new IllegalArgumentException("7z channel-source updates require a commit target");
+            }
+            config = SevenZipArkivoFileSystemConfig.fromUpdateOptions(options);
+        } catch (RuntimeException | Error exception) {
+            closeSourceAfterOpenFailure(source, exception);
+            throw exception;
+        }
+        return openConfiguredSource(source, config);
+    }
+
+    /// Opens one already validated pathless source configuration.
+    private static SevenZipArkivoFileSystem openConfiguredSource(
+            ArkivoSeekableChannelSource source,
+            SevenZipArkivoFileSystemConfig config
+    ) throws IOException {
         return new SevenZipArkivoFileSystemImpl(
                 SevenZipArkivoFileSystemProvider.instance(),
                 null,
@@ -235,18 +365,15 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
 
     /// Opens a multi-volume 7z archive file system.
     public static SevenZipArkivoFileSystem open(ArkivoVolumeSource volumes) throws IOException {
-        return open(volumes, ArchiveOptions.EMPTY);
+        return open(volumes, SevenZipArchiveOptions.READ_DEFAULTS);
     }
 
 
     /// Opens a multi-volume 7z archive file system with options.
-    public static SevenZipArkivoFileSystem open(ArkivoVolumeSource volumes, ArchiveOptions options) throws IOException {
+    public static SevenZipArkivoFileSystem open(ArkivoVolumeSource volumes, SevenZipArchiveOptions.Read options) throws IOException {
         Objects.requireNonNull(volumes, "volumes");
         Objects.requireNonNull(options, "options");
-        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromOptions(options);
-        if (config.archiveWritable()) {
-            throw new UnsupportedOperationException("7z volume sources cannot be opened with write archive options");
-        }
+        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromReadOptions(options);
         return new SevenZipArkivoFileSystemImpl(SevenZipArkivoFileSystemProvider.instance(), null, volumes, config);
     }
 
@@ -260,7 +387,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
             ArkivoVolumeTarget target,
             long splitSize
     ) throws IOException {
-        return update(source, target, splitSize, ArchiveOptions.EMPTY);
+        return update(source, target, splitSize, SevenZipArchiveOptions.UPDATE_DEFAULTS);
     }
 
 
@@ -272,7 +399,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
             ArkivoVolumeSource source,
             ArkivoVolumeTarget target,
             long splitSize,
-            ArchiveOptions options
+            SevenZipArchiveOptions.Update options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
@@ -280,13 +407,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
         if (splitSize <= 0L) {
             throw new IllegalArgumentException("splitSize must be positive");
         }
-        if (options.contains(ArkivoFileSystem.OPEN_OPTIONS)) {
-            throw new IllegalArgumentException("7z volume update open options are determined by the factory");
-        }
-        if (options.contains(SPLIT_SIZE)) {
-            throw new IllegalArgumentException("7z volume update splitSize must be provided as the factory argument");
-        }
-        if (options.contains(ArkivoFileSystem.COMMIT_TARGET)) {
+        if (options.common().commitTarget() != null) {
             throw new IllegalArgumentException("7z volume updates use the factory volume target");
         }
         SevenZipArkivoFileSystemConfig config =
@@ -309,7 +430,7 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     /// The target is opened when the file system closes. A successful close commits every volume; failure rolls back
     /// unpublished output.
     public static SevenZipArkivoFileSystem create(ArkivoVolumeTarget target, long splitSize) throws IOException {
-        return create(target, splitSize, ArchiveOptions.EMPTY);
+        return create(target, splitSize, SevenZipArchiveOptions.CREATE_DEFAULTS);
     }
 
 
@@ -321,20 +442,14 @@ public abstract sealed class SevenZipArkivoFileSystem extends ArkivoFileSystem p
     public static SevenZipArkivoFileSystem create(
             ArkivoVolumeTarget target,
             long splitSize,
-            ArchiveOptions options
+            SevenZipArchiveOptions.Create options
     ) throws IOException {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(options, "options");
         if (splitSize <= 0) {
             throw new IllegalArgumentException("splitSize must be positive");
         }
-        if (options.contains(ArkivoFileSystem.OPEN_OPTIONS)) {
-            throw new IllegalArgumentException("7z volume target open options are determined by the factory");
-        }
-        if (options.contains(SPLIT_SIZE)) {
-            throw new IllegalArgumentException("7z volume target splitSize must be provided as the factory argument");
-        }
-        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromWriterOptions(options);
+        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromCreateOptions(options);
         return new SevenZipArkivoFileSystemImpl(
                 SevenZipArkivoFileSystemProvider.instance(),
                 target,

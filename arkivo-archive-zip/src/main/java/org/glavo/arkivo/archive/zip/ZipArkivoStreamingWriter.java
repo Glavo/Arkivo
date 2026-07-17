@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.archive.zip;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
@@ -27,27 +26,24 @@ public abstract sealed class ZipArkivoStreamingWriter extends ArkivoStreamingWri
 
     /// Creates a streaming ZIP writer that writes to an archive path.
     public static ZipArkivoStreamingWriter create(Path path) throws IOException {
-        return create(path, ArchiveOptions.EMPTY);
+        return create(path, ZipArchiveOptions.CREATE_DEFAULTS);
     }
 
     /// Creates a streaming ZIP writer that writes to an archive path with options.
-    public static ZipArkivoStreamingWriter create(Path path, ArchiveOptions options) throws IOException {
+    public static ZipArkivoStreamingWriter create(Path path, ZipArchiveOptions.Create options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromWriterOptions(options);
-        if (!config.archiveWritable()) {
-            throw new IllegalArgumentException("ZIP streaming writer open options must include WRITE");
-        }
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromCreateOptions(options);
         return ZipArkivoStreamingWriterImpl.create(path, config);
     }
 
     /// Opens a streaming ZIP writer over an output stream.
     public static ZipArkivoStreamingWriter open(OutputStream output) {
-        return open(output, ArchiveOptions.EMPTY);
+        return open(output, ZipArchiveOptions.CREATE_DEFAULTS);
     }
 
     /// Opens a streaming ZIP writer over an output stream with options.
-    public static ZipArkivoStreamingWriter open(OutputStream output, ArchiveOptions options) {
+    public static ZipArkivoStreamingWriter open(OutputStream output, ZipArchiveOptions.Create options) {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(options, "options");
         return open(StreamChannelAdapters.writableChannel(output), options);
@@ -55,30 +51,30 @@ public abstract sealed class ZipArkivoStreamingWriter extends ArkivoStreamingWri
 
     /// Opens a streaming ZIP writer over a writable channel.
     public static ZipArkivoStreamingWriter open(WritableByteChannel output) {
-        return open(output, ArchiveOptions.EMPTY);
+        return open(output, ZipArchiveOptions.CREATE_DEFAULTS);
     }
 
     /// Opens a streaming ZIP writer over a writable channel with options.
     public static ZipArkivoStreamingWriter open(
             WritableByteChannel output,
-            ArchiveOptions options
+            ZipArchiveOptions.Create options
     ) {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(options, "options");
-        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromOptions(options);
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromCreateOptions(options);
         return ZipArkivoStreamingWriterImpl.open(output, config);
     }
 
     /// Opens a split streaming ZIP writer over a transactional volume target.
     public static ZipArkivoStreamingWriter open(ArkivoVolumeTarget target, long splitSize) throws IOException {
-        return open(target, splitSize, ArchiveOptions.EMPTY);
+        return open(target, splitSize, ZipArchiveOptions.CREATE_DEFAULTS);
     }
 
     /// Opens a split streaming ZIP writer over a transactional volume target with options.
     public static ZipArkivoStreamingWriter open(
             ArkivoVolumeTarget target,
             long splitSize,
-            ArchiveOptions options
+            ZipArchiveOptions.Create options
     ) throws IOException {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(options, "options");
@@ -88,12 +84,7 @@ public abstract sealed class ZipArkivoStreamingWriter extends ArkivoStreamingWri
                     "splitSize must be between MINIMUM_SPLIT_SIZE and MAXIMUM_SPLIT_SIZE"
             );
         }
-        if (options.contains(ZipArkivoFileSystem.SPLIT_SIZE)) {
-            throw new IllegalArgumentException(
-                    "ZIP volume target splitSize must be provided as the factory argument"
-            );
-        }
-        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromOptions(options);
+        ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromCreateOptions(options);
         return ZipArkivoStreamingWriterImpl.open(target, splitSize, config);
     }
 

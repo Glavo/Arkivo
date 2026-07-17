@@ -3,13 +3,15 @@
 
 package org.glavo.arkivo.all.internal;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.spi.ArkivoStreamingSource;
 import org.glavo.arkivo.archive.spi.ArkivoStreamingSourceProvider;
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.DecompressionLimits;
 import org.glavo.arkivo.codec.CompressionProbeResult;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -29,20 +31,26 @@ public final class CompressionStreamingSourceProvider implements ArkivoStreaming
     @Override
     public ArkivoStreamingSource probe(
             ReadableByteChannel source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(options, "options");
-        CompressionProbeResult probe = CompressionFormats.probe(source, ChannelOwnership.CLOSE);
+        CompressionProbeResult probe = CompressionFormats.probe(source, ResourceOwnership.OWNED);
         @Nullable CompressionFormat format = probe.format();
         ReadableByteChannel replay = probe.takeChannel();
         if (format == null) {
             return new ArkivoStreamingSource(false, replay);
         }
         try {
+            ArchiveReadLimits readLimits = options.limits();
             DecompressingReadableByteChannel decoder = format.defaultCodec().newReadableByteChannel(
                     replay,
-                    ChannelOwnership.CLOSE
+                    new DecompressionLimits(
+                            DecompressionLimits.UNLIMITED_SIZE,
+                            readLimits.maximumCompressionWindowSize(),
+                            readLimits.maximumDecoderMemorySize()
+                    ),
+                    ResourceOwnership.OWNED
             );
             return new ArkivoStreamingSource(true, decoder);
         } catch (IOException | RuntimeException | Error failure) {

@@ -7,9 +7,11 @@ import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.internal.ArchiveOptions;
+import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
+import org.glavo.arkivo.archive.PasswordPurpose;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.rar.RarArkivoFileSystem;
 import org.glavo.arkivo.archive.rar.RarArkivoStreamingReader;
@@ -45,6 +47,13 @@ import java.util.zip.CRC32;
 /// Implements the public forward-only RAR streaming reader API.
 @NotNullByDefault
 public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader {
+    /// The internal NIO environment key for legacy name detection.
+    private static final ArchiveOption<ArchiveMetadataCharsetDetector> LEGACY_CHARSET_DETECTOR =
+            ArchiveOption.of(
+                    "arkivo.rar",
+                    "legacyCharsetDetector",
+                    ArchiveMetadataCharsetDetector.class
+            );
     /// The maximum self-extracting stub size searched before the RAR signature.
     private static final int MAX_SFX_SIZE = 1024 * 1024;
 
@@ -471,7 +480,7 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         this.passwordProvider = passwordProvider;
         this.readLimits = ArkivoReadLimitTracker.fromOptions(checkedOptions);
         this.legacyCharsetDetector = checkedOptions.getOrDefault(
-                RarArkivoFileSystem.LEGACY_CHARSET_DETECTOR,
+                LEGACY_CHARSET_DETECTOR,
                 DEFAULT_LEGACY_CHARSET_DETECTOR
         );
         this.validateSkippedBodies = validateSkippedBodies;
@@ -771,7 +780,11 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (provider == null) {
             throw new IOException("RAR password provider is required for encrypted entry: " + attributes.path());
         }
-        byte @Nullable [] password = provider.passwordForArchive();
+        byte @Nullable [] password = provider.password(
+                RarLegacyCrypto.supports(rar3Info.extractionVersion())
+                        ? RarPasswordSupport.legacyEntry(attributes.path(), rar3Info.extractionVersion())
+                        : RarPasswordSupport.rar3(PasswordPurpose.ENTRY_CONTENT, attributes.path())
+        );
         if (password == null) {
             throw new IOException("RAR password provider did not supply an archive password");
         }
@@ -854,7 +867,11 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             throw new IOException("RAR password provider is required for encrypted entry: " + attributes.path());
         }
 
-        byte @Nullable [] password = provider.passwordForArchive();
+        byte @Nullable [] password = provider.password(
+                RarLegacyCrypto.supports(extractionVersion)
+                        ? RarPasswordSupport.legacyEntry(attributes.path(), extractionVersion)
+                        : RarPasswordSupport.rar3(PasswordPurpose.ENTRY_CONTENT, attributes.path())
+        );
         if (password == null) {
             throw new IOException("RAR password provider did not supply an archive password");
         }
@@ -916,7 +933,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
             throw new IOException("RAR5 password provider is required for encrypted entry: " + attributes.path());
         }
 
-        byte @Nullable [] password = provider.passwordForArchive();
+        byte @Nullable [] password = provider.password(
+                RarPasswordSupport.rar5(PasswordPurpose.ENTRY_CONTENT, attributes.path())
+        );
         if (password == null) {
             throw new IOException("RAR5 password provider did not supply an archive password");
         }
@@ -1328,7 +1347,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (provider == null) {
             throw new IOException("RAR5 password provider is required for encrypted headers");
         }
-        byte @Nullable [] password = provider.passwordForArchive();
+        byte @Nullable [] password = provider.password(
+                RarPasswordSupport.rar5(PasswordPurpose.ARCHIVE_METADATA, null)
+        );
         if (password == null) {
             throw new IOException("RAR5 password provider did not supply an archive password");
         }
@@ -1378,7 +1399,9 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
         if (provider == null) {
             throw new IOException("RAR3 password provider is required for encrypted headers");
         }
-        byte @Nullable [] password = provider.passwordForArchive();
+        byte @Nullable [] password = provider.password(
+                RarPasswordSupport.rar3(PasswordPurpose.ARCHIVE_METADATA, null)
+        );
         if (password == null) {
             throw new IOException("RAR3 password provider did not supply an archive password");
         }

@@ -3,12 +3,12 @@
 
 package org.glavo.arkivo.all;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
-import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArchiveOptions;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingWriter;
@@ -76,10 +76,8 @@ final class ArchiveConcurrentReadStressTest {
     @Test
     @Timeout(value = 60)
     void strictCloseInvalidatesResourcesAcrossEveryFormat(@TempDir Path directory) throws Exception {
-        ArchiveOptions options = ArchiveOptions.of(
-                ArkivoFileSystem.THREAD_SAFETY,
-                ArkivoFileSystemThreadSafety.STRICT
-        );
+        ArchiveReadOptions options = ArchiveReadOptions.DEFAULT
+                .withThreadSafety(ArkivoFileSystemThreadSafety.STRICT);
         for (Path archive : createArchives(directory)) {
             try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive, options);
                  SeekableByteChannel channel =
@@ -220,10 +218,9 @@ final class ArchiveConcurrentReadStressTest {
 
     /// Creates an LZMA2-compressed 7z fixture whose entries share solid folders.
     private static void createSevenZip(Path archive) throws IOException {
-        ArchiveOptions options = ArchiveOptions.builder()
-                .set(SevenZipArkivoFileSystem.COMPRESSION, SevenZipCompression.lzma2(1024 * 1024))
-                .set(SevenZipArkivoFileSystem.SOLID_FILE_COUNT, 16)
-                .build();
+        SevenZipArchiveOptions.Create options = SevenZipArchiveOptions.CREATE_DEFAULTS
+                .withCompression(SevenZipCompression.lzma2(1024 * 1024))
+                .withSolidFileCount(16);
         try (SevenZipArkivoStreamingWriter writer =
                      SevenZipArkivoStreamingWriter.create(archive, options)) {
             writeEntries(writer);
@@ -242,8 +239,8 @@ final class ArchiveConcurrentReadStressTest {
     /// Writes the deterministic stress entries through one streaming writer.
     private static void writeEntries(ArkivoStreamingWriter writer) throws IOException {
         for (int index = 0; index < ENTRY_COUNT; index++) {
-            writer.beginFile(entryName(index));
-            try (OutputStream output = writer.openOutputStream()) {
+            var writerEntry245 = writer.beginFile(entryName(index));
+            try (OutputStream output = writerEntry245.openOutputStream()) {
                 output.write(content(index));
             }
         }

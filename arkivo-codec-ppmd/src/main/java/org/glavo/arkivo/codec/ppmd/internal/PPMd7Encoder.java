@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.ppmd.internal;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -143,7 +143,7 @@ public final class PPMd7Encoder implements CompressionEncoder {
     private PPMd7ChannelEncoder createEncoder() throws IOException {
         return new PPMd7ChannelEncoder(
                 output,
-                ChannelOwnership.RETAIN,
+                ResourceOwnership.BORROWED,
                 maximumOrder,
                 memorySize
         );

@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.lzma.internal;
 
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
@@ -45,7 +45,7 @@ public final class LZMAChannelEncoder implements CompressingWritableByteChannel 
     /// Creates an EOS-terminated LZMA-alone encoder with the requested dictionary size.
     public LZMAChannelEncoder(
             WritableByteChannel target,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             int dictionarySize
     ) throws IOException {
         this(
@@ -59,7 +59,7 @@ public final class LZMAChannelEncoder implements CompressingWritableByteChannel 
     /// Creates an LZMA-alone encoder with complete model properties and an optional exact input size.
     public LZMAChannelEncoder(
             WritableByteChannel target,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             LZMAProperties properties,
             long expectedSize
     ) throws IOException {

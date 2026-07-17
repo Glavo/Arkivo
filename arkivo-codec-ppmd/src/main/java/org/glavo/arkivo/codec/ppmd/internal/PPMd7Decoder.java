@@ -54,7 +54,18 @@ public final class PPMd7Decoder implements CompressionDecoder {
 
     /// Decodes source bytes until input, output space, or the externally declared stream boundary stops progress.
     @Override
-    public CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
+    public CodecOutcome decode(ByteBuffer source, ByteBuffer target) throws IOException {
+        return decodeInternal(source, target, false);
+    }
+
+    /// Finishes decoding after all source bytes have been supplied.
+    @Override
+    public CodecOutcome finish(ByteBuffer source, ByteBuffer target) throws IOException {
+        return decodeInternal(source, target, true);
+    }
+
+    /// Implements decoding with the selected source-completion state.
+    private CodecOutcome decodeInternal(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
         requireOpen();

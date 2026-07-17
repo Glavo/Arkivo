@@ -3,7 +3,9 @@
 
 package org.glavo.arkivo.archive.ar;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveCreateOptions;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemFormat;
@@ -28,7 +30,7 @@ import java.util.Objects;
 /// Describes AR archive streaming support provided by Arkivo.
 @NotNullByDefault
 public final class ArArkivoFormat implements
-        ArkivoFileSystemFormat,
+        ArkivoFileSystemFormat.Writable,
         ArkivoStreamingReaderFormat,
         ArkivoStreamingWriterFormat {
     /// The stable AR format name.
@@ -37,8 +39,13 @@ public final class ArArkivoFormat implements
     /// The shared AR format instance.
     private static final ArArkivoFormat INSTANCE = new ArArkivoFormat();
 
-    /// Creates an AR format descriptor.
+    /// Creates a classpath-discoverable AR format descriptor.
     public ArArkivoFormat() {
+    }
+
+    /// Returns the canonical AR service provider.
+    public static ArArkivoFormat provider() {
+        return INSTANCE;
     }
 
     /// Returns the shared AR format descriptor.
@@ -87,8 +94,20 @@ public final class ArArkivoFormat implements
 
     /// Opens an AR archive file system with options.
     @Override
-    public ArArkivoFileSystem open(Path path, ArchiveOptions options) throws IOException {
-        return ArArkivoFileSystem.open(path, options);
+    public ArArkivoFileSystem open(Path path, ArchiveReadOptions options) throws IOException {
+        return ArArkivoFileSystem.open(path, readOptions(options));
+    }
+
+    /// Creates a new path-backed AR archive file system.
+    @Override
+    public ArArkivoFileSystem create(Path path, ArchiveCreateOptions options) throws IOException {
+        return ArArkivoFileSystem.create(path, createOptions(options));
+    }
+
+    /// Opens a complete-rewrite update of a path-backed AR archive.
+    @Override
+    public ArArkivoFileSystem update(Path path, ArchiveUpdateOptions options) throws IOException {
+        return ArArkivoFileSystem.update(path, updateOptions(options));
     }
 
     /// Opens a read-only AR archive file system directly from one owned seekable channel.
@@ -99,8 +118,8 @@ public final class ArArkivoFormat implements
 
     /// Opens an AR archive file system directly from one owned seekable channel with options.
     @Override
-    public ArArkivoFileSystem open(SeekableByteChannel source, ArchiveOptions options) throws IOException {
-        return ArArkivoFileSystem.open(source, options);
+    public ArArkivoFileSystem open(SeekableByteChannel source, ArchiveReadOptions options) throws IOException {
+        return ArArkivoFileSystem.open(source, readOptions(options));
     }
 
     /// Opens a read-only AR archive file system from a repeatable seekable channel source.
@@ -113,9 +132,9 @@ public final class ArArkivoFormat implements
     @Override
     public ArArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) throws IOException {
-        return ArArkivoFileSystem.open(source, options);
+        return ArArkivoFileSystem.open(source, readOptions(options));
     }
 
     /// Opens a streaming AR reader from an input stream.
@@ -128,10 +147,10 @@ public final class ArArkivoFormat implements
     @Override
     public ArArkivoStreamingReader openStreamingReader(
             InputStream source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) {
         Objects.requireNonNull(options, "options");
-        return ArArkivoStreamingReader.open(source, options);
+        return ArArkivoStreamingReader.open(source, readOptions(options));
     }
 
     /// Opens a streaming AR reader from a readable channel.
@@ -144,10 +163,10 @@ public final class ArArkivoFormat implements
     @Override
     public ArArkivoStreamingReader openStreamingReader(
             ReadableByteChannel source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) {
         Objects.requireNonNull(options, "options");
-        return ArArkivoStreamingReader.open(source, options);
+        return ArArkivoStreamingReader.open(source, readOptions(options));
     }
 
     /// Opens a streaming AR writer over an output stream.
@@ -160,11 +179,11 @@ public final class ArArkivoFormat implements
     @Override
     public ArArkivoStreamingWriter openStreamingWriter(
             OutputStream output,
-            ArchiveOptions options
+            ArchiveCreateOptions options
     ) {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(options, "options");
-        @Nullable ArkivoEditStorage bodyStorage = options.get(ArkivoFileSystem.EDIT_STORAGE);
+        @Nullable ArkivoEditStorage bodyStorage = options.editStorage();
         return bodyStorage == null
                 ? ArArkivoStreamingWriter.open(output)
                 : ArArkivoStreamingWriter.open(output, bodyStorage);
@@ -180,13 +199,28 @@ public final class ArArkivoFormat implements
     @Override
     public ArArkivoStreamingWriter openStreamingWriter(
             WritableByteChannel output,
-            ArchiveOptions options
+            ArchiveCreateOptions options
     ) {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(options, "options");
-        @Nullable ArkivoEditStorage bodyStorage = options.get(ArkivoFileSystem.EDIT_STORAGE);
+        @Nullable ArkivoEditStorage bodyStorage = options.editStorage();
         return bodyStorage == null
                 ? ArArkivoStreamingWriter.open(output)
                 : ArArkivoStreamingWriter.open(output, bodyStorage);
+    }
+
+    /// Applies AR defaults to format-independent read options.
+    private static ArArchiveOptions.Read readOptions(ArchiveReadOptions options) {
+        return new ArArchiveOptions.Read(options, ArArchiveOptions.DEFAULT_METADATA_CHARSET_DETECTOR);
+    }
+
+    /// Applies AR defaults to format-independent creation options.
+    private static ArArchiveOptions.Create createOptions(ArchiveCreateOptions options) {
+        return new ArArchiveOptions.Create(options, ArArchiveOptions.DEFAULT_METADATA_CHARSET_DETECTOR);
+    }
+
+    /// Applies AR defaults to format-independent update options.
+    private static ArArchiveOptions.Update updateOptions(ArchiveUpdateOptions options) {
+        return new ArArchiveOptions.Update(options, ArArchiveOptions.DEFAULT_METADATA_CHARSET_DETECTOR);
     }
 }

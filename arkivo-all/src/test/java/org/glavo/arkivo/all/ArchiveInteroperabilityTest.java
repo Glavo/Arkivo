@@ -107,14 +107,14 @@ final class ArchiveInteroperabilityTest {
                     "ar",
                     Files.newOutputStream(archive)
             )) {
-                writer.beginFile(AR_PATH);
+                var writerEntry110 = writer.beginFile(AR_PATH);
                 ArArkivoEntryAttributeView view = Objects.requireNonNull(
-                        writer.attributeView(ArArkivoEntryAttributeView.class)
+                        writerEntry110.attributeView(ArArkivoEntryAttributeView.class)
                 );
                 view.setUserId(321L);
                 view.setGroupId(654L);
                 view.setMode(0100600);
-                try (OutputStream body = writer.openOutputStream()) {
+                try (OutputStream body = writerEntry110.openOutputStream()) {
                     body.write(CONTENT);
                 }
             }
@@ -195,24 +195,24 @@ final class ArchiveInteroperabilityTest {
                     "tar",
                     Files.newOutputStream(archive)
             )) {
-                writer.beginDirectory("directory");
-                writer.endEntry();
+                var writerEntry198 = writer.beginDirectory("directory");
+                writerEntry198.close();
 
-                writer.beginFile(TAR_PATH);
+                var writerEntry201 = writer.beginFile(TAR_PATH);
                 TarArkivoEntryAttributeView view = Objects.requireNonNull(
-                        writer.attributeView(TarArkivoEntryAttributeView.class)
+                        writerEntry201.attributeView(TarArkivoEntryAttributeView.class)
                 );
                 view.setMode(0640);
                 view.setUserId(321L);
                 view.setGroupId(654L);
                 view.setUserName("arkivo-user");
                 view.setGroupName("arkivo-group");
-                try (OutputStream body = writer.openOutputStream()) {
+                try (OutputStream body = writerEntry201.openOutputStream()) {
                     body.write(CONTENT);
                 }
 
-                writer.beginSymbolicLink("link", LINK_TARGET);
-                writer.endEntry();
+                var writerEntry214 = writer.beginSymbolicLink("link", LINK_TARGET);
+                writerEntry214.close();
             }
 
             try (TarArchiveInputStream input = new TarArchiveInputStream(Files.newInputStream(archive))) {
@@ -292,16 +292,16 @@ final class ArchiveInteroperabilityTest {
                     "zip",
                     Files.newOutputStream(archive)
             )) {
-                writer.beginDirectory("directory");
-                writer.endEntry();
+                var writerEntry295 = writer.beginDirectory("directory");
+                writerEntry295.close();
 
-                writer.beginFile(MODERN_PATH);
-                try (OutputStream body = writer.openOutputStream()) {
+                var writerEntry298 = writer.beginFile(MODERN_PATH);
+                try (OutputStream body = writerEntry298.openOutputStream()) {
                     body.write(CONTENT);
                 }
 
-                writer.beginSymbolicLink("link", LINK_TARGET);
-                writer.endEntry();
+                var writerEntry303 = writer.beginSymbolicLink("link", LINK_TARGET);
+                writerEntry303.close();
             }
 
             try (ZipFile zipFile = ZipFile.builder().setPath(archive).get()) {
@@ -376,11 +376,11 @@ final class ArchiveInteroperabilityTest {
                     "7z",
                     Files.newOutputStream(archive)
             )) {
-                writer.beginDirectory("directory");
-                writer.endEntry();
+                var writerEntry379 = writer.beginDirectory("directory");
+                writerEntry379.close();
 
-                writer.beginFile(MODERN_PATH);
-                try (OutputStream body = writer.openOutputStream()) {
+                var writerEntry382 = writer.beginFile(MODERN_PATH);
+                try (OutputStream body = writerEntry382.openOutputStream()) {
                     body.write(CONTENT);
                 }
             }

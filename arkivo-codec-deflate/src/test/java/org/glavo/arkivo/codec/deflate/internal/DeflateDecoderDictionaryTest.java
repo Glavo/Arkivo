@@ -70,7 +70,9 @@ final class DeflateDecoderDictionaryTest {
             int offered = Math.min(2, compressed.length - offset);
             ByteBuffer source = ByteBuffer.wrap(compressed, offset, offered).slice();
             ByteBuffer target = ByteBuffer.allocateDirect(3);
-            CodecOutcome outcome = decoder.decode(source, target, offset + offered == compressed.length);
+            CodecOutcome outcome = offset + offered == compressed.length
+                    ? decoder.finish(source, target)
+                    : decoder.decode(source, target);
             offset += source.position();
             target.flip();
             while (target.hasRemaining()) {

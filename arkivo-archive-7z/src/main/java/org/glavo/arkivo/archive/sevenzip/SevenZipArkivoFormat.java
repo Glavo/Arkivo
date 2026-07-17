@@ -3,7 +3,10 @@
 
 package org.glavo.arkivo.archive.sevenzip;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveCreateOptions;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
+import org.glavo.arkivo.archive.ArchiveUpdateOptions;
+import org.glavo.arkivo.archive.ArkivoFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoPathVolumeFormat;
 import org.glavo.arkivo.archive.ArkivoVolumeFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
@@ -28,16 +31,22 @@ import java.util.Objects;
 @NotNullByDefault
 public final class SevenZipArkivoFormat implements
         ArkivoPathVolumeFormat,
-        ArkivoVolumeFileSystemFormat,
-        ArkivoVolumeStreamingWriterFormat {
+        ArkivoVolumeFileSystemFormat.Writable,
+        ArkivoVolumeStreamingWriterFormat,
+        ArkivoFileSystemFormat.Writable {
     /// The stable 7z format name.
     public static final String NAME = "7z";
 
     /// The shared 7z format instance.
     private static final SevenZipArkivoFormat INSTANCE = new SevenZipArkivoFormat();
 
-    /// Creates a 7z format descriptor.
+    /// Creates a classpath-discoverable 7z format descriptor.
     public SevenZipArkivoFormat() {
+    }
+
+    /// Returns the canonical 7z service provider.
+    public static SevenZipArkivoFormat provider() {
+        return INSTANCE;
     }
 
     /// Returns the shared 7z format descriptor.
@@ -99,9 +108,9 @@ public final class SevenZipArkivoFormat implements
     @Override
     public SevenZipArkivoStreamingWriter openStreamingWriter(
             OutputStream output,
-            ArchiveOptions options
+            ArchiveCreateOptions options
     ) throws IOException {
-        return SevenZipArkivoStreamingWriter.open(output, options);
+        return SevenZipArkivoStreamingWriter.open(output, createOptions(options));
     }
 
     /// Opens a streaming 7z writer over a writable channel.
@@ -114,9 +123,9 @@ public final class SevenZipArkivoFormat implements
     @Override
     public SevenZipArkivoStreamingWriter openStreamingWriter(
             WritableByteChannel output,
-            ArchiveOptions options
+            ArchiveCreateOptions options
     ) throws IOException {
-        return SevenZipArkivoStreamingWriter.open(output, options);
+        return SevenZipArkivoStreamingWriter.open(output, createOptions(options));
     }
 
     /// Opens a split streaming 7z writer over a transactional volume target.
@@ -133,9 +142,9 @@ public final class SevenZipArkivoFormat implements
     public SevenZipArkivoStreamingWriter openStreamingWriter(
             ArkivoVolumeTarget target,
             long splitSize,
-            ArchiveOptions options
+            ArchiveCreateOptions options
     ) throws IOException {
-        return SevenZipArkivoStreamingWriter.open(target, splitSize, options);
+        return SevenZipArkivoStreamingWriter.open(target, splitSize, createOptions(options));
     }
 
     /// Opens a 7z archive file system.
@@ -146,8 +155,20 @@ public final class SevenZipArkivoFormat implements
 
     /// Opens a 7z archive file system with options.
     @Override
-    public SevenZipArkivoFileSystem open(Path path, ArchiveOptions options) throws IOException {
-        return SevenZipArkivoFileSystem.open(path, options);
+    public SevenZipArkivoFileSystem open(Path path, ArchiveReadOptions options) throws IOException {
+        return SevenZipArkivoFileSystem.open(path, new SevenZipArchiveOptions.Read(options, null));
+    }
+
+    /// Creates or replaces a path-backed 7z archive with common creation options.
+    @Override
+    public SevenZipArkivoFileSystem create(Path path, ArchiveCreateOptions options) throws IOException {
+        return SevenZipArkivoFileSystem.create(path, createOptions(options));
+    }
+
+    /// Opens a path-backed 7z archive for complete-rewrite update with common options.
+    @Override
+    public SevenZipArkivoFileSystem update(Path path, ArchiveUpdateOptions options) throws IOException {
+        return SevenZipArkivoFileSystem.update(path, updateOptions(options));
     }
 
     /// Opens a read-only 7z archive file system directly from one owned seekable channel.
@@ -158,8 +179,8 @@ public final class SevenZipArkivoFormat implements
 
     /// Opens a 7z archive file system directly from one owned seekable channel with options.
     @Override
-    public SevenZipArkivoFileSystem open(SeekableByteChannel source, ArchiveOptions options) throws IOException {
-        return SevenZipArkivoFileSystem.open(source, options);
+    public SevenZipArkivoFileSystem open(SeekableByteChannel source, ArchiveReadOptions options) throws IOException {
+        return SevenZipArkivoFileSystem.open(source, new SevenZipArchiveOptions.Read(options, null));
     }
 
     /// Opens a read-only 7z archive file system from a repeatable seekable channel source.
@@ -174,8 +195,8 @@ public final class SevenZipArkivoFormat implements
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
     @Override
-    public SevenZipArkivoFileSystem open(ArkivoSeekableChannelSource source, ArchiveOptions options) throws IOException {
-        return SevenZipArkivoFileSystem.open(source, options);
+    public SevenZipArkivoFileSystem open(ArkivoSeekableChannelSource source, ArchiveReadOptions options) throws IOException {
+        return SevenZipArkivoFileSystem.open(source, new SevenZipArchiveOptions.Read(options, null));
     }
 
     /// Opens a multi-volume 7z archive file system.
@@ -186,8 +207,8 @@ public final class SevenZipArkivoFormat implements
 
     /// Opens a multi-volume 7z archive file system with options.
     @Override
-    public SevenZipArkivoFileSystem open(ArkivoVolumeSource volumes, ArchiveOptions options) throws IOException {
-        return SevenZipArkivoFileSystem.open(volumes, options);
+    public SevenZipArkivoFileSystem open(ArkivoVolumeSource volumes, ArchiveReadOptions options) throws IOException {
+        return SevenZipArkivoFileSystem.open(volumes, new SevenZipArchiveOptions.Read(options, null));
     }
 
     /// Opens a complete-rewrite update over multi-volume input and transactional output.
@@ -206,9 +227,16 @@ public final class SevenZipArkivoFormat implements
             ArkivoVolumeSource source,
             ArkivoVolumeTarget target,
             long splitSize,
-            ArchiveOptions options
+            ArchiveUpdateOptions options
     ) throws IOException {
-        return SevenZipArkivoFileSystem.update(source, target, splitSize, options);
+        return SevenZipArkivoFileSystem.update(source, target, splitSize, new SevenZipArchiveOptions.Update(
+                options,
+                null,
+                SevenZipCompression.copy(),
+                SevenZipFilterChain.EMPTY,
+                SevenZipArchiveOptions.DEFAULT_SOLID_FILE_COUNT,
+                false
+        ));
     }
 
     /// Creates a forward-only 7z file system that publishes split output to a transactional volume target.
@@ -222,8 +250,32 @@ public final class SevenZipArkivoFormat implements
     public SevenZipArkivoFileSystem create(
             ArkivoVolumeTarget target,
             long splitSize,
-            ArchiveOptions options
+            ArchiveCreateOptions options
     ) throws IOException {
-        return SevenZipArkivoFileSystem.create(target, splitSize, options);
+        return SevenZipArkivoFileSystem.create(target, splitSize, createOptions(options));
+    }
+
+    /// Applies 7z defaults to format-independent creation options.
+    private static SevenZipArchiveOptions.Create createOptions(ArchiveCreateOptions options) {
+        return new SevenZipArchiveOptions.Create(
+                options,
+                null,
+                SevenZipCompression.copy(),
+                SevenZipFilterChain.EMPTY,
+                SevenZipArchiveOptions.DEFAULT_SOLID_FILE_COUNT,
+                false
+        );
+    }
+
+    /// Applies 7z defaults to format-independent update options.
+    private static SevenZipArchiveOptions.Update updateOptions(ArchiveUpdateOptions options) {
+        return new SevenZipArchiveOptions.Update(
+                options,
+                null,
+                SevenZipCompression.copy(),
+                SevenZipFilterChain.EMPTY,
+                SevenZipArchiveOptions.DEFAULT_SOLID_FILE_COUNT,
+                false
+        );
     }
 }

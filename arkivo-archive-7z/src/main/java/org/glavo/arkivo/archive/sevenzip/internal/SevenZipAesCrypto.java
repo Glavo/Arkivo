@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.sevenzip.internal;
 
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.PasswordRequest;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
@@ -42,11 +43,13 @@ final class SevenZipAesCrypto {
     static InputStream openDecryptingStream(
             InputStream input,
             byte[] properties,
-            @Nullable ArkivoPasswordProvider passwordProvider
+            @Nullable ArkivoPasswordProvider passwordProvider,
+            PasswordRequest passwordRequest
     ) throws IOException {
         Objects.requireNonNull(input, "input");
+        Objects.requireNonNull(passwordRequest, "passwordRequest");
         AesProperties parsedProperties = AesProperties.parse(properties);
-        byte @Nullable [] password = passwordProvider != null ? passwordProvider.passwordForArchive() : null;
+        byte @Nullable [] password = passwordProvider != null ? passwordProvider.password(passwordRequest) : null;
         if (password == null) {
             throw new IOException("7z AES encrypted data requires a password");
         }

@@ -3,8 +3,6 @@
 
 package org.glavo.arkivo.archive.sevenzip;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.glavo.arkivo.archive.ArkivoVolumeTarget;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
@@ -31,29 +29,26 @@ public abstract sealed class SevenZipArkivoStreamingWriter extends ArkivoStreami
 
     /// Creates a streaming 7z writer that writes to an archive path.
     public static SevenZipArkivoStreamingWriter create(Path path) throws IOException {
-        return create(path, ArchiveOptions.EMPTY);
+        return create(path, SevenZipArchiveOptions.CREATE_DEFAULTS);
     }
 
     /// Creates a streaming 7z writer that writes to an archive path with options.
-    public static SevenZipArkivoStreamingWriter create(Path path, ArchiveOptions options) throws IOException {
+    public static SevenZipArkivoStreamingWriter create(Path path, SevenZipArchiveOptions.Create options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
-        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromWriterOptions(options);
-        if (!config.archiveWritable()) {
-            throw new IllegalArgumentException("7z streaming writer open options must include WRITE");
-        }
+        SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromCreateOptions(options);
         return SevenZipArkivoStreamingWriterImpl.create(path, config);
     }
 
     /// Opens a streaming 7z writer over an owned output stream.
     public static SevenZipArkivoStreamingWriter open(OutputStream output) throws IOException {
-        return open(output, ArchiveOptions.EMPTY);
+        return open(output, SevenZipArchiveOptions.CREATE_DEFAULTS);
     }
 
     /// Opens a streaming 7z writer over an owned output stream with options.
     public static SevenZipArkivoStreamingWriter open(
             OutputStream output,
-            ArchiveOptions options
+            SevenZipArchiveOptions.Create options
     ) throws IOException {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(options, "options");
@@ -62,13 +57,13 @@ public abstract sealed class SevenZipArkivoStreamingWriter extends ArkivoStreami
 
     /// Opens a streaming 7z writer over an owned writable channel.
     public static SevenZipArkivoStreamingWriter open(WritableByteChannel output) throws IOException {
-        return open(output, ArchiveOptions.EMPTY);
+        return open(output, SevenZipArchiveOptions.CREATE_DEFAULTS);
     }
 
     /// Opens a streaming 7z writer over an owned writable channel with options.
     public static SevenZipArkivoStreamingWriter open(
             WritableByteChannel output,
-            ArchiveOptions options
+            SevenZipArchiveOptions.Create options
     ) throws IOException {
         Objects.requireNonNull(output, "output");
         Objects.requireNonNull(options, "options");
@@ -80,14 +75,14 @@ public abstract sealed class SevenZipArkivoStreamingWriter extends ArkivoStreami
 
     /// Opens a split streaming 7z writer over a transactional volume target.
     public static SevenZipArkivoStreamingWriter open(ArkivoVolumeTarget target, long splitSize) throws IOException {
-        return open(target, splitSize, ArchiveOptions.EMPTY);
+        return open(target, splitSize, SevenZipArchiveOptions.CREATE_DEFAULTS);
     }
 
     /// Opens a split streaming 7z writer over a transactional volume target with options.
     public static SevenZipArkivoStreamingWriter open(
             ArkivoVolumeTarget target,
             long splitSize,
-            ArchiveOptions options
+            SevenZipArchiveOptions.Create options
     ) throws IOException {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(options, "options");
@@ -99,14 +94,8 @@ public abstract sealed class SevenZipArkivoStreamingWriter extends ArkivoStreami
     }
 
     /// Parses output options whose storage behavior is determined by the factory.
-    private static SevenZipArkivoFileSystemConfig directOutputConfig(ArchiveOptions options) {
-        if (options.contains(ArkivoFileSystem.OPEN_OPTIONS)) {
-            throw new IllegalArgumentException("7z streaming output open options are determined by the factory");
-        }
-        if (options.contains(SevenZipArkivoFileSystem.SPLIT_SIZE)) {
-            throw new IllegalArgumentException("7z streaming output splitSize must be provided by the factory");
-        }
-        return SevenZipArkivoFileSystemConfig.fromWriterOptions(options);
+    private static SevenZipArkivoFileSystemConfig directOutputConfig(SevenZipArchiveOptions.Create options) {
+        return SevenZipArkivoFileSystemConfig.fromCreateOptions(options);
     }
 
 }

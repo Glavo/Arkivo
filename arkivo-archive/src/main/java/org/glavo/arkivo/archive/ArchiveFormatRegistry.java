@@ -9,8 +9,7 @@ import org.jetbrains.annotations.Unmodifiable;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.IdentityHashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -22,7 +21,7 @@ import java.util.Set;
 /// Stores an immutable validated set of discoverable archive formats.
 @NotNullByDefault
 public final class ArchiveFormatRegistry {
-    /// Formats in discovery or caller-supplied order, with repeated identities included once.
+    /// Formats in discovery or caller-supplied order, with repeated logical providers included once.
     private final @Unmodifiable List<ArkivoFormat> formats;
 
     /// Formats indexed by normalized stable names and aliases.
@@ -34,12 +33,16 @@ public final class ArchiveFormatRegistry {
     /// Validates and indexes supplied format descriptors.
     private ArchiveFormatRegistry(List<ArkivoFormat> formats) {
         ArrayList<ArkivoFormat> copiedFormats = new ArrayList<>(formats.size());
-        Set<ArkivoFormat> seenFormats = Collections.newSetFromMap(new IdentityHashMap<>());
+        Set<FormatIdentity> seenFormats = new HashSet<>();
         LinkedHashMap<String, ArkivoFormat> formatsByName = new LinkedHashMap<>();
         int maximumProbeSize = 0;
         for (ArkivoFormat format : formats) {
             ArkivoFormat checkedFormat = Objects.requireNonNull(format, "archive format");
-            if (!seenFormats.add(checkedFormat)) {
+            FormatIdentity identity = new FormatIdentity(
+                    checkedFormat.getClass(),
+                    normalizeAndValidateName(checkedFormat.name())
+            );
+            if (!seenFormats.add(identity)) {
                 continue;
             }
 
@@ -88,7 +91,7 @@ public final class ArchiveFormatRegistry {
         return new ArchiveFormatRegistry(copiedFormats);
     }
 
-    /// Returns formats in discovery or caller-supplied order, with repeated identities included once.
+    /// Returns formats in discovery or caller-supplied order, with repeated logical providers included once.
     public @Unmodifiable List<ArkivoFormat> formats() {
         return formats;
     }
@@ -137,11 +140,7 @@ public final class ArchiveFormatRegistry {
             String name,
             ArkivoFormat format
     ) {
-        Objects.requireNonNull(name, "format name");
-        if (name.isBlank()) {
-            throw new IllegalStateException("Archive format names and aliases must not be blank");
-        }
-        String normalizedName = normalizeName(name);
+        String normalizedName = normalizeAndValidateName(name);
         @Nullable ArkivoFormat previous = formatsByName.putIfAbsent(normalizedName, format);
         if (previous != null && previous != format) {
             throw new IllegalStateException(
@@ -154,5 +153,29 @@ public final class ArchiveFormatRegistry {
     /// Normalizes one lookup name without using the process locale.
     private static String normalizeName(String name) {
         return name.toLowerCase(Locale.ROOT);
+    }
+
+    /// Validates and normalizes one stable name or alias.
+    private static String normalizeAndValidateName(String name) {
+        Objects.requireNonNull(name, "format name");
+        if (name.isBlank()) {
+            throw new IllegalStateException("Archive format names and aliases must not be blank");
+        }
+        return normalizeName(name);
+    }
+
+    /// Identifies one logical provider across module-path and classpath service discovery.
+    ///
+    /// @param implementation the concrete provider implementation class
+    /// @param name the normalized stable format name
+    private record FormatIdentity(
+            Class<? extends ArkivoFormat> implementation,
+            String name
+    ) {
+        /// Validates one logical provider identity.
+        private FormatIdentity {
+            Objects.requireNonNull(implementation, "implementation");
+            Objects.requireNonNull(name, "name");
+        }
     }
 }

@@ -26,10 +26,23 @@ public final class Deflate64Decoder implements CompressionDecoder {
 
     /// Decodes source bytes until input, output space, or the Deflate64 stream boundary stops progress.
     @Override
-    public CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
+    public CodecOutcome decode(ByteBuffer source, ByteBuffer target) throws IOException {
+        return decodeInternal(source, target, false);
+    }
+
+    /// Finishes decoding after all source bytes have been supplied.
+    @Override
+    public CodecOutcome finish(ByteBuffer source, ByteBuffer target) throws IOException {
+        return decodeInternal(source, target, true);
+    }
+
+    /// Implements decoding with the selected source-completion state.
+    private CodecOutcome decodeInternal(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
-        return engine.decode(source, target, endOfInput);
+        return endOfInput
+                ? engine.finish(source, target)
+                : engine.decode(source, target);
     }
 
     /// Abandons the current stream and restores empty Deflate64 history.

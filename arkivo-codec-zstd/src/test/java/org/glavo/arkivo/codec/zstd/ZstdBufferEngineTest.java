@@ -44,7 +44,7 @@ public final class ZstdBufferEngineTest {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocateDirect(1);
-                outcome = decoder.decode(source, target, false);
+                outcome = decoder.decode(source, target);
                 drain(target, decoded);
                 assertTrue(outcome == CodecOutcome.NEEDS_OUTPUT || outcome == CodecOutcome.FINISHED);
             } while (outcome != CodecOutcome.FINISHED);
@@ -106,7 +106,7 @@ public final class ZstdBufferEngineTest {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocate(7);
-                outcome = decoder.decode(source, target, true);
+                outcome = decoder.finish(source, target);
                 drain(target, decoded);
             } while (outcome == CodecOutcome.NEEDS_OUTPUT);
             assertEquals(CodecOutcome.NEEDS_DICTIONARY, outcome);
@@ -114,7 +114,7 @@ public final class ZstdBufferEngineTest {
             decoder.provideDictionary(dictionary);
             do {
                 ByteBuffer target = ByteBuffer.allocate(7);
-                outcome = decoder.decode(source, target, true);
+                outcome = decoder.finish(source, target);
                 drain(target, decoded);
             } while (outcome == CodecOutcome.NEEDS_OUTPUT);
             assertEquals(CodecOutcome.FINISHED, outcome);
@@ -135,7 +135,7 @@ public final class ZstdBufferEngineTest {
         try (CompressionDecoder decoder = CODEC.newDecoder()) {
             assertEquals(
                     CodecOutcome.FINISHED,
-                    decoder.decode(skippable, ByteBuffer.allocate(1), false)
+                    decoder.decode(skippable, ByteBuffer.allocate(1))
             );
         }
         assertEquals(8 + payload.length, skippable.position());
@@ -343,7 +343,7 @@ public final class ZstdBufferEngineTest {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocate(targetSize);
-                outcome = decoder.decode(source, target, true);
+                outcome = decoder.finish(source, target);
                 drain(target, decoded);
             } while (outcome == CodecOutcome.NEEDS_OUTPUT);
             assertEquals(CodecOutcome.FINISHED, outcome);
@@ -368,7 +368,9 @@ public final class ZstdBufferEngineTest {
                 boolean endOfInput = offset + length == encoded.length;
                 do {
                     ByteBuffer target = ByteBuffer.allocate(targetSize);
-                    outcome = decoder.decode(source, target, endOfInput);
+                    outcome = endOfInput
+                            ? decoder.finish(source, target)
+                            : decoder.decode(source, target);
                     drain(target, decoded);
                 } while (outcome == CodecOutcome.NEEDS_OUTPUT);
                 offset += source.position();

@@ -18,7 +18,7 @@ import java.util.Objects;
 /// Provides an immutable headerless LZMA configuration for containers that carry model properties separately.
 @NotNullByDefault
 public final class RawLZMACodec
-        implements CompressionCodec.PledgedSourceSizeEncoderFactory<RawLZMACodec, CompressionEncoder> {
+        implements CompressionCodec.PledgedSourceSizeEncoderFactory<CompressionEncoder> {
     /// The default dictionary size used for raw LZMA.
     public static final int DEFAULT_DICTIONARY_SIZE = 1 << 20;
 
@@ -121,7 +121,7 @@ public final class RawLZMACodec
         Objects.requireNonNull(limits, "limits");
         limits.requireWindowSize(properties.dictionarySize());
         return CompressionDecoderSupport.limitEngineOutput(
-                new LZMARawDecoder(properties, decodedSize, limits.maximumWindowSize()),
+                new LZMARawDecoder(properties, decodedSize, limits.effectiveMaximumWindowSize()),
                 limits.maximumOutputSize()
         );
     }

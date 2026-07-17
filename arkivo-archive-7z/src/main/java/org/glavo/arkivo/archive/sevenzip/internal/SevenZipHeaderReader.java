@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -58,8 +59,24 @@ public final class SevenZipHeaderReader {
             @Nullable ArkivoPasswordProvider passwordProvider,
             ArkivoReadLimitTracker readLimits
     ) throws IOException {
+        return readArchiveMetadata(
+                channel,
+                passwordProvider,
+                readLimits,
+                ArchiveReadLimits.UNLIMITED
+        );
+    }
+
+    /// Reads and validates 7z metadata under logical and decoder resource limits.
+    public static SevenZipArchiveMetadata readArchiveMetadata(
+            SeekableByteChannel channel,
+            @Nullable ArkivoPasswordProvider passwordProvider,
+            ArkivoReadLimitTracker readLimits,
+            ArchiveReadLimits archiveLimits
+    ) throws IOException {
         Objects.requireNonNull(channel, "channel");
         Objects.requireNonNull(readLimits, "readLimits");
+        Objects.requireNonNull(archiveLimits, "archiveLimits");
         SevenZipSignatureHeader signatureHeader = readSignatureHeader(channel);
         readLimits.acceptMetadata(SevenZipSignatureHeader.SIZE, null);
         readLimits.acceptMetadata(signatureHeader.nextHeaderSize(), null);
@@ -73,7 +90,8 @@ public final class SevenZipHeaderReader {
                             return openPackedStream(channel, offset, size);
                         },
                         passwordProvider,
-                        readLimits
+                        readLimits,
+                        archiveLimits
                 )
         );
     }

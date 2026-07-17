@@ -16,17 +16,19 @@ import java.nio.ByteBuffer;
 @NotNullByDefault
 public interface CompressionDecoder extends AutoCloseable {
     /// Decodes compressed source bytes while allowing additional source bytes in a later operation.
-    default CodecOutcome decode(ByteBuffer source, ByteBuffer target) throws IOException {
-        return decode(source, target, false);
-    }
-
-    /// Decodes compressed source bytes until input, output space, a dictionary, or the encoding boundary stops progress.
     ///
-    /// When `endOfInput` is true, exhausting the source before the encoding completes is an error. Buffer positions
-    /// are the authoritative record of bytes consumed and produced.
+    /// Buffer positions are the authoritative record of bytes consumed and produced.
     ///
     /// @return the actionable reason this operation returned
-    CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) throws IOException;
+    CodecOutcome decode(ByteBuffer source, ByteBuffer target) throws IOException;
+
+    /// Decodes after the caller has supplied all remaining compressed source bytes.
+    ///
+    /// Exhausting the source before the encoding completes is an error. Buffer positions are the authoritative record
+    /// of bytes consumed and produced.
+    ///
+    /// @return the actionable reason this operation returned
+    CodecOutcome finish(ByteBuffer source, ByteBuffer target) throws IOException;
 
     /// Abandons the current encoding and restores the decoder's original immutable configuration.
     void reset();
@@ -48,7 +50,7 @@ public interface CompressionDecoder extends AutoCloseable {
     interface DictionaryAware<
             D extends CompressionDictionary,
             R extends DictionaryRequest<D>
-    > extends CompressionDecoder {
+            > extends CompressionDecoder {
         /// Returns the dictionary request produced by the most recent decode operation.
         ///
         /// This method is valid only after `CodecOutcome.NEEDS_DICTIONARY`.
@@ -66,6 +68,6 @@ public interface CompressionDecoder extends AutoCloseable {
     interface FramedDictionaryAware<
             D extends CompressionDictionary,
             R extends DictionaryRequest<D>
-    > extends Framed, DictionaryAware<D, R> {
+            > extends Framed, DictionaryAware<D, R> {
     }
 }

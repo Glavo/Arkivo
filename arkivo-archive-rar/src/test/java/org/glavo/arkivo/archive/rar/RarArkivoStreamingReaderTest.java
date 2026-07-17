@@ -3,7 +3,8 @@
 
 package org.glavo.arkivo.archive.rar;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.rar.internal.RarArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
@@ -180,25 +181,30 @@ public final class RarArkivoStreamingReaderTest {
                 content,
                 null
         ));
-        @Unmodifiable Map<String, Object> environment = Map.of(
-                ArkivoFileSystem.MAX_ENTRY_COUNT.key(), 16L,
-                ArkivoFileSystem.MAX_ENTRY_SIZE.key(), 1L << 20,
-                ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE.key(), 1L << 20,
-                ArkivoFileSystem.MAX_METADATA_SIZE.key(), 1L << 20
+        RarArchiveOptions.Read options = RarArchiveOptions.READ_DEFAULTS.withCommon(
+                ArchiveReadOptions.DEFAULT.withLimits(ArchiveReadLimits.builder()
+                        .maximumEntryCount(16L)
+                        .maximumEntrySize(1L << 20)
+                        .maximumTotalEntrySize(1L << 20)
+                        .maximumMetadataSize(1L << 20)
+                        .maximumCompressionWindowSize(1L << 20)
+                        .maximumDecoderMemorySize(1L << 20)
+                        .build()
+                )
         );
         Path archivePath = createTemporaryArchivePath("rar-malformed-");
         try {
             Files.write(archivePath, validArchive);
-            try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem("rar", archivePath, ArchiveOptions.fromEnvironment(environment))) {
+            try (ArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archivePath, options)) {
                 assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/payload.bin")));
             }
-            assertArrayEquals(content, readSingleRarBody(validArchive, environment));
+            assertArrayEquals(content, readSingleRarBody(validArchive, options));
 
             for (int length : malformedTruncationLengths(validArchive.length)) {
                 exerciseMalformedRar(
                         archivePath,
                         Arrays.copyOf(validArchive, length),
-                        environment,
+                        options,
                         "truncation@" + length
                 );
             }
@@ -211,7 +217,7 @@ public final class RarArkivoStreamingReaderTest {
                     int offset = random.nextInt(mutated.length);
                     mutated[offset] ^= (byte) (1 << random.nextInt(Byte.SIZE));
                 }
-                exerciseMalformedRar(archivePath, mutated, environment, "mutation#" + index);
+                exerciseMalformedRar(archivePath, mutated, options, "mutation#" + index);
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -222,7 +228,7 @@ public final class RarArkivoStreamingReaderTest {
     private static void exerciseMalformedRar(
             Path archivePath,
             byte[] archive,
-            @Unmodifiable Map<String, Object> environment,
+            RarArchiveOptions.Read options,
             String variant
     ) throws IOException {
         tolerateMalformedRarFailure(
@@ -231,7 +237,7 @@ public final class RarArkivoStreamingReaderTest {
         );
         Files.write(archivePath, archive, StandardOpenOption.TRUNCATE_EXISTING);
         tolerateMalformedRarFailure(() -> {
-            try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem("rar", archivePath, ArchiveOptions.fromEnvironment(environment))) {
+            try (ArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archivePath, options)) {
                 Path payload = fileSystem.getPath("/payload.bin");
                 if (Files.exists(payload)) {
                     Files.readAllBytes(payload);
@@ -239,7 +245,7 @@ public final class RarArkivoStreamingReaderTest {
             }
         }, variant + " file system");
         tolerateMalformedRarFailure(
-                () -> readSingleRarBody(archive, environment),
+                () -> readSingleRarBody(archive, options),
                 variant + " streaming reader"
         );
     }
@@ -247,20 +253,19 @@ public final class RarArkivoStreamingReaderTest {
     /// Reads all regular RAR entry bodies with an independent output bound.
     private static byte[] readSingleRarBody(
             byte[] archive,
-            @Unmodifiable Map<String, Object> environment
+            RarArchiveOptions.Read options
     ) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        try (var reader = ArkivoFormats.openStreamingReader(
-                "rar",
+        try (var reader = RarArkivoStreamingReader.open(
                 Channels.newChannel(new ByteArrayInputStream(archive)),
-                ArchiveOptions.fromEnvironment(environment)
+                options
         )) {
-            while (reader.next()) {
-                BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);
+            for (var readerEntry264 = reader.nextEntry(); readerEntry264 != null; readerEntry264 = reader.nextEntry()) {
+                BasicFileAttributes attributes = readerEntry264.attributes(BasicFileAttributes.class);
                 if (!attributes.isRegularFile()) {
                     continue;
                 }
-                try (InputStream body = reader.openInputStream()) {
+                try (InputStream body = readerEntry264.openInputStream()) {
                     byte[] bytes = body.readNBytes((1 << 20) + 1);
                     if (bytes.length > 1 << 20) {
                         throw new IOException("Malformed RAR exceeded the defensive output bound");
@@ -333,7 +338,7 @@ public final class RarArkivoStreamingReaderTest {
         TrackingEditStorage storage = new TrackingEditStorage(false);
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 source,
-                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
+                RarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withEditStorage(storage))
         )) {
             assertEquals(0, storage.createdContentCount());
             assertEquals(content.length, Files.size(fileSystem.getPath("/value.txt")));
@@ -375,7 +380,7 @@ public final class RarArkivoStreamingReaderTest {
         TrackingEditStorage storage = new TrackingEditStorage(true);
         RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 archivePath,
-                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
+                RarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withEditStorage(storage))
         );
         try {
             assertEquals(0, storage.createdContentCount());
@@ -414,7 +419,7 @@ public final class RarArkivoStreamingReaderTest {
         TrackingEditStorage storage = new TrackingEditStorage(false);
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 archivePath,
-                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
+                RarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withEditStorage(storage))
         )) {
             assertEquals(0, storage.createdContentCount());
             assertEquals(first.length, Files.size(fileSystem.getPath("/first.bin")));
@@ -443,7 +448,7 @@ public final class RarArkivoStreamingReaderTest {
         TrackingEditStorage storage = new TrackingEditStorage(false);
         RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 archivePath,
-                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
+                RarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withEditStorage(storage))
         );
         SeekableByteChannel channel = Files.newByteChannel(fileSystem.getPath("/value.bin"));
         try {
@@ -475,7 +480,7 @@ public final class RarArkivoStreamingReaderTest {
         TrackingEditStorage storage = new TrackingEditStorage(false);
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 archivePath,
-                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
+                RarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withEditStorage(storage))
         )) {
             Path entry = fileSystem.getPath("/bad.bin");
             assertEquals(content.length, Files.size(entry));
@@ -503,13 +508,15 @@ public final class RarArkivoStreamingReaderTest {
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.MAX_ENTRY_COUNT.key(), 1L))
+                RarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withLimits(
+                        ArchiveReadLimits.builder().maximumEntryCount(1L).build()
+                ))
         )) {
-            assertEquals(true, reader.next());
-            try (InputStream input = reader.openInputStream()) {
+            var readerEntry517 = java.util.Objects.requireNonNull(reader.nextEntry());
+            try (InputStream input = readerEntry517.openInputStream()) {
                 assertArrayEquals(first, input.readAllBytes());
             }
-            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
+            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::nextEntry);
             assertEquals(ArkivoReadLimitKind.ENTRY_COUNT, exception.kind());
             assertEquals(1L, exception.maximum());
             assertEquals(2L, exception.actual());
@@ -523,7 +530,9 @@ public final class RarArkivoStreamingReaderTest {
                     ArkivoReadLimitException.class,
                     () -> RarArkivoFileSystem.open(
                             archivePath,
-                            ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE.key(), 6L))
+                            RarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withLimits(
+                                    ArchiveReadLimits.builder().maximumTotalEntrySize(6L).build()
+                            ))
                     )
             );
             assertEquals(ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, exception.kind());
@@ -547,15 +556,17 @@ public final class RarArkivoStreamingReaderTest {
         ));
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.MAX_METADATA_SIZE.key(), 8L))
+                RarArchiveOptions.READ_DEFAULTS.withCommon(ArchiveReadOptions.DEFAULT.withLimits(
+                        ArchiveReadLimits.builder().maximumMetadataSize(8L).build()
+                ))
         )) {
-            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
+            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::nextEntry);
             assertEquals(ArkivoReadLimitKind.METADATA_SIZE, exception.kind());
             assertEquals(8L, exception.maximum());
             assertTrue(exception.actual() > 8L);
             assertNull(exception.entryPath());
 
-            ArkivoReadLimitException repeated = assertThrows(ArkivoReadLimitException.class, reader::next);
+            ArkivoReadLimitException repeated = assertThrows(ArkivoReadLimitException.class, reader::nextEntry);
             assertEquals(exception.kind(), repeated.kind());
             assertEquals(exception.maximum(), repeated.maximum());
             assertEquals(exception.actual(), repeated.actual());
@@ -575,18 +586,18 @@ public final class RarArkivoStreamingReaderTest {
         ArrayList<String> paths = new ArrayList<>();
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes directory = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry593 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes directory = readerEntry593.attributes(RarArkivoEntryAttributes.class);
             paths.add(directory.path());
             assertEquals("dir/", directory.path());
             assertEquals(true, directory.isDirectory());
             assertEquals(040755, directory.fileAttributes());
             assertEquals(FileTime.fromMillis(1_700_000_000_000L), directory.lastModifiedTime());
 
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes file = reader.readAttributes(RarArkivoEntryAttributes.class);
-            BasicFileAttributes basicFile = reader.readAttributes(BasicFileAttributes.class);
-            PosixFileAttributes posixFile = reader.readAttributes(PosixFileAttributes.class);
+            var readerEntry601 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes file = readerEntry601.attributes(RarArkivoEntryAttributes.class);
+            BasicFileAttributes basicFile = readerEntry601.attributes(BasicFileAttributes.class);
+            PosixFileAttributes posixFile = readerEntry601.attributes(PosixFileAttributes.class);
             paths.add(file.path());
             assertEquals("dir/hello.txt", file.path());
             assertEquals(true, file.isRegularFile());
@@ -614,12 +625,12 @@ public final class RarArkivoStreamingReaderTest {
                     ),
                     posixFile.permissions()
             );
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry601.openInputStream()) {
                 assertArrayEquals(first, input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes link = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry636 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes link = readerEntry636.attributes(RarArkivoEntryAttributes.class);
             paths.add(link.path());
             assertEquals("link", link.path());
             assertEquals(true, link.isSymbolicLink());
@@ -629,11 +640,11 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals("dir/hello.txt", link.redirectionTarget());
             assertEquals(false, link.redirectionTargetDirectory());
             assertNull(link.userName());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry636.openInputStream()) {
                 assertArrayEquals(new byte[0], input.readAllBytes());
             }
 
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
 
         assertEquals(List.of("dir/", "dir/hello.txt", "link"), paths);
@@ -663,8 +674,8 @@ public final class RarArkivoStreamingReaderTest {
         );
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry681 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes attributes = readerEntry681.attributes(RarArkivoEntryAttributes.class);
             assertEquals("split.txt", attributes.path());
             assertEquals(firstPart.length, attributes.packedSize());
             assertEquals(content.length, attributes.unpackedSize());
@@ -672,24 +683,24 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals(false, attributes.continuesFromPreviousVolume());
             assertEquals(true, attributes.continuesInNextVolume());
 
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry681.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            assertEquals("split.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
+            assertEquals("split.txt", readerEntry681.attributes(RarArkivoEntryAttributes.class).path());
 
-            assertEquals(true, reader.next());
-            assertEquals("after.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
-            try (var input = reader.openInputStream()) {
+            var readerEntry695 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals("after.txt", readerEntry695.attributes(RarArkivoEntryAttributes.class).path());
+            try (var input = readerEntry695.openInputStream()) {
                 assertArrayEquals("after".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            assertEquals(true, reader.next());
-            assertEquals("after.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
-            assertEquals(false, reader.next());
+            var readerEntry704 = java.util.Objects.requireNonNull(reader.nextEntry());
+            var readerEntry705 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals("after.txt", readerEntry705.attributes(RarArkivoEntryAttributes.class).path());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -709,13 +720,13 @@ public final class RarArkivoStreamingReaderTest {
         ));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry727 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes attributes = readerEntry727.attributes(RarArkivoEntryAttributes.class);
             assertEquals(true, attributes.continuesFromPreviousVolume());
 
-            IOException exception = assertThrows(IOException.class, reader::openInputStream);
+            IOException exception = assertThrows(IOException.class, readerEntry727::openInputStream);
             assertEquals(true, exception.getMessage().contains("previous volume"));
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -750,8 +761,8 @@ public final class RarArkivoStreamingReaderTest {
         );
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes hardLink = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry768 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes hardLink = readerEntry768.attributes(RarArkivoEntryAttributes.class);
             assertEquals("hard-link", hardLink.path());
             assertEquals(true, hardLink.isRegularFile());
             assertEquals(false, hardLink.isSymbolicLink());
@@ -761,12 +772,12 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals(0, hardLink.redirectionFlags());
             assertEquals("dir/hello.txt", hardLink.redirectionTarget());
             assertEquals(false, hardLink.redirectionTargetDirectory());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry768.openInputStream()) {
                 assertArrayEquals(new byte[0], input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes fileCopy = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry783 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes fileCopy = readerEntry783.attributes(RarArkivoEntryAttributes.class);
             assertEquals("file-copy", fileCopy.path());
             assertEquals(true, fileCopy.isRegularFile());
             assertEquals(false, fileCopy.isSymbolicLink());
@@ -776,12 +787,12 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals(0, fileCopy.redirectionFlags());
             assertEquals("dir/hello.txt", fileCopy.redirectionTarget());
             assertEquals(false, fileCopy.redirectionTargetDirectory());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry783.openInputStream()) {
                 assertArrayEquals(new byte[0], input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes junction = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry798 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes junction = readerEntry798.attributes(RarArkivoEntryAttributes.class);
             assertEquals("junction", junction.path());
             assertEquals(false, junction.isRegularFile());
             assertEquals(false, junction.isSymbolicLink());
@@ -790,11 +801,11 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals(RarArkivoEntryAttributes.REDIRECTION_FLAG_TARGET_DIRECTORY, junction.redirectionFlags());
             assertEquals("target-dir", junction.redirectionTarget());
             assertEquals(true, junction.redirectionTargetDirectory());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry798.openInputStream()) {
                 assertArrayEquals(new byte[0], input.readAllBytes());
             }
 
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1123,7 +1134,7 @@ public final class RarArkivoStreamingReaderTest {
     public void failedSeekableChannelSourceOpenClosesSource() throws IOException {
         TestSeekableChannelSource source = new TestSeekableChannelSource(new byte[0]);
 
-        assertThrows(IOException.class, () -> RarArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(Map.of())));
+        assertThrows(IOException.class, () -> RarArkivoFileSystem.open(source, RarArchiveOptions.READ_DEFAULTS));
 
         assertEquals(true, source.openCount() > 0);
         assertEquals(true, source.allOpenedChannelsClosed());
@@ -1244,18 +1255,18 @@ public final class RarArkivoStreamingReaderTest {
             assertThrows(UnsupportedOperationException.class, discoveredPaths::clear);
 
             try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(firstVolume)) {
-                assertEquals(true, reader.next());
-                assertEquals("split.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
-                try (InputStream input = reader.openInputStream()) {
+                var readerEntry1262 = java.util.Objects.requireNonNull(reader.nextEntry());
+                assertEquals("split.txt", readerEntry1262.attributes(RarArkivoEntryAttributes.class).path());
+                try (InputStream input = readerEntry1262.openInputStream()) {
                     assertArrayEquals(content, input.readAllBytes());
                 }
 
-                assertEquals(true, reader.next());
-                assertEquals("after.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
-                try (InputStream input = reader.openInputStream()) {
+                var readerEntry1268 = java.util.Objects.requireNonNull(reader.nextEntry());
+                assertEquals("after.txt", readerEntry1268.attributes(RarArkivoEntryAttributes.class).path());
+                try (InputStream input = readerEntry1268.openInputStream()) {
                     assertArrayEquals("after".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
                 }
-                assertEquals(false, reader.next());
+                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
             }
         } finally {
             Files.deleteIfExists(secondVolume);
@@ -1311,23 +1322,24 @@ public final class RarArkivoStreamingReaderTest {
         });
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(source)) {
-            assertEquals(true, reader.next());
-            assertEquals("split.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
-            try (InputStream input = reader.openInputStream()) {
+            var readerEntry1329 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals("split.txt", readerEntry1329.attributes(RarArkivoEntryAttributes.class).path());
+            try (InputStream input = readerEntry1329.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            assertEquals("after.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
-            try (InputStream input = reader.openInputStream()) {
+            var readerEntry1335 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals("after.txt", readerEntry1335.attributes(RarArkivoEntryAttributes.class).path());
+            try (InputStream input = readerEntry1335.openInputStream()) {
                 assertArrayEquals("after".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
 
         assertEquals(1, source.closeCount());
         assertEquals(true, source.allOpenedChannelsClosed());
     }
+
     /// Verifies that stored RAR4 entries split across explicit archive volumes can be read.
     @Test
     public void opensStoredRar4SplitEntryFromVolumeSource() throws IOException {
@@ -1403,15 +1415,15 @@ public final class RarArkivoStreamingReaderTest {
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive)
         )) {
-            assertEquals(true, reader.next());
+            var readerEntry1421 = java.util.Objects.requireNonNull(reader.nextEntry());
             assertEquals(
                     3,
-                    reader.readAttributes(RarArkivoEntryAttributes.class).compressionMethod()
+                    readerEntry1421.attributes(RarArkivoEntryAttributes.class).compressionMethod()
             );
-            try (InputStream input = reader.openInputStream()) {
+            try (InputStream input = readerEntry1421.openInputStream()) {
                 assertArrayEquals(RAR5_COMPRESSED_CONTENT, input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -1435,9 +1447,9 @@ public final class RarArkivoStreamingReaderTest {
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive)
         )) {
-            assertEquals(true, reader.next());
+            var readerEntry1453 = java.util.Objects.requireNonNull(reader.nextEntry());
             IOException exception = assertThrows(IOException.class, () -> {
-                try (InputStream input = reader.openInputStream()) {
+                try (InputStream input = readerEntry1453.openInputStream()) {
                     input.readAllBytes();
                 }
             });
@@ -1602,7 +1614,7 @@ public final class RarArkivoStreamingReaderTest {
         try {
             try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                     ArkivoVolumeSource.of(List.of(firstVolume, secondVolume)),
-                    ArchiveOptions.fromEnvironment(rar5PasswordEnvironment(RAR5_PASSWORD))
+                    rar5PasswordOptions(RAR5_PASSWORD)
             )) {
                 assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/secret.txt")));
                 assertArrayEquals(
@@ -1679,7 +1691,7 @@ public final class RarArkivoStreamingReaderTest {
         try {
             try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                     ArkivoVolumeSource.of(List.of(firstVolume, secondVolume)),
-                    ArchiveOptions.fromEnvironment(rar5PasswordEnvironment(RAR5_PASSWORD))
+                    rar5PasswordOptions(RAR5_PASSWORD)
             )) {
                 assertArrayEquals(
                         RAR5_COMPRESSED_CONTENT,
@@ -1745,7 +1757,7 @@ public final class RarArkivoStreamingReaderTest {
         try {
             try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                     ArkivoVolumeSource.of(List.of(firstVolume, secondVolume)),
-                    ArchiveOptions.fromEnvironment(rar3PasswordEnvironment(RAR3_PASSWORD))
+                    rar3PasswordOptions(RAR3_PASSWORD)
             )) {
                 assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/secret.txt")));
                 assertArrayEquals(
@@ -1826,7 +1838,7 @@ public final class RarArkivoStreamingReaderTest {
         try {
             try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                     ArkivoVolumeSource.of(List.of(firstVolume, secondVolume)),
-                    ArchiveOptions.fromEnvironment(rar3PasswordEnvironment(RAR3_PASSWORD))
+                    rar3PasswordOptions(RAR3_PASSWORD)
             )) {
                 assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/file1.txt")));
                 assertArrayEquals(
@@ -1874,10 +1886,10 @@ public final class RarArkivoStreamingReaderTest {
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArchiveOptions.fromEnvironment(rar5PasswordEnvironment(RAR5_PASSWORD))
+                rar5PasswordOptions(RAR5_PASSWORD)
         )) {
-            assertEquals(true, reader.next());
-            var input = reader.openInputStream();
+            var readerEntry1894 = java.util.Objects.requireNonNull(reader.nextEntry());
+            var input = readerEntry1894.openInputStream();
             IOException exception = assertThrows(IOException.class, input::readAllBytes);
             assertEquals(true, exception.getMessage().contains("continuation encryption state differs"));
             assertThrows(IOException.class, input::close);
@@ -1919,10 +1931,10 @@ public final class RarArkivoStreamingReaderTest {
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArchiveOptions.fromEnvironment(rar5PasswordEnvironment(RAR5_PASSWORD))
+                rar5PasswordOptions(RAR5_PASSWORD)
         )) {
-            assertEquals(true, reader.next());
-            var input = reader.openInputStream();
+            var readerEntry1939 = java.util.Objects.requireNonNull(reader.nextEntry());
+            var input = readerEntry1939.openInputStream();
             IOException exception = assertThrows(IOException.class, input::readAllBytes);
             assertEquals(true, exception.getMessage().contains("Unexpected end of encrypted RAR"));
             assertThrows(IOException.class, input::close);
@@ -2117,14 +2129,14 @@ public final class RarArkivoStreamingReaderTest {
         byte[] archive = archive(compressedFile("compressed.bin", 1_700_000_000L, 0100644, new byte[]{1, 2, 3}, 6));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry2135 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes attributes = readerEntry2135.attributes(RarArkivoEntryAttributes.class);
             assertEquals("compressed.bin", attributes.path());
             assertEquals(6, attributes.compressionMethod());
 
-            IOException exception = assertThrows(IOException.class, reader::openInputStream);
+            IOException exception = assertThrows(IOException.class, readerEntry2135::openInputStream);
             assertEquals(true, exception.getMessage().contains("Unsupported RAR compression method"));
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -2138,44 +2150,44 @@ public final class RarArkivoStreamingReaderTest {
                 encrypted,
                 storedFile("after.txt", 1_700_000_001L, 0100644, after, null)
         );
-        Map<String, Object> environment = rar3PasswordEnvironment(RAR3_PASSWORD);
+        RarArchiveOptions.Read options = rar3PasswordOptions(RAR3_PASSWORD);
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArchiveOptions.fromEnvironment(environment)
+                options
         )) {
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry2162 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes attributes = readerEntry2162.attributes(RarArkivoEntryAttributes.class);
             assertEquals("secret.txt", attributes.path());
             assertEquals(true, attributes.isEncrypted());
             assertEquals(content.length, attributes.unpackedSize());
             assertEquals((content.length + 15) & ~15, attributes.packedSize());
-            try (var body = reader.openInputStream()) {
+            try (var body = readerEntry2162.openInputStream()) {
                 assertArrayEquals(content, body.readAllBytes());
             }
-            assertEquals(true, reader.next());
-            try (var body = reader.openInputStream()) {
+            var readerEntry2171 = java.util.Objects.requireNonNull(reader.nextEntry());
+            try (var body = readerEntry2171.openInputStream()) {
                 assertArrayEquals(after, body.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArchiveOptions.fromEnvironment(environment)
+                options
         )) {
-            assertEquals(true, reader.next());
-            try (var body = reader.openInputStream()) {
+            var readerEntry2182 = java.util.Objects.requireNonNull(reader.nextEntry());
+            try (var body = readerEntry2182.openInputStream()) {
                 assertArrayEquals(Arrays.copyOf(content, 4), body.readNBytes(4));
             }
-            assertEquals(true, reader.next());
-            assertEquals("after.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
+            var readerEntry2186 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals("after.txt", readerEntry2186.attributes(RarArkivoEntryAttributes.class).path());
         }
 
         Path archivePath = createTemporaryArchivePath("rar3-encrypted-entry-");
         Files.write(archivePath, archive);
         try {
-            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
+            try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(archivePath, options)) {
                 assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/secret.txt")));
                 assertArrayEquals(after, Files.readAllBytes(fileSystem.getPath("/after.txt")));
             }
@@ -2191,16 +2203,16 @@ public final class RarArkivoStreamingReaderTest {
         byte[] archive = rar4EncryptedArchive(rar4EncryptedStoredFile("unsalted.txt", content, null));
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 Channels.newChannel(new ByteArrayInputStream(archive)),
-                ArchiveOptions.fromEnvironment(rar3PasswordEnvironment(RAR3_PASSWORD))
+                rar3PasswordOptions(RAR3_PASSWORD)
         )) {
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry2211 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes attributes = readerEntry2211.attributes(RarArkivoEntryAttributes.class);
             assertEquals(true, attributes.isEncrypted());
             assertEquals((content.length + 15) & ~15, attributes.packedSize());
-            try (var body = reader.openInputStream()) {
+            try (var body = readerEntry2211.openInputStream()) {
                 assertArrayEquals(content, body.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -2215,17 +2227,17 @@ public final class RarArkivoStreamingReaderTest {
         ));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            assertEquals(true, reader.readAttributes(RarArkivoEntryAttributes.class).isEncrypted());
-            assertEquals(false, reader.next());
+            var readerEntry2233 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals(true, readerEntry2233.attributes(RarArkivoEntryAttributes.class).isEncrypted());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArchiveOptions.fromEnvironment(rar3PasswordEnvironment("wrong".getBytes(StandardCharsets.UTF_16LE)))
+                rar3PasswordOptions("wrong".getBytes(StandardCharsets.UTF_16LE))
         )) {
-            assertEquals(true, reader.next());
-            var body = reader.openInputStream();
+            var readerEntry2242 = java.util.Objects.requireNonNull(reader.nextEntry());
+            var body = readerEntry2242.openInputStream();
             IOException exception = assertThrows(IOException.class, body::readAllBytes);
             assertEquals(true, exception.getMessage().contains("Invalid RAR entry CRC32"));
             assertThrows(IOException.class, body::close);
@@ -2247,7 +2259,7 @@ public final class RarArkivoStreamingReaderTest {
         try {
             try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                     archivePath,
-                    ArchiveOptions.fromEnvironment(rar3PasswordEnvironment(RAR3_PASSWORD))
+                    rar3PasswordOptions(RAR3_PASSWORD)
             )) {
                 Path entry = fileSystem.getPath("/hidden/value.txt");
                 assertArrayEquals(content, Files.readAllBytes(entry));
@@ -2258,7 +2270,7 @@ public final class RarArkivoStreamingReaderTest {
                     IOException.class,
                     () -> RarArkivoFileSystem.open(
                             archivePath,
-                            ArchiveOptions.fromEnvironment(rar3PasswordEnvironment("wrong".getBytes(StandardCharsets.UTF_16LE)))
+                            rar3PasswordOptions("wrong".getBytes(StandardCharsets.UTF_16LE))
                     )
             );
             assertEquals(true, incorrectPassword.getMessage().contains("Incorrect RAR3 archive password"));
@@ -2294,9 +2306,9 @@ public final class RarArkivoStreamingReaderTest {
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArchiveOptions.fromEnvironment(rar3PasswordEnvironment(RAR3_PASSWORD))
+                rar3PasswordOptions(RAR3_PASSWORD)
         )) {
-            IOException exception = assertThrows(IOException.class, reader::next);
+            IOException exception = assertThrows(IOException.class, reader::nextEntry);
             assertEquals(true, exception.getMessage().contains("Incorrect RAR3 archive password or corrupt encrypted header"));
         }
     }
@@ -2323,7 +2335,7 @@ public final class RarArkivoStreamingReaderTest {
 
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 volumes,
-                ArchiveOptions.fromEnvironment(rar3PasswordEnvironment(RAR3_PASSWORD))
+                rar3PasswordOptions(RAR3_PASSWORD)
         )) {
             assertArrayEquals(firstContent, Files.readAllBytes(fileSystem.getPath("/first.txt")));
             assertArrayEquals(secondContent, Files.readAllBytes(fileSystem.getPath("/second.txt")));
@@ -2340,7 +2352,10 @@ public final class RarArkivoStreamingReaderTest {
                 RAR3_FILE_SALT
         ));
         List<byte[]> suppliedPasswords = new ArrayList<>();
-        ArkivoPasswordProvider passwordProvider = () -> {
+        ArkivoPasswordProvider passwordProvider = request -> {
+            if (request.entryPath() != null) {
+                assertEquals("/secret.txt", request.entryPath());
+            }
             byte[] password = RAR3_PASSWORD.clone();
             suppliedPasswords.add(password);
             return password;
@@ -2350,7 +2365,7 @@ public final class RarArkivoStreamingReaderTest {
         try {
             try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                     archivePath,
-                    ArchiveOptions.fromEnvironment(Map.of(RarArkivoFileSystem.PASSWORD_PROVIDER.key(), passwordProvider))
+                    RarArchiveOptions.READ_DEFAULTS.withPasswordProvider(passwordProvider)
             )) {
                 assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/secret.txt")));
             }
@@ -2372,38 +2387,38 @@ public final class RarArkivoStreamingReaderTest {
                 encryptedStoredFile("secret.txt", content, true),
                 storedFile("after.txt", 1_700_000_001L, 0100644, after, null)
         );
-        Map<String, Object> environment = rar5PasswordEnvironment(RAR5_PASSWORD);
+        RarArchiveOptions.Read options = rar5PasswordOptions(RAR5_PASSWORD);
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArchiveOptions.fromEnvironment(environment)
+                options
         )) {
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry2396 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes attributes = readerEntry2396.attributes(RarArkivoEntryAttributes.class);
             assertEquals("secret.txt", attributes.path());
             assertEquals(true, attributes.isEncrypted());
             assertEquals(content.length, attributes.unpackedSize());
             assertEquals((content.length + 15) & ~15, attributes.packedSize());
-            try (var body = reader.openInputStream()) {
+            try (var body = readerEntry2396.openInputStream()) {
                 assertArrayEquals(content, body.readAllBytes());
             }
-            assertEquals(true, reader.next());
-            try (var body = reader.openInputStream()) {
+            var readerEntry2405 = java.util.Objects.requireNonNull(reader.nextEntry());
+            try (var body = readerEntry2405.openInputStream()) {
                 assertArrayEquals(after, body.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArchiveOptions.fromEnvironment(environment)
+                options
         )) {
-            assertEquals(true, reader.next());
-            try (var body = reader.openInputStream()) {
+            var readerEntry2416 = java.util.Objects.requireNonNull(reader.nextEntry());
+            try (var body = readerEntry2416.openInputStream()) {
                 assertArrayEquals(Arrays.copyOf(content, 5), body.readNBytes(5));
             }
-            assertEquals(true, reader.next());
-            assertEquals("after.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
+            var readerEntry2420 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals("after.txt", readerEntry2420.attributes(RarArkivoEntryAttributes.class).path());
         }
     }
 
@@ -2413,16 +2428,16 @@ public final class RarArkivoStreamingReaderTest {
         byte[] archive = archive(encryptedStoredFile("empty.bin", new byte[0], true));
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 Channels.newChannel(new ByteArrayInputStream(archive)),
-                ArchiveOptions.fromEnvironment(rar5PasswordEnvironment(RAR5_PASSWORD))
+                rar5PasswordOptions(RAR5_PASSWORD)
         )) {
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry2433 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes attributes = readerEntry2433.attributes(RarArkivoEntryAttributes.class);
             assertEquals(0L, attributes.packedSize());
             assertEquals(0L, attributes.unpackedSize());
-            try (var body = reader.openInputStream()) {
+            try (var body = readerEntry2433.openInputStream()) {
                 assertArrayEquals(new byte[0], body.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -2458,17 +2473,17 @@ public final class RarArkivoStreamingReaderTest {
         ));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            assertEquals(true, reader.readAttributes(RarArkivoEntryAttributes.class).isEncrypted());
-            assertEquals(false, reader.next());
+            var readerEntry2476 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals(true, readerEntry2476.attributes(RarArkivoEntryAttributes.class).isEncrypted());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArchiveOptions.fromEnvironment(rar5PasswordEnvironment("wrong".getBytes(StandardCharsets.UTF_8)))
+                rar5PasswordOptions("wrong".getBytes(StandardCharsets.UTF_8))
         )) {
-            assertEquals(true, reader.next());
-            IOException exception = assertThrows(IOException.class, reader::openInputStream);
+            var readerEntry2485 = java.util.Objects.requireNonNull(reader.nextEntry());
+            IOException exception = assertThrows(IOException.class, readerEntry2485::openInputStream);
             assertEquals(true, exception.getMessage().contains("Incorrect RAR5 password"));
         }
     }
@@ -2483,7 +2498,7 @@ public final class RarArkivoStreamingReaderTest {
         try {
             try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                     archivePath,
-                    ArchiveOptions.fromEnvironment(rar5PasswordEnvironment(RAR5_PASSWORD))
+                    rar5PasswordOptions(RAR5_PASSWORD)
             )) {
                 Path entry = fileSystem.getPath("/hidden/value.txt");
                 assertArrayEquals(content, Files.readAllBytes(entry));
@@ -2494,7 +2509,7 @@ public final class RarArkivoStreamingReaderTest {
                     IOException.class,
                     () -> RarArkivoFileSystem.open(
                             archivePath,
-                            ArchiveOptions.fromEnvironment(rar5PasswordEnvironment("wrong".getBytes(StandardCharsets.UTF_8)))
+                            rar5PasswordOptions("wrong".getBytes(StandardCharsets.UTF_8))
                     )
             );
             assertEquals(true, exception.getMessage().contains("Incorrect RAR5 archive password"));
@@ -2515,7 +2530,10 @@ public final class RarArkivoStreamingReaderTest {
         byte[] content = "cleared password".getBytes(StandardCharsets.UTF_8);
         byte[] archive = encryptedHeaderArchive(encryptedStoredFile("secret.txt", content, true));
         List<byte[]> suppliedPasswords = new ArrayList<>();
-        ArkivoPasswordProvider passwordProvider = () -> {
+        ArkivoPasswordProvider passwordProvider = request -> {
+            if (request.entryPath() != null) {
+                assertEquals("/secret.txt", request.entryPath());
+            }
             byte[] password = RAR5_PASSWORD.clone();
             suppliedPasswords.add(password);
             return password;
@@ -2525,7 +2543,7 @@ public final class RarArkivoStreamingReaderTest {
         try {
             try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                     archivePath,
-                    ArchiveOptions.fromEnvironment(Map.of(RarArkivoFileSystem.PASSWORD_PROVIDER.key(), passwordProvider))
+                    RarArchiveOptions.READ_DEFAULTS.withPasswordProvider(passwordProvider)
             )) {
                 assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/secret.txt")));
             }
@@ -2559,7 +2577,7 @@ public final class RarArkivoStreamingReaderTest {
         try {
             try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                     ArkivoVolumeSource.of(List.of(firstVolume, secondVolume)),
-                    ArchiveOptions.fromEnvironment(rar5PasswordEnvironment(RAR5_PASSWORD))
+                    rar5PasswordOptions(RAR5_PASSWORD)
             )) {
                 assertArrayEquals(firstContent, Files.readAllBytes(fileSystem.getPath("/first.txt")));
                 assertArrayEquals(secondContent, Files.readAllBytes(fileSystem.getPath("/second.txt")));
@@ -2596,10 +2614,10 @@ public final class RarArkivoStreamingReaderTest {
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive(wrongCrc)),
-                ArchiveOptions.fromEnvironment(rar5PasswordEnvironment(RAR5_PASSWORD))
+                rar5PasswordOptions(RAR5_PASSWORD)
         )) {
-            assertEquals(true, reader.next());
-            var body = reader.openInputStream();
+            var readerEntry2616 = java.util.Objects.requireNonNull(reader.nextEntry());
+            var body = readerEntry2616.openInputStream();
             IOException exception = assertThrows(IOException.class, body::readAllBytes);
             assertEquals(true, exception.getMessage().contains("Invalid RAR entry CRC32"));
             IOException closeException = assertThrows(IOException.class, body::close);
@@ -2609,10 +2627,10 @@ public final class RarArkivoStreamingReaderTest {
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive(wrongCrc)),
-                ArchiveOptions.fromEnvironment(rar5PasswordEnvironment(RAR5_PASSWORD))
+                rar5PasswordOptions(RAR5_PASSWORD)
         )) {
-            assertEquals(true, reader.next());
-            var body = reader.openInputStream();
+            var readerEntry2629 = java.util.Objects.requireNonNull(reader.nextEntry());
+            var body = readerEntry2629.openInputStream();
             assertEquals(true, body.read() >= 0);
             IOException exception = assertThrows(IOException.class, body::close);
             assertEquals(true, exception.getMessage().contains("Invalid RAR entry CRC32"));
@@ -2638,13 +2656,13 @@ public final class RarArkivoStreamingReaderTest {
         ));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry2656 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes attributes = readerEntry2656.attributes(RarArkivoEntryAttributes.class);
 
             assertEquals(Instant.ofEpochSecond(1_700_000_000L, 123_456_789L), attributes.lastModifiedTime().toInstant());
             assertEquals(Instant.ofEpochSecond(1_700_000_001L, 987_654_321L), attributes.creationTime().toInstant());
             assertEquals(Instant.ofEpochSecond(1_700_000_002L, 1L), attributes.lastAccessTime().toInstant());
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -2664,13 +2682,13 @@ public final class RarArkivoStreamingReaderTest {
         ));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry2682 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes attributes = readerEntry2682.attributes(RarArkivoEntryAttributes.class);
 
             assertEquals(Instant.ofEpochSecond(1_700_000_010L, 100L), attributes.lastModifiedTime().toInstant());
             assertEquals(Instant.ofEpochSecond(1_700_000_011L, 200L), attributes.creationTime().toInstant());
             assertEquals(Instant.ofEpochSecond(1_700_000_012L, 300L), attributes.lastAccessTime().toInstant());
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -2687,14 +2705,14 @@ public final class RarArkivoStreamingReaderTest {
         ));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry2705 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes attributes = readerEntry2705.attributes(RarArkivoEntryAttributes.class);
 
             byte @Nullable [] firstHash = attributes.blake2spHash();
             assertArrayEquals(hash, firstHash);
             Objects.requireNonNull(firstHash, "firstHash")[0] = 99;
             assertArrayEquals(hash, attributes.blake2spHash());
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -2714,9 +2732,9 @@ public final class RarArkivoStreamingReaderTest {
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive)
         )) {
-            assertEquals(true, reader.next());
+            var readerEntry2732 = java.util.Objects.requireNonNull(reader.nextEntry());
             IOException exception = assertThrows(IOException.class, () -> {
-                try (InputStream input = reader.openInputStream()) {
+                try (InputStream input = readerEntry2732.openInputStream()) {
                     input.readAllBytes();
                 }
             });
@@ -2743,8 +2761,8 @@ public final class RarArkivoStreamingReaderTest {
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive)
         )) {
-            assertEquals(true, reader.next());
-            IOException exception = assertThrows(IOException.class, reader::next);
+            var readerEntry2761 = java.util.Objects.requireNonNull(reader.nextEntry());
+            IOException exception = assertThrows(IOException.class, reader::nextEntry);
             assertEquals(true, exception.getMessage().contains("BLAKE2sp"));
         }
     }
@@ -2755,10 +2773,10 @@ public final class RarArkivoStreamingReaderTest {
         byte[] archive = archive(storedFile("no-hash.txt", 0, 0100644, new byte[0], null));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
+            var readerEntry2773 = java.util.Objects.requireNonNull(reader.nextEntry());
 
-            assertNull(reader.readAttributes(RarArkivoEntryAttributes.class).blake2spHash());
-            assertEquals(false, reader.next());
+            assertNull(readerEntry2773.attributes(RarArkivoEntryAttributes.class).blake2spHash());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -2768,7 +2786,7 @@ public final class RarArkivoStreamingReaderTest {
         byte[] archive = archive(storedFile("../evil.txt", 0, 0100644, new byte[0], null));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            IOException exception = assertThrows(IOException.class, reader::next);
+            IOException exception = assertThrows(IOException.class, reader::nextEntry);
 
             assertEquals(true, exception.getMessage().contains("must not contain .."));
         }
@@ -2792,14 +2810,11 @@ public final class RarArkivoStreamingReaderTest {
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArchiveOptions.fromEnvironment(Map.of(
-                        RarArkivoFileSystem.LEGACY_CHARSET_DETECTOR.key(),
-                        detector
-                ))
+                RarArchiveOptions.READ_DEFAULTS.withLegacyCharsetDetector(detector)
         )) {
-            assertEquals(true, reader.next());
-            assertEquals(path, reader.readAttributes(RarArkivoEntryAttributes.class).path());
-            assertEquals(false, reader.next());
+            var readerEntry2815 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals(path, readerEntry2815.attributes(RarArkivoEntryAttributes.class).path());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -2814,13 +2829,10 @@ public final class RarArkivoStreamingReaderTest {
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArchiveOptions.fromEnvironment(Map.of(
-                        RarArkivoFileSystem.LEGACY_CHARSET_DETECTOR.key(),
-                        detector
-                ))
+                RarArchiveOptions.READ_DEFAULTS.withLegacyCharsetDetector(detector)
         )) {
-            assertEquals(true, reader.next());
-            assertEquals(path, reader.readAttributes(RarArkivoEntryAttributes.class).path());
+            var readerEntry2837 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals(path, readerEntry2837.attributes(RarArkivoEntryAttributes.class).path());
         }
     }
 
@@ -2840,16 +2852,16 @@ public final class RarArkivoStreamingReaderTest {
         );
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes directory = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry2858 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes directory = readerEntry2858.attributes(RarArkivoEntryAttributes.class);
             assertEquals("dir/", directory.path());
             assertEquals(true, directory.isDirectory());
             assertEquals(RarArkivoEntryAttributes.HOST_OS_UNIX, directory.hostOs());
             assertEquals(0, directory.compressionMethod());
             assertEquals(FileTime.from(Instant.ofEpochSecond(modificationTime)), directory.lastModifiedTime());
 
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes file = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry2866 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes file = readerEntry2866.attributes(RarArkivoEntryAttributes.class);
             assertEquals("dir/hello.txt", file.path());
             assertEquals(true, file.isRegularFile());
             assertEquals(RarArkivoEntryAttributes.HOST_OS_UNIX, file.hostOs());
@@ -2858,33 +2870,33 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals(content.length, file.unpackedSize());
             assertEquals(crc32(content), file.dataCrc32());
             assertEquals(FileTime.from(Instant.ofEpochSecond(modificationTime)), file.lastModifiedTime());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry2866.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes unicodeFile = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry2880 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes unicodeFile = readerEntry2880.attributes(RarArkivoEntryAttributes.class);
             assertEquals(unicodePath, unicodeFile.path());
             assertEquals(true, unicodeFile.isRegularFile());
             assertEquals(0, unicodeFile.compressionMethod());
             assertEquals(unicodeContent.length, unicodeFile.packedSize());
             assertEquals(unicodeContent.length, unicodeFile.unpackedSize());
             assertEquals(crc32(unicodeContent), unicodeFile.dataCrc32());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry2880.openInputStream()) {
                 assertArrayEquals(unicodeContent, input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes link = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry2892 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes link = readerEntry2892.attributes(RarArkivoEntryAttributes.class);
             assertEquals("link", link.path());
             assertEquals(true, link.isSymbolicLink());
             assertEquals("dir/hello.txt", link.linkName());
             assertEquals(RarArkivoEntryAttributes.REDIRECTION_TYPE_UNIX_SYMLINK, link.redirectionType());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry2892.openInputStream()) {
                 assertArrayEquals(new byte[0], input.readAllBytes());
             }
 
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
 
         Path archivePath = createTemporaryArchivePath("rar4-fs-");
@@ -2907,10 +2919,10 @@ public final class RarArkivoStreamingReaderTest {
         byte[] archive = archive(storedFileWithCrc("bad.txt", 0, 0100644, "bad".getBytes(StandardCharsets.UTF_8), 0));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            assertEquals(true, reader.next());
+            var readerEntry2925 = java.util.Objects.requireNonNull(reader.nextEntry());
 
             IOException exception = assertThrows(IOException.class, () -> {
-                try (var input = reader.openInputStream()) {
+                try (var input = readerEntry2925.openInputStream()) {
                     input.readAllBytes();
                 }
             });
@@ -2925,11 +2937,11 @@ public final class RarArkivoStreamingReaderTest {
                 storedFile("hello.txt", 0, 0100644, "hello".getBytes(StandardCharsets.UTF_8), null)
         ));
         RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(source);
-        assertEquals(true, reader.next());
+        var readerEntry2943 = java.util.Objects.requireNonNull(reader.nextEntry());
 
         IOException exception = assertThrows(IOException.class, reader::close);
         assertEquals("close failed", exception.getMessage());
-        assertThrows(IOException.class, reader::next);
+        assertThrows(IOException.class, reader::nextEntry);
         assertEquals(1, source.closeCount());
 
         reader.close();
@@ -2953,7 +2965,7 @@ public final class RarArkivoStreamingReaderTest {
                 true
         );
         RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(source);
-        assertEquals(true, reader.next());
+        var readerEntry2971 = java.util.Objects.requireNonNull(reader.nextEntry());
 
         IOException exception = assertThrows(IOException.class, reader::close);
         assertEquals("source close failed", exception.getMessage());
@@ -2965,6 +2977,7 @@ public final class RarArkivoStreamingReaderTest {
 
         assertEquals(2, source.closeCount());
     }
+
     /// Creates the deterministic plaintext stored in the real RAR5 compressed-body fixture.
     private static byte[] numberedRar5Content() {
         byte[] content = new byte[512 * 4];
@@ -2977,6 +2990,7 @@ public final class RarArkivoStreamingReaderTest {
         }
         return content;
     }
+
     /// Creates one RAR5 archive.
     private static byte[] archive(Member... members) throws IOException {
         return archiveVolume(true, members);
@@ -3986,12 +4000,9 @@ public final class RarArkivoStreamingReaderTest {
         return crc32.getValue();
     }
 
-    /// Returns environment options containing one fixed UTF-16LE RAR3 password provider.
-    private static Map<String, Object> rar3PasswordEnvironment(byte[] password) {
-        return Map.of(
-                RarArkivoFileSystem.PASSWORD_PROVIDER.key(),
-                ArkivoPasswordProvider.fixed(password)
-        );
+    /// Returns read options containing one fixed UTF-16LE RAR3 password provider.
+    private static RarArchiveOptions.Read rar3PasswordOptions(byte[] password) {
+        return RarArchiveOptions.READ_DEFAULTS.withPasswordProvider(ArkivoPasswordProvider.fixed(password));
     }
 
     /// Independently derives RAR 3.x fixture keys for passwords shorter than one SHA-1 block.
@@ -4041,12 +4052,9 @@ public final class RarArkivoStreamingReaderTest {
         }
     }
 
-    /// Returns environment options containing one fixed RAR5 password provider.
-    private static Map<String, Object> rar5PasswordEnvironment(byte[] password) {
-        return Map.of(
-                RarArkivoFileSystem.PASSWORD_PROVIDER.key(),
-                ArkivoPasswordProvider.fixed(password)
-        );
+    /// Returns read options containing one fixed RAR5 password provider.
+    private static RarArchiveOptions.Read rar5PasswordOptions(byte[] password) {
+        return RarArchiveOptions.READ_DEFAULTS.withPasswordProvider(ArkivoPasswordProvider.fixed(password));
     }
 
     /// Independently derives the three RAR5 PBKDF2 outputs used by encrypted fixtures.
@@ -4431,7 +4439,7 @@ public final class RarArkivoStreamingReaderTest {
     /// Stores one RAR4 member together with its file-encryption salt.
     ///
     /// @param member the encrypted member metadata and ciphertext
-    /// @param salt the eight-byte RAR 3.x derivation salt, or `null` for unsalted encryption
+    /// @param salt   the eight-byte RAR 3.x derivation salt, or `null` for unsalted encryption
     @NotNullByDefault
     private record Rar4EncryptedFixture(
             Member member,
@@ -4449,7 +4457,7 @@ public final class RarArkivoStreamingReaderTest {
 
     /// Stores independently derived RAR3 fixture key material.
     ///
-    /// @param key the AES-128 encryption key
+    /// @param key                  the AES-128 encryption key
     /// @param initializationVector the AES-CBC initialization vector
     @NotNullByDefault
     private record TestRar3Keys(
@@ -4507,8 +4515,8 @@ public final class RarArkivoStreamingReaderTest {
 
     /// Stores independently derived RAR5 fixture key material.
     ///
-    /// @param aesKey the AES-256 encryption key
-    /// @param hashKey the password-dependent checksum key
+    /// @param aesKey        the AES-256 encryption key
+    /// @param hashKey       the password-dependent checksum key
     /// @param passwordCheck the folded password verification value
     @NotNullByDefault
     private record TestRar5Keys(

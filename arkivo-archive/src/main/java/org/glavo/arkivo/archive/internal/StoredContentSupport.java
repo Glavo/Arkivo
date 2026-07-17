@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.archive.internal;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
@@ -42,7 +41,7 @@ public final class StoredContentSupport {
     @SuppressWarnings("resource")
     public static ArkivoEditStorage selectStorage(ArchiveOptions options) {
         Objects.requireNonNull(options, "options");
-        @Nullable ArkivoEditStorage configured = options.get(ArkivoFileSystem.EDIT_STORAGE);
+        @Nullable ArkivoEditStorage configured = options.get(ArchiveEnvironmentOptions.EDIT_STORAGE);
         return configured != null
                 ? configured
                 : ArkivoEditStorage.temporaryFiles(defaultStorageDirectory());

@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.lzma.internal;
 
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
@@ -45,7 +45,7 @@ public final class LZMARawChannelEncoder implements CompressingWritableByteChann
     /// Creates a raw LZMA encoder with explicit model and termination parameters.
     public LZMARawChannelEncoder(
             WritableByteChannel target,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             LZMAProperties properties,
             long expectedSize,
             boolean endMarker

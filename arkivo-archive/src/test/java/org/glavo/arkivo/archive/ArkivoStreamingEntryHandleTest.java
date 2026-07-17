@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
@@ -23,6 +24,7 @@ import java.util.Objects;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -44,9 +46,9 @@ public final class ArkivoStreamingEntryHandleTest {
 
         ArkivoStreamingReader.Entry second = Objects.requireNonNull(reader.nextEntry());
         assertEquals("second.bin", second.path());
-        assertThrows(IllegalStateException.class, first::attributes);
+        assertThrows(ClosedChannelException.class, first::attributes);
         assertNull(reader.nextEntry());
-        assertThrows(IllegalStateException.class, second::attributes);
+        assertThrows(ClosedChannelException.class, second::attributes);
 
         reader.close();
         assertTrue(reader.closed);
@@ -59,20 +61,58 @@ public final class ArkivoStreamingEntryHandleTest {
 
         ArkivoStreamingWriter.Entry first = writer.beginFile("first.bin");
         assertThrows(IllegalStateException.class, () -> writer.beginDirectory("nested"));
-        first.commit();
+        first.close();
         assertEquals(List.of("first.bin"), writer.committedPaths);
-        assertThrows(IllegalStateException.class, first::commit);
+        first.close();
 
         ArkivoStreamingWriter.Entry custom = writer.beginCustom("custom.bin");
         assertEquals("custom.bin", custom.path());
-        custom.openChannel().close();
+        WritableByteChannel body = custom.openChannel();
+        assertThrows(IllegalStateException.class, () -> writer.beginFile("blocked.bin"));
+        assertThrows(IllegalStateException.class, () -> custom.attributeView(FileAttributeView.class));
+        body.close();
         assertEquals(List.of("first.bin", "custom.bin"), writer.committedPaths);
+        assertThrows(ClosedChannelException.class, () -> custom.attributeView(FileAttributeView.class));
+
+        ArkivoStreamingWriter.Entry directory = writer.beginDirectory("nested");
+        directory.close();
 
         writer.close();
         assertTrue(writer.closed);
         assertThrows(ClosedChannelException.class, () -> writer.beginFile("closed.bin"));
-        assertThrows(ClosedChannelException.class, () -> writer.attributeView(FileAttributeView.class));
         assertThrows(ClosedChannelException.class, () -> custom.attributeView(FileAttributeView.class));
+    }
+
+    /// Verifies closing a writer closes an active body before closing the format writer.
+    @Test
+    void writerCloseClosesTheActiveBody() throws Exception {
+        TestWriter writer = new TestWriter();
+        ArkivoStreamingWriter.Entry entry = writer.beginFile("body.bin");
+        WritableByteChannel body = entry.openChannel();
+        TrackingWritableByteChannel delegate = Objects.requireNonNull(writer.bodyChannel);
+
+        assertTrue(body.isOpen());
+        assertTrue(delegate.isOpen());
+        writer.close();
+
+        assertFalse(body.isOpen());
+        assertFalse(delegate.isOpen());
+        assertTrue(writer.closed);
+        assertEquals(List.of("body.bin"), writer.committedPaths);
+        entry.close();
+    }
+
+    /// Verifies closing a writer commits a pending entry that has no opened body.
+    @Test
+    void writerCloseCommitsAPendingEmptyEntry() throws Exception {
+        TestWriter writer = new TestWriter();
+        ArkivoStreamingWriter.Entry entry = writer.beginDirectory("empty");
+
+        writer.close();
+
+        assertTrue(writer.closed);
+        assertEquals(List.of("empty"), writer.committedPaths);
+        entry.close();
     }
 
     /// Supplies two deterministic reader entries.
@@ -132,6 +172,9 @@ public final class ArkivoStreamingEntryHandleTest {
         /// Whether this writer has closed.
         private boolean closed;
 
+        /// Most recently opened format-specific body channel, or null before opening one.
+        private @Nullable TrackingWritableByteChannel bodyChannel;
+
         /// Begins one custom test entry through the protected extension hook.
         private Entry beginCustom(String path) throws java.io.IOException {
             return beginCustomEntry(path, this::beginFileEntry);
@@ -173,7 +216,9 @@ public final class ArkivoStreamingEntryHandleTest {
         protected WritableByteChannel openCurrentChannel() {
             committedPaths.add(requireCurrentPath());
             currentPath = null;
-            return Channels.newChannel(new ByteArrayOutputStream());
+            TrackingWritableByteChannel channel = new TrackingWritableByteChannel();
+            bodyChannel = channel;
+            return channel;
         }
 
         /// Marks this writer closed.
@@ -189,6 +234,35 @@ public final class ArkivoStreamingEntryHandleTest {
                 throw new IllegalStateException("No test entry is pending");
             }
             return path;
+        }
+    }
+
+    /// Exposes whether a test body delegate has been closed by its owning writer.
+    @NotNullByDefault
+    private static final class TrackingWritableByteChannel implements WritableByteChannel {
+        /// In-memory writable delegate.
+        private final WritableByteChannel delegate = Channels.newChannel(new ByteArrayOutputStream());
+
+        /// Creates an open tracking body channel.
+        private TrackingWritableByteChannel() {
+        }
+
+        /// Writes bytes to the in-memory delegate.
+        @Override
+        public int write(ByteBuffer source) throws java.io.IOException {
+            return delegate.write(Objects.requireNonNull(source, "source"));
+        }
+
+        /// Returns whether the in-memory delegate remains open.
+        @Override
+        public boolean isOpen() {
+            return delegate.isOpen();
+        }
+
+        /// Closes the in-memory delegate.
+        @Override
+        public void close() throws java.io.IOException {
+            delegate.close();
         }
     }
 

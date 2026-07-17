@@ -170,7 +170,9 @@ public final class RawLZMABufferEngineTest {
                 ByteBuffer source = ByteBuffer.wrap(encoded, offset, length).slice();
                 ByteBuffer target = ByteBuffer.allocateDirect(targetSize);
                 boolean endOfInput = endAtArrayBoundary && offset + length == encoded.length;
-                outcome = decoder.decode(source, target, endOfInput);
+                outcome = endOfInput
+                        ? decoder.finish(source, target)
+                        : decoder.decode(source, target);
                 offset += source.position();
                 drain(target, decoded);
                 assertTrue(

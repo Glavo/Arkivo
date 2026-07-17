@@ -100,7 +100,7 @@ public final class PPMdBufferEngineTest {
             try (CompressionDecoder decoder = CODEC.withDecodedSize(content.length).newDecoder()) {
                 assertThrows(
                         EOFException.class,
-                        () -> decoder.decode(source, ByteBuffer.allocate(1), true),
+                        () -> decoder.finish(source, ByteBuffer.allocate(1)),
                         "prefix length " + length
                 );
             }
@@ -110,7 +110,7 @@ public final class PPMdBufferEngineTest {
         ByteBuffer source = ByteBuffer.wrap(Arrays.copyOf(encoded, truncatedLength));
         ByteBuffer target = ByteBuffer.allocate(content.length);
         try (CompressionDecoder decoder = CODEC.withDecodedSize(content.length).newDecoder()) {
-            assertThrows(EOFException.class, () -> decoder.decode(source, target, true));
+            assertThrows(EOFException.class, () -> decoder.finish(source, target));
         }
     }
 
@@ -201,7 +201,9 @@ public final class PPMdBufferEngineTest {
                 boolean endOfInput = endAtArrayBoundary && offset + length == encoded.length;
                 int sourceStart = source.position();
                 int targetStart = target.position();
-                CodecOutcome outcome = decoder.decode(source, target, endOfInput);
+                CodecOutcome outcome = endOfInput
+                        ? decoder.finish(source, target)
+                        : decoder.decode(source, target);
                 offset += source.position();
                 drain(target, decoded);
                 if (outcome == CodecOutcome.FINISHED) {

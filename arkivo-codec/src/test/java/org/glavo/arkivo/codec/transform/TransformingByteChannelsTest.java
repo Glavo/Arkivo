@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.transform;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -36,7 +36,7 @@ public final class TransformingByteChannelsTest {
         TransformingWritableByteChannel encoder = new TransformingWritableByteChannel(
                 target,
                 new DeferredXorTransform(),
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         );
         ByteBuffer source = ByteBuffer.allocateDirect(input.length).put(input).flip();
         while (source.hasRemaining()) {
@@ -52,7 +52,7 @@ public final class TransformingByteChannelsTest {
         TransformingReadableByteChannel decoder = new TransformingReadableByteChannel(
                 transformedSource,
                 new DeferredXorTransform(),
-                ChannelOwnership.CLOSE
+                ResourceOwnership.OWNED
         );
         ByteBuffer decoded = ByteBuffer.allocateDirect(input.length);
         while (decoded.hasRemaining()) {

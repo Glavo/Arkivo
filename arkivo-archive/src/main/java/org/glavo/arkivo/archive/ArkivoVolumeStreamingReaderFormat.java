@@ -12,7 +12,7 @@ import java.io.IOException;
 public interface ArkivoVolumeStreamingReaderFormat extends ArkivoStreamingReaderFormat {
     /// Opens a multi-volume streaming reader with default options.
     default ArkivoStreamingReader openStreamingReader(ArkivoVolumeSource source) throws IOException {
-        return openStreamingReader(source, ArchiveOptions.EMPTY);
+        return openStreamingReader(source, ArchiveReadOptions.DEFAULT);
     }
 
     /// Opens a configured multi-volume streaming reader and takes ownership of the source when successful.
@@ -21,6 +21,6 @@ public interface ArkivoVolumeStreamingReaderFormat extends ArkivoStreamingReader
     /// boundaries rather than treating the volumes as byte-for-byte concatenated storage.
     ArkivoStreamingReader openStreamingReader(
             ArkivoVolumeSource source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) throws IOException;
 }

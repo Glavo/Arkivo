@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.lzma.internal;
 
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
@@ -42,14 +42,14 @@ public final class LZMAChannelDecoder implements DecompressingReadableByteChanne
     private boolean open = true;
 
     /// Creates an LZMA-alone decoder and consumes its header.
-    public LZMAChannelDecoder(ReadableByteChannel source, ChannelOwnership ownership) throws IOException {
+    public LZMAChannelDecoder(ReadableByteChannel source, ResourceOwnership ownership) throws IOException {
         this(source, ownership, CompressionCodec.UNKNOWN_SIZE);
     }
 
     /// Creates an LZMA-alone decoder with an optional maximum dictionary size.
     public LZMAChannelDecoder(
             ReadableByteChannel source,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             long maximumWindowSize
     ) throws IOException {
         this.source = Objects.requireNonNull(source, "source");

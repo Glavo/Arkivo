@@ -506,16 +506,11 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             }
             if (config.commitTarget() == null) {
                 throw new IllegalArgumentException(
-                        "ZIP channel-source update mode requires ArkivoFileSystem.COMMIT_TARGET"
+                        "ZIP channel-source update mode requires an explicit commit target"
                 );
             }
             if (config.splitSize() != ZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
                 throw new UnsupportedOperationException("ZIP channel-source updates do not support split output");
-            }
-            if (config.sourceMutationPolicy() != null) {
-                throw new UnsupportedOperationException(
-                        "ZIP channel-source update mode always performs a complete archive rewrite"
-                );
             }
             return new ZipArkivoWritableFileSystemImpl(
                     provider,
@@ -564,11 +559,6 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             if (config.splitSize() != ZipArkivoFileSystemConfig.NO_SPLIT_SIZE) {
                 throw new UnsupportedOperationException(
                         "ZIP volume update splitSize must be provided as the factory argument"
-                );
-            }
-            if (config.sourceMutationPolicy() != null) {
-                throw new UnsupportedOperationException(
-                        "ZIP volume updates always perform a complete archive rewrite"
                 );
             }
             return new ZipArkivoWritableFileSystemImpl(provider, source, target, splitSize, config);
@@ -2185,41 +2175,47 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             requireNoActiveEntry();
             boolean replacingExistingEntry = checkWritableFileEntry(entryName, options);
             byte @Nullable [] password = passwordForMetadata(entryName, metadata);
-            byte[] rawName = rawEntryName(entryName);
-            int flags = metadata.generalPurposeFlags();
-            boolean zip64LocalHeader = metadata.zip64LocalHeaderNeeded();
-            byte[] localExtraData = metadata.localHeaderExtraData(zip64LocalHeader);
-            output.startRecord(localHeaderSize(rawName, localExtraData));
-            registerWritableFileEntry(entryName, replacingExistingEntry);
+            try {
+                byte[] rawName = rawEntryName(entryName);
+                int flags = metadata.generalPurposeFlags();
+                boolean zip64LocalHeader = metadata.zip64LocalHeaderNeeded();
+                byte[] localExtraData = metadata.localHeaderExtraData(zip64LocalHeader);
+                output.startRecord(localHeaderSize(rawName, localExtraData));
+                registerWritableFileEntry(entryName, replacingExistingEntry);
 
-            long localHeaderAbsoluteOffset = output.position();
-            int localHeaderDiskNumber = output.diskNumber();
-            long localHeaderOffset = output.diskPosition();
-            writeLocalHeader(
-                    rawName,
-                    localExtraData,
-                    metadata.versionNeeded(zip64LocalHeader),
-                    flags,
-                    metadata.headerMethod(),
-                    metadata.dosTime,
-                    metadata.dosDate,
-                    metadata.localHeaderCrc32(),
-                    metadata.localHeaderCompressedSize(zip64LocalHeader),
-                    metadata.localHeaderUncompressedSize(zip64LocalHeader)
-            );
-            EntryOutputStream entryOutput = new EntryOutputStream(
-                    entryName,
-                    rawName,
-                    localHeaderDiskNumber,
-                    localHeaderOffset,
-                    localHeaderAbsoluteOffset,
-                    output.position(),
-                    flags,
-                    metadata,
-                    password
-            );
-            currentEntryOutput = entryOutput;
-            return entryOutput;
+                long localHeaderAbsoluteOffset = output.position();
+                int localHeaderDiskNumber = output.diskNumber();
+                long localHeaderOffset = output.diskPosition();
+                writeLocalHeader(
+                        rawName,
+                        localExtraData,
+                        metadata.versionNeeded(zip64LocalHeader),
+                        flags,
+                        metadata.headerMethod(),
+                        metadata.dosTime,
+                        metadata.dosDate,
+                        metadata.localHeaderCrc32(),
+                        metadata.localHeaderCompressedSize(zip64LocalHeader),
+                        metadata.localHeaderUncompressedSize(zip64LocalHeader)
+                );
+                EntryOutputStream entryOutput = new EntryOutputStream(
+                        entryName,
+                        rawName,
+                        localHeaderDiskNumber,
+                        localHeaderOffset,
+                        localHeaderAbsoluteOffset,
+                        output.position(),
+                        flags,
+                        metadata,
+                        password
+                );
+                currentEntryOutput = entryOutput;
+                return entryOutput;
+            } finally {
+                if (password != null) {
+                    Arrays.fill(password, (byte) 0);
+                }
+            }
         } finally {
             unlock();
         }
@@ -2359,69 +2355,75 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             }
 
             byte @Nullable [] password = passwordForMetadata(entryName, metadata);
-            byte[] rawName = rawEntryName(entryName);
-            requireNewEntry(entryName);
-            stageCompleteEntryContent(entryName, content);
-            int flags = metadata.generalPurposeFlags() & ~DATA_DESCRIPTOR_FLAG;
-            long compressedSize = metadata.encryptedCompressedSize(size);
-            boolean zip64LocalHeader = metadata.zip64LocalHeaderNeeded(compressedSize, size);
-            byte[] localExtraData = metadata.localHeaderExtraData(zip64LocalHeader, compressedSize, size);
-            output.startRecord(localHeaderSize(rawName, localExtraData));
-            long localHeaderAbsoluteOffset = output.position();
-            int localHeaderDiskNumber = output.diskNumber();
-            long localHeaderOffset = output.diskPosition();
-            writeLocalHeader(
-                    rawName,
-                    localExtraData,
-                    metadata.versionNeeded(zip64LocalHeader),
-                    flags,
-                    metadata.headerMethod(),
-                    metadata.dosTime,
-                    metadata.dosDate,
-                    crcValue,
-                    zip32Field(compressedSize, zip64LocalHeader),
-                    zip32Field(size, zip64LocalHeader)
-            );
-            long localHeaderSize = output.position() - localHeaderAbsoluteOffset;
-            if (metadata.traditionalEncrypted()) {
-                byte[] encryptionPassword = Objects.requireNonNull(password, "password");
-                OutputStream encrypted = ZipTraditionalCrypto.openEncryptingStream(
-                        output,
-                        encryptionPassword,
-                        metadata.encryptionVerificationByte(crcValue)
+            try {
+                byte[] rawName = rawEntryName(entryName);
+                requireNewEntry(entryName);
+                stageCompleteEntryContent(entryName, content);
+                int flags = metadata.generalPurposeFlags() & ~DATA_DESCRIPTOR_FLAG;
+                long compressedSize = metadata.encryptedCompressedSize(size);
+                boolean zip64LocalHeader = metadata.zip64LocalHeaderNeeded(compressedSize, size);
+                byte[] localExtraData = metadata.localHeaderExtraData(zip64LocalHeader, compressedSize, size);
+                output.startRecord(localHeaderSize(rawName, localExtraData));
+                long localHeaderAbsoluteOffset = output.position();
+                int localHeaderDiskNumber = output.diskNumber();
+                long localHeaderOffset = output.diskPosition();
+                writeLocalHeader(
+                        rawName,
+                        localExtraData,
+                        metadata.versionNeeded(zip64LocalHeader),
+                        flags,
+                        metadata.headerMethod(),
+                        metadata.dosTime,
+                        metadata.dosDate,
+                        crcValue,
+                        zip32Field(compressedSize, zip64LocalHeader),
+                        zip32Field(size, zip64LocalHeader)
                 );
-                encrypted.write(content);
-                encrypted.flush();
-            } else if (metadata.aesEncrypted()) {
-                byte[] encryptionPassword = Objects.requireNonNull(password, "password");
-                ZipAesCrypto.EncryptingOutputStream encrypted = ZipAesCrypto.openEncryptingStream(
-                        output,
-                        metadata.aesExtraField(),
-                        encryptionPassword
-                );
-                encrypted.write(content);
-                encrypted.finish();
-            } else {
-                output.write(content);
-            }
-            centralEntries.add(new CentralEntry(
-                    entryName,
-                    rawName,
-                    flags,
-                    metadata.headerMethod(),
-                    metadata.dosTime,
-                    metadata.dosDate,
-                    crcValue,
-                    compressedSize,
-                    size,
-                    localHeaderDiskNumber,
-                    localHeaderOffset,
-                    localHeaderSize,
-                    output.position() - localHeaderAbsoluteOffset,
-                    metadata
-            ));
-            if (symbolicLinkTarget != null) {
-                writtenSymbolicLinkTargets.put(entryName, symbolicLinkTarget);
+                long localHeaderSize = output.position() - localHeaderAbsoluteOffset;
+                if (metadata.traditionalEncrypted()) {
+                    byte[] encryptionPassword = Objects.requireNonNull(password, "password");
+                    OutputStream encrypted = ZipTraditionalCrypto.openEncryptingStream(
+                            output,
+                            encryptionPassword,
+                            metadata.encryptionVerificationByte(crcValue)
+                    );
+                    encrypted.write(content);
+                    encrypted.flush();
+                } else if (metadata.aesEncrypted()) {
+                    byte[] encryptionPassword = Objects.requireNonNull(password, "password");
+                    ZipAesCrypto.EncryptingOutputStream encrypted = ZipAesCrypto.openEncryptingStream(
+                            output,
+                            metadata.aesExtraField(),
+                            encryptionPassword
+                    );
+                    encrypted.write(content);
+                    encrypted.finish();
+                } else {
+                    output.write(content);
+                }
+                centralEntries.add(new CentralEntry(
+                        entryName,
+                        rawName,
+                        flags,
+                        metadata.headerMethod(),
+                        metadata.dosTime,
+                        metadata.dosDate,
+                        crcValue,
+                        compressedSize,
+                        size,
+                        localHeaderDiskNumber,
+                        localHeaderOffset,
+                        localHeaderSize,
+                        output.position() - localHeaderAbsoluteOffset,
+                        metadata
+                ));
+                if (symbolicLinkTarget != null) {
+                    writtenSymbolicLinkTargets.put(entryName, symbolicLinkTarget);
+                }
+            } finally {
+                if (password != null) {
+                    Arrays.fill(password, (byte) 0);
+                }
             }
         } finally {
             unlock();
@@ -3173,12 +3175,14 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     }
 
     /// Returns the password for an encrypted entry path.
-    private byte[] passwordForEntry(String entryName) throws IOException {
+    private byte[] passwordForEntry(String entryName, ZipEncryption encryption) throws IOException {
         ArkivoPasswordProvider passwordProvider = config.passwordProvider();
         if (passwordProvider == null) {
             throw new IOException("ZIP encrypted entry requires a password: " + entryName);
         }
-        byte[] password = passwordProvider.passwordForEntry("/" + entryName);
+        byte[] password = passwordProvider.password(
+                ZipPasswordSupport.entryRequest("/" + entryName, encryption)
+        );
         if (password == null) {
             throw new IOException("ZIP encrypted entry requires a password: " + entryName);
         }
@@ -3187,7 +3191,7 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
 
     /// Returns the password for encrypted metadata, or `null` when the entry is not encrypted.
     private byte @Nullable [] passwordForMetadata(String entryName, EntryMetadata metadata) throws IOException {
-        return metadata.encrypted() ? passwordForEntry(entryName) : null;
+        return metadata.encrypted() ? passwordForEntry(entryName, metadata.encryption) : null;
     }
 
     /// Returns the complete local file header size before entry data.

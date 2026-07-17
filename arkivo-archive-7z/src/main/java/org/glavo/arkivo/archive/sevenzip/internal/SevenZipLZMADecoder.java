@@ -3,7 +3,9 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.PasswordPurpose;
 import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.transform.TransformingInputStream;
 import org.glavo.arkivo.codec.transform.ByteTransform.Direction;
@@ -253,9 +255,56 @@ final class SevenZipLZMADecoder {
             long finalOutputLimit,
             @Nullable ArkivoPasswordProvider passwordProvider
     ) throws IOException {
+        return openFolder(
+                packedInputs,
+                packedInputSizes,
+                method,
+                finalOutputLimit,
+                passwordProvider,
+                PasswordPurpose.ARCHIVE_CONTENT,
+                null,
+                ArchiveReadLimits.UNLIMITED
+        );
+    }
+
+    /// Opens the decoder graph with password context for a 7z folder.
+    static InputStream openFolder(
+            List<? extends InputStream> packedInputs,
+            long[] packedInputSizes,
+            SevenZipFolderMethod method,
+            long finalOutputLimit,
+            @Nullable ArkivoPasswordProvider passwordProvider,
+            PasswordPurpose passwordPurpose,
+            @Nullable String entryPath
+    ) throws IOException {
+        return openFolder(
+                packedInputs,
+                packedInputSizes,
+                method,
+                finalOutputLimit,
+                passwordProvider,
+                passwordPurpose,
+                entryPath,
+                ArchiveReadLimits.UNLIMITED
+        );
+    }
+
+    /// Opens the decoder graph with password and resource-limit context for a 7z folder.
+    static InputStream openFolder(
+            List<? extends InputStream> packedInputs,
+            long[] packedInputSizes,
+            SevenZipFolderMethod method,
+            long finalOutputLimit,
+            @Nullable ArkivoPasswordProvider passwordProvider,
+            PasswordPurpose passwordPurpose,
+            @Nullable String entryPath,
+            ArchiveReadLimits readLimits
+    ) throws IOException {
         Objects.requireNonNull(packedInputs, "packedInputs");
         Objects.requireNonNull(packedInputSizes, "packedInputSizes");
         Objects.requireNonNull(method, "method");
+        Objects.requireNonNull(passwordPurpose, "passwordPurpose");
+        Objects.requireNonNull(readLimits, "readLimits");
         if (finalOutputLimit < 0) {
             throw new IllegalArgumentException("finalOutputLimit must be non-negative");
         }
@@ -274,7 +323,15 @@ final class SevenZipLZMADecoder {
             }
         }
 
-        GraphBuilder builder = new GraphBuilder(inputs, inputSizes, method, passwordProvider);
+        GraphBuilder builder = new GraphBuilder(
+                inputs,
+                inputSizes,
+                method,
+                passwordProvider,
+                passwordPurpose,
+                entryPath,
+                readLimits
+        );
         boolean completed = false;
         Throwable failure = null;
         try {
@@ -305,35 +362,38 @@ final class SevenZipLZMADecoder {
             byte[] methodId,
             byte[] properties,
             long outputLimit,
-            @Nullable ArkivoPasswordProvider passwordProvider
+            @Nullable ArkivoPasswordProvider passwordProvider,
+            PasswordPurpose passwordPurpose,
+            @Nullable String entryPath,
+            ArchiveReadLimits readLimits
     ) throws IOException {
         if (isCopy(methodId)) {
             return input;
         }
         if (isLZMA(methodId)) {
-            return openLZMA(input, outputLimit, properties);
+            return openLZMA(input, outputLimit, properties, readLimits);
         }
         if (isLZMA2(methodId)) {
-            return openLZMA2(input, properties, outputLimit);
+            return openLZMA2(input, properties, outputLimit, readLimits);
         }
         if (isDeflate(methodId)) {
-            return openDeflate(input, properties, outputLimit);
+            return openDeflate(input, properties, outputLimit, readLimits);
         }
         if (isDeflate64(methodId)) {
-            return openDeflate64(input, properties, outputLimit);
+            return openDeflate64(input, properties, outputLimit, readLimits);
         }
         if (isBZip2(methodId)) {
-            return openBZip2(input, properties, outputLimit);
+            return openBZip2(input, properties, outputLimit, readLimits);
         }
         if (isZstandard(methodId)) {
-            return openZstandard(input, properties, outputLimit);
+            return openZstandard(input, properties, outputLimit, readLimits);
         }
         if (isPpmd(methodId)) {
-            return openPpmd(input, properties, outputLimit);
+            return openPpmd(input, properties, outputLimit, readLimits);
         }
         if (isAes(methodId)) {
             return new SevenZipBoundedInputStream(
-                    openAes(input, properties, passwordProvider),
+                    openAes(input, properties, passwordProvider, passwordPurpose, entryPath),
                     outputLimit
             );
         }
@@ -361,6 +421,15 @@ final class SevenZipLZMADecoder {
         /// The password provider used by AES coder nodes.
         private final @Nullable ArkivoPasswordProvider passwordProvider;
 
+        /// The protected material associated with AES password requests.
+        private final PasswordPurpose passwordPurpose;
+
+        /// The logical entry path associated with AES password requests, or `null`.
+        private final @Nullable String entryPath;
+
+        /// The archive-wide decoder resource limits.
+        private final ArchiveReadLimits readLimits;
+
         /// The currently unowned stream roots that must be closed after setup failure.
         private final Set<InputStream> roots = Collections.newSetFromMap(new IdentityHashMap<>());
 
@@ -369,12 +438,18 @@ final class SevenZipLZMADecoder {
                 List<InputStream> packedInputs,
                 long[] packedInputSizes,
                 SevenZipFolderMethod method,
-                @Nullable ArkivoPasswordProvider passwordProvider
+                @Nullable ArkivoPasswordProvider passwordProvider,
+                PasswordPurpose passwordPurpose,
+                @Nullable String entryPath,
+                ArchiveReadLimits readLimits
         ) {
             this.packedInputs = List.copyOf(packedInputs);
             this.packedInputSizes = packedInputSizes.clone();
             this.method = method;
             this.passwordProvider = passwordProvider;
+            this.passwordPurpose = passwordPurpose;
+            this.entryPath = entryPath;
+            this.readLimits = Objects.requireNonNull(readLimits, "readLimits");
             roots.addAll(packedInputs);
         }
 
@@ -457,7 +532,10 @@ final class SevenZipLZMADecoder {
                         methodId,
                         properties,
                         outputLimit,
-                        passwordProvider
+                        passwordProvider,
+                        passwordPurpose,
+                        entryPath,
+                        readLimits
                 );
             }
             for (InputStream coderInput : coderInputs) {
@@ -520,13 +598,25 @@ final class SevenZipLZMADecoder {
     static InputStream openAes(
             InputStream input,
             byte[] properties,
-            @Nullable ArkivoPasswordProvider passwordProvider
+            @Nullable ArkivoPasswordProvider passwordProvider,
+            PasswordPurpose passwordPurpose,
+            @Nullable String entryPath
     ) throws IOException {
-        return SevenZipAesCrypto.openDecryptingStream(input, properties, passwordProvider);
+        return SevenZipAesCrypto.openDecryptingStream(
+                input,
+                properties,
+                passwordProvider,
+                SevenZipPasswordSupport.request(passwordPurpose, entryPath)
+        );
     }
 
     /// Opens a raw LZMA decoder for 7z coder properties.
-    static InputStream openLZMA(InputStream input, long uncompressedSize, byte[] properties) throws IOException {
+    static InputStream openLZMA(
+            InputStream input,
+            long uncompressedSize,
+            byte[] properties,
+            ArchiveReadLimits readLimits
+    ) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(properties, "properties");
         if (properties.length != 5) {
@@ -537,7 +627,8 @@ final class SevenZipLZMADecoder {
                 input,
                 Byte.toUnsignedInt(properties[0]),
                 dictionarySize,
-                uncompressedSize
+                uncompressedSize,
+                readLimits
         );
     }
 
@@ -545,7 +636,8 @@ final class SevenZipLZMADecoder {
     static InputStream openLZMA2(
             InputStream input,
             byte[] properties,
-            long maximumOutputSize
+            long maximumOutputSize,
+            ArchiveReadLimits readLimits
     ) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(properties, "properties");
@@ -560,7 +652,8 @@ final class SevenZipLZMADecoder {
         return SevenZipCompressionFormats.openLZMA2Decoder(
                 input,
                 dictionarySize,
-                maximumOutputSize
+                maximumOutputSize,
+                readLimits
         );
     }
 
@@ -568,49 +661,53 @@ final class SevenZipLZMADecoder {
     static InputStream openDeflate(
             InputStream input,
             byte[] properties,
-            long maximumOutputSize
+            long maximumOutputSize,
+            ArchiveReadLimits readLimits
     ) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(properties, "properties");
         if (properties.length != 0) {
             throw new IOException("7z Deflate coder properties must be empty");
         }
-        return SevenZipCompressionFormats.newInputStream("deflate", input, maximumOutputSize);
+        return SevenZipCompressionFormats.newInputStream("deflate", input, maximumOutputSize, readLimits);
     }
 
     /// Opens a size-limited Deflate64 decoder for 7z coder properties.
     static InputStream openDeflate64(
             InputStream input,
             byte[] properties,
-            long maximumOutputSize
+            long maximumOutputSize,
+            ArchiveReadLimits readLimits
     ) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(properties, "properties");
         if (properties.length != 0) {
             throw new IOException("7z Deflate64 coder properties must be empty");
         }
-        return SevenZipCompressionFormats.newInputStream("deflate64", input, maximumOutputSize);
+        return SevenZipCompressionFormats.newInputStream("deflate64", input, maximumOutputSize, readLimits);
     }
 
     /// Opens a size-limited BZip2 decoder for 7z coder properties.
     static InputStream openBZip2(
             InputStream input,
             byte[] properties,
-            long maximumOutputSize
+            long maximumOutputSize,
+            ArchiveReadLimits readLimits
     ) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(properties, "properties");
         if (properties.length != 0) {
             throw new IOException("7z BZip2 coder properties must be empty");
         }
-        return SevenZipCompressionFormats.newInputStream("bzip2", input, maximumOutputSize);
+        return SevenZipCompressionFormats.newInputStream("bzip2", input, maximumOutputSize, readLimits);
     }
 
     /// Opens a size-limited Zstandard decoder for 7z coder properties.
     static InputStream openZstandard(
             InputStream input,
             byte[] properties,
-            long maximumOutputSize
+            long maximumOutputSize,
+            ArchiveReadLimits readLimits
     ) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(properties, "properties");
@@ -620,14 +717,15 @@ final class SevenZipLZMADecoder {
                 && properties.length != 5) {
             throw new IOException("7z Zstandard coder properties must contain zero, one, three, or five bytes");
         }
-        return SevenZipCompressionFormats.newInputStream("zstd", input, maximumOutputSize);
+        return SevenZipCompressionFormats.newInputStream("zstd", input, maximumOutputSize, readLimits);
     }
 
     /// Opens an exactly sized PPMd7 decoder for 7z coder properties.
     static InputStream openPpmd(
             InputStream input,
             byte[] properties,
-            long uncompressedSize
+            long uncompressedSize,
+            ArchiveReadLimits readLimits
     ) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(properties, "properties");
@@ -646,7 +744,8 @@ final class SevenZipLZMADecoder {
                 input,
                 maximumOrder,
                 memorySize,
-                uncompressedSize
+                uncompressedSize,
+                readLimits
         );
     }
 

@@ -337,27 +337,6 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
         }
 
         IOException failure = null;
-        EntryBodyOutputStream body = currentBody;
-        if (body != null) {
-            try {
-                body.close();
-            } catch (IOException exception) {
-                failure = exception;
-            }
-        }
-
-        PendingEntry entry = pendingEntry;
-        if (failure == null && entry != null) {
-            pendingEntry = null;
-            try {
-                entry.ensurePending();
-                writeEntry(entry, null, 0L);
-            } catch (IOException exception) {
-                pendingEntry = entry;
-                failure = exception;
-            }
-        }
-
         if (failure == null && !finished) {
             try {
                 output.write(new byte[END_MARKER_SIZE]);

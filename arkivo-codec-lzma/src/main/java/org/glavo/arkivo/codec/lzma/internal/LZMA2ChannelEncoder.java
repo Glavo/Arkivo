@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.lzma.internal;
 
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -52,7 +52,7 @@ public final class LZMA2ChannelEncoder implements CompressingWritableByteChannel
     /// Creates a raw LZMA2 encoder with the requested dictionary size.
     public LZMA2ChannelEncoder(
             WritableByteChannel target,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             int dictionarySize
     ) {
         this(target, ownership, LZMAProperties.defaults(dictionarySize));
@@ -61,7 +61,7 @@ public final class LZMA2ChannelEncoder implements CompressingWritableByteChannel
     /// Creates a raw LZMA2 encoder with complete model properties.
     public LZMA2ChannelEncoder(
             WritableByteChannel target,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             LZMAProperties properties
     ) {
         this.target = Objects.requireNonNull(target, "target");

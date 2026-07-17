@@ -5,7 +5,9 @@ package org.glavo.arkivo.archive.sevenzip.internal;
 
 import org.glavo.arkivo.archive.sevenzip.SevenZipPackedStream;
 
+import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
+import org.glavo.arkivo.archive.PasswordPurpose;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -143,8 +145,26 @@ public final class SevenZipHeaderParser {
             @Nullable ArkivoPasswordProvider passwordProvider,
             ArkivoReadLimitTracker readLimits
     ) throws IOException {
+        return parseEntries(
+                header,
+                packedStreamOpener,
+                passwordProvider,
+                readLimits,
+                ArchiveReadLimits.UNLIMITED
+        );
+    }
+
+    /// Parses entries under logical and decoder resource limits.
+    static List<SevenZipEntryMetadata> parseEntries(
+            byte[] header,
+            @Nullable PackedStreamOpener packedStreamOpener,
+            @Nullable ArkivoPasswordProvider passwordProvider,
+            ArkivoReadLimitTracker readLimits,
+            ArchiveReadLimits archiveLimits
+    ) throws IOException {
         Objects.requireNonNull(header, "header");
         Objects.requireNonNull(readLimits, "readLimits");
+        Objects.requireNonNull(archiveLimits, "archiveLimits");
         if (header.length == 0) {
             return List.of();
         }
@@ -156,7 +176,7 @@ public final class SevenZipHeaderParser {
             return List.of();
         }
         if (type == K_ENCODED_HEADER) {
-            return parseEncodedHeader(input, packedStreamOpener, passwordProvider, readLimits);
+            return parseEncodedHeader(input, packedStreamOpener, passwordProvider, readLimits, archiveLimits);
         }
         if (type != K_HEADER) {
             throw new IOException("Unexpected 7z next header type: " + type);
@@ -174,7 +194,13 @@ public final class SevenZipHeaderParser {
             switch (property) {
                 case K_ARCHIVE_PROPERTIES -> skipArchiveProperties(input);
                 case K_ADDITIONAL_STREAMS_INFO -> externalData =
-                        new ExternalData(readStreamsInfo(input), packedStreamOpener, passwordProvider, readLimits);
+                        new ExternalData(
+                                readStreamsInfo(input),
+                                packedStreamOpener,
+                                passwordProvider,
+                                readLimits,
+                                archiveLimits
+                        );
                 case K_MAIN_STREAMS_INFO -> streamsInfo = readStreamsInfo(input, externalData);
                 case K_FILES_INFO -> entries.addAll(readFilesInfo(input, streamsInfo, externalData));
                 case K_DUMMY -> skipDummyData(input);
@@ -190,7 +216,8 @@ public final class SevenZipHeaderParser {
             HeaderInput input,
             @Nullable PackedStreamOpener packedStreamOpener,
             @Nullable ArkivoPasswordProvider passwordProvider,
-            ArkivoReadLimitTracker readLimits
+            ArkivoReadLimitTracker readLimits,
+            ArchiveReadLimits archiveLimits
     ) throws IOException {
         if (packedStreamOpener == null) {
             throw new IOException("7z encoded headers require archive stream access");
@@ -206,10 +233,17 @@ public final class SevenZipHeaderParser {
                     index,
                     packedStreamOpener,
                     passwordProvider,
-                    readLimits
+                    readLimits,
+                    archiveLimits
             ));
         }
-        return parseEntries(decodedHeader.toByteArray(), packedStreamOpener, passwordProvider, readLimits);
+        return parseEntries(
+                decodedHeader.toByteArray(),
+                packedStreamOpener,
+                passwordProvider,
+                readLimits,
+                archiveLimits
+        );
     }
 
     /// Decodes one encoded header substream.
@@ -218,7 +252,8 @@ public final class SevenZipHeaderParser {
             int index,
             PackedStreamOpener packedStreamOpener,
             @Nullable ArkivoPasswordProvider passwordProvider,
-            ArkivoReadLimitTracker readLimits
+            ArkivoReadLimitTracker readLimits,
+            ArchiveReadLimits archiveLimits
     ) throws IOException {
         long unpackSize = streamsInfo.unpackSize(index);
         readLimits.acceptMetadata(unpackSize, null);
@@ -247,7 +282,10 @@ public final class SevenZipHeaderParser {
                     packedInputSizes,
                     method,
                     decodedLimit,
-                    passwordProvider
+                    passwordProvider,
+                    PasswordPurpose.ARCHIVE_METADATA,
+                    null,
+                    archiveLimits
             );
         }
         Throwable failure = null;
@@ -1376,7 +1414,8 @@ public final class SevenZipHeaderParser {
                 StreamsInfo.EMPTY,
                 null,
                 null,
-                ArkivoReadLimitTracker.fromLimits(-1L, -1L, -1L, -1L)
+                ArkivoReadLimitTracker.fromLimits(-1L, -1L, -1L, -1L),
+                ArchiveReadLimits.UNLIMITED
         );
 
         /// The additional streams metadata.
@@ -1391,17 +1430,22 @@ public final class SevenZipHeaderParser {
         /// The common archive read budget applied to decoded external metadata.
         private final ArkivoReadLimitTracker readLimits;
 
+        /// The decoder resource limits applied to external metadata streams.
+        private final ArchiveReadLimits archiveLimits;
+
         /// Creates an external data source.
         private ExternalData(
                 StreamsInfo streamsInfo,
                 @Nullable PackedStreamOpener packedStreamOpener,
                 @Nullable ArkivoPasswordProvider passwordProvider,
-                ArkivoReadLimitTracker readLimits
+                ArkivoReadLimitTracker readLimits,
+                ArchiveReadLimits archiveLimits
         ) {
             this.streamsInfo = Objects.requireNonNull(streamsInfo, "streamsInfo");
             this.packedStreamOpener = packedStreamOpener;
             this.passwordProvider = passwordProvider;
             this.readLimits = Objects.requireNonNull(readLimits, "readLimits");
+            this.archiveLimits = Objects.requireNonNull(archiveLimits, "archiveLimits");
         }
 
         /// Returns the external data stream at the given index.
@@ -1417,7 +1461,8 @@ public final class SevenZipHeaderParser {
                     index,
                     packedStreamOpener,
                     passwordProvider,
-                    readLimits
+                    readLimits,
+                    archiveLimits
             ));
         }
     }

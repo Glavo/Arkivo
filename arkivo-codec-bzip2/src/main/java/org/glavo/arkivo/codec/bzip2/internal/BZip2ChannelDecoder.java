@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.bzip2.internal;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
@@ -176,7 +176,7 @@ public class BZip2ChannelDecoder implements DecompressingReadableByteChannel.Fra
     private long outputBytes;
 
     /// Creates a concatenated-stream decoder over a compressed channel with explicit ownership.
-    public BZip2ChannelDecoder(ReadableByteChannel source, ChannelOwnership ownership) throws IOException {
+    public BZip2ChannelDecoder(ReadableByteChannel source, ResourceOwnership ownership) throws IOException {
         Objects.requireNonNull(source, "source");
         this.sourceCloser = new OwnedChannelCloser(source, ownership);
         this.bits = new BitInput(source, 8192);

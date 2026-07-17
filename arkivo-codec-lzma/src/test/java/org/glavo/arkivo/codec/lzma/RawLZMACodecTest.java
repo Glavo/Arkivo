@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.lzma;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
@@ -113,7 +113,7 @@ public final class RawLZMACodecTest {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         try (DecompressingReadableByteChannel decoder = decodingCodec.newReadableByteChannel(
                 Channels.newChannel(source),
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         )) {
             ByteBuffer buffer = ByteBuffer.allocate(4096);
             while (decoder.read(buffer) >= 0) {
@@ -177,7 +177,7 @@ public final class RawLZMACodecTest {
                 () -> LZMA2_CODEC.newReadableByteChannel(
                         Channels.newChannel(new ByteArrayInputStream(new byte[0])),
                         DecompressionLimits.ofMaximumWindowSize(DICTIONARY_SIZE - 1L),
-                        ChannelOwnership.RETAIN
+                        ResourceOwnership.BORROWED
                 )
         );
     }
@@ -185,7 +185,7 @@ public final class RawLZMACodecTest {
 
     /// Compresses one byte array with a public codec.
     private static byte[] compress(
-            CompressionCodec<?> codec,
+            CompressionCodec codec,
             byte[] content
     ) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
@@ -198,7 +198,7 @@ public final class RawLZMACodecTest {
 
     /// Decompresses one byte array with a public codec.
     private static byte[] decompress(
-            CompressionCodec<?> codec,
+            CompressionCodec codec,
             byte[] compressed
     ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();

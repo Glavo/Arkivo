@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.transform;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -35,7 +35,7 @@ final class TransformCloseRetryTest {
         TransformingWritableByteChannel output = new TransformingWritableByteChannel(
                 target,
                 IDENTITY,
-                ChannelOwnership.CLOSE
+                ResourceOwnership.OWNED
         );
         output.write(ByteBuffer.wrap(new byte[]{1, 2, 3}));
         assertThrows(IOException.class, output::close);
@@ -50,7 +50,7 @@ final class TransformCloseRetryTest {
         TransformingReadableByteChannel input = new TransformingReadableByteChannel(
                 source,
                 IDENTITY,
-                ChannelOwnership.CLOSE
+                ResourceOwnership.OWNED
         );
         assertThrows(IOException.class, input::close);
         assertFalse(input.isOpen());

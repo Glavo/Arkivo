@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.xz;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
@@ -57,7 +57,7 @@ public final class XZCodecTest {
         XZCodec codec = new XZCodec();
         byte[] input = "hello xz".getBytes(StandardCharsets.UTF_8);
 
-        assertEquals(true, codec instanceof CompressionCodec<?>);
+        assertEquals(true, codec instanceof CompressionCodec);
         assertEquals(XZFormat.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
@@ -332,7 +332,7 @@ public final class XZCodecTest {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         try (DecompressingReadableByteChannel.Framed decoder = new XZCodec().newReadableByteChannel(
                 source,
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         )) {
             ByteBuffer target = ByteBuffer.allocate(4096);
             CodecResult.Status status;
@@ -442,7 +442,7 @@ public final class XZCodecTest {
                 .build();
         CompressingWritableByteChannel encoder = configured.newWritableByteChannel(
                 compressedTarget,
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         );
         ByteBuffer source = ByteBuffer.allocateDirect(content.length).put(content).flip();
         assertEquals(content.length, encoder.write(source));
@@ -462,7 +462,7 @@ public final class XZCodecTest {
         ReadableByteChannel compressedSource = Channels.newChannel(new ByteArrayInputStream(encoded));
         DecompressingReadableByteChannel decoder = new XZCodec().newReadableByteChannel(
                 compressedSource,
-                ChannelOwnership.CLOSE
+                ResourceOwnership.OWNED
         );
         ByteBuffer decoded = ByteBuffer.allocateDirect(content.length);
         while (decoded.hasRemaining()) {
@@ -481,7 +481,7 @@ public final class XZCodecTest {
         ByteArrayOutputStream uncheckedBytes = new ByteArrayOutputStream();
         try (CompressingWritableByteChannel unchecked = new XZCodec()
                 .withCheckType(XZCheckType.NONE)
-                .newWritableByteChannel(Channels.newChannel(uncheckedBytes), ChannelOwnership.RETAIN)) {
+                .newWritableByteChannel(Channels.newChannel(uncheckedBytes), ResourceOwnership.BORROWED)) {
             unchecked.finish();
         }
         assertEquals(XZ.CHECK_NONE, Byte.toUnsignedInt(uncheckedBytes.toByteArray()[7]));
@@ -566,7 +566,7 @@ public final class XZCodecTest {
     }
 
     /// Compresses and decompresses the given bytes.
-    private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
+    private static byte[] roundTrip(CompressionCodec codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
         try (OutputStream output = codec.newOutputStream(compressed)) {
             output.write(input);

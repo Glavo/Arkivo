@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.benchmark;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArchiveOptions;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
@@ -151,8 +151,8 @@ public class ArchiveFileSystemBenchmark {
         byte[] content = content();
         try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(archive)) {
             for (int index = 0; index < ENTRY_COUNT; index++) {
-                writer.beginFile(entryName(index));
-                try (OutputStream output = writer.openOutputStream()) {
+                var writerEntry154 = writer.beginFile(entryName(index));
+                try (OutputStream output = writerEntry154.openOutputStream()) {
                     output.write(content);
                 }
             }
@@ -162,15 +162,14 @@ public class ArchiveFileSystemBenchmark {
     /// Creates the benchmark solid 7z archive through the public streaming writer.
     private static void createSevenZip(Path archive) throws IOException {
         byte[] content = content();
-        ArchiveOptions options = ArchiveOptions.builder()
-                .set(SevenZipArkivoFileSystem.COMPRESSION, SevenZipCompression.lzma2(1024 * 1024))
-                .set(SevenZipArkivoFileSystem.SOLID_FILE_COUNT, 64)
-                .build();
+        SevenZipArchiveOptions.Create options = SevenZipArchiveOptions.CREATE_DEFAULTS
+                .withCompression(SevenZipCompression.lzma2(1024 * 1024))
+                .withSolidFileCount(64);
         try (SevenZipArkivoStreamingWriter writer =
                      SevenZipArkivoStreamingWriter.create(archive, options)) {
             for (int index = 0; index < ENTRY_COUNT; index++) {
-                writer.beginFile(entryName(index));
-                try (OutputStream output = writer.openOutputStream()) {
+                var writerEntry172 = writer.beginFile(entryName(index));
+                try (OutputStream output = writerEntry172.openOutputStream()) {
                     output.write(content);
                 }
             }

@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.spi;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
@@ -35,7 +35,7 @@ public final class CodecChannelAdapters {
     /// Creates an encoding channel whose runtime capabilities match the created engine.
     public static CompressingWritableByteChannel newWritableByteChannel(
             WritableByteChannel target,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             EncoderFactory<? extends CompressionEncoder> factory
     ) throws IOException {
         Objects.requireNonNull(target, "target");
@@ -58,7 +58,7 @@ public final class CodecChannelAdapters {
     /// Creates an encoding channel with nonterminal flush support.
     public static CompressingWritableByteChannel.Flushable newFlushableWritableByteChannel(
             WritableByteChannel target,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             EncoderFactory<? extends CompressionEncoder.Flushable> factory
     ) throws IOException {
         Objects.requireNonNull(target, "target");
@@ -75,7 +75,7 @@ public final class CodecChannelAdapters {
     /// Creates an encoding channel that can finish independently terminated frames.
     public static CompressingWritableByteChannel.Framed newFramedWritableByteChannel(
             WritableByteChannel target,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             EncoderFactory<? extends CompressionEncoder.Framed> factory
     ) throws IOException {
         Objects.requireNonNull(target, "target");
@@ -92,7 +92,7 @@ public final class CodecChannelAdapters {
     /// Creates an encoding channel with both frame-boundary and nonterminal-flush support.
     public static CompressingWritableByteChannel.FlushableFramed newFlushableFramedWritableByteChannel(
             WritableByteChannel target,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             EncoderFactory<? extends CompressionEncoder.FlushableFramed> factory
     ) throws IOException {
         Objects.requireNonNull(target, "target");
@@ -106,7 +106,7 @@ public final class CodecChannelAdapters {
     /// Creates a decoding channel whose runtime frame capability matches the created engine.
     public static DecompressingReadableByteChannel newReadableByteChannel(
             ReadableByteChannel source,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             DecoderFactory<? extends CompressionDecoder> factory
     ) throws IOException {
         Objects.requireNonNull(source, "source");
@@ -123,7 +123,7 @@ public final class CodecChannelAdapters {
     /// Creates a decoding channel that can stop at independently terminated frame boundaries.
     public static DecompressingReadableByteChannel.Framed newFramedReadableByteChannel(
             ReadableByteChannel source,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             DecoderFactory<? extends CompressionDecoder.Framed> factory
     ) throws IOException {
         Objects.requireNonNull(source, "source");
@@ -593,7 +593,9 @@ public final class CodecChannelAdapters {
                 }
                 int inputPosition = input.position();
                 int outputPosition = target.position();
-                CodecOutcome outcome = decoder.decode(input, target, endOfInput);
+                CodecOutcome outcome = endOfInput
+                        ? decoder.finish(input, target)
+                        : decoder.decode(input, target);
                 inputBytes += input.position() - inputPosition;
                 outputBytes += target.position() - outputPosition;
 

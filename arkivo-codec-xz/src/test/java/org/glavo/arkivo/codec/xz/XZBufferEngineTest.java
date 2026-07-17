@@ -83,12 +83,12 @@ public final class XZBufferEngineTest {
         ByteBuffer source = ByteBuffer.wrap(combined);
         ByteBuffer firstTarget = ByteBuffer.allocateDirect(first.length + 1);
         try (CompressionDecoder decoder = CODEC.newDecoder()) {
-            assertEquals(CodecOutcome.FINISHED, decoder.decode(source, firstTarget, false));
+            assertEquals(CodecOutcome.FINISHED, decoder.decode(source, firstTarget));
             assertEquals(firstStream.length, source.position());
             decoder.reset();
 
             ByteBuffer secondTarget = ByteBuffer.allocateDirect(second.length + 1);
-            assertEquals(CodecOutcome.FINISHED, decoder.decode(source, secondTarget, true));
+            assertEquals(CodecOutcome.FINISHED, decoder.finish(source, secondTarget));
             firstTarget.flip();
             secondTarget.flip();
             assertArrayEquals(first, readBytes(firstTarget));
@@ -124,7 +124,7 @@ public final class XZBufferEngineTest {
             ByteBuffer partialSource = ByteBuffer.wrap(encoded.toByteArray());
             ByteBuffer partialTarget = ByteBuffer.allocateDirect(first.length + 1);
             try (CompressionDecoder decoder = CODEC.newDecoder()) {
-                assertEquals(CodecOutcome.NEEDS_INPUT, decoder.decode(partialSource, partialTarget, false));
+                assertEquals(CodecOutcome.NEEDS_INPUT, decoder.decode(partialSource, partialTarget));
             }
             partialTarget.flip();
             assertArrayEquals(first, readBytes(partialTarget));
@@ -213,7 +213,9 @@ public final class XZBufferEngineTest {
                 ByteBuffer source = ByteBuffer.wrap(encoded, offset, length).slice();
                 ByteBuffer target = ByteBuffer.allocateDirect(targetSize);
                 boolean endOfInput = endAtArrayBoundary && offset + length == encoded.length;
-                outcome = decoder.decode(source, target, endOfInput);
+                outcome = endOfInput
+                        ? decoder.finish(source, target)
+                        : decoder.decode(source, target);
                 offset += source.position();
                 drain(target, decoded);
                 assertTrue(

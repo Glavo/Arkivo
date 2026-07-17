@@ -70,17 +70,15 @@ public final class LZMAStandaloneBufferEngineTest {
                         CodecOutcome.NEEDS_INPUT,
                         decoder.decode(
                                 ByteBuffer.wrap(invalid, offset, 1).slice(),
-                                ByteBuffer.allocateDirect(1),
-                                false
+                                ByteBuffer.allocateDirect(1)
                         )
                 );
             }
             assertThrows(
                     IOException.class,
-                    () -> decoder.decode(
+                    () -> decoder.finish(
                             ByteBuffer.wrap(invalid, invalid.length - 1, 1).slice(),
-                            ByteBuffer.allocateDirect(1),
-                            true
+                            ByteBuffer.allocateDirect(1)
                     )
             );
         }
@@ -135,7 +133,9 @@ public final class LZMAStandaloneBufferEngineTest {
                 ByteBuffer source = ByteBuffer.wrap(encoded, offset, length).slice();
                 ByteBuffer target = ByteBuffer.allocateDirect(targetSize);
                 boolean endOfInput = endAtArrayBoundary && offset + length == encoded.length;
-                outcome = decoder.decode(source, target, endOfInput);
+                outcome = endOfInput
+                        ? decoder.finish(source, target)
+                        : decoder.decode(source, target);
                 offset += source.position();
                 drain(target, decoded);
             }

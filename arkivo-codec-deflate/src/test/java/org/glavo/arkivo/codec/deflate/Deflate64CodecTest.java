@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.deflate;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -47,7 +47,7 @@ final class Deflate64CodecTest {
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(compressed));
         DecompressingReadableByteChannel decoder = codec.newReadableByteChannel(
                 source,
-                ChannelOwnership.CLOSE
+                ResourceOwnership.OWNED
         );
         ByteBuffer output = ByteBuffer.allocateDirect(content.length);
         while (output.hasRemaining()) {
@@ -66,7 +66,7 @@ final class Deflate64CodecTest {
         ReadableByteChannel retained = Channels.newChannel(new ByteArrayInputStream(compressed));
         DecompressingReadableByteChannel retainedDecoder = codec.newReadableByteChannel(
                 retained,
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         );
         retainedDecoder.close();
         assertTrue(retained.isOpen());

@@ -73,10 +73,10 @@ public class CodecBufferThroughputBenchmark {
     private ByteBuffer decodedOutput = ByteBuffer.allocate(0);
 
     /// The immutable codec configuration used by compression operations in the current trial.
-    private @Nullable CompressionCodec<?> compressionCodec;
+    private @Nullable CompressionCodec compressionCodec;
 
     /// The immutable codec configuration used by decompression operations in the current trial.
-    private @Nullable CompressionCodec<?> decompressionCodec;
+    private @Nullable CompressionCodec decompressionCodec;
 
     /// The transport-independent encoder under measurement.
     private @Nullable CompressionEncoder encoder;
@@ -87,9 +87,9 @@ public class CodecBufferThroughputBenchmark {
     /// Creates reusable engines and buffers and verifies one complete round trip.
     @Setup
     public void setUp() throws IOException {
-        CompressionCodec<?> selectedCodec = CompressionFormats.require(formatName).defaultCodec();
-        CompressionCodec<?> compressionConfiguration = selectedCodec;
-        CompressionCodec<?> decompressionConfiguration = selectedCodec;
+        CompressionCodec selectedCodec = CompressionFormats.require(formatName).defaultCodec();
+        CompressionCodec compressionConfiguration = selectedCodec;
+        CompressionCodec decompressionConfiguration = selectedCodec;
         if (selectedCodec instanceof PPMdCodec ppmdCodec) {
             PPMdCodec configured = ppmdCodec
                     .withMaximumOrder(6)
@@ -239,7 +239,7 @@ public class CodecBufferThroughputBenchmark {
         while (true) {
             int sourcePosition = compressedInput.position();
             int targetPosition = decodedOutput.position();
-            CodecOutcome outcome = current.decode(compressedInput, decodedOutput, true);
+            CodecOutcome outcome = current.finish(compressedInput, decodedOutput);
             if (outcome == CodecOutcome.FINISHED) {
                 if (compressedInput.hasRemaining() && !formatName.equals("ppmd")) {
                     throw new IOException("Compression decoder left trailing input");
@@ -265,8 +265,8 @@ public class CodecBufferThroughputBenchmark {
     }
 
     /// Returns the current initialized compression configuration.
-    private CompressionCodec<?> requireCompressionCodec() {
-        CompressionCodec<?> current = compressionCodec;
+    private CompressionCodec requireCompressionCodec() {
+        CompressionCodec current = compressionCodec;
         if (current == null) {
             throw new IllegalStateException("Benchmark compression codec is not initialized");
         }
@@ -274,8 +274,8 @@ public class CodecBufferThroughputBenchmark {
     }
 
     /// Returns the current initialized decompression configuration.
-    private CompressionCodec<?> requireDecompressionCodec() {
-        CompressionCodec<?> current = decompressionCodec;
+    private CompressionCodec requireDecompressionCodec() {
+        CompressionCodec current = decompressionCodec;
         if (current == null) {
             throw new IllegalStateException("Benchmark decompression codec is not initialized");
         }
@@ -301,7 +301,7 @@ public class CodecBufferThroughputBenchmark {
     }
 
     /// Returns a safe reusable compression target capacity for the selected codec.
-    private static int compressionCapacity(CompressionCodec<?> codec) {
+    private static int compressionCapacity(CompressionCodec codec) {
         long bound = codec.maxCompressedSize(SOURCE_SIZE);
         long capacity = bound >= 0L
                 ? bound

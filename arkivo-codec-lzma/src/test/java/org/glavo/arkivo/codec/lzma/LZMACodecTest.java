@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.lzma;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
@@ -46,7 +46,7 @@ public final class LZMACodecTest {
         LZMACodec codec = new LZMACodec();
         byte[] input = "hello lzma".getBytes(StandardCharsets.UTF_8);
 
-        assertEquals(true, codec instanceof CompressionCodec<?>);
+        assertEquals(true, codec instanceof CompressionCodec);
         assertEquals(LZMAFormat.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
@@ -210,7 +210,7 @@ public final class LZMACodecTest {
         try (CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                 Channels.newChannel(compressed),
                 content.length,
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         )) {
             encoder.write(ByteBuffer.wrap(content, 0, 17));
             encoder.write(ByteBuffer.wrap(content, 17, content.length - 17));
@@ -250,7 +250,7 @@ public final class LZMACodecTest {
         LZMA2Codec codec = new LZMA2Codec().withDictionarySize(dictionarySize);
         try (CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                 Channels.newChannel(compressed),
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         )) {
             encoder.write(ByteBuffer.wrap(content, 0, 31));
             int offset = 31;
@@ -315,7 +315,7 @@ public final class LZMACodecTest {
         CompressingWritableByteChannel encoder = lzmaCodec.newWritableByteChannel(
                 Channels.newChannel(new ByteArrayOutputStream()),
                 content.length + 1L,
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         );
         encoder.write(ByteBuffer.wrap(content));
         assertThrows(IOException.class, encoder::finish);
@@ -342,7 +342,7 @@ public final class LZMACodecTest {
         try (CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                 Channels.newChannel(compressed),
                 content.length,
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         )) {
             encoder.write(ByteBuffer.wrap(content));
             encoder.finish();
@@ -362,7 +362,7 @@ public final class LZMACodecTest {
         try (CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                 Channels.newChannel(emptyCompressed),
                 0L,
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         )) {
             encoder.finish();
         }
@@ -405,7 +405,7 @@ public final class LZMACodecTest {
         CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                 Channels.newChannel(incomplete),
                 content.length + 1L,
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         );
         encoder.write(ByteBuffer.wrap(content));
         assertThrows(IOException.class, encoder::finish);
@@ -423,7 +423,7 @@ public final class LZMACodecTest {
 
         CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                 compressedTarget,
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         );
         assertEquals(content.length, encoder.write(source));
         encoder.finish();
@@ -437,7 +437,7 @@ public final class LZMACodecTest {
         ReadableByteChannel compressedSource = Channels.newChannel(new ByteArrayInputStream(encoded));
         DecompressingReadableByteChannel decoder = new LZMACodec().newReadableByteChannel(
                 compressedSource,
-                ChannelOwnership.CLOSE
+                ResourceOwnership.OWNED
         );
         ByteBuffer decoded = ByteBuffer.allocateDirect(content.length);
         while (decoded.hasRemaining()) {
@@ -500,7 +500,7 @@ public final class LZMACodecTest {
         WritableByteChannel target = Channels.newChannel(compressedBytes);
         LZMA2ChannelEncoder encoder = new LZMA2ChannelEncoder(
                 target,
-                ChannelOwnership.RETAIN,
+                ResourceOwnership.BORROWED,
                 1 << 20
         );
         ByteBuffer source = ByteBuffer.allocateDirect(content.length).put(content).flip();
@@ -515,7 +515,7 @@ public final class LZMACodecTest {
         );
         LZMA2ChannelDecoder decoder = new LZMA2ChannelDecoder(
                 compressedSource,
-                ChannelOwnership.RETAIN,
+                ResourceOwnership.BORROWED,
                 1 << 20
         );
         ByteBuffer decoded = ByteBuffer.allocateDirect(content.length);
@@ -567,7 +567,7 @@ public final class LZMACodecTest {
         try (CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                 Channels.newChannel(compressed),
                 pledgedSourceSize,
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         )) {
             encoder.write(ByteBuffer.wrap(content));
             encoder.finish();
@@ -577,7 +577,7 @@ public final class LZMACodecTest {
 
     /// Compresses bytes through one configured public codec.
     private static byte[] compress(
-            CompressionCodec<?> codec,
+            CompressionCodec codec,
             byte[] content
     ) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
@@ -590,7 +590,7 @@ public final class LZMACodecTest {
 
     /// Decompresses bytes through one configured public codec.
     private static byte[] decompress(
-            CompressionCodec<?> codec,
+            CompressionCodec codec,
             byte[] compressed
     ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
@@ -601,7 +601,7 @@ public final class LZMACodecTest {
         return decoded.toByteArray();
     }
     /// Compresses and decompresses the given bytes.
-    private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
+    private static byte[] roundTrip(CompressionCodec codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
         try (OutputStream output = codec.newOutputStream(compressed)) {
             output.write(input);

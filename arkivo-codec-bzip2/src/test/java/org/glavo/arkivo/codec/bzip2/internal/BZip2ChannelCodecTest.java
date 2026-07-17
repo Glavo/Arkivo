@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.bzip2.internal;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -38,7 +38,7 @@ public final class BZip2ChannelCodecTest {
     @Test
     public void decodesIndependentFixture() throws IOException {
         byte[] compressed = Base64.getDecoder().decode(INDEPENDENT_FIXTURE);
-        try (BZip2ChannelDecoder decoder = decoder(compressed, ChannelOwnership.CLOSE)) {
+        try (BZip2ChannelDecoder decoder = decoder(compressed, ResourceOwnership.OWNED)) {
             assertArrayEquals("independent bzip2 fixture".getBytes(StandardCharsets.UTF_8), readAll(decoder));
             assertEquals(compressed.length, decoder.inputBytes());
         }
@@ -88,7 +88,7 @@ public final class BZip2ChannelCodecTest {
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(sourceBytes));
 
         try (BZip2ChannelDecoder decoder =
-                     new BZip2ChannelDecoder(source, ChannelOwnership.RETAIN)) {
+                     new BZip2ChannelDecoder(source, ResourceOwnership.BORROWED)) {
             assertArrayEquals(expected, readFrame(decoder));
             assertEquals(compressed.length, decoder.inputBytes());
             assertEquals(sourceBytes.length, decoder.sourceBytes());
@@ -111,7 +111,7 @@ public final class BZip2ChannelCodecTest {
         ByteArrayOutputStream target = new ByteArrayOutputStream();
         try (BZip2ChannelEncoder encoder = new BZip2ChannelEncoder(
                 Channels.newChannel(target),
-                ChannelOwnership.RETAIN,
+                ResourceOwnership.BORROWED,
                 1
         )) {
             writeAll(encoder, first);
@@ -119,7 +119,7 @@ public final class BZip2ChannelCodecTest {
             writeAll(encoder, second);
         }
 
-        try (BZip2ChannelDecoder decoder = decoder(target.toByteArray(), ChannelOwnership.CLOSE)) {
+        try (BZip2ChannelDecoder decoder = decoder(target.toByteArray(), ResourceOwnership.OWNED)) {
             assertArrayEquals(first, readFrame(decoder));
             assertArrayEquals(second, readFrame(decoder));
             ByteBuffer end = ByteBuffer.allocate(1);
@@ -134,7 +134,7 @@ public final class BZip2ChannelCodecTest {
         byte[] expected = "legacy randomized block".getBytes(StandardCharsets.UTF_8);
         byte[] compressed = compress(expected, 9);
         compressed[14] |= (byte) 0x80;
-        try (BZip2ChannelDecoder decoder = decoder(compressed, ChannelOwnership.CLOSE)) {
+        try (BZip2ChannelDecoder decoder = decoder(compressed, ResourceOwnership.OWNED)) {
             assertArrayEquals(expected, readAll(decoder));
         }
     }
@@ -142,14 +142,14 @@ public final class BZip2ChannelCodecTest {
     /// Rejects invalid stream headers and block-size digits.
     @Test
     public void rejectsInvalidHeaders() {
-        assertThrows(IOException.class, () -> decoder(new byte[0], ChannelOwnership.CLOSE));
+        assertThrows(IOException.class, () -> decoder(new byte[0], ResourceOwnership.OWNED));
         assertThrows(IOException.class, () -> decoder(
                 new byte[]{'B', 'Z', '0', '9'},
-                ChannelOwnership.CLOSE
+                ResourceOwnership.OWNED
         ));
         assertThrows(IOException.class, () -> decoder(
                 new byte[]{'B', 'Z', 'h', '0'},
-                ChannelOwnership.CLOSE
+                ResourceOwnership.OWNED
         ));
     }
 
@@ -158,13 +158,13 @@ public final class BZip2ChannelCodecTest {
     public void rejectsCrcCorruption() throws IOException {
         byte[] compressed = compress("CRC protected block".getBytes(StandardCharsets.UTF_8), 9);
         compressed[10] ^= 0x40;
-        try (BZip2ChannelDecoder decoder = decoder(compressed, ChannelOwnership.CLOSE)) {
+        try (BZip2ChannelDecoder decoder = decoder(compressed, ResourceOwnership.OWNED)) {
             assertThrows(IOException.class, () -> readAll(decoder));
         }
 
         byte[] empty = compress(new byte[0], 9);
         empty[empty.length - 1] ^= 1;
-        try (BZip2ChannelDecoder decoder = decoder(empty, ChannelOwnership.CLOSE)) {
+        try (BZip2ChannelDecoder decoder = decoder(empty, ResourceOwnership.OWNED)) {
             assertThrows(IOException.class, () -> readAll(decoder));
         }
     }
@@ -177,7 +177,7 @@ public final class BZip2ChannelCodecTest {
         for (int length : truncationPoints) {
             byte[] truncated = Arrays.copyOf(compressed, length);
             assertThrows(IOException.class, () -> {
-                try (BZip2ChannelDecoder decoder = decoder(truncated, ChannelOwnership.CLOSE)) {
+                try (BZip2ChannelDecoder decoder = decoder(truncated, ResourceOwnership.OWNED)) {
                     readAll(decoder);
                 }
             });
@@ -189,19 +189,19 @@ public final class BZip2ChannelCodecTest {
     public void validatesEncoderLifecycle() throws IOException {
         assertThrows(IllegalArgumentException.class, () -> new BZip2ChannelEncoder(
                 Channels.newChannel(new ByteArrayOutputStream()),
-                ChannelOwnership.RETAIN,
+                ResourceOwnership.BORROWED,
                 0
         ));
         assertThrows(IllegalArgumentException.class, () -> new BZip2ChannelEncoder(
                 Channels.newChannel(new ByteArrayOutputStream()),
-                ChannelOwnership.RETAIN,
+                ResourceOwnership.BORROWED,
                 10
         ));
 
         TrackingOutputStream retainedTarget = new TrackingOutputStream();
         BZip2ChannelEncoder retained = new BZip2ChannelEncoder(
                 Channels.newChannel(retainedTarget),
-                ChannelOwnership.RETAIN,
+                ResourceOwnership.BORROWED,
                 1
         );
         writeAll(retained, new byte[]{'A'});
@@ -214,7 +214,7 @@ public final class BZip2ChannelCodecTest {
         TrackingOutputStream ownedTarget = new TrackingOutputStream();
         BZip2ChannelEncoder owned = new BZip2ChannelEncoder(
                 Channels.newChannel(ownedTarget),
-                ChannelOwnership.CLOSE,
+                ResourceOwnership.OWNED,
                 1
         );
         owned.finish();
@@ -228,7 +228,7 @@ public final class BZip2ChannelCodecTest {
         TrackingInputStream source = new TrackingInputStream(compress(new byte[0], 9));
         BZip2ChannelDecoder decoder = new BZip2ChannelDecoder(
                 Channels.newChannel(source),
-                ChannelOwnership.CLOSE
+                ResourceOwnership.OWNED
         );
         decoder.close();
         decoder.close();
@@ -239,7 +239,7 @@ public final class BZip2ChannelCodecTest {
     /// Compresses and then decompresses bytes with the requested block size.
     private static byte[] roundTrip(byte[] input, int blockSize) throws IOException {
         byte[] compressed = compress(input, blockSize);
-        try (BZip2ChannelDecoder decoder = decoder(compressed, ChannelOwnership.CLOSE)) {
+        try (BZip2ChannelDecoder decoder = decoder(compressed, ResourceOwnership.OWNED)) {
             return readAll(decoder);
         }
     }
@@ -249,7 +249,7 @@ public final class BZip2ChannelCodecTest {
         ByteArrayOutputStream target = new ByteArrayOutputStream();
         try (BZip2ChannelEncoder encoder = new BZip2ChannelEncoder(
                 Channels.newChannel(target),
-                ChannelOwnership.RETAIN,
+                ResourceOwnership.BORROWED,
                 blockSize
         )) {
             writeAll(encoder, input);
@@ -258,7 +258,7 @@ public final class BZip2ChannelCodecTest {
     }
 
     /// Opens a decoder over in-memory compressed bytes.
-    private static BZip2ChannelDecoder decoder(byte[] compressed, ChannelOwnership ownership) throws IOException {
+    private static BZip2ChannelDecoder decoder(byte[] compressed, ResourceOwnership ownership) throws IOException {
         return new BZip2ChannelDecoder(
                 Channels.newChannel(new ByteArrayInputStream(compressed)),
                 ownership

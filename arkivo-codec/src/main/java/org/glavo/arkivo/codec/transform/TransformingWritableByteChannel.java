@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.transform;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -49,14 +49,14 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
 
     /// Creates a transforming channel retaining its target.
     public TransformingWritableByteChannel(WritableByteChannel target, ByteTransform transform) {
-        this(target, transform, ChannelOwnership.RETAIN);
+        this(target, transform, ResourceOwnership.BORROWED);
     }
 
     /// Creates a transforming channel with explicit target ownership.
     public TransformingWritableByteChannel(
             WritableByteChannel target,
             ByteTransform transform,
-            ChannelOwnership ownership
+            ResourceOwnership ownership
     ) {
         this.target = Objects.requireNonNull(target, "target");
         this.transform = Objects.requireNonNull(transform, "transform");

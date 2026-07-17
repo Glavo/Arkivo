@@ -3,9 +3,8 @@
 
 package org.glavo.arkivo.archive.sevenzip;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -17,7 +16,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.util.Map;
 import java.util.Set;
 
 /// Verifies that complete 7z updates stream entry bodies larger than the available Java heap.
@@ -55,16 +53,8 @@ public final class SevenZipLowHeapUpdateProbe {
 
     /// Creates one uncompressed 7z entry without retaining its complete body in memory.
     private static void createArchive(Path archivePath) throws IOException {
-        Map<String, Object> environment = Map.of(
-                ArkivoFileSystem.OPEN_OPTIONS.key(),
-                Set.of(
-                        StandardOpenOption.CREATE,
-                        StandardOpenOption.TRUNCATE_EXISTING,
-                        StandardOpenOption.WRITE
-                )
-        );
         byte[] buffer = new byte[BUFFER_SIZE];
-        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment));
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.create(archivePath);
              OutputStream output = Files.newOutputStream(fileSystem.getPath("/large.bin"))) {
             long remaining = ENTRY_SIZE;
             while (remaining > 0L) {
@@ -77,13 +67,17 @@ public final class SevenZipLowHeapUpdateProbe {
 
     /// Randomly modifies the large entry through temporary-file edit storage and commits a complete rewrite.
     private static void updateArchive(Path archivePath, Path storageDirectory) throws IOException {
-        Map<String, Object> environment = Map.of(
-                ArkivoFileSystem.OPEN_OPTIONS.key(),
-                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
-                ArkivoFileSystem.EDIT_STORAGE.key(),
-                ArkivoEditStorage.temporaryFiles(storageDirectory)
+        SevenZipArchiveOptions.Update options = new SevenZipArchiveOptions.Update(
+                ArchiveUpdateOptions.DEFAULT.withEditStorage(
+                        ArkivoEditStorage.temporaryFiles(storageDirectory)
+                ),
+                null,
+                SevenZipCompression.copy(),
+                SevenZipFilterChain.EMPTY,
+                SevenZipArchiveOptions.DEFAULT_SOLID_FILE_COUNT,
+                false
         );
-        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment));
+        try (SevenZipArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.update(archivePath, options);
              SeekableByteChannel channel = Files.newByteChannel(
                      fileSystem.getPath("/large.bin"),
                      Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)

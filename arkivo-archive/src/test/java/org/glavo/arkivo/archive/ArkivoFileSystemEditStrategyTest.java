@@ -24,20 +24,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /// Tests built-in archive file system edit strategies.
 @NotNullByDefault
 public final class ArkivoFileSystemEditStrategyTest {
-    /// Verifies that common file system edit option keys use the Arkivo namespace.
-    @Test
-    public void commonFileSystemEditOptionKeysUseArkivoNamespace() {
-        assertEquals("arkivo", ArkivoFileSystem.EDIT_STORAGE.namespace());
-        assertEquals("editStorage", ArkivoFileSystem.EDIT_STORAGE.name());
-        assertEquals("arkivo.editStorage", ArkivoFileSystem.EDIT_STORAGE.key());
-        assertEquals("arkivo", ArkivoFileSystem.COMMIT_TARGET.namespace());
-        assertEquals("commitTarget", ArkivoFileSystem.COMMIT_TARGET.name());
-        assertEquals("arkivo.commitTarget", ArkivoFileSystem.COMMIT_TARGET.key());
-        assertEquals("arkivo", ArkivoFileSystem.SOURCE_MUTATION_POLICY.namespace());
-        assertEquals("sourceMutationPolicy", ArkivoFileSystem.SOURCE_MUTATION_POLICY.name());
-        assertEquals("arkivo.sourceMutationPolicy", ArkivoFileSystem.SOURCE_MUTATION_POLICY.key());
-    }
-
     /// Verifies that memory edit storage can stage and reopen content.
     @Test
     public void memoryEditStorage() throws IOException {
@@ -193,50 +179,6 @@ public final class ArkivoFileSystemEditStrategyTest {
             Files.deleteIfExists(sourcePath);
             Files.deleteIfExists(directory);
         }
-    }
-
-    /// Verifies that source mutation policies return the expected decisions.
-    @Test
-    public void sourceMutationPolicies() throws IOException {
-        ArkivoSourceMutationRequest fixedPatch = request(true, true);
-        ArkivoSourceMutationRequest unsupportedPatch = request(false, false);
-
-        assertEquals(ArkivoSourceMutationDecision.REWRITE, ArkivoSourceMutationPolicy.never().decide(fixedPatch));
-        assertEquals(
-                ArkivoSourceMutationDecision.ALLOW,
-                ArkivoSourceMutationPolicy.patchWhenSafe().decide(fixedPatch)
-        );
-        assertEquals(
-                ArkivoSourceMutationDecision.REWRITE,
-                ArkivoSourceMutationPolicy.patchWhenSafe().decide(unsupportedPatch)
-        );
-        assertEquals(
-                ArkivoSourceMutationDecision.ALLOW,
-                ArkivoSourceMutationPolicy.directWhenPossible().decide(fixedPatch)
-        );
-    }
-
-    /// Returns a source mutation request for tests.
-    private static ArkivoSourceMutationRequest request(boolean fixedLengthPatch, boolean directMutationSupported) {
-        return new ArkivoSourceMutationRequest() {
-            /// Returns the test entry path.
-            @Override
-            public String path() {
-                return "entry";
-            }
-
-            /// Returns whether this request is fixed length.
-            @Override
-            public boolean fixedLengthPatch() {
-                return fixedLengthPatch;
-            }
-
-            /// Returns whether this request is directly supported.
-            @Override
-            public boolean directMutationSupported() {
-                return directMutationSupported;
-            }
-        };
     }
 
     /// Returns the temporary file path owned by a stored content instance.

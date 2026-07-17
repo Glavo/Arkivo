@@ -272,7 +272,7 @@ final class AllAggregationTest {
                 .getBytes(StandardCharsets.UTF_8);
 
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec<?> codec = format.defaultCodec();
+            CompressionCodec codec = format.defaultCodec();
 
             ByteBuffer source = ByteBuffer.allocateDirect(expected.length + 4);
             source.position(2);
@@ -292,7 +292,7 @@ final class AllAggregationTest {
             int decodedStart = 2;
             decoded.position(decodedStart);
             decoded.limit(decodedStart + expected.length);
-            CompressionCodec<?> decoderCodec = codec instanceof PPMdCodec ppmdCodec
+            CompressionCodec decoderCodec = codec instanceof PPMdCodec ppmdCodec
                     ? ppmdCodec.withDecodedSize(expected.length)
                     : codec;
             decoderCodec.decompress(compressed, decoded);
@@ -318,7 +318,7 @@ final class AllAggregationTest {
 
         byte[] content = "Arkivo compression probe".getBytes(StandardCharsets.UTF_8);
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec<?> codec = format.defaultCodec();
+            CompressionCodec codec = format.defaultCodec();
             if (format.probeSize() == 0) {
                 continue;
             }
@@ -354,8 +354,8 @@ final class AllAggregationTest {
     private static byte[] tarArchive() throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output)) {
-            writer.beginFile("value.txt");
-            try (OutputStream body = writer.openOutputStream()) {
+            var writerEntry357 = writer.beginFile("value.txt");
+            try (OutputStream body = writerEntry357.openOutputStream()) {
                 body.write("value".getBytes(StandardCharsets.UTF_8));
             }
         }
@@ -394,8 +394,8 @@ final class AllAggregationTest {
 
     /// Writes one regular entry through a format-independent streaming writer.
     private static void writeStreamingEntry(ArkivoStreamingWriter writer, byte[] content) throws IOException {
-        writer.beginFile("value.txt");
-        try (OutputStream body = writer.openOutputStream()) {
+        var writerEntry397 = writer.beginFile("value.txt");
+        try (OutputStream body = writerEntry397.openOutputStream()) {
             body.write(content);
         }
     }

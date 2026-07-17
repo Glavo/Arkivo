@@ -12,16 +12,18 @@ import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
 import org.apache.commons.compress.archivers.zip.ZipFile;
 import org.apache.commons.compress.archivers.zip.ZipSplitReadOnlySeekableByteChannel;
 import org.apache.commons.compress.utils.MultiReadOnlySeekableByteChannel;
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
+import org.glavo.arkivo.archive.ArkivoPathVolumeTarget;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoStreamingReader;
+import org.glavo.arkivo.archive.ArkivoVolumePathLayout;
+import org.glavo.arkivo.archive.sevenzip.SevenZipArchiveOptions;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoFileSystem;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
-import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.zip.ZipMethod;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -99,7 +101,7 @@ final class ArchiveVolumeInteroperabilityTest {
             try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archivePath)) {
                 assertArrayEquals(CONTENT, Files.readAllBytes(fileSystem.getPath("/" + ENTRY_PATH)));
             }
-            assertArrayEquals(CONTENT, readStreamingBody(archivePath, ArchiveOptions.EMPTY));
+            assertArrayEquals(CONTENT, readStreamingBody(archivePath, ArchiveReadOptions.DEFAULT));
         } finally {
             deleteTemporaryDirectory(directory);
         }
@@ -112,16 +114,16 @@ final class ArchiveVolumeInteroperabilityTest {
         Path directory = Files.createTempDirectory("arkivo-interop-split-zip-write-");
         Path archivePath = directory.resolve("arkivo.zip");
         try {
-            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.create(
-                    archivePath,
-                    ArchiveOptions.of(ZipArkivoFileSystem.SPLIT_SIZE, SPLIT_SIZE)
+            try (ZipArkivoStreamingWriter writer = ZipArkivoStreamingWriter.open(
+                    new ArkivoPathVolumeTarget(new ZipVolumeLayout(archivePath)),
+                    SPLIT_SIZE
             )) {
-                writer.beginFile(ENTRY_PATH);
+                var writerEntry119 = writer.beginFile(ENTRY_PATH);
                 ZipArkivoEntryAttributeView attributes = Objects.requireNonNull(
-                        writer.attributeView(ZipArkivoEntryAttributeView.class)
+                        writerEntry119.attributeView(ZipArkivoEntryAttributeView.class)
                 );
                 attributes.setMethod(ZipMethod.stored());
-                try (OutputStream body = writer.openOutputStream()) {
+                try (OutputStream body = writerEntry119.openOutputStream()) {
                     body.write(CONTENT);
                 }
             }
@@ -174,11 +176,9 @@ final class ArchiveVolumeInteroperabilityTest {
             @Unmodifiable List<Path> volumes = writeSevenZipVolumes(firstVolume, archive);
             assertBoundedVolumes(volumes);
 
-            ArchiveOptions options = ArchiveOptions.of(
-                    SevenZipArkivoFileSystem.PASSWORD_PROVIDER,
-                    ArkivoPasswordProvider.fixed(PASSWORD_BYTES)
-            );
-            try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(firstVolume, options)) {
+            SevenZipArchiveOptions.Read options = SevenZipArchiveOptions.READ_DEFAULTS
+                    .withPasswordProvider(ArkivoPasswordProvider.fixed(PASSWORD_BYTES));
+            try (ArkivoFileSystem fileSystem = SevenZipArkivoFileSystem.open(firstVolume, options)) {
                 assertArrayEquals(CONTENT, Files.readAllBytes(fileSystem.getPath("/" + ENTRY_PATH)));
             }
         } finally {
@@ -195,23 +195,17 @@ final class ArchiveVolumeInteroperabilityTest {
         Path firstVolume = directory.resolve("arkivo.7z.001");
         char[] password = PASSWORD_TEXT.toCharArray();
         try {
-            try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.create(
-                    firstVolume,
-                    ArchiveOptions.builder()
-                            .set(
-                                    SevenZipArkivoFileSystem.PASSWORD_PROVIDER,
-                                    ArkivoPasswordProvider.fixed(PASSWORD_BYTES)
-                            )
-                            .set(SevenZipArkivoFileSystem.ENCRYPT_HEADERS, true)
-                            .set(
-                                    SevenZipArkivoFileSystem.COMPRESSION,
-                                    SevenZipCompression.lzma2(1 << 20)
-                            )
-                            .set(SevenZipArkivoFileSystem.SPLIT_SIZE, SPLIT_SIZE)
-                            .build()
+            SevenZipArchiveOptions.Create options = SevenZipArchiveOptions.CREATE_DEFAULTS
+                    .withPasswordProvider(ArkivoPasswordProvider.fixed(PASSWORD_BYTES))
+                    .withEncryptHeaders(true)
+                    .withCompression(SevenZipCompression.lzma2(1 << 20));
+            try (SevenZipArkivoStreamingWriter writer = SevenZipArkivoStreamingWriter.open(
+                    new ArkivoPathVolumeTarget(new SevenZipVolumeLayout(firstVolume)),
+                    SPLIT_SIZE,
+                    options
             )) {
-                writer.beginFile(ENTRY_PATH);
-                try (OutputStream body = writer.openOutputStream()) {
+                var writerEntry213 = writer.beginFile(ENTRY_PATH);
+                try (OutputStream body = writerEntry213.openOutputStream()) {
                     body.write(CONTENT);
                 }
             }
@@ -242,16 +236,16 @@ final class ArchiveVolumeInteroperabilityTest {
     /// Reads the only regular body from a path-backed streaming archive reader.
     private static byte[] readStreamingBody(
             Path archivePath,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) throws IOException {
         ByteArrayOutputStream body = new ByteArrayOutputStream();
         int regularEntryCount = 0;
         try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(archivePath, options)) {
-            while (reader.next()) {
-                BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);
+            for (var readerEntry250 = reader.nextEntry(); readerEntry250 != null; readerEntry250 = reader.nextEntry()) {
+                BasicFileAttributes attributes = readerEntry250.attributes(BasicFileAttributes.class);
                 if (attributes.isRegularFile()) {
                     regularEntryCount++;
-                    try (InputStream input = reader.openInputStream()) {
+                    try (InputStream input = readerEntry250.openInputStream()) {
                         input.transferTo(body);
                     }
                 }
@@ -349,5 +343,56 @@ final class ArchiveVolumeInteroperabilityTest {
             }
         }
         Files.deleteIfExists(directory);
+    }
+
+    /// Maps split ZIP volumes to conventional `.zNN` paths and the final `.zip` path.
+    ///
+    /// @param archivePath the final ZIP path
+    private record ZipVolumeLayout(Path archivePath) implements ArkivoVolumePathLayout {
+        /// Returns the staging directory.
+        @Override
+        public Path outputDirectory() {
+            return Objects.requireNonNull(archivePath.toAbsolutePath().getParent());
+        }
+
+        /// Returns the conventional path for one ZIP volume.
+        @Override
+        public Path volumePath(long index, long finalVolumeIndex) {
+            if (index == finalVolumeIndex) {
+                return archivePath;
+            }
+            String fileName = archivePath.getFileName().toString();
+            String baseName = fileName.substring(0, fileName.length() - ".zip".length());
+            return archivePath.resolveSibling(baseName + ".z" + String.format(Locale.ROOT, "%02d", index + 1L));
+        }
+
+        /// Returns currently published ZIP volume paths.
+        @Override
+        public @Unmodifiable List<Path> existingVolumePaths() {
+            return zipVolumePaths(archivePath).stream().filter(Files::exists).toList();
+        }
+    }
+
+    /// Maps numbered 7z volumes to conventional `.001`, `.002`, and subsequent paths.
+    ///
+    /// @param firstVolume the first numbered volume path
+    private record SevenZipVolumeLayout(Path firstVolume) implements ArkivoVolumePathLayout {
+        /// Returns the staging directory.
+        @Override
+        public Path outputDirectory() {
+            return Objects.requireNonNull(firstVolume.toAbsolutePath().getParent());
+        }
+
+        /// Returns the conventional path for one numbered volume.
+        @Override
+        public Path volumePath(long index, long finalVolumeIndex) {
+            return sevenZipVolumePath(firstVolume, Math.toIntExact(index + 1L));
+        }
+
+        /// Returns currently published numbered volume paths.
+        @Override
+        public @Unmodifiable List<Path> existingVolumePaths() {
+            return sevenZipVolumePaths(firstVolume);
+        }
     }
 }

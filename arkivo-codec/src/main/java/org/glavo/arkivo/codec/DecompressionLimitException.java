@@ -11,7 +11,9 @@ import java.util.Objects;
 /// Indicates that decompression exceeded an operation-scoped safety limit.
 @NotNullByDefault
 public abstract sealed class DecompressionLimitException extends IOException
-        permits DecompressionOutputLimitException, DecompressionWindowLimitException {
+        permits DecompressionMemoryLimitException,
+        DecompressionOutputLimitException,
+        DecompressionWindowLimitException {
     /// The serialization version for this exception type.
     private static final long serialVersionUID = 0L;
 
@@ -60,6 +62,9 @@ public abstract sealed class DecompressionLimitException extends IOException
         OUTPUT_SIZE,
 
         /// Algorithm history-window size.
-        WINDOW_SIZE
+        WINDOW_SIZE,
+
+        /// Decoder working-memory size.
+        MEMORY_SIZE
     }
 }

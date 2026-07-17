@@ -3,9 +3,8 @@
 
 package org.glavo.arkivo.archive.tar;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -20,8 +19,6 @@ import java.nio.file.FileStore;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.Map;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -67,12 +64,10 @@ final class TarArkivoChannelSourceTest {
         TrackingSource source = new TrackingSource(archivePath, false);
         try {
             Files.write(archivePath, archiveBytes());
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
-            );
-
-            assertThrows(IllegalArgumentException.class, () -> TarArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment)));
+            assertThrows(IllegalArgumentException.class, () -> TarArkivoFileSystem.update(
+                    source,
+                    TarArchiveOptions.UPDATE_DEFAULTS
+            ));
             assertEquals(0, source.openCount());
             assertEquals(1, source.closeCount());
         } finally {
@@ -94,14 +89,11 @@ final class TarArkivoChannelSourceTest {
                 assertNull(sourceArchivePath);
                 return ArkivoCommitTarget.writeTo(targetPath).openOutput(sourceArchivePath);
             };
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
-                    ArkivoFileSystem.COMMIT_TARGET.key(),
-                    target
+            TarArchiveOptions.Update options = TarArchiveOptions.UPDATE_DEFAULTS.withCommon(
+                    ArchiveUpdateOptions.DEFAULT.withCommitTarget(target)
             );
 
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment))) {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.update(source, options)) {
                 assertFalse(fileSystem.isReadOnly());
                 Files.writeString(fileSystem.getPath("/value.txt"), "updated", StandardCharsets.UTF_8);
                 Files.writeString(fileSystem.getPath("/added.txt"), "added", StandardCharsets.UTF_8);
@@ -132,14 +124,11 @@ final class TarArkivoChannelSourceTest {
         try {
             Files.write(sourcePath, original);
             channel = Files.newByteChannel(sourcePath, StandardOpenOption.READ);
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
-                    ArkivoFileSystem.COMMIT_TARGET.key(),
-                    ArkivoCommitTarget.writeTo(targetPath)
+            TarArchiveOptions.Update options = TarArchiveOptions.UPDATE_DEFAULTS.withCommon(
+                    ArchiveUpdateOptions.DEFAULT.withCommitTarget(ArkivoCommitTarget.writeTo(targetPath))
             );
 
-            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(channel, ArchiveOptions.fromEnvironment(environment))) {
+            try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.update(channel, options)) {
                 Files.delete(fileSystem.getPath("/value.txt"));
                 Files.writeString(fileSystem.getPath("/replacement.txt"), "replacement", StandardCharsets.UTF_8);
             }
@@ -174,14 +163,11 @@ final class TarArkivoChannelSourceTest {
                 assertNull(sourceArchivePath);
                 throw new IOException("channel commit target failed");
             };
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
-                    ArkivoFileSystem.COMMIT_TARGET.key(),
-                    failingTarget
+            TarArchiveOptions.Update options = TarArchiveOptions.UPDATE_DEFAULTS.withCommon(
+                    ArchiveUpdateOptions.DEFAULT.withCommitTarget(failingTarget)
             );
 
-            TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment));
+            TarArkivoFileSystem fileSystem = TarArkivoFileSystem.update(source, options);
             Files.writeString(fileSystem.getPath("/value.txt"), "changed", StandardCharsets.UTF_8);
             IOException exception = assertThrows(IOException.class, fileSystem::close);
 
@@ -204,14 +190,11 @@ final class TarArkivoChannelSourceTest {
         TrackingSource source = new TrackingSource(sourcePath, false);
         try {
             Files.write(sourcePath, archiveBytes());
-            Map<String, Object> environment = Map.of(
-                    ArkivoFileSystem.OPEN_OPTIONS.key(),
-                    Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
-                    ArkivoFileSystem.COMMIT_TARGET.key(),
-                    ArkivoCommitTarget.writeTo(targetPath)
+            TarArchiveOptions.Update options = TarArchiveOptions.UPDATE_DEFAULTS.withCommon(
+                    ArchiveUpdateOptions.DEFAULT.withCommitTarget(ArkivoCommitTarget.writeTo(targetPath))
             );
 
-            try (TarArkivoFileSystem ignored = TarArkivoFileSystem.open(source, ArchiveOptions.fromEnvironment(environment))) {
+            try (TarArkivoFileSystem ignored = TarArkivoFileSystem.update(source, options)) {
             }
 
             assertFalse(Files.exists(targetPath));
@@ -261,8 +244,8 @@ final class TarArkivoChannelSourceTest {
     private static byte[] archiveBytes() throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output)) {
-            writer.beginFile("value.txt");
-            try (OutputStream body = writer.openOutputStream()) {
+            var writerEntry264 = writer.beginFile("value.txt");
+            try (OutputStream body = writerEntry264.openOutputStream()) {
                 body.write("value".getBytes(StandardCharsets.UTF_8));
             }
         }

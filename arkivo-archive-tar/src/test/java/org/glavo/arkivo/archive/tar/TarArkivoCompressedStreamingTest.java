@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.archive.tar;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
@@ -24,14 +23,12 @@ import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// Verifies automatic and explicit TAR stream compression with resource ownership.
@@ -43,10 +40,11 @@ final class TarArkivoCompressedStreamingTest {
     /// Verifies gzip streaming through ordinary non-seekable channels and a stable compression format name.
     @Test
     void roundTripsGzipThroughChannels() throws IOException {
-        Map<String, Object> environment = Map.of(TarArkivoFileSystem.COMPRESSION.key(), "gzip");
+        TarArchiveOptions.Create createOptions = createOptions("gzip");
+        TarArchiveOptions.Read readOptions = readOptions("gzip");
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
         WritableByteChannel output = Channels.newChannel(archive);
-        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output, ArchiveOptions.fromEnvironment(environment))) {
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(output, createOptions)) {
             writeEntry(writer);
         }
         assertFalse(output.isOpen());
@@ -57,7 +55,7 @@ final class TarArkivoCompressedStreamingTest {
         assertEquals("gzip", detected.name());
 
         ReadableByteChannel input = Channels.newChannel(new ByteArrayInputStream(archiveBytes));
-        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(input, ArchiveOptions.fromEnvironment(environment))) {
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(input, readOptions)) {
             assertEntry(reader);
         }
         assertFalse(input.isOpen());
@@ -66,9 +64,8 @@ final class TarArkivoCompressedStreamingTest {
     /// Verifies gzip is detected through the channel factory when no compression option is present.
     @Test
     void detectsGzipThroughForwardOnlyChannel() throws IOException {
-        Map<String, Object> environment = Map.of(TarArkivoFileSystem.COMPRESSION.key(), "gzip");
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
-        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive, ArchiveOptions.fromEnvironment(environment))) {
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive, createOptions("gzip"))) {
             writeEntry(writer);
         }
 
@@ -82,9 +79,8 @@ final class TarArkivoCompressedStreamingTest {
     /// Verifies zlib is detected through the input-stream adapter without an explicit option.
     @Test
     void detectsZlibThroughForwardOnlyStream() throws IOException {
-        Map<String, Object> environment = Map.of(TarArkivoFileSystem.COMPRESSION.key(), "zlib");
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
-        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive, ArchiveOptions.fromEnvironment(environment))) {
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive, createOptions("zlib"))) {
             writeEntry(writer);
         }
 
@@ -98,19 +94,20 @@ final class TarArkivoCompressedStreamingTest {
     /// Verifies codec-object configuration through the TAR format facade.
     @Test
     void roundTripsRawDeflateThroughFormatFacade() throws IOException {
-        CompressionCodec<?> codec = CompressionFormats.require("deflate").defaultCodec();
-        Map<String, Object> environment = Map.of(TarArkivoFileSystem.COMPRESSION.key(), codec);
+        CompressionCodec codec = CompressionFormats.require("deflate").defaultCodec();
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
 
-        TarArkivoFormat format = TarArkivoFormat.instance();
-        try (TarArkivoStreamingWriter writer = format.openStreamingWriter(archive, ArchiveOptions.fromEnvironment(environment))) {
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(
+                archive,
+                TarArchiveOptions.CREATE_DEFAULTS.withCompression(codec)
+        )) {
             writeEntry(writer);
         }
         assertNull(CompressionFormats.detect(ByteBuffer.wrap(archive.toByteArray())));
 
-        try (TarArkivoStreamingReader reader = format.openStreamingReader(
+        try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive.toByteArray()),
-                ArchiveOptions.fromEnvironment(environment)
+                TarArchiveOptions.READ_DEFAULTS.withCompression(codec)
         )) {
             assertEntry(reader);
         }
@@ -120,18 +117,17 @@ final class TarArkivoCompressedStreamingTest {
     @Test
     void createsCompressedPathWithOwnedBodyStorage() throws IOException {
         Path archivePath = Files.createTempFile("arkivo-streaming-", ".tar.gz");
-        Map<String, Object> environment = Map.of(TarArkivoFileSystem.COMPRESSION.key(), "gzip");
         try {
             try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(
                     archivePath,
                     ArkivoEditStorage.memory(),
-                    ArchiveOptions.fromEnvironment(environment)
+                    createOptions("gzip")
             )) {
                 writeEntry(writer);
             }
             try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                     Files.newInputStream(archivePath),
-                    ArchiveOptions.fromEnvironment(environment)
+                    readOptions("gzip")
             )) {
                 assertEntry(reader);
             }
@@ -144,7 +140,7 @@ final class TarArkivoCompressedStreamingTest {
     @Test
     void keepsRawTarAsTheStreamingDefault() throws IOException {
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
-        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive, ArchiveOptions.fromEnvironment(Map.of()))) {
+        try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive)) {
             writeEntry(writer);
         }
         byte[] archiveBytes = archive.toByteArray();
@@ -164,8 +160,8 @@ final class TarArkivoCompressedStreamingTest {
         String entryName = "x\u0001value.txt";
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive)) {
-            writer.beginFile(entryName);
-            try (OutputStream body = writer.openOutputStream()) {
+            var writerEntry167 = writer.beginFile(entryName);
+            try (OutputStream body = writerEntry167.openOutputStream()) {
                 body.write(CONTENT);
             }
         }
@@ -177,90 +173,45 @@ final class TarArkivoCompressedStreamingTest {
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archiveBytes)
         )) {
-            assertTrue(reader.next());
-            assertEquals(entryName, reader.readAttributes(TarArkivoEntryAttributes.class).path());
-            try (InputStream body = reader.openInputStream()) {
+            var readerEntry180 = java.util.Objects.requireNonNull(reader.nextEntry());
+            assertEquals(entryName, readerEntry180.attributes(TarArkivoEntryAttributes.class).path());
+            try (InputStream body = readerEntry180.openInputStream()) {
                 assertArrayEquals(CONTENT, body.readAllBytes());
             }
-            assertFalse(reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
-    /// Verifies that option conversion failures leave caller-owned streams open.
-    @Test
-    void leavesStreamsOpenWhenEnvironmentValidationFails() {
-        Map<String, Object> environment = Map.of(
-                TarArkivoFileSystem.COMPRESSION.key(),
-                "missing-codec"
+    /// Returns typed TAR creation options for one registered compression format.
+    private static TarArchiveOptions.Create createOptions(String formatName) {
+        return TarArchiveOptions.CREATE_DEFAULTS.withCompression(
+                CompressionFormats.require(formatName).defaultCodec()
         );
-        TrackingInputStream input = new TrackingInputStream();
-        TrackingOutputStream output = new TrackingOutputStream();
+    }
 
-        assertThrows(IllegalArgumentException.class, () -> TarArkivoStreamingReader.open(input, ArchiveOptions.fromEnvironment(environment)));
-        assertThrows(IllegalArgumentException.class, () -> TarArkivoStreamingWriter.open(output, ArchiveOptions.fromEnvironment(environment)));
-        assertFalse(input.closed());
-        assertFalse(output.closed());
+    /// Returns typed TAR read options for one registered compression format.
+    private static TarArchiveOptions.Read readOptions(String formatName) {
+        return TarArchiveOptions.READ_DEFAULTS.withCompression(
+                CompressionFormats.require(formatName).defaultCodec()
+        );
     }
 
     /// Writes one regular file entry.
     private static void writeEntry(TarArkivoStreamingWriter writer) throws IOException {
-        writer.beginFile("value.txt");
-        try (OutputStream body = writer.openOutputStream()) {
+        var writerEntry207 = writer.beginFile("value.txt");
+        try (OutputStream body = writerEntry207.openOutputStream()) {
             body.write(CONTENT);
         }
     }
 
     /// Verifies and consumes one regular file entry.
     private static void assertEntry(TarArkivoStreamingReader reader) throws IOException {
-        assertTrue(reader.next());
-        TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+        var readerEntry215 = java.util.Objects.requireNonNull(reader.nextEntry());
+        TarArkivoEntryAttributes attributes = readerEntry215.attributes(TarArkivoEntryAttributes.class);
         assertEquals("value.txt", attributes.path());
-        try (InputStream body = reader.openInputStream()) {
+        try (InputStream body = readerEntry215.openInputStream()) {
             assertArrayEquals(CONTENT, body.readAllBytes());
         }
-        assertFalse(reader.next());
-    }
-
-    /// Tracks whether an input stream has been closed.
-    @NotNullByDefault
-    private static final class TrackingInputStream extends ByteArrayInputStream {
-        /// Whether this stream has closed.
-        private boolean closed;
-
-        /// Creates an empty tracked input stream.
-        private TrackingInputStream() {
-            super(new byte[0]);
-        }
-
-        /// Closes this stream.
-        @Override
-        public void close() throws IOException {
-            closed = true;
-            super.close();
-        }
-
-        /// Returns whether this stream has closed.
-        private boolean closed() {
-            return closed;
-        }
-    }
-
-    /// Tracks whether an output stream has been closed.
-    @NotNullByDefault
-    private static final class TrackingOutputStream extends ByteArrayOutputStream {
-        /// Whether this stream has closed.
-        private boolean closed;
-
-        /// Closes this stream.
-        @Override
-        public void close() throws IOException {
-            closed = true;
-            super.close();
-        }
-
-        /// Returns whether this stream has closed.
-        private boolean closed() {
-            return closed;
-        }
+        org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
     }
 }

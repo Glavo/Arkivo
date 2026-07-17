@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.bzip2.internal;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -157,7 +157,7 @@ public final class BZip2Encoder implements CompressionEncoder.Framed {
     /// Creates the pure Java block encoder over the private memory sink.
     private BZip2ChannelEncoder createBlockEncoder() {
         try {
-            return new BZip2ChannelEncoder(output, ChannelOwnership.RETAIN, blockSize);
+            return new BZip2ChannelEncoder(output, ResourceOwnership.BORROWED, blockSize);
         } catch (IOException exception) {
             throw new AssertionError("In-memory BZip2 encoder creation unexpectedly failed", exception);
         }

@@ -28,10 +28,10 @@ final class OutputLimitingCompressionDecoderTest {
         ByteBuffer target = ByteBuffer.allocate(8);
         target.limit(7);
 
-        assertEquals(CodecOutcome.NEEDS_OUTPUT, decoder.decode(ByteBuffer.allocate(0), target, true));
+        assertEquals(CodecOutcome.NEEDS_OUTPUT, decoder.finish(ByteBuffer.allocate(0), target));
         assertEquals(3, target.position());
         assertEquals(7, target.limit());
-        assertEquals(CodecOutcome.FINISHED, decoder.decode(ByteBuffer.allocate(0), target, true));
+        assertEquals(CodecOutcome.FINISHED, decoder.finish(ByteBuffer.allocate(0), target));
     }
 
     /// Verifies the hidden probe rejects the first byte beyond the configured limit after delivering its prefix.
@@ -45,17 +45,17 @@ final class OutputLimitingCompressionDecoderTest {
 
         assertEquals(
                 CodecOutcome.NEEDS_OUTPUT,
-                decoder.decode(ByteBuffer.allocate(0), target, true)
+                decoder.finish(ByteBuffer.allocate(0), target)
         );
         assertEquals(3, target.position());
         DecompressionLimitException exception = assertThrows(
                 DecompressionLimitException.class,
-                () -> decoder.decode(ByteBuffer.allocate(0), target, true)
+                () -> decoder.finish(ByteBuffer.allocate(0), target)
         );
         assertEquals(3L, exception.maximum());
         assertThrows(
                 DecompressionLimitException.class,
-                () -> decoder.decode(ByteBuffer.allocate(0), target, true)
+                () -> decoder.finish(ByteBuffer.allocate(0), target)
         );
     }
 
@@ -75,7 +75,18 @@ final class OutputLimitingCompressionDecoderTest {
 
         /// Copies staged bytes and requests output whenever the supplied target becomes full.
         @Override
-        public CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) {
+        public CodecOutcome decode(ByteBuffer source, ByteBuffer target) {
+            return decodeInternal(source, target, false);
+        }
+
+        /// Finishes decoding after all source bytes have been supplied.
+        @Override
+        public CodecOutcome finish(ByteBuffer source, ByteBuffer target) {
+            return decodeInternal(source, target, true);
+        }
+
+        /// Implements decoding with the selected source-completion state.
+        private CodecOutcome decodeInternal(ByteBuffer source, ByteBuffer target, boolean endOfInput) {
             Objects.requireNonNull(source, "source");
             Objects.requireNonNull(target, "target");
             if (closed) {

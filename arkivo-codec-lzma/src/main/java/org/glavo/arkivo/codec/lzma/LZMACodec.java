@@ -18,7 +18,7 @@ import java.util.Objects;
 /// Provides an immutable LZMA-alone configuration and transport-independent engines.
 @NotNullByDefault
 public final class LZMACodec
-        implements CompressionCodec.PledgedSourceSizeEncoderFactory<LZMACodec, CompressionEncoder> {
+        implements CompressionCodec.PledgedSourceSizeEncoderFactory<CompressionEncoder> {
     /// The default LZMA dictionary size used for encoding.
     public static final int DEFAULT_DICTIONARY_SIZE = 1 << 20;
 
@@ -74,7 +74,7 @@ public final class LZMACodec
     public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
         Objects.requireNonNull(limits, "limits");
         return CompressionDecoderSupport.limitEngineOutput(
-                new LZMADecoder(limits.maximumWindowSize()),
+                new LZMADecoder(limits.effectiveMaximumWindowSize()),
                 limits.maximumOutputSize()
         );
     }

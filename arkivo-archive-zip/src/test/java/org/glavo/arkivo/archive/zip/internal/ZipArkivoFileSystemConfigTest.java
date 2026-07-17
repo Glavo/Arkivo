@@ -3,13 +3,11 @@
 
 package org.glavo.arkivo.archive.zip.internal;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
-import org.glavo.arkivo.archive.ArkivoSourceMutationPolicy;
+import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.archive.zip.ZipEncryption;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -35,32 +33,14 @@ public final class ZipArkivoFileSystemConfigTest {
         assertEquals(ZipArkivoFileSystemConfig.NO_SPLIT_SIZE, ZipArkivoFileSystemConfig.DEFAULTS.splitSize());
     }
 
-    /// Verifies that ZIP file system option keys use the ZIP namespace.
-    @Test
-    public void zipOptionKeysUseZipNamespace() {
-        assertEquals("arkivo.zip", ZipArkivoFileSystem.PASSWORD_PROVIDER.namespace());
-        assertEquals("passwordProvider", ZipArkivoFileSystem.PASSWORD_PROVIDER.name());
-        assertEquals("arkivo.zip.passwordProvider", ZipArkivoFileSystem.PASSWORD_PROVIDER.key());
-        assertEquals("arkivo.zip.defaultEncryption", ZipArkivoFileSystem.DEFAULT_ENCRYPTION.key());
-        assertEquals("arkivo.zip.splitSize", ZipArkivoFileSystem.SPLIT_SIZE.key());
-        assertEquals(
-                "arkivo.zip.legacyCharsetDetector",
-                ZipArkivoFileSystem.LEGACY_CHARSET_DETECTOR.key()
-        );
-        assertEquals("arkivo.threadSafety", ArkivoFileSystem.THREAD_SAFETY.key());
-        assertEquals("arkivo.editStorage", ArkivoFileSystem.EDIT_STORAGE.key());
-        assertEquals("arkivo.commitTarget", ArkivoFileSystem.COMMIT_TARGET.key());
-        assertEquals("arkivo.sourceMutationPolicy", ArkivoFileSystem.SOURCE_MUTATION_POLICY.key());
-    }
-
     /// Verifies that string environment values are parsed through typed ZIP options.
     @Test
     public void stringValues() throws Exception {
         Map<String, Object> environment = new HashMap<>();
-        environment.put(ArkivoFileSystem.THREAD_SAFETY.key(), "strict");
-        environment.put(ZipArkivoFileSystem.DEFAULT_ENCRYPTION.key(), "winzip-aes-256");
-        environment.put(ZipArkivoFileSystem.SPLIT_SIZE.key(), "65536");
-        environment.put(ZipArkivoFileSystem.LEGACY_CHARSET_DETECTOR.key(), "gb18030");
+        environment.put("arkivo.threadSafety", "strict");
+        environment.put("arkivo.zip.defaultEncryption", "winzip-aes-256");
+        environment.put("arkivo.zip.splitSize", "65536");
+        environment.put("arkivo.zip.legacyCharsetDetector", "gb18030");
 
         ZipArkivoFileSystemConfig config = fromEnvironment(environment);
 
@@ -76,7 +56,7 @@ public final class ZipArkivoFileSystemConfigTest {
     /// Verifies that split size accepts compatible integral environment values.
     @Test
     public void integralSplitSize() {
-        Map<String, Object> environment = Map.of(ZipArkivoFileSystem.SPLIT_SIZE.key(), 65536);
+        Map<String, Object> environment = Map.of("arkivo.zip.splitSize", 65536);
 
         ZipArkivoFileSystemConfig config = fromEnvironment(environment);
 
@@ -87,9 +67,9 @@ public final class ZipArkivoFileSystemConfigTest {
     @Test
     public void writableSplitSize() {
         Map<String, Object> environment = Map.of(
-                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                "arkivo.openOptions",
                 Set.of(StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE),
-                ZipArkivoFileSystem.SPLIT_SIZE.key(),
+                "arkivo.zip.splitSize",
                 65536L
         );
 
@@ -104,23 +84,24 @@ public final class ZipArkivoFileSystemConfigTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> fromEnvironment(Map.of(
-                        ZipArkivoFileSystem.SPLIT_SIZE.key(),
+                        "arkivo.zip.splitSize",
                         ZipArkivoFileSystem.MINIMUM_SPLIT_SIZE - 1L
                 ))
         );
         assertThrows(
                 IllegalArgumentException.class,
                 () -> fromEnvironment(Map.of(
-                        ZipArkivoFileSystem.SPLIT_SIZE.key(),
+                        "arkivo.zip.splitSize",
                         ZipArkivoFileSystem.MAXIMUM_SPLIT_SIZE + 1L
                 ))
         );
     }
+
     /// Verifies that writable ZIP configuration accepts append mode.
     @Test
     public void writableAppendMode() {
         Map<String, Object> environment = Map.of(
-                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                "arkivo.openOptions",
                 Set.of(StandardOpenOption.APPEND, StandardOpenOption.WRITE)
         );
 
@@ -134,7 +115,7 @@ public final class ZipArkivoFileSystemConfigTest {
     @Test
     public void writableUpdateModeNormalizesToAppend() {
         Map<String, Object> environment = Map.of(
-                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                "arkivo.openOptions",
                 Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)
         );
 
@@ -150,7 +131,7 @@ public final class ZipArkivoFileSystemConfigTest {
     @Test
     public void writableAppendRejectsTruncate() {
         Map<String, Object> environment = Map.of(
-                ArkivoFileSystem.OPEN_OPTIONS.key(),
+                "arkivo.openOptions",
                 Set.of(StandardOpenOption.APPEND, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)
         );
 
@@ -162,7 +143,7 @@ public final class ZipArkivoFileSystemConfigTest {
     public void passwordProvider() {
         ArkivoPasswordProvider passwordProvider = ArkivoPasswordProvider.fixed(new byte[]{1, 2, 3});
         Map<String, Object> environment = Map.of(
-                ZipArkivoFileSystem.PASSWORD_PROVIDER.key(),
+                "arkivo.zip.passwordProvider",
                 passwordProvider
         );
 
@@ -177,19 +158,17 @@ public final class ZipArkivoFileSystemConfigTest {
     public void editStrategies() {
         ArkivoEditStorage storage = ArkivoEditStorage.memory();
         ArkivoCommitTarget commitTarget = ArkivoCommitTarget.replaceOriginal();
-        ArkivoSourceMutationPolicy sourceMutationPolicy = ArkivoSourceMutationPolicy.patchWhenSafe();
         Map<String, Object> environment = Map.of(
-                ArkivoFileSystem.EDIT_STORAGE.key(), storage,
-                ArkivoFileSystem.COMMIT_TARGET.key(), commitTarget,
-                ArkivoFileSystem.SOURCE_MUTATION_POLICY.key(), sourceMutationPolicy
+                "arkivo.editStorage", storage,
+                "arkivo.commitTarget", commitTarget
         );
 
         ZipArkivoFileSystemConfig config = fromEnvironment(environment);
 
         assertSame(storage, config.editStorage());
         assertSame(commitTarget, config.commitTarget());
-        assertSame(sourceMutationPolicy, config.sourceMutationPolicy());
     }
+
     /// Parses raw NIO environment values through the public immutable option boundary.
     private static ZipArkivoFileSystemConfig fromEnvironment(Map<String, ?> environment) {
         return ZipArkivoFileSystemConfig.fromOptions(ArchiveOptions.fromEnvironment(environment));

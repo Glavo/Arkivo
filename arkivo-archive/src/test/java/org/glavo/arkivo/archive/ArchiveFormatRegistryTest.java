@@ -23,7 +23,12 @@ public final class ArchiveFormatRegistryTest {
     void indexesFormats() {
         TestFormat alpha = new TestFormat("alpha", List.of("a"), 1, 0x11);
         TestFormat beta = new TestFormat("beta", List.of("b"), 2, 0x2233);
-        ArchiveFormatRegistry registry = ArchiveFormatRegistry.fromFormats(List.of(alpha, alpha, beta));
+        ArchiveFormatRegistry registry = ArchiveFormatRegistry.fromFormats(List.of(
+                alpha,
+                alpha,
+                new TestFormat("alpha", List.of("a"), 1, 0x11),
+                beta
+        ));
 
         assertEquals(List.of(alpha, beta), registry.formats());
         assertSame(alpha, registry.find("ALPHA"));

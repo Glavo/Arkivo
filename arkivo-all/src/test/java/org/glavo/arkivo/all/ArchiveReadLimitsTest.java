@@ -12,8 +12,8 @@ import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
-import org.glavo.arkivo.archive.ArchiveOption;
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFormats;
 import org.glavo.arkivo.archive.ArkivoReadLimitException;
@@ -57,7 +57,7 @@ final class ArchiveReadLimitsTest {
             for (Fixture fixture : fixtures) {
                 assertFileSystemLimit(
                         fixture,
-                        ArkivoFileSystem.MAX_ENTRY_COUNT,
+                        ArchiveReadLimits.builder().maximumEntryCount(1L).build(),
                         1L,
                         ArkivoReadLimitKind.ENTRY_COUNT,
                         2L,
@@ -65,7 +65,7 @@ final class ArchiveReadLimitsTest {
                 );
                 assertFileSystemLimit(
                         fixture,
-                        ArkivoFileSystem.MAX_ENTRY_SIZE,
+                        ArchiveReadLimits.builder().maximumEntrySize(3L).build(),
                         3L,
                         ArkivoReadLimitKind.ENTRY_SIZE,
                         4L,
@@ -73,7 +73,7 @@ final class ArchiveReadLimitsTest {
                 );
                 assertFileSystemLimit(
                         fixture,
-                        ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE,
+                        ArchiveReadLimits.builder().maximumTotalEntrySize(6L).build(),
                         6L,
                         ArkivoReadLimitKind.TOTAL_ENTRY_SIZE,
                         7L,
@@ -97,15 +97,15 @@ final class ArchiveReadLimitsTest {
                 try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(
                         fixture.format(),
                         fixture.path(),
-                        ArchiveOptions.of(ArkivoFileSystem.MAX_ENTRY_COUNT, 1L)
+                        readOptions(ArchiveReadLimits.builder().maximumEntryCount(1L).build())
                 )) {
-                    assertTrue(reader.next());
-                    try (InputStream input = reader.openInputStream()) {
+                    var readerEntry102 = java.util.Objects.requireNonNull(reader.nextEntry());
+                    try (InputStream input = readerEntry102.openInputStream()) {
                         assertArrayEquals(FIRST_CONTENT, input.readAllBytes());
                     }
                     ArkivoReadLimitException exception = assertThrows(
                             ArkivoReadLimitException.class,
-                            reader::next
+                            reader::nextEntry
                     );
                     assertLimit(exception, ArkivoReadLimitKind.ENTRY_COUNT, 1L, 2L, null);
                 }
@@ -123,12 +123,12 @@ final class ArchiveReadLimitsTest {
             try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(
                     "zip",
                     fixture.path(),
-                    ArchiveOptions.of(ArkivoFileSystem.MAX_ENTRY_SIZE, 2L)
+                    readOptions(ArchiveReadLimits.builder().maximumEntrySize(2L).build())
             )) {
-                assertTrue(reader.next());
+                var readerEntry128 = java.util.Objects.requireNonNull(reader.nextEntry());
                 ArkivoReadLimitException exception = assertThrows(
                         ArkivoReadLimitException.class,
-                        () -> readCurrentEntry(reader)
+                        () -> readCurrentEntry(readerEntry128)
                 );
                 assertLimit(exception, ArkivoReadLimitKind.ENTRY_SIZE, 2L, 3L, "first.bin");
             }
@@ -136,14 +136,14 @@ final class ArchiveReadLimitsTest {
             try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(
                     "zip",
                     fixture.path(),
-                    ArchiveOptions.of(ArkivoFileSystem.MAX_TOTAL_ENTRY_SIZE, 5L)
+                    readOptions(ArchiveReadLimits.builder().maximumTotalEntrySize(5L).build())
             )) {
-                assertTrue(reader.next());
-                assertArrayEquals(FIRST_CONTENT, readCurrentEntry(reader));
-                assertTrue(reader.next());
+                var readerEntry141 = java.util.Objects.requireNonNull(reader.nextEntry());
+                assertArrayEquals(FIRST_CONTENT, readCurrentEntry(readerEntry141));
+                var readerEntry143 = java.util.Objects.requireNonNull(reader.nextEntry());
                 ArkivoReadLimitException exception = assertThrows(
                         ArkivoReadLimitException.class,
-                        () -> readCurrentEntry(reader)
+                        () -> readCurrentEntry(readerEntry143)
                 );
                 assertLimit(exception, ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, 5L, 7L, "second.bin");
             }
@@ -168,7 +168,7 @@ final class ArchiveReadLimitsTest {
                     try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(
                             fixture.format(),
                             fixture.path(),
-                            ArchiveOptions.of(ArkivoFileSystem.MAX_METADATA_SIZE, maximum)
+                            readOptions(ArchiveReadLimits.builder().maximumMetadataSize(maximum).build())
                     )) {
                         Files.readAttributes(fileSystem.getPath("/first.bin"), BasicFileAttributes.class);
                     }
@@ -200,11 +200,11 @@ final class ArchiveReadLimitsTest {
                 try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(
                         fixture.format(),
                         fixture.path(),
-                        ArchiveOptions.of(ArkivoFileSystem.MAX_METADATA_SIZE, maximum)
+                        readOptions(ArchiveReadLimits.builder().maximumMetadataSize(maximum).build())
                 )) {
                     ArkivoReadLimitException exception = assertThrows(
                             ArkivoReadLimitException.class,
-                            reader::next
+                            reader::nextEntry
                     );
                     assertEquals(ArkivoReadLimitKind.METADATA_SIZE, exception.kind());
                     assertEquals(maximum, exception.maximum());
@@ -220,7 +220,7 @@ final class ArchiveReadLimitsTest {
     /// Opens a fixture file system and verifies the expected read-limit failure.
     private static void assertFileSystemLimit(
             Fixture fixture,
-            ArchiveOption<Long> option,
+            ArchiveReadLimits limits,
             long maximum,
             ArkivoReadLimitKind kind,
             long actual,
@@ -230,12 +230,17 @@ final class ArchiveReadLimitsTest {
             try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(
                     fixture.format(),
                     fixture.path(),
-                    ArchiveOptions.of(option, maximum)
+                    readOptions(limits)
             )) {
                 Files.readAttributes(fileSystem.getPath("/first.bin"), BasicFileAttributes.class);
             }
         });
         assertLimit(exception, kind, maximum, actual, expectedPath);
+    }
+
+    /// Returns archive options carrying one immutable read-limit set.
+    private static ArchiveReadOptions readOptions(ArchiveReadLimits limits) {
+        return ArchiveReadOptions.DEFAULT.withLimits(limits);
     }
 
     /// Verifies all structured fields of a read-limit exception.
@@ -257,8 +262,8 @@ final class ArchiveReadLimitsTest {
     }
 
     /// Reads and closes the current streaming entry body.
-    private static byte[] readCurrentEntry(ArkivoStreamingReader reader) throws IOException {
-        try (InputStream input = reader.openInputStream()) {
+    private static byte[] readCurrentEntry(ArkivoStreamingReader.Entry entry) throws IOException {
+        try (InputStream input = entry.openInputStream()) {
             return input.readAllBytes();
         }
     }

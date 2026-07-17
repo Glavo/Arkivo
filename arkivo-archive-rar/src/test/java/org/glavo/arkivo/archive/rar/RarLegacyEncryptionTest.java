@@ -3,7 +3,6 @@
 
 package org.glavo.arkivo.archive.rar;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -21,7 +20,6 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.zip.CRC32;
 
@@ -73,32 +71,28 @@ public final class RarLegacyEncryptionTest {
     /// Reads both compressed members from a real RAR 2.02 encrypted archive.
     @Test
     public void readsRealRar20EncryptedArchive() throws IOException {
-        Map<String, Object> environment = Map.of(
-                RarArkivoFileSystem.PASSWORD_PROVIDER.key(),
-                ArkivoPasswordProvider.fixed(PASSWORD)
-        );
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(RAR20_ARCHIVE),
-                ArchiveOptions.fromEnvironment(environment)
+                passwordOptions(PASSWORD)
         )) {
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes first = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry84 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes first = readerEntry84.attributes(RarArkivoEntryAttributes.class);
             assertEquals("FILE1.TXT", first.path());
             assertEquals(true, first.isEncrypted());
             assertEquals(3, first.compressionMethod());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry84.openInputStream()) {
                 assertArrayEquals("file1\r\n".getBytes(StandardCharsets.US_ASCII), input.readAllBytes());
             }
 
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes second = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry93 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes second = readerEntry93.attributes(RarArkivoEntryAttributes.class);
             assertEquals("FILE2.TXT", second.path());
             assertEquals(true, second.isEncrypted());
             assertEquals(3, second.compressionMethod());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry93.openInputStream()) {
                 assertArrayEquals("file2\r\n".getBytes(StandardCharsets.US_ASCII), input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -123,16 +117,16 @@ public final class RarLegacyEncryptionTest {
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
-                ArchiveOptions.fromEnvironment(passwordEnvironment(PASSWORD))
+                passwordOptions(PASSWORD)
         )) {
-            assertEquals(true, reader.next());
-            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
+            var readerEntry128 = java.util.Objects.requireNonNull(reader.nextEntry());
+            RarArkivoEntryAttributes attributes = readerEntry128.attributes(RarArkivoEntryAttributes.class);
             assertEquals(0, attributes.compressionMethod());
             assertEquals(true, attributes.isEncrypted());
-            try (var input = reader.openInputStream()) {
+            try (var input = readerEntry128.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -157,13 +151,13 @@ public final class RarLegacyEncryptionTest {
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 Channels.newChannel(new ByteArrayInputStream(archive)),
-                ArchiveOptions.fromEnvironment(passwordEnvironment(PASSWORD))
+                passwordOptions(PASSWORD)
         )) {
-            assertEquals(true, reader.next());
-            try (var input = reader.openInputStream()) {
+            var readerEntry162 = java.util.Objects.requireNonNull(reader.nextEntry());
+            try (var input = readerEntry162.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            assertEquals(false, reader.next());
+            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
         }
     }
 
@@ -173,10 +167,10 @@ public final class RarLegacyEncryptionTest {
         byte[] wrongPassword = "incorrect".getBytes(StandardCharsets.ISO_8859_1);
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(RAR20_ARCHIVE),
-                ArchiveOptions.fromEnvironment(passwordEnvironment(wrongPassword))
+                passwordOptions(wrongPassword)
         )) {
-            assertEquals(true, reader.next());
-            var input = reader.openInputStream();
+            var readerEntry178 = java.util.Objects.requireNonNull(reader.nextEntry());
+            var input = readerEntry178.openInputStream();
             IOException exception = assertThrows(IOException.class, input::readAllBytes);
             assertEquals(true, exception.getMessage() != null && !exception.getMessage().isEmpty());
             assertThrows(IOException.class, input::close);
@@ -191,7 +185,7 @@ public final class RarLegacyEncryptionTest {
 
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 archivePath,
-                ArchiveOptions.fromEnvironment(passwordEnvironment(PASSWORD))
+                passwordOptions(PASSWORD)
         )) {
             assertArrayEquals(
                     "file1\r\n".getBytes(StandardCharsets.US_ASCII),
@@ -267,7 +261,7 @@ public final class RarLegacyEncryptionTest {
 
         try (RarArkivoFileSystem fileSystem = RarArkivoFileSystem.open(
                 ArkivoVolumeSource.of(List.of(firstVolume, secondVolume)),
-                ArchiveOptions.fromEnvironment(passwordEnvironment(PASSWORD))
+                passwordOptions(PASSWORD)
         )) {
             assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/FILE1.TXT")));
             assertArrayEquals(afterContent, Files.readAllBytes(fileSystem.getPath("/after.txt")));
@@ -427,12 +421,9 @@ public final class RarLegacyEncryptionTest {
         return crc32.getValue();
     }
 
-    /// Returns a fixed archive-level legacy password environment.
-    private static Map<String, Object> passwordEnvironment(byte[] password) {
-        return Map.of(
-                RarArkivoFileSystem.PASSWORD_PROVIDER.key(),
-                ArkivoPasswordProvider.fixed(password)
-        );
+    /// Returns read options with a fixed archive-level legacy password.
+    private static RarArchiveOptions.Read passwordOptions(byte[] password) {
+        return RarArchiveOptions.READ_DEFAULTS.withPasswordProvider(ArkivoPasswordProvider.fixed(password));
     }
 
     /// Stores one synthetic RAR4 physical file part.

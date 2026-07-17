@@ -3,9 +3,9 @@
 
 package org.glavo.arkivo.archive.tar;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveCreateOptions;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -19,7 +19,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
-import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -36,8 +35,8 @@ public final class TarIndexedStorageTest {
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
         TrackingEditStorage storage = new TrackingEditStorage(true);
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(archive, storage)) {
-            writer.beginFile("file.txt");
-            try (OutputStream output = writer.openOutputStream()) {
+            var writerEntry39 = writer.beginFile("file.txt");
+            try (OutputStream output = writerEntry39.openOutputStream()) {
                 output.write(expected);
             }
         }
@@ -46,8 +45,8 @@ public final class TarIndexedStorageTest {
         assertEquals(1, storage.closeCount());
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(archive.toByteArray()))) {
-            assertEquals(true, reader.next());
-            try (var input = reader.openInputStream()) {
+            var readerEntry49 = java.util.Objects.requireNonNull(reader.nextEntry());
+            try (var input = readerEntry49.openInputStream()) {
                 assertArrayEquals(expected, input.readAllBytes());
             }
         }
@@ -61,10 +60,12 @@ public final class TarIndexedStorageTest {
 
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(
                 archive,
-                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
+                TarArchiveOptions.CREATE_DEFAULTS.withCommon(
+                        ArchiveCreateOptions.DEFAULT.withEditStorage(storage)
+                )
         )) {
-            writer.beginFile("file.txt");
-            try (OutputStream output = writer.openOutputStream()) {
+            var writerEntry66 = writer.beginFile("file.txt");
+            try (OutputStream output = writerEntry66.openOutputStream()) {
                 output.write("environment-storage".getBytes(StandardCharsets.UTF_8));
             }
         }
@@ -73,6 +74,7 @@ public final class TarIndexedStorageTest {
         assertEquals(1, storage.contentCloseCount());
         assertEquals(1, storage.closeCount());
     }
+
     /// Verifies that a regular file and its hard link share one owned stored body.
     @Test
     public void hardLinksShareOneStoredBody() throws IOException {
@@ -81,7 +83,9 @@ public final class TarIndexedStorageTest {
         try {
             try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(
                     archivePath,
-                    ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
+                    TarArchiveOptions.READ_DEFAULTS.withCommon(
+                            ArchiveReadOptions.DEFAULT.withEditStorage(storage)
+                    )
             )) {
                 byte[] expected = "shared-content".getBytes(StandardCharsets.UTF_8);
                 assertArrayEquals(expected, Files.readAllBytes(fileSystem.getPath("/file.txt")));
@@ -102,7 +106,9 @@ public final class TarIndexedStorageTest {
         TrackingEditStorage storage = new TrackingEditStorage(true);
         TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(
                 archivePath,
-                ArchiveOptions.fromEnvironment(Map.of(ArkivoFileSystem.EDIT_STORAGE.key(), storage))
+                TarArchiveOptions.READ_DEFAULTS.withCommon(
+                        ArchiveReadOptions.DEFAULT.withEditStorage(storage)
+                )
         );
         try {
             IOException failure = assertThrows(IOException.class, fileSystem::close);
@@ -129,13 +135,13 @@ public final class TarIndexedStorageTest {
         Files.createDirectories(directory);
         Path archivePath = Files.createTempFile(directory, "indexed-storage-", ".tar");
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
-            writer.beginFile("file.txt");
-            try (OutputStream output = writer.openOutputStream()) {
+            var writerEntry132 = writer.beginFile("file.txt");
+            try (OutputStream output = writerEntry132.openOutputStream()) {
                 output.write("shared-content".getBytes(StandardCharsets.UTF_8));
             }
             if (includeHardLink) {
-                writer.beginHardLink("hard.txt", "file.txt");
-                writer.endEntry();
+                var writerEntry137 = writer.beginHardLink("hard.txt", "file.txt");
+                writerEntry137.close();
             }
         }
         return archivePath;

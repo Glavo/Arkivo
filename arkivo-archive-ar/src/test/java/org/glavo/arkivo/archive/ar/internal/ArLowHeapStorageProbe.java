@@ -3,9 +3,9 @@
 
 package org.glavo.arkivo.archive.ar.internal;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
+import org.glavo.arkivo.archive.ar.ArArchiveOptions;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.ar.ArArkivoFileSystem;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter;
@@ -20,7 +20,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -64,8 +63,8 @@ public final class ArLowHeapStorageProbe {
     private static void createArchive(Path archivePath) throws IOException {
         byte[] buffer = new byte[BUFFER_SIZE];
         try (ArArkivoStreamingWriter writer = ArArkivoStreamingWriter.create(archivePath)) {
-            writer.beginFile("large.bin");
-            try (OutputStream output = writer.openOutputStream()) {
+            var writerEntry67 = writer.beginFile("large.bin");
+            try (OutputStream output = writerEntry67.openOutputStream()) {
                 long remaining = ENTRY_SIZE;
                 while (remaining > 0L) {
                     int count = (int) Math.min(remaining, buffer.length);
@@ -78,13 +77,12 @@ public final class ArLowHeapStorageProbe {
 
     /// Expands and randomly modifies the large member through temporary-file indexed storage.
     private static void updateArchive(Path archivePath, Path storageDirectory) throws IOException {
-        Map<String, Object> environment = Map.of(
-                ArkivoFileSystem.OPEN_OPTIONS.key(),
-                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
-                ArkivoFileSystem.EDIT_STORAGE.key(),
-                ArkivoEditStorage.temporaryFiles(storageDirectory)
+        ArArchiveOptions.Update options = ArArchiveOptions.UPDATE_DEFAULTS.withCommon(
+                ArchiveUpdateOptions.DEFAULT.withEditStorage(
+                        ArkivoEditStorage.temporaryFiles(storageDirectory)
+                )
         );
-        try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment))) {
+        try (ArArkivoFileSystem fileSystem = ArArkivoFileSystem.update(archivePath, options)) {
             Path entry = fileSystem.getPath("/large.bin");
             ArArkivoEntryAttributeView attributes = Objects.requireNonNull(
                     Files.getFileAttributeView(entry, ArArkivoEntryAttributeView.class)

@@ -34,7 +34,7 @@ public final class SevenZipWritePasswordTest {
     public void decodesAndClearsPassword() throws IOException {
         String text = "p\u00e4ss-\u5bc6\u7801";
         byte[] suppliedBytes = text.getBytes(StandardCharsets.UTF_16LE);
-        SevenZipWritePassword password = SevenZipWritePassword.open(() -> suppliedBytes);
+        SevenZipWritePassword password = SevenZipWritePassword.open(request -> suppliedBytes);
         byte[] bytes = Objects.requireNonNull(password.bytes());
 
         assertArrayEquals(suppliedBytes, bytes);
@@ -71,11 +71,11 @@ public final class SevenZipWritePasswordTest {
         byte[] truncatedSurrogate = new byte[]{0, (byte) 0xd8};
         assertThrows(
                 IOException.class,
-                () -> SevenZipWritePassword.open(() -> oddLength)
+                () -> SevenZipWritePassword.open(request -> oddLength)
         );
         assertThrows(
                 IOException.class,
-                () -> SevenZipWritePassword.open(() -> truncatedSurrogate)
+                () -> SevenZipWritePassword.open(request -> truncatedSurrogate)
         );
         assertArrayEquals(new byte[oddLength.length], oddLength);
         assertArrayEquals(new byte[truncatedSurrogate.length], truncatedSurrogate);

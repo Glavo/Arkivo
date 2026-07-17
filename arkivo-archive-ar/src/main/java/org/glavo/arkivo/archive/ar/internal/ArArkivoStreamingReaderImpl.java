@@ -4,7 +4,8 @@
 package org.glavo.arkivo.archive.ar.internal;
 
 import org.glavo.arkivo.archive.ArchiveMetadataCharsetDetector;
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.internal.ArchiveOptions;
+import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.internal.ArkivoReadLimitTracker;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
@@ -32,6 +33,13 @@ import java.util.Objects;
 /// Implements the public forward-only AR streaming reader API.
 @NotNullByDefault
 public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
+    /// The internal NIO environment key for name detection.
+    private static final ArchiveOption<ArchiveMetadataCharsetDetector> METADATA_CHARSET_DETECTOR =
+            ArchiveOption.of(
+                    "arkivo.ar",
+                    "metadataCharsetDetector",
+                    ArchiveMetadataCharsetDetector.class
+            );
     /// The global AR archive signature.
     private static final byte @Unmodifiable [] GLOBAL_HEADER = "!<arch>\n".getBytes(StandardCharsets.US_ASCII);
 
@@ -84,7 +92,7 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
         ArchiveOptions checkedOptions = Objects.requireNonNull(options, "options");
         this.readLimits = ArkivoReadLimitTracker.fromOptions(checkedOptions);
         this.metadataCharsetDetector = checkedOptions.getOrDefault(
-                ArArkivoFileSystem.METADATA_CHARSET_DETECTOR,
+                METADATA_CHARSET_DETECTOR,
                 DEFAULT_METADATA_CHARSET_DETECTOR
         );
     }

@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.all;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecTransferResult;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
@@ -45,23 +45,23 @@ final class CodecFactoryTest {
     @Test
     void roundTripsEveryDefaultCodecByFormatName() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec<?> codec = format.defaultCodec();
+            CompressionCodec codec = format.defaultCodec();
             TrackingWritableChannel target = new TrackingWritableChannel();
             try (CompressingWritableByteChannel encoder = CompressionFormats.newWritableByteChannel(
                     codec.format().name(),
                     target,
-                    ChannelOwnership.CLOSE
+                    ResourceOwnership.OWNED
             )) {
                 writeAll(encoder, CONTENT);
             }
             assertFalse(target.isOpen(), codec.format().name());
 
             TrackingReadableChannel source = new TrackingReadableChannel(target.bytes());
-            CompressionCodec<?> decoderCodec =
+            CompressionCodec decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
             try (DecompressingReadableByteChannel decoder = decoderCodec.newReadableByteChannel(
                     source,
-                    ChannelOwnership.CLOSE
+                    ResourceOwnership.OWNED
             )) {
                 assertArrayEquals(CONTENT, readAll(decoder), codec.format().name());
             }
@@ -116,7 +116,7 @@ final class CodecFactoryTest {
         assertEquals(expected, signed);
 
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec<?> codec = format.defaultCodec();
+            CompressionCodec codec = format.defaultCodec();
             if (format.probeSize() == 0) {
                 continue;
             }
@@ -124,7 +124,7 @@ final class CodecFactoryTest {
             TrackingReadableChannel source = new TrackingReadableChannel(encoded);
             try (DecompressingReadableByteChannel decoder = CompressionFormats.newReadableByteChannel(
                     source,
-                    ChannelOwnership.CLOSE
+                    ResourceOwnership.OWNED
             )) {
                 assertArrayEquals(CONTENT, readAll(decoder), codec.format().name());
             }
@@ -136,7 +136,7 @@ final class CodecFactoryTest {
     @Test
     void transfersEveryDefaultCodecByFormatName() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec<?> codec = format.defaultCodec();
+            CompressionCodec codec = format.defaultCodec();
 
             TrackingReadableChannel source = new TrackingReadableChannel(CONTENT);
             TrackingWritableChannel compressed = new TrackingWritableChannel();
@@ -152,7 +152,7 @@ final class CodecFactoryTest {
 
             TrackingReadableChannel encoded = new TrackingReadableChannel(compressed.bytes());
             TrackingWritableChannel decoded = new TrackingWritableChannel();
-            CompressionCodec<?> decoderCodec =
+            CompressionCodec decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
             CodecTransferResult decompression = decoderCodec.decompress(encoded, decoded);
             if (CodecContractConfigurations.requiresDecoderConfiguration(codec)) {
@@ -192,24 +192,24 @@ final class CodecFactoryTest {
     @Test
     void opensNamedAndDetectedStreamAdapters() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec<?> codec = format.defaultCodec();
+            CompressionCodec codec = format.defaultCodec();
 
             TrackingOutputStream compressed = new TrackingOutputStream();
             try (OutputStream output = CompressionFormats.newOutputStream(
                     codec.format().name(),
                     compressed,
-                    ChannelOwnership.CLOSE
+                    ResourceOwnership.OWNED
             )) {
                 output.write(CONTENT);
             }
             assertTrue(compressed.closed(), codec.format().name());
 
             TrackingInputStream encoded = new TrackingInputStream(compressed.bytes());
-            CompressionCodec<?> decoderCodec =
+            CompressionCodec decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
             try (InputStream input = decoderCodec.newInputStream(
                     encoded,
-                    ChannelOwnership.CLOSE
+                    ResourceOwnership.OWNED
             )) {
                 assertArrayEquals(CONTENT, input.readAllBytes(), codec.format().name());
             }
@@ -219,7 +219,7 @@ final class CodecFactoryTest {
                 TrackingInputStream detectedSource = new TrackingInputStream(compressed.bytes());
                 try (InputStream input = CompressionFormats.newInputStream(
                         detectedSource,
-                        ChannelOwnership.CLOSE
+                        ResourceOwnership.OWNED
                 )) {
                     assertArrayEquals(CONTENT, input.readAllBytes(), codec.format().name());
                 }
@@ -233,7 +233,7 @@ final class CodecFactoryTest {
                 () -> CompressionFormats.newOutputStream(
                         "missing",
                         unknownTarget,
-                        ChannelOwnership.CLOSE
+                        ResourceOwnership.OWNED
                 )
         );
         assertTrue(unknownTarget.closed());
@@ -244,7 +244,7 @@ final class CodecFactoryTest {
                 () -> CompressionFormats.newInputStream(
                         "missing",
                         unknownSource,
-                        ChannelOwnership.CLOSE
+                        ResourceOwnership.OWNED
                 )
         );
         assertTrue(unknownSource.closed());
@@ -254,7 +254,7 @@ final class CodecFactoryTest {
                 IOException.class,
                 () -> CompressionFormats.newInputStream(
                         unrecognizedSource,
-                        ChannelOwnership.CLOSE
+                        ResourceOwnership.OWNED
                 )
         );
         assertTrue(unrecognizedSource.closed());
@@ -277,7 +277,7 @@ final class CodecFactoryTest {
                 () -> CompressionFormats.newWritableByteChannel(
                         "missing",
                         ownedTarget,
-                        ChannelOwnership.CLOSE
+                        ResourceOwnership.OWNED
                 )
         );
         assertFalse(ownedTarget.isOpen());
@@ -293,7 +293,7 @@ final class CodecFactoryTest {
         TrackingReadableChannel ownedSource = new TrackingReadableChannel(new byte[]{1, 2, 3, 4});
         assertThrows(
                 IOException.class,
-                () -> CompressionFormats.newReadableByteChannel(ownedSource, ChannelOwnership.CLOSE)
+                () -> CompressionFormats.newReadableByteChannel(ownedSource, ResourceOwnership.OWNED)
         );
         assertFalse(ownedSource.isOpen());
 
@@ -310,7 +310,7 @@ final class CodecFactoryTest {
                 () -> CompressionFormats.newReadableByteChannel(
                         "ppmd",
                         source,
-                        ChannelOwnership.CLOSE
+                        ResourceOwnership.OWNED
                 )
         );
         assertFalse(source.isOpen());
@@ -321,7 +321,7 @@ final class CodecFactoryTest {
                 () -> CompressionFormats.newWritableByteChannel(
                         "missing",
                         failing,
-                        ChannelOwnership.CLOSE
+                        ResourceOwnership.OWNED
                 )
         );
         assertEquals(1, failing.closeCount());
@@ -335,7 +335,7 @@ final class CodecFactoryTest {
         try (CompressingWritableByteChannel encoder = CompressionFormats.newWritableByteChannel(
                 formatName,
                 target,
-                ChannelOwnership.CLOSE
+                ResourceOwnership.OWNED
         )) {
             writeAll(encoder, CONTENT);
         }

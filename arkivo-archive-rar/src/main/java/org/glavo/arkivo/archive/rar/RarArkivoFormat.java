@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.archive.rar;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArkivoPathVolumeFormat;
 import org.glavo.arkivo.archive.ArkivoVolumeFileSystemFormat;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
@@ -35,8 +35,13 @@ public final class RarArkivoFormat implements
     /// The shared RAR format instance.
     private static final RarArkivoFormat INSTANCE = new RarArkivoFormat();
 
-    /// Creates a RAR format descriptor.
+    /// Creates a classpath-discoverable RAR format descriptor.
     public RarArkivoFormat() {
+    }
+
+    /// Returns the canonical RAR service provider.
+    public static RarArkivoFormat provider() {
+        return INSTANCE;
     }
 
     /// Returns the shared RAR format descriptor.
@@ -96,8 +101,8 @@ public final class RarArkivoFormat implements
 
     /// Opens a RAR archive file system with options.
     @Override
-    public RarArkivoFileSystem open(Path path, ArchiveOptions options) throws IOException {
-        return RarArkivoFileSystem.open(path, options);
+    public RarArkivoFileSystem open(Path path, ArchiveReadOptions options) throws IOException {
+        return RarArkivoFileSystem.open(path, readOptions(options));
     }
 
     /// Opens a read-only RAR archive file system directly from one owned seekable channel.
@@ -108,8 +113,8 @@ public final class RarArkivoFormat implements
 
     /// Opens a read-only RAR archive file system directly from one owned seekable channel with options.
     @Override
-    public RarArkivoFileSystem open(SeekableByteChannel source, ArchiveOptions options) throws IOException {
-        return RarArkivoFileSystem.open(source, options);
+    public RarArkivoFileSystem open(SeekableByteChannel source, ArchiveReadOptions options) throws IOException {
+        return RarArkivoFileSystem.open(source, readOptions(options));
     }
 
     /// Opens a read-only RAR archive file system from a repeatable seekable channel source.
@@ -124,8 +129,8 @@ public final class RarArkivoFormat implements
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
     @Override
-    public RarArkivoFileSystem open(ArkivoSeekableChannelSource source, ArchiveOptions options) throws IOException {
-        return RarArkivoFileSystem.open(source, options);
+    public RarArkivoFileSystem open(ArkivoSeekableChannelSource source, ArchiveReadOptions options) throws IOException {
+        return RarArkivoFileSystem.open(source, readOptions(options));
     }
 
     /// Opens a multi-volume RAR archive file system.
@@ -136,8 +141,8 @@ public final class RarArkivoFormat implements
 
     /// Opens a multi-volume RAR archive file system with options.
     @Override
-    public RarArkivoFileSystem open(ArkivoVolumeSource volumes, ArchiveOptions options) throws IOException {
-        return RarArkivoFileSystem.open(volumes, options);
+    public RarArkivoFileSystem open(ArkivoVolumeSource volumes, ArchiveReadOptions options) throws IOException {
+        return RarArkivoFileSystem.open(volumes, readOptions(options));
     }
 
     /// Opens a streaming RAR reader from a path and discovers conventional split storage.
@@ -150,9 +155,9 @@ public final class RarArkivoFormat implements
     @Override
     public RarArkivoStreamingReader openStreamingReader(
             Path path,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) throws IOException {
-        return RarArkivoStreamingReader.open(path, options);
+        return RarArkivoStreamingReader.open(path, readOptions(options));
     }
 
     /// Opens a streaming RAR reader from a multi-volume source.
@@ -165,9 +170,9 @@ public final class RarArkivoFormat implements
     @Override
     public RarArkivoStreamingReader openStreamingReader(
             ArkivoVolumeSource source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) {
-        return RarArkivoStreamingReader.open(source, options);
+        return RarArkivoStreamingReader.open(source, readOptions(options));
     }
 
     /// Opens a streaming RAR reader from an input stream.
@@ -180,10 +185,10 @@ public final class RarArkivoFormat implements
     @Override
     public RarArkivoStreamingReader openStreamingReader(
             InputStream source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) {
         Objects.requireNonNull(options, "options");
-        return RarArkivoStreamingReader.open(source, options);
+        return RarArkivoStreamingReader.open(source, readOptions(options));
     }
 
     /// Opens a streaming RAR reader from a readable channel.
@@ -196,9 +201,18 @@ public final class RarArkivoFormat implements
     @Override
     public RarArkivoStreamingReader openStreamingReader(
             ReadableByteChannel source,
-            ArchiveOptions options
+            ArchiveReadOptions options
     ) {
         Objects.requireNonNull(options, "options");
-        return RarArkivoStreamingReader.open(source, options);
+        return RarArkivoStreamingReader.open(source, readOptions(options));
+    }
+
+    /// Applies RAR defaults to format-independent read options.
+    private static RarArchiveOptions.Read readOptions(ArchiveReadOptions options) {
+        return new RarArchiveOptions.Read(
+                options,
+                null,
+                RarArchiveOptions.DEFAULT_LEGACY_CHARSET_DETECTOR
+        );
     }
 }

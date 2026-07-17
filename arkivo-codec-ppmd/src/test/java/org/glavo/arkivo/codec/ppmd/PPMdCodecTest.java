@@ -3,12 +3,13 @@
 
 package org.glavo.arkivo.codec.ppmd;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecTransferResult;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -132,7 +133,7 @@ final class PPMdCodecTest {
 
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         WritableByteChannel ownedTarget = Channels.newChannel(encoded);
-        try (var encoder = modelCodec().newWritableByteChannel(ownedTarget, ChannelOwnership.CLOSE)) {
+        try (var encoder = modelCodec().newWritableByteChannel(ownedTarget, ResourceOwnership.OWNED)) {
             encoder.write(ByteBuffer.wrap(new byte[]{1, 2, 3, 4}));
             assertEquals(4L, encoder.inputBytes());
         }
@@ -147,7 +148,7 @@ final class PPMdCodecTest {
         ReadableByteChannel missingOptions = Channels.newChannel(new ByteArrayInputStream(new byte[0]));
         assertThrows(
                 IllegalStateException.class,
-                () -> codec.newReadableByteChannel(missingOptions, ChannelOwnership.RETAIN)
+                () -> codec.newReadableByteChannel(missingOptions, ResourceOwnership.BORROWED)
         );
 
         ByteBuffer singleByteFrame = modelCodec().compress(ByteBuffer.wrap(new byte[]{1}));
@@ -156,7 +157,7 @@ final class PPMdCodecTest {
         try (DecompressingReadableByteChannel limitedDecoder = decoderCodec(1L).newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(singleByteFrameBytes)),
                 DecompressionLimits.ofMaximumOutputSize(0L),
-                ChannelOwnership.RETAIN
+                ResourceOwnership.BORROWED
         )) {
             assertThrows(
                     DecompressionLimitException.class,
@@ -167,13 +168,29 @@ final class PPMdCodecTest {
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(new byte[5]));
         try (DecompressingReadableByteChannel decoder = decoderCodec(0L).newReadableByteChannel(
                 source,
-                ChannelOwnership.CLOSE
+                ResourceOwnership.OWNED
         )) {
             assertEquals(-1, decoder.read(ByteBuffer.allocateDirect(1)));
             assertEquals(5L, decoder.inputBytes());
             assertEquals(0L, decoder.outputBytes());
         }
         assertFalse(source.isOpen());
+    }
+
+    /// Rejects a configured PPMd model arena that exceeds the operation memory limit.
+    @Test
+    void enforcesModelMemoryLimit() {
+        PPMdCodec codec = decoderCodec(0L);
+        long maximumMemorySize = codec.memorySize() - 1L;
+
+        DecompressionMemoryLimitException exception = assertThrows(
+                DecompressionMemoryLimitException.class,
+                () -> codec.newDecoder(DecompressionLimits.ofMaximumMemorySize(maximumMemorySize))
+        );
+
+        assertEquals(maximumMemorySize, exception.maximumMemorySize());
+        assertEquals(codec.memorySize(), exception.requiredMemorySize());
+        assertEquals(DecompressionLimitException.Kind.MEMORY_SIZE, exception.kind());
     }
 
     /// Creates a valid raw PPMd7 configuration for the given exact decoded size.

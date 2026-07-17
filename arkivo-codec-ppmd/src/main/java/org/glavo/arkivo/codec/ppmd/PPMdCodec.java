@@ -6,8 +6,8 @@ package org.glavo.arkivo.codec.ppmd;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7Decoder;
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7Encoder;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -17,7 +17,7 @@ import java.util.Objects;
 
 /// Provides an immutable raw PPMd7 configuration with externally declared model parameters and decoded size.
 @NotNullByDefault
-public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
+public final class PPMdCodec implements CompressionCodec {
     /// The default maximum context order used for compression.
     public static final int DEFAULT_MAXIMUM_ORDER = 6;
 
@@ -113,6 +113,7 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
                     "Raw PPMd decompression requires an externally declared decoded size"
             );
         }
+        limits.requireMemorySize(memorySize);
         long maximumOutputSize = limits.maximumOutputSize();
         if (maximumOutputSize >= 0L && decodedSize > maximumOutputSize) {
             throw new DecompressionOutputLimitException(maximumOutputSize);

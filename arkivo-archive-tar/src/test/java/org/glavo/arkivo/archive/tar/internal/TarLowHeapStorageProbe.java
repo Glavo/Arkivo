@@ -3,9 +3,9 @@
 
 package org.glavo.arkivo.archive.tar.internal;
 
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.ArchiveUpdateOptions;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
+import org.glavo.arkivo.archive.tar.TarArchiveOptions;
 import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -19,7 +19,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.util.Map;
 import java.util.Set;
 
 /// Verifies that indexed TAR reads and complete updates keep large entry bodies outside the Java heap.
@@ -59,8 +58,8 @@ public final class TarLowHeapStorageProbe {
     private static void createArchive(Path archivePath) throws IOException {
         byte[] buffer = new byte[BUFFER_SIZE];
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.create(archivePath)) {
-            writer.beginFile("large.bin");
-            try (OutputStream output = writer.openOutputStream()) {
+            var writerEntry62 = writer.beginFile("large.bin");
+            try (OutputStream output = writerEntry62.openOutputStream()) {
                 long remaining = ENTRY_SIZE;
                 while (remaining > 0L) {
                     int count = (int) Math.min(remaining, buffer.length);
@@ -73,13 +72,10 @@ public final class TarLowHeapStorageProbe {
 
     /// Randomly modifies the large entry through temporary-file storage and commits a complete rewrite.
     private static void updateArchive(Path archivePath, Path storageDirectory) throws IOException {
-        Map<String, Object> environment = Map.of(
-                ArkivoFileSystem.OPEN_OPTIONS.key(),
-                Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE),
-                ArkivoFileSystem.EDIT_STORAGE.key(),
-                ArkivoEditStorage.temporaryFiles(storageDirectory)
+        TarArchiveOptions.Update options = TarArchiveOptions.UPDATE_DEFAULTS.withCommon(
+                ArchiveUpdateOptions.DEFAULT.withEditStorage(ArkivoEditStorage.temporaryFiles(storageDirectory))
         );
-        try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.open(archivePath, ArchiveOptions.fromEnvironment(environment));
+        try (TarArkivoFileSystem fileSystem = TarArkivoFileSystem.update(archivePath, options);
              SeekableByteChannel channel = Files.newByteChannel(
                      fileSystem.getPath("/large.bin"),
                      Set.of(StandardOpenOption.READ, StandardOpenOption.WRITE)

@@ -27,7 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @NotNullByDefault
 final class CompressionChannelContextTest {
     /// The identity codec used to isolate generic channel behavior.
-    private static final CompressionCodec.FlushableFramed<IdentityCodec> CODEC = new IdentityCodec();
+    private static final CompressionCodec.FlushableFramed CODEC = new IdentityCodec();
 
     /// Verifies explicit flush and frame operations with retained target ownership.
     @Test
@@ -73,7 +73,7 @@ final class CompressionChannelContextTest {
         WritableByteChannel target = Channels.newChannel(new ByteArrayOutputStream());
         try (CompressingWritableByteChannel.Framed encoder = CODEC.newWritableByteChannel(
                 target,
-                ChannelOwnership.CLOSE
+                ResourceOwnership.OWNED
         )) {
             encoder.finishFrame(ByteBuffer.wrap(new byte[]{1}));
         }
@@ -82,7 +82,7 @@ final class CompressionChannelContextTest {
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(new byte[]{1}));
         try (DecompressingReadableByteChannel decoder = CODEC.newReadableByteChannel(
                 source,
-                ChannelOwnership.CLOSE
+                ResourceOwnership.OWNED
         )) {
             decoder.decode(ByteBuffer.allocate(1));
         }
@@ -95,7 +95,7 @@ final class CompressionChannelContextTest {
         FailingCloseWritableChannel target = new FailingCloseWritableChannel();
         CompressingWritableByteChannel encoder = CODEC.newWritableByteChannel(
                 target,
-                ChannelOwnership.CLOSE
+                ResourceOwnership.OWNED
         );
         encoder.write(ByteBuffer.wrap(new byte[]{1, 2, 3}));
         assertThrows(IOException.class, encoder::finish);
@@ -109,7 +109,7 @@ final class CompressionChannelContextTest {
         FailingCloseReadableChannel source = new FailingCloseReadableChannel(new byte[]{4, 5, 6});
         DecompressingReadableByteChannel decoder = CODEC.newReadableByteChannel(
                 source,
-                ChannelOwnership.CLOSE
+                ResourceOwnership.OWNED
         );
         assertThrows(IOException.class, decoder::close);
         assertFalse(decoder.isOpen());
@@ -151,7 +151,7 @@ final class CompressionChannelContextTest {
         assertFalse(CODEC instanceof CompressionCodec.LevelConfigurable<?>);
         assertFalse(CODEC instanceof CompressionCodec.StrategyConfigurable<?>);
         assertFalse(CODEC instanceof CompressionCodec.DictionaryConfigurable<?, ?>);
-        assertFalse(CODEC instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?, ?>);
+        assertFalse(CODEC instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?>);
     }
 
     /// Implements a writable byte-array channel that fails its first close attempt.
@@ -244,7 +244,7 @@ final class CompressionChannelContextTest {
     /// Implements transport-independent identity coding for generic channel tests.
     @NotNullByDefault
     private static final class IdentityCodec
-            implements CompressionCodec.FlushableFramed<IdentityCodec>, CompressionFormat {
+            implements CompressionCodec.FlushableFramed, CompressionFormat {
         /// Creates an identity codec.
         private IdentityCodec() {
         }
@@ -263,7 +263,7 @@ final class CompressionChannelContextTest {
 
         /// Returns this test object as the default codec configuration.
         @Override
-        public CompressionCodec<?> defaultCodec() {
+        public CompressionCodec defaultCodec() {
             return this;
         }
 
@@ -332,7 +332,18 @@ final class CompressionChannelContextTest {
     private static final class IdentityDecoder implements CompressionDecoder.Framed {
         /// Copies available source bytes and finishes at physical input end.
         @Override
-        public CodecOutcome decode(ByteBuffer source, ByteBuffer target, boolean endOfInput) {
+        public CodecOutcome decode(ByteBuffer source, ByteBuffer target) {
+            return decodeInternal(source, target, false);
+        }
+
+        /// Finishes decoding after all source bytes have been supplied.
+        @Override
+        public CodecOutcome finish(ByteBuffer source, ByteBuffer target) {
+            return decodeInternal(source, target, true);
+        }
+
+        /// Implements decoding with the selected source-completion state.
+        private CodecOutcome decodeInternal(ByteBuffer source, ByteBuffer target, boolean endOfInput) {
             int count = Math.min(source.remaining(), target.remaining());
             ByteBuffer chunk = source.slice();
             chunk.limit(count);

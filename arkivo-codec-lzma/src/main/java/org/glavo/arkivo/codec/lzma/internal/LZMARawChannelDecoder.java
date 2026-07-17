@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.lzma.internal;
 
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
@@ -40,7 +40,7 @@ public final class LZMARawChannelDecoder implements DecompressingReadableByteCha
     /// Creates a raw LZMA decoder with explicit model and output-size parameters.
     public LZMARawChannelDecoder(
             ReadableByteChannel source,
-            ChannelOwnership ownership,
+            ResourceOwnership ownership,
             LZMAProperties properties,
             long expectedSize,
             long maximumWindowSize

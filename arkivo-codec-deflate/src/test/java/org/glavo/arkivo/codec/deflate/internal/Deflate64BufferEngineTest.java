@@ -205,7 +205,9 @@ final class Deflate64BufferEngineTest {
                 ByteBuffer source = directBuffer(input, offset, offered);
                 ByteBuffer target = ByteBuffer.allocateDirect(targetChunkSize);
                 boolean finalSource = endOfInput && offset + offered == input.length;
-                CodecOutcome outcome = decoder.decode(source, target, finalSource);
+                CodecOutcome outcome = finalSource
+                        ? decoder.finish(source, target)
+                        : decoder.decode(source, target);
                 offset += source.position();
                 drain(target, output);
 

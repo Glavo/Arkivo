@@ -3,12 +3,17 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.PasswordPurpose;
+import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -61,7 +66,8 @@ public final class SevenZipLZMADecoderTest {
             SevenZipLZMADecoder.openZstandard(
                     new ByteArrayInputStream(new byte[0]),
                     new byte[propertyLength],
-                    0
+                    0,
+                    ArchiveReadLimits.UNLIMITED
             ).close();
         }
     }
@@ -74,10 +80,58 @@ public final class SevenZipLZMADecoderTest {
                 () -> SevenZipLZMADecoder.openZstandard(
                         new ByteArrayInputStream(new byte[0]),
                         new byte[2],
-                        0
+                        0,
+                        ArchiveReadLimits.UNLIMITED
                 )
         );
         assertTrue(exception.getMessage().contains("zero, one, three, or five bytes"));
+    }
+
+    /// Verifies 7z coder output, window, and memory bounds are combined without losing either archive limit.
+    @Test
+    public void combinesCodecDecompressionLimits() {
+        ArchiveReadLimits readLimits = ArchiveReadLimits.builder()
+                .maximumCompressionWindowSize(8_192L)
+                .maximumDecoderMemorySize(4_096L)
+                .build();
+
+        DecompressionLimits limits = SevenZipCompressionFormats.decompressionLimits(123L, readLimits);
+
+        assertEquals(123L, limits.maximumOutputSize());
+        assertEquals(8_192L, limits.maximumWindowSize());
+        assertEquals(4_096L, limits.maximumMemorySize());
+        assertEquals(4_096L, limits.effectiveMaximumWindowSize());
+    }
+
+    /// Verifies folder decoding rejects PPMd model memory above the archive decoder-memory ceiling.
+    @Test
+    public void folderGraphEnforcesPpmdMemoryLimit() {
+        byte[] properties = {4, 0, 8, 0, 0};
+        SevenZipFolderMethod method = SevenZipFolderMethod.single(
+                SevenZipLZMADecoder.PPMD_METHOD_ID,
+                properties,
+                0L
+        );
+        ArchiveReadLimits readLimits = ArchiveReadLimits.builder()
+                .maximumDecoderMemorySize((1L << 11) - 1L)
+                .build();
+
+        DecompressionMemoryLimitException exception = assertThrows(
+                DecompressionMemoryLimitException.class,
+                () -> SevenZipLZMADecoder.openFolder(
+                        List.of(new ByteArrayInputStream(new byte[0])),
+                        new long[]{0L},
+                        method,
+                        0L,
+                        null,
+                        PasswordPurpose.ARCHIVE_CONTENT,
+                        null,
+                        readLimits
+                )
+        );
+
+        assertEquals((1L << 11) - 1L, exception.maximumMemorySize());
+        assertEquals(1L << 11, exception.requiredMemorySize());
     }
 
     /// Verifies that decoder setup failures are not replaced by cleanup failures.

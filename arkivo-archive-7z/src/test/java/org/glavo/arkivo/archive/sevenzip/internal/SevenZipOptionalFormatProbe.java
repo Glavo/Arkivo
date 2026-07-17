@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
+import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 
@@ -31,7 +32,8 @@ public final class SevenZipOptionalFormatProbe {
             requireMissingFormat(formatName, () -> SevenZipCompressionFormats.newInputStream(
                     formatName,
                     new ByteArrayInputStream(new byte[0]),
-                    0L
+                    0L,
+                    ArchiveReadLimits.UNLIMITED
             ));
             requireMissingFormat(formatName, () -> SevenZipCompressionFormats.newOutputStream(
                     formatName,
@@ -43,7 +45,8 @@ public final class SevenZipOptionalFormatProbe {
                 new ByteArrayInputStream(new byte[0]),
                 4,
                 1L << 20,
-                0L
+                0L,
+                ArchiveReadLimits.UNLIMITED
         ));
         requireMissingFormat("ppmd", () -> SevenZipCompressionFormats.openPpmdEncoder(
                 4,
@@ -54,7 +57,8 @@ public final class SevenZipOptionalFormatProbe {
                 new ByteArrayInputStream(new byte[0]),
                 0x5d,
                 1L << 20,
-                0L
+                0L,
+                ArchiveReadLimits.UNLIMITED
         ));
         requireMissingFormat("lzma-raw", () -> SevenZipCompressionFormats.openRawLZMAEncoder(
                 1L << 20,
@@ -64,7 +68,8 @@ public final class SevenZipOptionalFormatProbe {
         requireMissingFormat("lzma2", () -> SevenZipCompressionFormats.openLZMA2Decoder(
                 new ByteArrayInputStream(new byte[0]),
                 1L << 20,
-                0L
+                0L,
+                ArchiveReadLimits.UNLIMITED
         ));
         requireMissingFormat("lzma2", () -> SevenZipCompressionFormats.openLZMA2Encoder(
                 1L << 20,

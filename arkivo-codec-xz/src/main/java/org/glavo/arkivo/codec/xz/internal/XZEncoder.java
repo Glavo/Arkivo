@@ -3,7 +3,7 @@
 
 package org.glavo.arkivo.codec.xz.internal;
 
-import org.glavo.arkivo.codec.ChannelOwnership;
+import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
@@ -184,7 +184,7 @@ public final class XZEncoder implements CompressionEncoder.FlushableFramed {
     private XZChannelEncoder createWriter() throws IOException {
         return new XZChannelEncoder(
                 output,
-                ChannelOwnership.RETAIN,
+                ResourceOwnership.BORROWED,
                 properties,
                 checkType,
                 filterChain,

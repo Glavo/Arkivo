@@ -4,13 +4,16 @@
 package org.glavo.arkivo.archive.ar.internal;
 
 import org.glavo.arkivo.archive.ArkivoCommitOutput;
-import org.glavo.arkivo.archive.ArchiveOptions;
+import org.glavo.arkivo.archive.internal.ArchiveOptions;
+import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
 import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
+import org.glavo.arkivo.archive.ArkivoStreamingReader;
+import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
 import org.glavo.arkivo.archive.ar.ArArkivoFileSystem;
@@ -223,15 +226,12 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
             Runnable closeAction
     ) throws IOException {
         Objects.requireNonNull(options, "options");
-        ArkivoFileSystemThreadSafety threadSafety = options.getOrDefault(ArkivoFileSystem.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
+        ArkivoFileSystemThreadSafety threadSafety = options.getOrDefault(ArchiveEnvironmentOptions.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
         );
-        Set<OpenOption> openOptions = options.getOrDefault(ArkivoFileSystem.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
+        Set<OpenOption> openOptions = options.getOrDefault(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
         );
         if (isArchiveUpdateOpen(openOptions)) {
             validateArchiveUpdateOptions(openOptions);
-            if (options.contains(ArkivoFileSystem.SOURCE_MUTATION_POLICY)) {
-                throw new UnsupportedOperationException("AR update mode always performs a complete archive rewrite");
-            }
             ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(options);
             Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
             try {
@@ -246,7 +246,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
                 } else {
                     throw new NoSuchFileException(archivePath.toString());
                 }
-                @Nullable ArkivoCommitTarget commitTarget = options.get(ArkivoFileSystem.COMMIT_TARGET);
+                @Nullable ArkivoCommitTarget commitTarget = options.get(ArchiveEnvironmentOptions.COMMIT_TARGET);
                 if (commitTarget == null) {
                     commitTarget = ArkivoCommitTarget.atomicReplace(defaultCommitDirectory(archivePath));
                 }
@@ -275,7 +275,7 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
         if (isWriteArchiveOpen(openOptions)) {
             validateArchiveWriteOptions(openOptions);
-            if (options.get(ArkivoFileSystem.COMMIT_TARGET) != null) {
+            if (options.get(ArchiveEnvironmentOptions.COMMIT_TARGET) != null) {
                 throw new UnsupportedOperationException("AR archive writes do not support commit targets");
             }
             OutputStream output = Files.newOutputStream(archivePath, openOptions.toArray(OpenOption[]::new));
@@ -342,20 +342,17 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         boolean updateMode;
         @Nullable ArkivoCommitTarget commitTarget;
         try {
-            threadSafety = options.getOrDefault(ArkivoFileSystem.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
+            threadSafety = options.getOrDefault(ArchiveEnvironmentOptions.THREAD_SAFETY, ArkivoFileSystemThreadSafety.CONCURRENT_READ
             );
-            Set<OpenOption> openOptions = options.getOrDefault(ArkivoFileSystem.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
+            Set<OpenOption> openOptions = options.getOrDefault(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
             );
             updateMode = isArchiveUpdateOpen(openOptions);
             if (updateMode) {
                 validateArchiveUpdateOptions(openOptions);
-                if (options.contains(ArkivoFileSystem.SOURCE_MUTATION_POLICY)) {
-                    throw new UnsupportedOperationException("AR update mode always performs a complete archive rewrite");
-                }
-                commitTarget = options.get(ArkivoFileSystem.COMMIT_TARGET);
+                commitTarget = options.get(ArchiveEnvironmentOptions.COMMIT_TARGET);
                 if (commitTarget == null) {
                     throw new IllegalArgumentException(
-                            "AR channel-source update mode requires ArkivoFileSystem.COMMIT_TARGET"
+                            "AR channel-source update mode requires an explicit commit target"
                     );
                 }
             } else {
@@ -671,9 +668,9 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         int mode = initialMode(false, false, attributes);
         String entryPath = prepareWritableEntry(path, false);
         ArArkivoStreamingWriter currentWriter = requireWriter();
-        currentWriter.beginFile(entryPath);
-        applyInitialMode(currentWriter, mode);
-        return new WrittenEntryOutputStream(currentWriter.openOutputStream(), entryPath);
+        ArkivoStreamingWriter.Entry entry = currentWriter.beginFile(entryPath);
+        applyInitialMode(entry, mode);
+        return new WrittenEntryOutputStream(entry.openOutputStream(), entryPath);
     }
 
     /// Creates a new directory member in a writable archive.
@@ -702,9 +699,9 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
         String entryPath = prepareWritableEntry(directory, true);
         ArArkivoStreamingWriter currentWriter = requireWriter();
-        currentWriter.beginDirectory(entryPath);
-        applyInitialMode(currentWriter, mode);
-        currentWriter.endEntry();
+        try (ArkivoStreamingWriter.Entry entry = currentWriter.beginDirectory(entryPath)) {
+            applyInitialMode(entry, mode);
+        }
         recordWrittenEntry(entryPath, true);
     }
 
@@ -741,9 +738,9 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         }
         String entryPath = prepareWritableEntry(link, false);
         ArArkivoStreamingWriter currentWriter = requireWriter();
-        currentWriter.beginSymbolicLink(entryPath, targetText);
-        applyInitialMode(currentWriter, mode);
-        currentWriter.endEntry();
+        try (ArkivoStreamingWriter.Entry entry = currentWriter.beginSymbolicLink(entryPath, targetText)) {
+            applyInitialMode(entry, mode);
+        }
         recordWrittenEntry(entryPath, false);
     }
 
@@ -1295,11 +1292,11 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Applies a supported initial mode to the current pending AR writer member.
-    private static void applyInitialMode(ArArkivoStreamingWriter writer, int mode) throws IOException {
+    private static void applyInitialMode(ArkivoStreamingWriter.Entry entry, int mode) throws IOException {
         if (mode == UNKNOWN_MODE) {
             return;
         }
-        ArArkivoEntryAttributeView view = writer.attributeView(ArArkivoEntryAttributeView.class);
+        ArArkivoEntryAttributeView view = entry.attributeView(ArArkivoEntryAttributeView.class);
         if (view == null) {
             throw new UnsupportedOperationException("AR writer does not expose AR member attributes");
         }
@@ -2141,26 +2138,32 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         Node root = new Node("", syntheticDirectoryAttributes("/"), true, null, true);
         nodes.put("", root);
 
-        try (ArArkivoStreamingReader reader = ArArkivoStreamingReader.open(input, options)) {
-            while (reader.next()) {
-                ArArkivoEntryAttributes attributes = reader.readAttributes(ArArkivoEntryAttributes.class);
-                String path = normalizeEntryPath(attributes.path());
-                ensureParents(nodes, path);
-                @Nullable ArkivoStoredContent content = null;
-                if (attributes.size() > 0L) {
-                    try (InputStream entryInput = reader.openInputStream()) {
-                        content = StoredContentSupport.storeInput(
-                                editStorage,
-                                ownedContents,
-                                path,
-                                attributes.size(),
-                                entryInput
-                        );
-                    }
+        try (ArArkivoStreamingReader reader = new ArArkivoStreamingReaderImpl(input, options)) {
+            while (true) {
+                @Nullable ArkivoStreamingReader.Entry entry = reader.nextEntry();
+                if (entry == null) {
+                    break;
                 }
-                long contentSize = content != null ? content.size() : 0L;
-                ArArkivoEntryAttributes nodeAttributes = copyAttributes(attributes, path, contentSize);
-                putNode(nodes, new Node(path, nodeAttributes, nodeAttributes.isDirectory(), content, false));
+                try (entry) {
+                    ArArkivoEntryAttributes attributes = entry.attributes(ArArkivoEntryAttributes.class);
+                    String path = normalizeEntryPath(attributes.path());
+                    ensureParents(nodes, path);
+                    @Nullable ArkivoStoredContent content = null;
+                    if (attributes.size() > 0L) {
+                        try (InputStream entryInput = entry.openInputStream()) {
+                            content = StoredContentSupport.storeInput(
+                                    editStorage,
+                                    ownedContents,
+                                    path,
+                                    attributes.size(),
+                                    entryInput
+                            );
+                        }
+                    }
+                    long contentSize = content != null ? content.size() : 0L;
+                    ArArkivoEntryAttributes nodeAttributes = copyAttributes(attributes, path, contentSize);
+                    putNode(nodes, new Node(path, nodeAttributes, nodeAttributes.isDirectory(), content, false));
+                }
             }
         }
         return nodes;
