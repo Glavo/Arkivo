@@ -7,11 +7,9 @@ import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoPasswordProvider;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
-import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoVolumeSource;
 import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
 import org.glavo.arkivo.archive.internal.ArkivoFileSystemProviderSupport;
@@ -20,7 +18,6 @@ import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.rar.RarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.rar.RarArkivoFileSystem;
-import org.glavo.arkivo.archive.rar.internal.RarArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.rar.RarArkivoStreamingReader;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -839,35 +836,29 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                      false
             )) {
             RarArkivoStreamingReaderImpl readerImpl = (RarArkivoStreamingReaderImpl) reader;
-            while (true) {
-                @Nullable ArkivoStreamingReader.Entry entry = reader.nextEntry();
-                if (entry == null) {
-                    break;
+            while (reader.next()) {
+                RarEntryAttributes attributes =
+                        (RarEntryAttributes) reader.readAttributes(RarArkivoEntryAttributes.class);
+                String path = normalizeEntryPath(attributes.path());
+                if (!node.path().equals(path)) {
+                    continue;
                 }
-                try (entry) {
-                    RarEntryAttributes attributes =
-                            (RarEntryAttributes) entry.attributes(RarArkivoEntryAttributes.class);
-                    String path = normalizeEntryPath(attributes.path());
-                    if (!node.path().equals(path)) {
-                        continue;
-                    }
-                    requireMatchingContentMetadata(node.attributes(), attributes);
-                    if (!readerImpl.isCurrentBodyReadable()) {
-                        throw new IOException("RAR entry content is no longer readable: " + node.path());
-                    }
-                    ArkivoStoredContent content;
-                    try (InputStream entryInput = entry.openInputStream()) {
-                        content = StoredContentSupport.storeInput(
-                                editStorage,
-                                ownedContents,
-                                node.path(),
-                                node.attributes().unpackedSize(),
-                                entryInput
-                        );
-                    }
-                    node.setContent(content);
-                    return content;
+                requireMatchingContentMetadata(node.attributes(), attributes);
+                if (!readerImpl.isCurrentBodyReadable()) {
+                    throw new IOException("RAR entry content is no longer readable: " + node.path());
                 }
+                ArkivoStoredContent content;
+                try (InputStream entryInput = reader.openInputStream()) {
+                    content = StoredContentSupport.storeInput(
+                            editStorage,
+                            ownedContents,
+                            node.path(),
+                            node.attributes().unpackedSize(),
+                            entryInput
+                    );
+                }
+                node.setContent(content);
+                return content;
             }
         }
         throw new IOException("RAR entry disappeared while materializing content: " + node.path());
@@ -935,32 +926,26 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
                 false
         )) {
             RarArkivoStreamingReaderImpl readerImpl = (RarArkivoStreamingReaderImpl) reader;
-            while (true) {
-                @Nullable ArkivoStreamingReader.Entry entry = reader.nextEntry();
-                if (entry == null) {
-                    break;
-                }
-                try (entry) {
-                    RarEntryAttributes attributes =
-                            (RarEntryAttributes) entry.attributes(RarArkivoEntryAttributes.class);
-                    String path = normalizeEntryPath(attributes.path());
-                    ensureParents(nodes, path);
-                    @Nullable String redirectionTarget = isContentRedirection(attributes)
-                            ? normalizeRedirectionTargetPath(attributes.redirectionTarget())
-                            : null;
-                    boolean bodyReadable = redirectionTarget == null
-                            && attributes.isRegularFile()
-                            && readerImpl.isCurrentBodyReadable()
-                            && (!attributes.isEncrypted() || encryptedContentAvailable)
-                            && !attributes.continuesFromPreviousVolume();
-                    putNode(nodes, new Node(
-                            path,
-                            attributes,
-                            attributes.isDirectory(),
-                            bodyReadable,
-                            redirectionTarget
-                    ));
-                }
+            while (reader.next()) {
+                RarEntryAttributes attributes =
+                        (RarEntryAttributes) reader.readAttributes(RarArkivoEntryAttributes.class);
+                String path = normalizeEntryPath(attributes.path());
+                ensureParents(nodes, path);
+                @Nullable String redirectionTarget = isContentRedirection(attributes)
+                        ? normalizeRedirectionTargetPath(attributes.redirectionTarget())
+                        : null;
+                boolean bodyReadable = redirectionTarget == null
+                        && attributes.isRegularFile()
+                        && readerImpl.isCurrentBodyReadable()
+                        && (!attributes.isEncrypted() || encryptedContentAvailable)
+                        && !attributes.continuesFromPreviousVolume();
+                putNode(nodes, new Node(
+                        path,
+                        attributes,
+                        attributes.isDirectory(),
+                        bodyReadable,
+                        redirectionTarget
+                ));
             }
         }
         resolveRedirectionSizes(nodes);

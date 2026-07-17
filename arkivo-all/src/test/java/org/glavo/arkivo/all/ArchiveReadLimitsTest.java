@@ -26,7 +26,6 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -99,13 +98,13 @@ final class ArchiveReadLimitsTest {
                         fixture.path(),
                         readOptions(ArchiveReadLimits.builder().maximumEntryCount(1L).build())
                 )) {
-                    var readerEntry102 = java.util.Objects.requireNonNull(reader.nextEntry());
-                    try (InputStream input = readerEntry102.openInputStream()) {
+                    org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                    try (InputStream input = reader.openInputStream()) {
                         assertArrayEquals(FIRST_CONTENT, input.readAllBytes());
                     }
                     ArkivoReadLimitException exception = assertThrows(
                             ArkivoReadLimitException.class,
-                            reader::nextEntry
+                            reader::next
                     );
                     assertLimit(exception, ArkivoReadLimitKind.ENTRY_COUNT, 1L, 2L, null);
                 }
@@ -125,10 +124,10 @@ final class ArchiveReadLimitsTest {
                     fixture.path(),
                     readOptions(ArchiveReadLimits.builder().maximumEntrySize(2L).build())
             )) {
-                var readerEntry128 = java.util.Objects.requireNonNull(reader.nextEntry());
+                assertTrue(reader.next());
                 ArkivoReadLimitException exception = assertThrows(
                         ArkivoReadLimitException.class,
-                        () -> readCurrentEntry(readerEntry128)
+                        () -> readCurrentEntry(reader)
                 );
                 assertLimit(exception, ArkivoReadLimitKind.ENTRY_SIZE, 2L, 3L, "first.bin");
             }
@@ -138,12 +137,12 @@ final class ArchiveReadLimitsTest {
                     fixture.path(),
                     readOptions(ArchiveReadLimits.builder().maximumTotalEntrySize(5L).build())
             )) {
-                var readerEntry141 = java.util.Objects.requireNonNull(reader.nextEntry());
-                assertArrayEquals(FIRST_CONTENT, readCurrentEntry(readerEntry141));
-                var readerEntry143 = java.util.Objects.requireNonNull(reader.nextEntry());
+                assertTrue(reader.next());
+                assertArrayEquals(FIRST_CONTENT, readCurrentEntry(reader));
+                assertTrue(reader.next());
                 ArkivoReadLimitException exception = assertThrows(
                         ArkivoReadLimitException.class,
-                        () -> readCurrentEntry(readerEntry143)
+                        () -> readCurrentEntry(reader)
                 );
                 assertLimit(exception, ArkivoReadLimitKind.TOTAL_ENTRY_SIZE, 5L, 7L, "second.bin");
             }
@@ -204,7 +203,7 @@ final class ArchiveReadLimitsTest {
                 )) {
                     ArkivoReadLimitException exception = assertThrows(
                             ArkivoReadLimitException.class,
-                            reader::nextEntry
+                            reader::next
                     );
                     assertEquals(ArkivoReadLimitKind.METADATA_SIZE, exception.kind());
                     assertEquals(maximum, exception.maximum());
@@ -262,8 +261,8 @@ final class ArchiveReadLimitsTest {
     }
 
     /// Reads and closes the current streaming entry body.
-    private static byte[] readCurrentEntry(ArkivoStreamingReader.Entry entry) throws IOException {
-        try (InputStream input = entry.openInputStream()) {
+    private static byte[] readCurrentEntry(ArkivoStreamingReader reader) throws IOException {
+        try (InputStream input = reader.openInputStream()) {
             return input.readAllBytes();
         }
     }

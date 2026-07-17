@@ -80,26 +80,26 @@ public final class Rar5CompressionTest {
                 new ByteArrayInputStream(SOLID_ARCHIVE)
         )) {
             for (int index = 1; index <= 9; index++) {
-                var readerEntry85 = java.util.Objects.requireNonNull(reader.nextEntry());
-                RarArkivoEntryAttributes attributes = readerEntry85.attributes(RarArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
                 assertEquals("file" + index + ".txt", attributes.path());
                 assertEquals(3, attributes.compressionMethod());
-                try (InputStream input = readerEntry85.openInputStream()) {
+                try (InputStream input = reader.openInputStream()) {
                     assertArrayEquals(
                             ("file" + index + "\n").getBytes(StandardCharsets.UTF_8),
                             input.readAllBytes()
                     );
                 }
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(SOLID_ARCHIVE)
         )) {
-            var readerEntry102 = java.util.Objects.requireNonNull(reader.nextEntry());
-            var readerEntry103 = java.util.Objects.requireNonNull(reader.nextEntry());
-            try (InputStream input = readerEntry103.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            try (InputStream input = reader.openInputStream()) {
                 assertArrayEquals("file2\n".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
             }
         }
@@ -130,15 +130,15 @@ public final class Rar5CompressionTest {
                     new ByteArrayInputStream(archive),
                     passwordOptions(PASSWORD)
             )) {
-                var readerEntry135 = java.util.Objects.requireNonNull(reader.nextEntry());
-                RarArkivoEntryAttributes attributes = readerEntry135.attributes(RarArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
                 assertEquals("file1.txt", attributes.path());
                 assertEquals(3, attributes.compressionMethod());
                 assertTrue(attributes.isEncrypted());
-                try (InputStream input = readerEntry135.openInputStream()) {
+                try (InputStream input = reader.openInputStream()) {
                     assertArrayEquals("file1\n".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         }
     }
@@ -171,8 +171,8 @@ public final class Rar5CompressionTest {
                     new ByteArrayInputStream(ENCRYPTED_BODY_ARCHIVE),
                     passwordOptions("wrong".getBytes(StandardCharsets.UTF_8))
             )) {
-                var readerEntry176 = java.util.Objects.requireNonNull(reader.nextEntry());
-                try (InputStream input = readerEntry176.openInputStream()) {
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                try (InputStream input = reader.openInputStream()) {
                     input.readAllBytes();
                 }
             }
@@ -207,14 +207,8 @@ public final class Rar5CompressionTest {
                 new ByteArrayInputStream(SOLID_ARCHIVE)
         );
         try {
-            Object entry = readerType.getMethod("nextEntry").invoke(reader);
-            assertEquals(false, entry == null);
-            Class<?> entryType = Class.forName(
-                    "org.glavo.arkivo.archive.ArkivoStreamingReader$Entry",
-                    true,
-                    loader
-            );
-            try (InputStream input = (InputStream) entryType.getMethod("openInputStream").invoke(entry)) {
+            assertEquals(true, readerType.getMethod("next").invoke(reader));
+            try (InputStream input = (InputStream) readerType.getMethod("openInputStream").invoke(reader)) {
                 assertArrayEquals("file1\n".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
             }
         } finally {

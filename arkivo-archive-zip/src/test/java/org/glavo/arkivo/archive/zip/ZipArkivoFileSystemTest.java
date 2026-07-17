@@ -534,14 +534,14 @@ public final class ZipArkivoFileSystemTest {
 
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-                var readerEntry513 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes streamingAttributes = readerEntry513.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes streamingAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("deprecated-zstandard.txt", streamingAttributes.path());
                 assertEquals(ZipMethod.deprecatedZstandard(), streamingAttributes.method());
-                try (var input = readerEntry513.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(content, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
@@ -618,24 +618,24 @@ public final class ZipArkivoFileSystemTest {
 
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-                var readerEntry597 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes bzip2Attributes = readerEntry597.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes bzip2Attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("bzip2.txt", bzip2Attributes.path());
                 assertEquals(ZipMethod.bzip2(), bzip2Attributes.method());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, bzip2Attributes.compressedSize());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, bzip2Attributes.size());
-                try (var input = readerEntry597.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(bzip2Content, input.readAllBytes());
                 }
 
-                var readerEntry607 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes afterAttributes = readerEntry607.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
                 assertEquals(ZipMethod.stored(), afterAttributes.method());
-                try (var input = readerEntry607.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -704,24 +704,24 @@ public final class ZipArkivoFileSystemTest {
 
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-                var readerEntry683 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes zstandardAttributes = readerEntry683.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes zstandardAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("zstandard.txt", zstandardAttributes.path());
                 assertEquals(ZipMethod.zstandard(), zstandardAttributes.method());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, zstandardAttributes.compressedSize());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, zstandardAttributes.size());
-                try (var input = readerEntry683.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(zstandardContent, input.readAllBytes());
                 }
 
-                var readerEntry693 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes afterAttributes = readerEntry693.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
                 assertEquals(ZipMethod.stored(), afterAttributes.method());
-                try (var input = readerEntry693.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -756,24 +756,24 @@ public final class ZipArkivoFileSystemTest {
 
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-                var readerEntry735 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes xzAttributes = readerEntry735.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes xzAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("xz.txt", xzAttributes.path());
                 assertEquals(ZipMethod.xz(), xzAttributes.method());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, xzAttributes.compressedSize());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, xzAttributes.size());
-                try (var input = readerEntry735.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(xzContent, input.readAllBytes());
                 }
 
-                var readerEntry745 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes afterAttributes = readerEntry745.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
                 assertEquals(ZipMethod.stored(), afterAttributes.method());
-                try (var input = readerEntry745.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -809,24 +809,24 @@ public final class ZipArkivoFileSystemTest {
 
             byte[] archive = tamperFirstDataDescriptorCrc(Files.readAllBytes(archivePath));
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-                var readerEntry788 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes firstAttributes = readerEntry788.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("xz-descriptor-crc.txt", firstAttributes.path());
                 assertEquals(ZipMethod.xz(), firstAttributes.method());
-                var firstInput = readerEntry788.openInputStream();
+                var firstInput = reader.openInputStream();
 
                 IOException exception = assertThrows(IOException.class, firstInput::readAllBytes);
                 assertEquals(true, exception.getMessage().contains("data descriptor does not match"));
                 firstInput.close();
 
-                var readerEntry798 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes secondAttributes = readerEntry798.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", secondAttributes.path());
                 assertEquals(ZipMethod.stored(), secondAttributes.method());
-                try (var secondInput = readerEntry798.openInputStream()) {
+                try (var secondInput = reader.openInputStream()) {
                     assertArrayEquals(afterContent, secondInput.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -861,25 +861,25 @@ public final class ZipArkivoFileSystemTest {
 
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-                var readerEntry840 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes lzmaAttributes = readerEntry840.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes lzmaAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("lzma.txt", lzmaAttributes.path());
                 assertEquals(ZipMethod.lzma(), lzmaAttributes.method());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, lzmaAttributes.compressedSize());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, lzmaAttributes.size());
                 assertEquals(true, (lzmaAttributes.generalPurposeFlags() & LZMA_EOS_MARKER_FLAG) != 0);
-                try (var input = readerEntry840.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(lzmaContent, input.readAllBytes());
                 }
 
-                var readerEntry851 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes afterAttributes = readerEntry851.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
                 assertEquals(ZipMethod.stored(), afterAttributes.method());
-                try (var input = readerEntry851.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -922,25 +922,25 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry901 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes xzAttributes = readerEntry901.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes xzAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("secret-xz.txt", xzAttributes.path());
                 assertEquals(ZipMethod.xz(), xzAttributes.method());
                 assertEquals(ZipEncryption.traditional(), xzAttributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, xzAttributes.compressedSize());
-                try (var input = readerEntry901.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(xzContent, input.readAllBytes());
                 }
 
-                var readerEntry911 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes afterAttributes = readerEntry911.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
                 assertEquals(ZipMethod.stored(), afterAttributes.method());
                 assertEquals(ZipEncryption.none(), afterAttributes.encryption());
-                try (var input = readerEntry911.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -983,25 +983,25 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry962 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes lzmaAttributes = readerEntry962.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes lzmaAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("secret-lzma.txt", lzmaAttributes.path());
                 assertEquals(ZipMethod.lzma(), lzmaAttributes.method());
                 assertEquals(ZipEncryption.traditional(), lzmaAttributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, lzmaAttributes.compressedSize());
-                try (var input = readerEntry962.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(lzmaContent, input.readAllBytes());
                 }
 
-                var readerEntry972 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes afterAttributes = readerEntry972.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
                 assertEquals(ZipMethod.stored(), afterAttributes.method());
                 assertEquals(ZipEncryption.none(), afterAttributes.encryption());
-                try (var input = readerEntry972.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -1044,25 +1044,25 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry1023 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes xzAttributes = readerEntry1023.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes xzAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("aes-xz.txt", xzAttributes.path());
                 assertEquals(ZipMethod.xz(), xzAttributes.method());
                 assertEquals(ZipEncryption.winZipAes256(), xzAttributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, xzAttributes.compressedSize());
-                try (var input = readerEntry1023.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(xzContent, input.readAllBytes());
                 }
 
-                var readerEntry1033 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes afterAttributes = readerEntry1033.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
                 assertEquals(ZipMethod.stored(), afterAttributes.method());
                 assertEquals(ZipEncryption.none(), afterAttributes.encryption());
-                try (var input = readerEntry1033.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -1098,24 +1098,24 @@ public final class ZipArkivoFileSystemTest {
 
             byte[] archive = tamperFirstDataDescriptorCrc(Files.readAllBytes(archivePath));
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-                var readerEntry1077 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes firstAttributes = readerEntry1077.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("zstandard-descriptor-crc.txt", firstAttributes.path());
                 assertEquals(ZipMethod.zstandard(), firstAttributes.method());
-                var firstInput = readerEntry1077.openInputStream();
+                var firstInput = reader.openInputStream();
 
                 IOException exception = assertThrows(IOException.class, firstInput::readAllBytes);
                 assertEquals(true, exception.getMessage().contains("data descriptor does not match"));
                 firstInput.close();
 
-                var readerEntry1087 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes secondAttributes = readerEntry1087.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", secondAttributes.path());
                 assertEquals(ZipMethod.stored(), secondAttributes.method());
-                try (var secondInput = readerEntry1087.openInputStream()) {
+                try (var secondInput = reader.openInputStream()) {
                     assertArrayEquals(afterContent, secondInput.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -1158,25 +1158,25 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry1137 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes zstandardAttributes = readerEntry1137.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes zstandardAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("secret-zstandard.txt", zstandardAttributes.path());
                 assertEquals(ZipMethod.zstandard(), zstandardAttributes.method());
                 assertEquals(ZipEncryption.traditional(), zstandardAttributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, zstandardAttributes.compressedSize());
-                try (var input = readerEntry1137.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(zstandardContent, input.readAllBytes());
                 }
 
-                var readerEntry1147 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes afterAttributes = readerEntry1147.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
                 assertEquals(ZipMethod.stored(), afterAttributes.method());
                 assertEquals(ZipEncryption.none(), afterAttributes.encryption());
-                try (var input = readerEntry1147.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -1220,26 +1220,26 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry1199 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes firstAttributes = readerEntry1199.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("secret-zstandard-descriptor-crc.txt", firstAttributes.path());
                 assertEquals(ZipMethod.zstandard(), firstAttributes.method());
                 assertEquals(ZipEncryption.traditional(), firstAttributes.encryption());
-                var firstInput = readerEntry1199.openInputStream();
+                var firstInput = reader.openInputStream();
 
                 IOException exception = assertThrows(IOException.class, firstInput::readAllBytes);
                 assertEquals(true, exception.getMessage().contains("data descriptor does not match"));
                 firstInput.close();
 
-                var readerEntry1210 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes secondAttributes = readerEntry1210.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", secondAttributes.path());
                 assertEquals(ZipMethod.stored(), secondAttributes.method());
                 assertEquals(ZipEncryption.none(), secondAttributes.encryption());
-                try (var secondInput = readerEntry1210.openInputStream()) {
+                try (var secondInput = reader.openInputStream()) {
                     assertArrayEquals(afterContent, secondInput.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -1282,25 +1282,25 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry1261 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes lzmaAttributes = readerEntry1261.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes lzmaAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("aes-lzma.txt", lzmaAttributes.path());
                 assertEquals(ZipMethod.lzma(), lzmaAttributes.method());
                 assertEquals(ZipEncryption.winZipAes256(), lzmaAttributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, lzmaAttributes.compressedSize());
-                try (var input = readerEntry1261.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(lzmaContent, input.readAllBytes());
                 }
 
-                var readerEntry1271 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes afterAttributes = readerEntry1271.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
                 assertEquals(ZipMethod.stored(), afterAttributes.method());
                 assertEquals(ZipEncryption.none(), afterAttributes.encryption());
-                try (var input = readerEntry1271.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -1325,19 +1325,19 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry1308 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes attributes = readerEntry1308.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals(ZipMethod.deflated(), attributes.method());
                 assertEquals(encryption, attributes.encryption());
-                try (InputStream input = readerEntry1308.openInputStream()) {
+                try (InputStream input = reader.openInputStream()) {
                     assertEquals(Byte.toUnsignedInt(content[0]), input.read());
                 }
 
-                var readerEntry1316 = java.util.Objects.requireNonNull(reader.nextEntry());
-                try (InputStream input = readerEntry1316.openInputStream()) {
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                try (InputStream input = reader.openInputStream()) {
                     assertArrayEquals(after, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         }
     }
@@ -1361,17 +1361,17 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry1348 = java.util.Objects.requireNonNull(reader.nextEntry());
-                InputStream input = readerEntry1348.openInputStream();
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                InputStream input = reader.openInputStream();
                 IOException exception = assertThrows(IOException.class, input::readAllBytes);
                 assertEquals(true, exception.getMessage().contains("data descriptor"));
                 input.close();
 
-                var readerEntry1354 = java.util.Objects.requireNonNull(reader.nextEntry());
-                try (InputStream afterInput = readerEntry1354.openInputStream()) {
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                try (InputStream afterInput = reader.openInputStream()) {
                     assertArrayEquals(after, afterInput.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         }
     }
@@ -1394,17 +1394,17 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry1385 = java.util.Objects.requireNonNull(reader.nextEntry());
-                assertEquals(encryption, readerEntry1385.attributes(ZipArkivoEntryAttributes.class).encryption());
-                try (InputStream input = readerEntry1385.openInputStream()) {
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                assertEquals(encryption, reader.readAttributes(ZipArkivoEntryAttributes.class).encryption());
+                try (InputStream input = reader.openInputStream()) {
                     assertEquals(Byte.toUnsignedInt(content[0]), input.read());
                 }
 
-                var readerEntry1391 = java.util.Objects.requireNonNull(reader.nextEntry());
-                try (InputStream input = readerEntry1391.openInputStream()) {
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                try (InputStream input = reader.openInputStream()) {
                     assertArrayEquals(after, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         }
     }
@@ -1428,17 +1428,17 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry1423 = java.util.Objects.requireNonNull(reader.nextEntry());
-                InputStream input = readerEntry1423.openInputStream();
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                InputStream input = reader.openInputStream();
                 IOException exception = assertThrows(IOException.class, input::readAllBytes);
                 assertEquals(true, exception.getMessage().contains("data descriptor"));
                 input.close();
 
-                var readerEntry1429 = java.util.Objects.requireNonNull(reader.nextEntry());
-                try (InputStream afterInput = readerEntry1429.openInputStream()) {
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                try (InputStream afterInput = reader.openInputStream()) {
                     assertArrayEquals(after, afterInput.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         }
     }
@@ -1479,25 +1479,25 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry1474 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes zstandardAttributes = readerEntry1474.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes zstandardAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("aes-zstandard.txt", zstandardAttributes.path());
                 assertEquals(ZipMethod.zstandard(), zstandardAttributes.method());
                 assertEquals(ZipEncryption.winZipAes256(), zstandardAttributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, zstandardAttributes.compressedSize());
-                try (var input = readerEntry1474.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(zstandardContent, input.readAllBytes());
                 }
 
-                var readerEntry1484 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes afterAttributes = readerEntry1484.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
                 assertEquals(ZipMethod.stored(), afterAttributes.method());
                 assertEquals(ZipEncryption.none(), afterAttributes.encryption());
-                try (var input = readerEntry1484.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -1541,26 +1541,26 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry1536 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes firstAttributes = readerEntry1536.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("aes-zstandard-descriptor-crc.txt", firstAttributes.path());
                 assertEquals(ZipMethod.zstandard(), firstAttributes.method());
                 assertEquals(ZipEncryption.winZipAes256(), firstAttributes.encryption());
-                var firstInput = readerEntry1536.openInputStream();
+                var firstInput = reader.openInputStream();
 
                 IOException exception = assertThrows(IOException.class, firstInput::readAllBytes);
                 assertEquals(true, exception.getMessage().contains("WinZip AES data descriptor does not match"));
                 firstInput.close();
 
-                var readerEntry1547 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes secondAttributes = readerEntry1547.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", secondAttributes.path());
                 assertEquals(ZipMethod.stored(), secondAttributes.method());
                 assertEquals(ZipEncryption.none(), secondAttributes.encryption());
-                try (var secondInput = readerEntry1547.openInputStream()) {
+                try (var secondInput = reader.openInputStream()) {
                     assertArrayEquals(afterContent, secondInput.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -1596,24 +1596,24 @@ public final class ZipArkivoFileSystemTest {
 
             byte[] archive = tamperFirstDataDescriptorCrc(Files.readAllBytes(archivePath));
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-                var readerEntry1591 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes firstAttributes = readerEntry1591.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("bzip2-descriptor-crc.txt", firstAttributes.path());
                 assertEquals(ZipMethod.bzip2(), firstAttributes.method());
-                var firstInput = readerEntry1591.openInputStream();
+                var firstInput = reader.openInputStream();
 
                 IOException exception = assertThrows(IOException.class, firstInput::readAllBytes);
                 assertEquals(true, exception.getMessage().contains("data descriptor does not match"));
                 firstInput.close();
 
-                var readerEntry1601 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes secondAttributes = readerEntry1601.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", secondAttributes.path());
                 assertEquals(ZipMethod.stored(), secondAttributes.method());
-                try (var secondInput = readerEntry1601.openInputStream()) {
+                try (var secondInput = reader.openInputStream()) {
                     assertArrayEquals(afterContent, secondInput.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -1656,25 +1656,25 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry1651 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes bzip2Attributes = readerEntry1651.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes bzip2Attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("secret-bzip2.txt", bzip2Attributes.path());
                 assertEquals(ZipMethod.bzip2(), bzip2Attributes.method());
                 assertEquals(ZipEncryption.traditional(), bzip2Attributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, bzip2Attributes.compressedSize());
-                try (var input = readerEntry1651.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(bzip2Content, input.readAllBytes());
                 }
 
-                var readerEntry1661 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes afterAttributes = readerEntry1661.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
                 assertEquals(ZipMethod.stored(), afterAttributes.method());
                 assertEquals(ZipEncryption.none(), afterAttributes.encryption());
-                try (var input = readerEntry1661.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -1718,26 +1718,26 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry1713 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes firstAttributes = readerEntry1713.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("secret-bzip2-descriptor-crc.txt", firstAttributes.path());
                 assertEquals(ZipMethod.bzip2(), firstAttributes.method());
                 assertEquals(ZipEncryption.traditional(), firstAttributes.encryption());
-                var firstInput = readerEntry1713.openInputStream();
+                var firstInput = reader.openInputStream();
 
                 IOException exception = assertThrows(IOException.class, firstInput::readAllBytes);
                 assertEquals(true, exception.getMessage().contains("data descriptor does not match"));
                 firstInput.close();
 
-                var readerEntry1724 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes secondAttributes = readerEntry1724.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", secondAttributes.path());
                 assertEquals(ZipMethod.stored(), secondAttributes.method());
                 assertEquals(ZipEncryption.none(), secondAttributes.encryption());
-                try (var secondInput = readerEntry1724.openInputStream()) {
+                try (var secondInput = reader.openInputStream()) {
                     assertArrayEquals(afterContent, secondInput.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -1780,25 +1780,25 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry1775 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes bzip2Attributes = readerEntry1775.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes bzip2Attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("aes-bzip2.txt", bzip2Attributes.path());
                 assertEquals(ZipMethod.bzip2(), bzip2Attributes.method());
                 assertEquals(ZipEncryption.winZipAes256(), bzip2Attributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, bzip2Attributes.compressedSize());
-                try (var input = readerEntry1775.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(bzip2Content, input.readAllBytes());
                 }
 
-                var readerEntry1785 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes afterAttributes = readerEntry1785.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
                 assertEquals(ZipMethod.stored(), afterAttributes.method());
                 assertEquals(ZipEncryption.none(), afterAttributes.encryption());
-                try (var input = readerEntry1785.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -1842,26 +1842,26 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry1837 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes firstAttributes = readerEntry1837.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("aes-bzip2-descriptor-crc.txt", firstAttributes.path());
                 assertEquals(ZipMethod.bzip2(), firstAttributes.method());
                 assertEquals(ZipEncryption.winZipAes256(), firstAttributes.encryption());
-                var firstInput = readerEntry1837.openInputStream();
+                var firstInput = reader.openInputStream();
 
                 IOException exception = assertThrows(IOException.class, firstInput::readAllBytes);
                 assertEquals(true, exception.getMessage().contains("WinZip AES data descriptor does not match"));
                 firstInput.close();
 
-                var readerEntry1848 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes secondAttributes = readerEntry1848.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", secondAttributes.path());
                 assertEquals(ZipMethod.stored(), secondAttributes.method());
                 assertEquals(ZipEncryption.none(), secondAttributes.encryption());
-                try (var secondInput = readerEntry1848.openInputStream()) {
+                try (var secondInput = reader.openInputStream()) {
                     assertArrayEquals(afterContent, secondInput.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -1876,13 +1876,13 @@ public final class ZipArkivoFileSystemTest {
         try {
             ZipArkivoStreamingReader reader =
                     ZipArkivoStreamingReader.open(new ByteArrayInputStream(Files.readAllBytes(archivePath)));
-            var readerEntry1871 = java.util.Objects.requireNonNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
 
             reader.close();
 
             assertThrows(
                     ClosedChannelException.class,
-                    () -> readerEntry1871.attributes(ZipArkivoEntryAttributes.class)
+                    () -> reader.readAttributes(ZipArkivoEntryAttributes.class)
             );
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -2195,16 +2195,16 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry2201 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes attributes = readerEntry2201.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("secure/aes.txt", attributes.path());
                 assertEquals(ZipMethod.deflated(), attributes.method());
                 assertEquals(ZipEncryption.winZipAes256(), attributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.compressedSize());
-                try (var input = readerEntry2201.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(content, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
 
             byte[] tampered = tamperLastDataDescriptorCrc(archive);
@@ -2212,9 +2212,9 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(tampered),
                     readOptions(password)
             )) {
-                var readerEntry2218 = java.util.Objects.requireNonNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 IOException exception = assertThrows(IOException.class, () -> {
-                    try (var input = readerEntry2218.openInputStream()) {
+                    try (var input = reader.openInputStream()) {
                         input.readAllBytes();
                     }
                 });
@@ -2258,14 +2258,14 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry2268 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes attributes = readerEntry2268.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("empty-password-aes.txt", attributes.path());
                 assertEquals(ZipEncryption.winZipAes256(), attributes.encryption());
-                try (var input = readerEntry2268.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(content, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -2316,15 +2316,15 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry2326 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes attributes = readerEntry2326.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("stored-aes.bin", attributes.path());
                 assertEquals(ZipMethod.stored(), attributes.method());
                 assertEquals(ZipEncryption.winZipAes128(), attributes.encryption());
-                try (var input = readerEntry2326.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(content, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -2372,16 +2372,16 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry2382 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes attributes = readerEntry2382.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("stored-aes-descriptor.bin", attributes.path());
                 assertEquals(ZipMethod.stored(), attributes.method());
                 assertEquals(ZipEncryption.winZipAes192(), attributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.compressedSize());
-                try (var input = readerEntry2382.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(content, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
 
             byte[] tampered = tamperLastDataDescriptorCrc(archive);
@@ -2389,9 +2389,9 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(tampered),
                     readOptions(password)
             )) {
-                var readerEntry2399 = java.util.Objects.requireNonNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 IOException exception = assertThrows(IOException.class, () -> {
-                    try (var input = readerEntry2399.openInputStream()) {
+                    try (var input = reader.openInputStream()) {
                         input.readAllBytes();
                     }
                 });
@@ -2413,16 +2413,16 @@ public final class ZipArkivoFileSystemTest {
                 new ByteArrayInputStream(archive),
                 readOptions(password)
         )) {
-            var readerEntry2423 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes attributes = readerEntry2423.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("aes-stored-descriptor.bin", attributes.path());
             assertEquals(ZipMethod.stored(), attributes.method());
             assertEquals(ZipEncryption.winZipAes256(), attributes.encryption());
             assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.compressedSize());
-            try (var input = readerEntry2423.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -2437,16 +2437,16 @@ public final class ZipArkivoFileSystemTest {
                 new ByteArrayInputStream(archive),
                 readOptions(password)
         )) {
-            var readerEntry2447 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes attributes = readerEntry2447.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("aes-stored-descriptor.bin", attributes.path());
             assertEquals(ZipMethod.stored(), attributes.method());
             assertEquals(ZipEncryption.winZipAes256(), attributes.encryption());
             assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.compressedSize());
-            try (var input = readerEntry2447.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -2466,23 +2466,23 @@ public final class ZipArkivoFileSystemTest {
                 new ByteArrayInputStream(archive),
                 readOptions(password)
         )) {
-            var readerEntry2476 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes firstAttributes = readerEntry2476.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("aes-deflated-descriptor.txt", firstAttributes.path());
-            var firstInput = readerEntry2476.openInputStream();
+            var firstInput = reader.openInputStream();
 
             IOException exception = assertThrows(IOException.class, firstInput::close);
             assertEquals(true, exception.getMessage().contains("WinZip AES authentication failed"));
             firstInput.close();
 
-            var readerEntry2485 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes secondAttributes = readerEntry2485.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("after.txt", secondAttributes.path());
             assertEquals(ZipMethod.stored(), secondAttributes.method());
-            try (var secondInput = readerEntry2485.openInputStream()) {
+            try (var secondInput = reader.openInputStream()) {
                 assertArrayEquals(secondContent, secondInput.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -2503,25 +2503,25 @@ public final class ZipArkivoFileSystemTest {
                 new ByteArrayInputStream(archive),
                 readOptions(password)
         )) {
-            var readerEntry2513 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes firstAttributes = readerEntry2513.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("aes-zip64-stored-descriptor-crc.bin", firstAttributes.path());
             assertEquals(ZipMethod.stored(), firstAttributes.method());
             assertEquals(ZipEncryption.winZipAes256(), firstAttributes.encryption());
-            var firstInput = readerEntry2513.openInputStream();
+            var firstInput = reader.openInputStream();
 
             IOException exception = assertThrows(IOException.class, firstInput::close);
             assertEquals(true, exception.getMessage().contains("WinZip AES data descriptor does not match"));
             firstInput.close();
 
-            var readerEntry2524 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes secondAttributes = readerEntry2524.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("after.txt", secondAttributes.path());
             assertEquals(ZipMethod.stored(), secondAttributes.method());
-            try (var secondInput = readerEntry2524.openInputStream()) {
+            try (var secondInput = reader.openInputStream()) {
                 assertArrayEquals(secondContent, secondInput.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -4561,9 +4561,9 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
                 ArrayList<String> visited = new ArrayList<>();
-                for (var readerEntry4724 = reader.nextEntry(); readerEntry4724 != null; readerEntry4724 = reader.nextEntry()) {
-                    ZipArkivoEntryAttributes attributes = readerEntry4724.attributes(ZipArkivoEntryAttributes.class);
-                    PosixFileAttributes posixAttributes = readerEntry4724.attributes(PosixFileAttributes.class);
+                while (reader.next()) {
+                    ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
+                    PosixFileAttributes posixAttributes = reader.readAttributes(PosixFileAttributes.class);
                     assertEquals(attributes.isDirectory(), posixAttributes.isDirectory());
                     assertEquals("owner", attributes.owner().getName());
                     assertEquals("owner", posixAttributes.owner().getName());
@@ -4572,7 +4572,7 @@ public final class ZipArkivoFileSystemTest {
                         assertEquals("dir/", attributes.path());
                     } else {
                         assertEquals("dir/hello.txt", attributes.path());
-                        try (var input = readerEntry4724.openInputStream()) {
+                        try (var input = reader.openInputStream()) {
                             assertArrayEquals("hello".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
                         }
                     }
@@ -4591,7 +4591,7 @@ public final class ZipArkivoFileSystemTest {
         byte[] archive = streamingStoredArchiveWithRawName(new byte[]{(byte) 0xc3, 0x28}, utf8Flag);
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            IOException exception = assertThrows(IOException.class, reader::nextEntry);
+            IOException exception = assertThrows(IOException.class, reader::next);
             assertEquals(true, exception.getMessage().contains("Failed to decode ZIP entry name"));
         }
     }
@@ -4606,7 +4606,7 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            IOException exception = assertThrows(IOException.class, reader::nextEntry);
+            IOException exception = assertThrows(IOException.class, reader::next);
             assertEquals(true, exception.getMessage().contains("Invalid ZIP extra field length"));
         }
     }
@@ -4617,7 +4617,7 @@ public final class ZipArkivoFileSystemTest {
         byte[] archive = streamingStoredArchiveWithRawName(new byte[0], 0);
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            IOException exception = assertThrows(IOException.class, reader::nextEntry);
+            IOException exception = assertThrows(IOException.class, reader::next);
             assertEquals(true, exception.getMessage().contains("ZIP entry is missing a path"));
         }
     }
@@ -4628,7 +4628,7 @@ public final class ZipArkivoFileSystemTest {
         byte[] archive = streamingStoredArchiveWithRawName(new byte[]{'.'}, 0);
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            IOException exception = assertThrows(IOException.class, reader::nextEntry);
+            IOException exception = assertThrows(IOException.class, reader::next);
             assertEquals(true, exception.getMessage().contains("ZIP entry is missing a path"));
         }
     }
@@ -4639,7 +4639,7 @@ public final class ZipArkivoFileSystemTest {
         byte[] archive = streamingStoredArchiveWithRawName("../evil.txt".getBytes(StandardCharsets.UTF_8), 0);
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            IOException exception = assertThrows(IOException.class, reader::nextEntry);
+            IOException exception = assertThrows(IOException.class, reader::next);
             assertEquals(true, exception.getMessage().contains("ZIP entry path must not contain .."));
         }
     }
@@ -4650,7 +4650,7 @@ public final class ZipArkivoFileSystemTest {
         byte[] archive = streamingStoredArchiveWithRawName("/evil.txt".getBytes(StandardCharsets.UTF_8), 0);
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            IOException exception = assertThrows(IOException.class, reader::nextEntry);
+            IOException exception = assertThrows(IOException.class, reader::next);
             assertEquals(true, exception.getMessage().contains("ZIP entry path must be relative"));
         }
     }
@@ -4661,7 +4661,7 @@ public final class ZipArkivoFileSystemTest {
         byte[] archive = streamingStoredArchiveWithRawName("C:/evil.txt".getBytes(StandardCharsets.UTF_8), 0);
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            IOException exception = assertThrows(IOException.class, reader::nextEntry);
+            IOException exception = assertThrows(IOException.class, reader::next);
             assertEquals(true, exception.getMessage().contains("ZIP entry path must be relative"));
         }
     }
@@ -4672,7 +4672,7 @@ public final class ZipArkivoFileSystemTest {
         byte[] archive = streamingStoredArchiveWithRawName("..\\evil.txt".getBytes(StandardCharsets.UTF_8), 0);
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            IOException exception = assertThrows(IOException.class, reader::nextEntry);
+            IOException exception = assertThrows(IOException.class, reader::next);
             assertEquals(true, exception.getMessage().contains("ZIP entry path must not contain .."));
         }
     }
@@ -4690,11 +4690,11 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry4853 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes attributes = readerEntry4853.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("stored.txt", attributes.path());
             IOException exception = assertThrows(IOException.class, () -> {
-                try (var input = readerEntry4853.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     input.readAllBytes();
                 }
             });
@@ -4806,11 +4806,11 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry4969 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes attributes = readerEntry4969.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("deflated.txt", attributes.path());
             IOException exception = assertThrows(IOException.class, () -> {
-                try (var input = readerEntry4969.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     input.readAllBytes();
                 }
             });
@@ -4833,16 +4833,16 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry4996 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes attributes = readerEntry4996.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("bzip2-streaming.txt", attributes.path());
             assertEquals(ZipMethod.bzip2(), attributes.method());
             assertEquals(compressed.length, attributes.compressedSize());
             assertEquals(content.length, attributes.size());
-            try (var input = readerEntry4996.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -4862,16 +4862,16 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry5025 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes attributes = readerEntry5025.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("zstandard-streaming.txt", attributes.path());
             assertEquals(ZipMethod.zstandard(), attributes.method());
             assertEquals(compressed.length, attributes.compressedSize());
             assertEquals(content.length, attributes.size());
-            try (var input = readerEntry5025.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -4890,16 +4890,16 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry5053 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes attributes = readerEntry5053.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("xz-streaming.txt", attributes.path());
             assertEquals(ZipMethod.xz(), attributes.method());
             assertEquals(compressed.length, attributes.compressedSize());
             assertEquals(content.length, attributes.size());
-            try (var input = readerEntry5053.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -4918,17 +4918,17 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry5081 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes attributes = readerEntry5081.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("lzma-streaming.txt", attributes.path());
             assertEquals(ZipMethod.lzma(), attributes.method());
             assertEquals(compressed.length, attributes.compressedSize());
             assertEquals(content.length, attributes.size());
             assertEquals(LZMA_VERSION_NEEDED, attributes.versionNeededToExtract());
-            try (var input = readerEntry5081.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -4948,16 +4948,16 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry5111 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes attributes = readerEntry5111.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("deprecated-zstandard-streaming.txt", attributes.path());
             assertEquals(ZipMethod.of(ZipMethod.DEPRECATED_ZSTANDARD_ID), attributes.method());
             assertEquals(compressed.length, attributes.compressedSize());
             assertEquals(content.length, attributes.size());
-            try (var input = readerEntry5111.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -4976,16 +4976,16 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry5139 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes attributes = readerEntry5139.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("deflate64-streaming.txt", attributes.path());
             assertEquals(ZipMethod.deflate64(), attributes.method());
             assertEquals(compressed.length, attributes.compressedSize());
             assertEquals(content.length, attributes.size());
-            try (var input = readerEntry5139.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -5007,22 +5007,22 @@ public final class ZipArkivoFileSystemTest {
             );
             try (ZipArkivoStreamingReader reader =
                          ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-                var readerEntry5170 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes attributes = readerEntry5170.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("deflate64-descriptor.txt", attributes.path());
                 assertEquals(ZipMethod.deflate64(), attributes.method());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.compressedSize());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.size());
-                try (InputStream input = readerEntry5170.openInputStream()) {
+                try (InputStream input = reader.openInputStream()) {
                     assertArrayEquals(firstContent, input.readAllBytes());
                 }
 
-                var readerEntry5180 = java.util.Objects.requireNonNull(reader.nextEntry());
-                assertEquals("after.txt", readerEntry5180.attributes(ZipArkivoEntryAttributes.class).path());
-                try (InputStream input = readerEntry5180.openInputStream()) {
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                assertEquals("after.txt", reader.readAttributes(ZipArkivoEntryAttributes.class).path());
+                try (InputStream input = reader.openInputStream()) {
                     assertArrayEquals(secondContent, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         }
     }
@@ -5042,15 +5042,15 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry5205 = java.util.Objects.requireNonNull(reader.nextEntry());
-            try (InputStream input = readerEntry5205.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            try (InputStream input = reader.openInputStream()) {
                 assertEquals(Byte.toUnsignedInt(firstContent[0]), input.read());
             }
-            var readerEntry5209 = java.util.Objects.requireNonNull(reader.nextEntry());
-            try (InputStream input = readerEntry5209.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            try (InputStream input = reader.openInputStream()) {
                 assertArrayEquals(secondContent, input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -5089,19 +5089,19 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive.toByteArray()),
                     readOptions(password)
             )) {
-                var readerEntry5256 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes attributes = readerEntry5256.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals(ZipMethod.deflate64(), attributes.method());
                 assertEquals(encryption, attributes.encryption());
-                try (InputStream input = readerEntry5256.openInputStream()) {
+                try (InputStream input = reader.openInputStream()) {
                     assertArrayEquals(content, input.readAllBytes());
                 }
 
-                var readerEntry5264 = java.util.Objects.requireNonNull(reader.nextEntry());
-                try (InputStream input = readerEntry5264.openInputStream()) {
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                try (InputStream input = reader.openInputStream()) {
                     assertArrayEquals(after, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         }
     }
@@ -5124,9 +5124,9 @@ public final class ZipArkivoFileSystemTest {
         byte[] corrupt = archive.clone();
         corrupt[descriptorOffset + Integer.BYTES] ^= 1;
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(corrupt))) {
-            var readerEntry5291 = java.util.Objects.requireNonNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             IOException exception = assertThrows(IOException.class, () -> {
-                try (InputStream input = readerEntry5291.openInputStream()) {
+                try (InputStream input = reader.openInputStream()) {
                     input.readAllBytes();
                 }
             });
@@ -5135,9 +5135,9 @@ public final class ZipArkivoFileSystemTest {
 
         byte[] truncated = Arrays.copyOf(archive, descriptorOffset + Integer.BYTES + Integer.BYTES);
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(truncated))) {
-            var readerEntry5302 = java.util.Objects.requireNonNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             assertThrows(IOException.class, () -> {
-                try (InputStream input = readerEntry5302.openInputStream()) {
+                try (InputStream input = reader.openInputStream()) {
                     input.readAllBytes();
                 }
             });
@@ -5158,11 +5158,11 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry5325 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes attributes = readerEntry5325.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("deflated-size.txt", attributes.path());
             IOException exception = assertThrows(IOException.class, () -> {
-                try (var input = readerEntry5325.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     input.readAllBytes();
                 }
             });
@@ -5184,22 +5184,22 @@ public final class ZipArkivoFileSystemTest {
         );
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry5351 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes firstAttributes = readerEntry5351.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("deflated-padding.txt", firstAttributes.path());
-            var firstInput = readerEntry5351.openInputStream();
+            var firstInput = reader.openInputStream();
 
             IOException exception = assertThrows(IOException.class, firstInput::close);
             assertEquals(true, exception.getMessage().contains("ZIP entry data does not match local header"));
             firstInput.close();
 
-            var readerEntry5360 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes secondAttributes = readerEntry5360.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("after.txt", secondAttributes.path());
-            try (var secondInput = readerEntry5360.openInputStream()) {
+            try (var secondInput = reader.openInputStream()) {
                 assertArrayEquals(secondContent, secondInput.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -5222,15 +5222,15 @@ public final class ZipArkivoFileSystemTest {
 
             byte[] archive = Files.readAllBytes(archivePath);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-                var readerEntry5389 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes attributes = readerEntry5389.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("stored.txt", attributes.path());
                 assertEquals(ZipMethod.stored(), attributes.method());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.compressedSize());
-                try (var input = readerEntry5389.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(content, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -5244,18 +5244,18 @@ public final class ZipArkivoFileSystemTest {
         byte[] archive = streamingDirectoryDataDescriptorWithStoredEntry(content);
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry5411 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes directory = readerEntry5411.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes directory = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("directory/", directory.path());
             assertEquals(true, directory.isDirectory());
 
-            var readerEntry5416 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes file = readerEntry5416.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes file = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("after.txt", file.path());
-            try (var input = readerEntry5416.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -5266,11 +5266,11 @@ public final class ZipArkivoFileSystemTest {
         byte[] archive = streamingStoredArchiveWithUndeclaredDataDescriptor(content, crc32(content));
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry5433 = java.util.Objects.requireNonNull(reader.nextEntry());
-            try (var input = readerEntry5433.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -5281,11 +5281,11 @@ public final class ZipArkivoFileSystemTest {
         byte[] archive = streamingStoredArchiveWithUndeclaredDataDescriptor(content, crc32(content) ^ 1L);
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry5448 = java.util.Objects.requireNonNull(reader.nextEntry());
-            try (var input = readerEntry5448.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            IOException exception = assertThrows(IOException.class, reader::nextEntry);
+            IOException exception = assertThrows(IOException.class, reader::next);
             assertEquals(true, exception.getMessage().contains("Undeclared ZIP data descriptor"));
         }
     }
@@ -5298,23 +5298,23 @@ public final class ZipArkivoFileSystemTest {
         byte[] archive = streamingStoredDataDescriptorCrcMismatchWithStoredEntry(firstContent, secondContent);
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry5465 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes firstAttributes = readerEntry5465.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("stored-descriptor-crc.txt", firstAttributes.path());
-            var firstInput = readerEntry5465.openInputStream();
+            var firstInput = reader.openInputStream();
 
             IOException exception = assertThrows(IOException.class, firstInput::close);
             assertEquals(true, exception.getMessage().contains("data descriptor does not match"));
             firstInput.close();
 
-            var readerEntry5474 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes secondAttributes = readerEntry5474.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("after.txt", secondAttributes.path());
             assertEquals(ZipMethod.stored(), secondAttributes.method());
-            try (var secondInput = readerEntry5474.openInputStream()) {
+            try (var secondInput = reader.openInputStream()) {
                 assertArrayEquals(secondContent, secondInput.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -5351,26 +5351,26 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry5524 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes firstAttributes = readerEntry5524.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("encrypted-stored-descriptor-crc.txt", firstAttributes.path());
                 assertEquals(ZipMethod.stored(), firstAttributes.method());
                 assertEquals(ZipEncryption.traditional(), firstAttributes.encryption());
-                var firstInput = readerEntry5524.openInputStream();
+                var firstInput = reader.openInputStream();
 
                 IOException exception = assertThrows(IOException.class, firstInput::close);
                 assertEquals(true, exception.getMessage().contains("data descriptor does not match"));
                 firstInput.close();
 
-                var readerEntry5535 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes secondAttributes = readerEntry5535.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", secondAttributes.path());
                 assertEquals(ZipMethod.stored(), secondAttributes.method());
                 assertEquals(ZipEncryption.traditional(), secondAttributes.encryption());
-                try (var secondInput = readerEntry5535.openInputStream()) {
+                try (var secondInput = reader.openInputStream()) {
                     assertArrayEquals(secondContent, secondInput.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -5384,15 +5384,15 @@ public final class ZipArkivoFileSystemTest {
         byte[] archive = zip64DeflatedDataDescriptorArchive(content);
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry5557 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes attributes = readerEntry5557.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("zip64.txt", attributes.path());
             assertEquals(ZipMethod.deflated(), attributes.method());
             assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.compressedSize());
-            try (var input = readerEntry5557.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -5405,24 +5405,24 @@ public final class ZipArkivoFileSystemTest {
         byte[] archive = zip64StoredDataDescriptorCrcMismatchWithStoredEntry(firstContent, secondContent);
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry5578 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes firstAttributes = readerEntry5578.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("zip64-stored-descriptor-crc.txt", firstAttributes.path());
             assertEquals(ZipMethod.stored(), firstAttributes.method());
-            var firstInput = readerEntry5578.openInputStream();
+            var firstInput = reader.openInputStream();
 
             IOException exception = assertThrows(IOException.class, firstInput::close);
             assertEquals(true, exception.getMessage().contains("data descriptor does not match"));
             firstInput.close();
 
-            var readerEntry5588 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes secondAttributes = readerEntry5588.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("after.txt", secondAttributes.path());
             assertEquals(ZipMethod.stored(), secondAttributes.method());
-            try (var secondInput = readerEntry5588.openInputStream()) {
+            try (var secondInput = reader.openInputStream()) {
                 assertArrayEquals(secondContent, secondInput.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -5434,23 +5434,23 @@ public final class ZipArkivoFileSystemTest {
         byte[] archive = zip64ExtraWithZip32DataDescriptorArchive(firstContent, secondContent);
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry5607 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes firstAttributes = readerEntry5607.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("zip64-extra.txt", firstAttributes.path());
             assertEquals(ZipMethod.deflated(), firstAttributes.method());
-            try (var input = readerEntry5607.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(firstContent, input.readAllBytes());
             }
 
-            var readerEntry5615 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes secondAttributes = readerEntry5615.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("after.txt", secondAttributes.path());
             assertEquals(ZipMethod.stored(), secondAttributes.method());
             assertEquals(secondContent.length, secondAttributes.size());
-            try (var input = readerEntry5615.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(secondContent, input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -5461,16 +5461,16 @@ public final class ZipArkivoFileSystemTest {
         byte[] archive = zip64StoredLocalSizesArchive(content);
 
         try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry5634 = java.util.Objects.requireNonNull(reader.nextEntry());
-            ZipArkivoEntryAttributes attributes = readerEntry5634.attributes(ZipArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("zip64-stored.txt", attributes.path());
             assertEquals(ZipMethod.stored(), attributes.method());
             assertEquals(content.length, attributes.compressedSize());
             assertEquals(content.length, attributes.size());
-            try (var input = readerEntry5634.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -5491,12 +5491,12 @@ public final class ZipArkivoFileSystemTest {
             byte[] archive = Files.readAllBytes(archivePath);
             byte[] tampered = tamperLastDataDescriptorCrc(archive);
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(tampered))) {
-                var readerEntry5664 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes attributes = readerEntry5664.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("deflated.txt", attributes.path());
                 assertEquals(ZipMethod.deflated(), attributes.method());
                 IOException exception = assertThrows(IOException.class, () -> {
-                    try (var input = readerEntry5664.openInputStream()) {
+                    try (var input = reader.openInputStream()) {
                         input.readAllBytes();
                     }
                 });
@@ -5525,8 +5525,8 @@ public final class ZipArkivoFileSystemTest {
             CloseFailingOnceInputStream source = new CloseFailingOnceInputStream(tampered);
             ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(source);
             try {
-                var readerEntry5698 = java.util.Objects.requireNonNull(reader.nextEntry());
-                var input = readerEntry5698.openInputStream();
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                var input = reader.openInputStream();
 
                 IOException exception = assertThrows(IOException.class, reader::close);
                 assertEquals(true, exception.getMessage().contains("data descriptor does not match"));
@@ -5557,8 +5557,8 @@ public final class ZipArkivoFileSystemTest {
                 new ReadFailingCloseTrackingInputStream(archive, 30 + name.length);
 
         ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(source);
-        var readerEntry5730 = java.util.Objects.requireNonNull(reader.nextEntry());
-        InputStream entryInput = readerEntry5730.openInputStream();
+        org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+        InputStream entryInput = reader.openInputStream();
 
         RuntimeException exception = assertThrows(RuntimeException.class, reader::close);
         assertEquals("read failed", exception.getMessage());
@@ -5596,27 +5596,27 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry5775 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes deflatedAttributes = readerEntry5775.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes deflatedAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("deflated.txt", deflatedAttributes.path());
                 assertEquals(ZipMethod.deflated(), deflatedAttributes.method());
                 assertEquals(ZipEncryption.traditional(), deflatedAttributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, deflatedAttributes.compressedSize());
-                try (var input = readerEntry5775.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(deflatedContent, input.readAllBytes());
                 }
 
-                var readerEntry5785 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes storedAttributes = readerEntry5785.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes storedAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("stored.txt", storedAttributes.path());
                 assertEquals(ZipMethod.stored(), storedAttributes.method());
                 assertEquals(ZipEncryption.traditional(), storedAttributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, storedAttributes.compressedSize());
-                try (var input = readerEntry5785.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(storedContent, input.readAllBytes());
                 }
 
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -5668,23 +5668,23 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry5847 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes secretAttributes = readerEntry5847.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes secretAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("secret.txt", secretAttributes.path());
                 assertEquals(ZipMethod.stored(), secretAttributes.method());
                 assertEquals(ZipEncryption.traditional(), secretAttributes.encryption());
 
-                IOException exception = assertThrows(IOException.class, readerEntry5847::openInputStream);
+                IOException exception = assertThrows(IOException.class, reader::openInputStream);
                 assertEquals(true, exception.getMessage().contains("password verification failed"));
 
-                var readerEntry5856 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes afterAttributes = readerEntry5856.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
                 assertEquals(ZipMethod.stored(), afterAttributes.method());
-                try (var input = readerEntry5856.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -5712,13 +5712,13 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(tampered),
                     readOptions(password)
             )) {
-                var readerEntry5897 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes attributes = readerEntry5897.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("deflated.txt", attributes.path());
                 assertEquals(ZipMethod.deflated(), attributes.method());
                 assertEquals(ZipEncryption.traditional(), attributes.encryption());
                 IOException exception = assertThrows(IOException.class, () -> {
-                    try (var input = readerEntry5897.openInputStream()) {
+                    try (var input = reader.openInputStream()) {
                         input.readAllBytes();
                     }
                 });
@@ -5764,17 +5764,17 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry5949 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes attributes = readerEntry5949.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
 
                 assertEquals("aes.txt", attributes.path());
                 assertEquals(ZipMethod.deflated(), attributes.method());
                 assertEquals(ZipEncryption.winZipAes256(), attributes.encryption());
                 assertEquals(content.length, attributes.size());
-                try (var input = readerEntry5949.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     assertArrayEquals(content, input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             deleteTemporaryArchive(archivePath);
@@ -5805,9 +5805,9 @@ public final class ZipArkivoFileSystemTest {
                     new ByteArrayInputStream(archive),
                     readOptions(password)
             )) {
-                var readerEntry5990 = java.util.Objects.requireNonNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 IOException exception = assertThrows(IOException.class, () -> {
-                    try (var input = readerEntry5990.openInputStream()) {
+                    try (var input = reader.openInputStream()) {
                         input.readAllBytes();
                     }
                 });
@@ -5856,14 +5856,14 @@ public final class ZipArkivoFileSystemTest {
             }
 
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-                var readerEntry6041 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes attributes = readerEntry6041.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
 
                 assertEquals("bad-aes.txt", attributes.path());
                 assertEquals(ZipMethod.of(99), attributes.method());
                 assertEquals(unknownAes, attributes.encryption());
                 IOException exception = assertThrows(IOException.class, () -> {
-                    try (var input = readerEntry6041.openInputStream()) {
+                    try (var input = reader.openInputStream()) {
                         input.readAllBytes();
                     }
                 });
@@ -5892,14 +5892,14 @@ public final class ZipArkivoFileSystemTest {
             }
 
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-                var readerEntry6077 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes attributes = readerEntry6077.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
 
                 assertEquals("unencrypted-aes.txt", attributes.path());
                 assertEquals(ZipMethod.of(99), attributes.method());
                 assertEquals(ZipEncryption.none(), attributes.encryption());
                 IOException exception = assertThrows(IOException.class, () -> {
-                    try (var input = readerEntry6077.openInputStream()) {
+                    try (var input = reader.openInputStream()) {
                         input.readAllBytes();
                     }
                 });
@@ -5929,14 +5929,14 @@ public final class ZipArkivoFileSystemTest {
             }
 
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-                var readerEntry6114 = java.util.Objects.requireNonNull(reader.nextEntry());
-                ZipArkivoEntryAttributes attributes = readerEntry6114.attributes(ZipArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
 
                 assertEquals("bad-aes.txt", attributes.path());
                 assertEquals(ZipMethod.of(99), attributes.method());
                 assertEquals(unknownAes, attributes.encryption());
                 IOException exception = assertThrows(IOException.class, () -> {
-                    try (var input = readerEntry6114.openInputStream()) {
+                    try (var input = reader.openInputStream()) {
                         input.readAllBytes();
                     }
                 });
@@ -7502,12 +7502,12 @@ public final class ZipArkivoFileSystemTest {
             assertThrows(UnsupportedOperationException.class, discoveredPaths::clear);
 
             try (ZipArkivoStreamingReader reader = ZipArkivoStreamingReader.open(archivePath)) {
-                var readerEntry7709 = java.util.Objects.requireNonNull(reader.nextEntry());
-                assertEquals("hello.txt", readerEntry7709.attributes(ZipArkivoEntryAttributes.class).path());
-                try (InputStream input = readerEntry7709.openInputStream()) {
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                assertEquals("hello.txt", reader.readAttributes(ZipArkivoEntryAttributes.class).path());
+                try (InputStream input = reader.openInputStream()) {
                     assertEquals("split", new String(input.readAllBytes(), StandardCharsets.UTF_8));
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {

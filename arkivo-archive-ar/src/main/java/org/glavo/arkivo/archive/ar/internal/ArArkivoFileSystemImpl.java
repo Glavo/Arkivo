@@ -8,16 +8,13 @@ import org.glavo.arkivo.archive.internal.ArchiveOptions;
 import org.glavo.arkivo.archive.internal.ArchiveEnvironmentOptions;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
-import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.ar.ArArkivoEntryAttributes;
 import org.glavo.arkivo.archive.ar.ArArkivoFileSystem;
-import org.glavo.arkivo.archive.ar.internal.ArArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingReader;
 import org.glavo.arkivo.archive.ar.ArArkivoStreamingWriter;
 import org.glavo.arkivo.archive.internal.ArkivoFileStoreAttributes;
@@ -2139,31 +2136,25 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
         nodes.put("", root);
 
         try (ArArkivoStreamingReader reader = new ArArkivoStreamingReaderImpl(input, options)) {
-            while (true) {
-                @Nullable ArkivoStreamingReader.Entry entry = reader.nextEntry();
-                if (entry == null) {
-                    break;
-                }
-                try (entry) {
-                    ArArkivoEntryAttributes attributes = entry.attributes(ArArkivoEntryAttributes.class);
-                    String path = normalizeEntryPath(attributes.path());
-                    ensureParents(nodes, path);
-                    @Nullable ArkivoStoredContent content = null;
-                    if (attributes.size() > 0L) {
-                        try (InputStream entryInput = entry.openInputStream()) {
-                            content = StoredContentSupport.storeInput(
-                                    editStorage,
-                                    ownedContents,
-                                    path,
-                                    attributes.size(),
-                                    entryInput
-                            );
-                        }
+            while (reader.next()) {
+                ArArkivoEntryAttributes attributes = reader.readAttributes(ArArkivoEntryAttributes.class);
+                String path = normalizeEntryPath(attributes.path());
+                ensureParents(nodes, path);
+                @Nullable ArkivoStoredContent content = null;
+                if (attributes.size() > 0L) {
+                    try (InputStream entryInput = reader.openInputStream()) {
+                        content = StoredContentSupport.storeInput(
+                                editStorage,
+                                ownedContents,
+                                path,
+                                attributes.size(),
+                                entryInput
+                        );
                     }
-                    long contentSize = content != null ? content.size() : 0L;
-                    ArArkivoEntryAttributes nodeAttributes = copyAttributes(attributes, path, contentSize);
-                    putNode(nodes, new Node(path, nodeAttributes, nodeAttributes.isDirectory(), content, false));
                 }
+                long contentSize = content != null ? content.size() : 0L;
+                ArArkivoEntryAttributes nodeAttributes = copyAttributes(attributes, path, contentSize);
+                putNode(nodes, new Node(path, nodeAttributes, nodeAttributes.isDirectory(), content, false));
             }
         }
         return nodes;

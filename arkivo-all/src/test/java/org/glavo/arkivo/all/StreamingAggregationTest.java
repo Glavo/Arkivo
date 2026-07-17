@@ -113,7 +113,7 @@ final class StreamingAggregationTest {
         TrackingInputStream rarSource = new TrackingInputStream(rarSignature);
         try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader("rar", rarSource)) {
             assertInstanceOf(RarArkivoStreamingReader.class, reader);
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
         assertEquals(1, rarSource.closeCount());
     }
@@ -311,7 +311,7 @@ final class StreamingAggregationTest {
                 (ArkivoVolumeSource) source
         )) {
             assertInstanceOf(RarArkivoStreamingReader.class, reader);
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
 
         assertEquals(1, source.closeCount());
@@ -1390,13 +1390,13 @@ final class StreamingAggregationTest {
 
     /// Verifies and consumes one streaming archive entry with the expected content.
     private static void assertEntry(ArkivoStreamingReader reader, byte[] expectedContent) throws IOException {
-        var readerEntry1590 = java.util.Objects.requireNonNull(reader.nextEntry());
-        BasicFileAttributes attributes = readerEntry1590.attributes(BasicFileAttributes.class);
+        org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+        BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);
         assertTrue(attributes.isRegularFile());
-        try (InputStream body = readerEntry1590.openInputStream()) {
+        try (InputStream body = reader.openInputStream()) {
             assertArrayEquals(expectedContent, body.readAllBytes());
         }
-        org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+        org.junit.jupiter.api.Assertions.assertFalse(reader.next());
     }
 
     /// Opens an archive file system over one owned seekable channel.

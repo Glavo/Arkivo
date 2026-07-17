@@ -75,24 +75,24 @@ public final class RarLegacyEncryptionTest {
                 new ByteArrayInputStream(RAR20_ARCHIVE),
                 passwordOptions(PASSWORD)
         )) {
-            var readerEntry84 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes first = readerEntry84.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes first = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals("FILE1.TXT", first.path());
             assertEquals(true, first.isEncrypted());
             assertEquals(3, first.compressionMethod());
-            try (var input = readerEntry84.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals("file1\r\n".getBytes(StandardCharsets.US_ASCII), input.readAllBytes());
             }
 
-            var readerEntry93 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes second = readerEntry93.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes second = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals("FILE2.TXT", second.path());
             assertEquals(true, second.isEncrypted());
             assertEquals(3, second.compressionMethod());
-            try (var input = readerEntry93.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals("file2\r\n".getBytes(StandardCharsets.US_ASCII), input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -119,14 +119,14 @@ public final class RarLegacyEncryptionTest {
                 new ByteArrayInputStream(archive),
                 passwordOptions(PASSWORD)
         )) {
-            var readerEntry128 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes attributes = readerEntry128.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals(0, attributes.compressionMethod());
             assertEquals(true, attributes.isEncrypted());
-            try (var input = readerEntry128.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -153,11 +153,11 @@ public final class RarLegacyEncryptionTest {
                 Channels.newChannel(new ByteArrayInputStream(archive)),
                 passwordOptions(PASSWORD)
         )) {
-            var readerEntry162 = java.util.Objects.requireNonNull(reader.nextEntry());
-            try (var input = readerEntry162.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -169,8 +169,8 @@ public final class RarLegacyEncryptionTest {
                 new ByteArrayInputStream(RAR20_ARCHIVE),
                 passwordOptions(wrongPassword)
         )) {
-            var readerEntry178 = java.util.Objects.requireNonNull(reader.nextEntry());
-            var input = readerEntry178.openInputStream();
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            var input = reader.openInputStream();
             IOException exception = assertThrows(IOException.class, input::readAllBytes);
             assertEquals(true, exception.getMessage() != null && !exception.getMessage().isEmpty());
             assertThrows(IOException.class, input::close);

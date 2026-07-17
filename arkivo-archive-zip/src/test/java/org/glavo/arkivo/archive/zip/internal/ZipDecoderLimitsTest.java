@@ -6,7 +6,6 @@ package org.glavo.arkivo.archive.zip.internal;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArchiveReadOptions;
 import org.glavo.arkivo.archive.ArchiveUpdateOptions;
-import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.zip.ZipArchiveOptions;
 import org.glavo.arkivo.archive.zip.ZipArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
@@ -79,10 +78,10 @@ public final class ZipDecoderLimitsTest {
                 new ByteArrayInputStream(archive),
                 readOptions(limitedWindow())
         )) {
-            ArkivoStreamingReader.Entry entry = Objects.requireNonNull(reader.nextEntry());
+            assertTrue(reader.next());
             DecompressionWindowLimitException exception = assertThrows(
                     DecompressionWindowLimitException.class,
-                    entry::openInputStream
+                    reader::openInputStream
             );
             assertWindowLimit(exception);
         }

@@ -260,12 +260,12 @@ public final class RarArkivoStreamingReaderTest {
                 Channels.newChannel(new ByteArrayInputStream(archive)),
                 options
         )) {
-            for (var readerEntry264 = reader.nextEntry(); readerEntry264 != null; readerEntry264 = reader.nextEntry()) {
-                BasicFileAttributes attributes = readerEntry264.attributes(BasicFileAttributes.class);
+            while (reader.next()) {
+                BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);
                 if (!attributes.isRegularFile()) {
                     continue;
                 }
-                try (InputStream body = readerEntry264.openInputStream()) {
+                try (InputStream body = reader.openInputStream()) {
                     byte[] bytes = body.readNBytes((1 << 20) + 1);
                     if (bytes.length > 1 << 20) {
                         throw new IOException("Malformed RAR exceeded the defensive output bound");
@@ -512,11 +512,11 @@ public final class RarArkivoStreamingReaderTest {
                         ArchiveReadLimits.builder().maximumEntryCount(1L).build()
                 ))
         )) {
-            var readerEntry517 = java.util.Objects.requireNonNull(reader.nextEntry());
-            try (InputStream input = readerEntry517.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            try (InputStream input = reader.openInputStream()) {
                 assertArrayEquals(first, input.readAllBytes());
             }
-            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::nextEntry);
+            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
             assertEquals(ArkivoReadLimitKind.ENTRY_COUNT, exception.kind());
             assertEquals(1L, exception.maximum());
             assertEquals(2L, exception.actual());
@@ -560,13 +560,13 @@ public final class RarArkivoStreamingReaderTest {
                         ArchiveReadLimits.builder().maximumMetadataSize(8L).build()
                 ))
         )) {
-            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::nextEntry);
+            ArkivoReadLimitException exception = assertThrows(ArkivoReadLimitException.class, reader::next);
             assertEquals(ArkivoReadLimitKind.METADATA_SIZE, exception.kind());
             assertEquals(8L, exception.maximum());
             assertTrue(exception.actual() > 8L);
             assertNull(exception.entryPath());
 
-            ArkivoReadLimitException repeated = assertThrows(ArkivoReadLimitException.class, reader::nextEntry);
+            ArkivoReadLimitException repeated = assertThrows(ArkivoReadLimitException.class, reader::next);
             assertEquals(exception.kind(), repeated.kind());
             assertEquals(exception.maximum(), repeated.maximum());
             assertEquals(exception.actual(), repeated.actual());
@@ -586,18 +586,18 @@ public final class RarArkivoStreamingReaderTest {
         ArrayList<String> paths = new ArrayList<>();
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry593 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes directory = readerEntry593.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes directory = reader.readAttributes(RarArkivoEntryAttributes.class);
             paths.add(directory.path());
             assertEquals("dir/", directory.path());
             assertEquals(true, directory.isDirectory());
             assertEquals(040755, directory.fileAttributes());
             assertEquals(FileTime.fromMillis(1_700_000_000_000L), directory.lastModifiedTime());
 
-            var readerEntry601 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes file = readerEntry601.attributes(RarArkivoEntryAttributes.class);
-            BasicFileAttributes basicFile = readerEntry601.attributes(BasicFileAttributes.class);
-            PosixFileAttributes posixFile = readerEntry601.attributes(PosixFileAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes file = reader.readAttributes(RarArkivoEntryAttributes.class);
+            BasicFileAttributes basicFile = reader.readAttributes(BasicFileAttributes.class);
+            PosixFileAttributes posixFile = reader.readAttributes(PosixFileAttributes.class);
             paths.add(file.path());
             assertEquals("dir/hello.txt", file.path());
             assertEquals(true, file.isRegularFile());
@@ -625,12 +625,12 @@ public final class RarArkivoStreamingReaderTest {
                     ),
                     posixFile.permissions()
             );
-            try (var input = readerEntry601.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(first, input.readAllBytes());
             }
 
-            var readerEntry636 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes link = readerEntry636.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes link = reader.readAttributes(RarArkivoEntryAttributes.class);
             paths.add(link.path());
             assertEquals("link", link.path());
             assertEquals(true, link.isSymbolicLink());
@@ -640,11 +640,11 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals("dir/hello.txt", link.redirectionTarget());
             assertEquals(false, link.redirectionTargetDirectory());
             assertNull(link.userName());
-            try (var input = readerEntry636.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(new byte[0], input.readAllBytes());
             }
 
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
 
         assertEquals(List.of("dir/", "dir/hello.txt", "link"), paths);
@@ -674,8 +674,8 @@ public final class RarArkivoStreamingReaderTest {
         );
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry681 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes attributes = readerEntry681.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals("split.txt", attributes.path());
             assertEquals(firstPart.length, attributes.packedSize());
             assertEquals(content.length, attributes.unpackedSize());
@@ -683,24 +683,24 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals(false, attributes.continuesFromPreviousVolume());
             assertEquals(true, attributes.continuesInNextVolume());
 
-            try (var input = readerEntry681.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
-            assertEquals("split.txt", readerEntry681.attributes(RarArkivoEntryAttributes.class).path());
+            assertEquals("split.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
 
-            var readerEntry695 = java.util.Objects.requireNonNull(reader.nextEntry());
-            assertEquals("after.txt", readerEntry695.attributes(RarArkivoEntryAttributes.class).path());
-            try (var input = readerEntry695.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals("after.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals("after".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry704 = java.util.Objects.requireNonNull(reader.nextEntry());
-            var readerEntry705 = java.util.Objects.requireNonNull(reader.nextEntry());
-            assertEquals("after.txt", readerEntry705.attributes(RarArkivoEntryAttributes.class).path());
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals("after.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -720,13 +720,13 @@ public final class RarArkivoStreamingReaderTest {
         ));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry727 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes attributes = readerEntry727.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals(true, attributes.continuesFromPreviousVolume());
 
-            IOException exception = assertThrows(IOException.class, readerEntry727::openInputStream);
+            IOException exception = assertThrows(IOException.class, reader::openInputStream);
             assertEquals(true, exception.getMessage().contains("previous volume"));
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -761,8 +761,8 @@ public final class RarArkivoStreamingReaderTest {
         );
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry768 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes hardLink = readerEntry768.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes hardLink = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals("hard-link", hardLink.path());
             assertEquals(true, hardLink.isRegularFile());
             assertEquals(false, hardLink.isSymbolicLink());
@@ -772,12 +772,12 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals(0, hardLink.redirectionFlags());
             assertEquals("dir/hello.txt", hardLink.redirectionTarget());
             assertEquals(false, hardLink.redirectionTargetDirectory());
-            try (var input = readerEntry768.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(new byte[0], input.readAllBytes());
             }
 
-            var readerEntry783 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes fileCopy = readerEntry783.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes fileCopy = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals("file-copy", fileCopy.path());
             assertEquals(true, fileCopy.isRegularFile());
             assertEquals(false, fileCopy.isSymbolicLink());
@@ -787,12 +787,12 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals(0, fileCopy.redirectionFlags());
             assertEquals("dir/hello.txt", fileCopy.redirectionTarget());
             assertEquals(false, fileCopy.redirectionTargetDirectory());
-            try (var input = readerEntry783.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(new byte[0], input.readAllBytes());
             }
 
-            var readerEntry798 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes junction = readerEntry798.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes junction = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals("junction", junction.path());
             assertEquals(false, junction.isRegularFile());
             assertEquals(false, junction.isSymbolicLink());
@@ -801,11 +801,11 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals(RarArkivoEntryAttributes.REDIRECTION_FLAG_TARGET_DIRECTORY, junction.redirectionFlags());
             assertEquals("target-dir", junction.redirectionTarget());
             assertEquals(true, junction.redirectionTargetDirectory());
-            try (var input = readerEntry798.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(new byte[0], input.readAllBytes());
             }
 
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -1255,18 +1255,18 @@ public final class RarArkivoStreamingReaderTest {
             assertThrows(UnsupportedOperationException.class, discoveredPaths::clear);
 
             try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(firstVolume)) {
-                var readerEntry1262 = java.util.Objects.requireNonNull(reader.nextEntry());
-                assertEquals("split.txt", readerEntry1262.attributes(RarArkivoEntryAttributes.class).path());
-                try (InputStream input = readerEntry1262.openInputStream()) {
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                assertEquals("split.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
+                try (InputStream input = reader.openInputStream()) {
                     assertArrayEquals(content, input.readAllBytes());
                 }
 
-                var readerEntry1268 = java.util.Objects.requireNonNull(reader.nextEntry());
-                assertEquals("after.txt", readerEntry1268.attributes(RarArkivoEntryAttributes.class).path());
-                try (InputStream input = readerEntry1268.openInputStream()) {
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                assertEquals("after.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
+                try (InputStream input = reader.openInputStream()) {
                     assertArrayEquals("after".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             Files.deleteIfExists(secondVolume);
@@ -1322,18 +1322,18 @@ public final class RarArkivoStreamingReaderTest {
         });
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(source)) {
-            var readerEntry1329 = java.util.Objects.requireNonNull(reader.nextEntry());
-            assertEquals("split.txt", readerEntry1329.attributes(RarArkivoEntryAttributes.class).path());
-            try (InputStream input = readerEntry1329.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals("split.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
+            try (InputStream input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
 
-            var readerEntry1335 = java.util.Objects.requireNonNull(reader.nextEntry());
-            assertEquals("after.txt", readerEntry1335.attributes(RarArkivoEntryAttributes.class).path());
-            try (InputStream input = readerEntry1335.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals("after.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
+            try (InputStream input = reader.openInputStream()) {
                 assertArrayEquals("after".getBytes(StandardCharsets.UTF_8), input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
 
         assertEquals(1, source.closeCount());
@@ -1415,15 +1415,15 @@ public final class RarArkivoStreamingReaderTest {
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive)
         )) {
-            var readerEntry1421 = java.util.Objects.requireNonNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             assertEquals(
                     3,
-                    readerEntry1421.attributes(RarArkivoEntryAttributes.class).compressionMethod()
+                    reader.readAttributes(RarArkivoEntryAttributes.class).compressionMethod()
             );
-            try (InputStream input = readerEntry1421.openInputStream()) {
+            try (InputStream input = reader.openInputStream()) {
                 assertArrayEquals(RAR5_COMPRESSED_CONTENT, input.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -1447,9 +1447,9 @@ public final class RarArkivoStreamingReaderTest {
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive)
         )) {
-            var readerEntry1453 = java.util.Objects.requireNonNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             IOException exception = assertThrows(IOException.class, () -> {
-                try (InputStream input = readerEntry1453.openInputStream()) {
+                try (InputStream input = reader.openInputStream()) {
                     input.readAllBytes();
                 }
             });
@@ -1888,8 +1888,8 @@ public final class RarArkivoStreamingReaderTest {
                 new ByteArrayInputStream(archive),
                 rar5PasswordOptions(RAR5_PASSWORD)
         )) {
-            var readerEntry1894 = java.util.Objects.requireNonNull(reader.nextEntry());
-            var input = readerEntry1894.openInputStream();
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            var input = reader.openInputStream();
             IOException exception = assertThrows(IOException.class, input::readAllBytes);
             assertEquals(true, exception.getMessage().contains("continuation encryption state differs"));
             assertThrows(IOException.class, input::close);
@@ -1933,8 +1933,8 @@ public final class RarArkivoStreamingReaderTest {
                 new ByteArrayInputStream(archive),
                 rar5PasswordOptions(RAR5_PASSWORD)
         )) {
-            var readerEntry1939 = java.util.Objects.requireNonNull(reader.nextEntry());
-            var input = readerEntry1939.openInputStream();
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            var input = reader.openInputStream();
             IOException exception = assertThrows(IOException.class, input::readAllBytes);
             assertEquals(true, exception.getMessage().contains("Unexpected end of encrypted RAR"));
             assertThrows(IOException.class, input::close);
@@ -2129,14 +2129,14 @@ public final class RarArkivoStreamingReaderTest {
         byte[] archive = archive(compressedFile("compressed.bin", 1_700_000_000L, 0100644, new byte[]{1, 2, 3}, 6));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry2135 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes attributes = readerEntry2135.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals("compressed.bin", attributes.path());
             assertEquals(6, attributes.compressionMethod());
 
-            IOException exception = assertThrows(IOException.class, readerEntry2135::openInputStream);
+            IOException exception = assertThrows(IOException.class, reader::openInputStream);
             assertEquals(true, exception.getMessage().contains("Unsupported RAR compression method"));
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -2156,32 +2156,32 @@ public final class RarArkivoStreamingReaderTest {
                 new ByteArrayInputStream(archive),
                 options
         )) {
-            var readerEntry2162 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes attributes = readerEntry2162.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals("secret.txt", attributes.path());
             assertEquals(true, attributes.isEncrypted());
             assertEquals(content.length, attributes.unpackedSize());
             assertEquals((content.length + 15) & ~15, attributes.packedSize());
-            try (var body = readerEntry2162.openInputStream()) {
+            try (var body = reader.openInputStream()) {
                 assertArrayEquals(content, body.readAllBytes());
             }
-            var readerEntry2171 = java.util.Objects.requireNonNull(reader.nextEntry());
-            try (var body = readerEntry2171.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            try (var body = reader.openInputStream()) {
                 assertArrayEquals(after, body.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
                 options
         )) {
-            var readerEntry2182 = java.util.Objects.requireNonNull(reader.nextEntry());
-            try (var body = readerEntry2182.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            try (var body = reader.openInputStream()) {
                 assertArrayEquals(Arrays.copyOf(content, 4), body.readNBytes(4));
             }
-            var readerEntry2186 = java.util.Objects.requireNonNull(reader.nextEntry());
-            assertEquals("after.txt", readerEntry2186.attributes(RarArkivoEntryAttributes.class).path());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals("after.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
         }
 
         Path archivePath = createTemporaryArchivePath("rar3-encrypted-entry-");
@@ -2205,14 +2205,14 @@ public final class RarArkivoStreamingReaderTest {
                 Channels.newChannel(new ByteArrayInputStream(archive)),
                 rar3PasswordOptions(RAR3_PASSWORD)
         )) {
-            var readerEntry2211 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes attributes = readerEntry2211.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals(true, attributes.isEncrypted());
             assertEquals((content.length + 15) & ~15, attributes.packedSize());
-            try (var body = readerEntry2211.openInputStream()) {
+            try (var body = reader.openInputStream()) {
                 assertArrayEquals(content, body.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -2227,17 +2227,17 @@ public final class RarArkivoStreamingReaderTest {
         ));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry2233 = java.util.Objects.requireNonNull(reader.nextEntry());
-            assertEquals(true, readerEntry2233.attributes(RarArkivoEntryAttributes.class).isEncrypted());
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals(true, reader.readAttributes(RarArkivoEntryAttributes.class).isEncrypted());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
                 rar3PasswordOptions("wrong".getBytes(StandardCharsets.UTF_16LE))
         )) {
-            var readerEntry2242 = java.util.Objects.requireNonNull(reader.nextEntry());
-            var body = readerEntry2242.openInputStream();
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            var body = reader.openInputStream();
             IOException exception = assertThrows(IOException.class, body::readAllBytes);
             assertEquals(true, exception.getMessage().contains("Invalid RAR entry CRC32"));
             assertThrows(IOException.class, body::close);
@@ -2308,7 +2308,7 @@ public final class RarArkivoStreamingReaderTest {
                 new ByteArrayInputStream(archive),
                 rar3PasswordOptions(RAR3_PASSWORD)
         )) {
-            IOException exception = assertThrows(IOException.class, reader::nextEntry);
+            IOException exception = assertThrows(IOException.class, reader::next);
             assertEquals(true, exception.getMessage().contains("Incorrect RAR3 archive password or corrupt encrypted header"));
         }
     }
@@ -2393,32 +2393,32 @@ public final class RarArkivoStreamingReaderTest {
                 new ByteArrayInputStream(archive),
                 options
         )) {
-            var readerEntry2396 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes attributes = readerEntry2396.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals("secret.txt", attributes.path());
             assertEquals(true, attributes.isEncrypted());
             assertEquals(content.length, attributes.unpackedSize());
             assertEquals((content.length + 15) & ~15, attributes.packedSize());
-            try (var body = readerEntry2396.openInputStream()) {
+            try (var body = reader.openInputStream()) {
                 assertArrayEquals(content, body.readAllBytes());
             }
-            var readerEntry2405 = java.util.Objects.requireNonNull(reader.nextEntry());
-            try (var body = readerEntry2405.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            try (var body = reader.openInputStream()) {
                 assertArrayEquals(after, body.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
                 options
         )) {
-            var readerEntry2416 = java.util.Objects.requireNonNull(reader.nextEntry());
-            try (var body = readerEntry2416.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            try (var body = reader.openInputStream()) {
                 assertArrayEquals(Arrays.copyOf(content, 5), body.readNBytes(5));
             }
-            var readerEntry2420 = java.util.Objects.requireNonNull(reader.nextEntry());
-            assertEquals("after.txt", readerEntry2420.attributes(RarArkivoEntryAttributes.class).path());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals("after.txt", reader.readAttributes(RarArkivoEntryAttributes.class).path());
         }
     }
 
@@ -2430,14 +2430,14 @@ public final class RarArkivoStreamingReaderTest {
                 Channels.newChannel(new ByteArrayInputStream(archive)),
                 rar5PasswordOptions(RAR5_PASSWORD)
         )) {
-            var readerEntry2433 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes attributes = readerEntry2433.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals(0L, attributes.packedSize());
             assertEquals(0L, attributes.unpackedSize());
-            try (var body = readerEntry2433.openInputStream()) {
+            try (var body = reader.openInputStream()) {
                 assertArrayEquals(new byte[0], body.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -2473,17 +2473,17 @@ public final class RarArkivoStreamingReaderTest {
         ));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry2476 = java.util.Objects.requireNonNull(reader.nextEntry());
-            assertEquals(true, readerEntry2476.attributes(RarArkivoEntryAttributes.class).isEncrypted());
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals(true, reader.readAttributes(RarArkivoEntryAttributes.class).isEncrypted());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive),
                 rar5PasswordOptions("wrong".getBytes(StandardCharsets.UTF_8))
         )) {
-            var readerEntry2485 = java.util.Objects.requireNonNull(reader.nextEntry());
-            IOException exception = assertThrows(IOException.class, readerEntry2485::openInputStream);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            IOException exception = assertThrows(IOException.class, reader::openInputStream);
             assertEquals(true, exception.getMessage().contains("Incorrect RAR5 password"));
         }
     }
@@ -2616,8 +2616,8 @@ public final class RarArkivoStreamingReaderTest {
                 new ByteArrayInputStream(archive(wrongCrc)),
                 rar5PasswordOptions(RAR5_PASSWORD)
         )) {
-            var readerEntry2616 = java.util.Objects.requireNonNull(reader.nextEntry());
-            var body = readerEntry2616.openInputStream();
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            var body = reader.openInputStream();
             IOException exception = assertThrows(IOException.class, body::readAllBytes);
             assertEquals(true, exception.getMessage().contains("Invalid RAR entry CRC32"));
             IOException closeException = assertThrows(IOException.class, body::close);
@@ -2629,8 +2629,8 @@ public final class RarArkivoStreamingReaderTest {
                 new ByteArrayInputStream(archive(wrongCrc)),
                 rar5PasswordOptions(RAR5_PASSWORD)
         )) {
-            var readerEntry2629 = java.util.Objects.requireNonNull(reader.nextEntry());
-            var body = readerEntry2629.openInputStream();
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            var body = reader.openInputStream();
             assertEquals(true, body.read() >= 0);
             IOException exception = assertThrows(IOException.class, body::close);
             assertEquals(true, exception.getMessage().contains("Invalid RAR entry CRC32"));
@@ -2656,13 +2656,13 @@ public final class RarArkivoStreamingReaderTest {
         ));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry2656 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes attributes = readerEntry2656.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
 
             assertEquals(Instant.ofEpochSecond(1_700_000_000L, 123_456_789L), attributes.lastModifiedTime().toInstant());
             assertEquals(Instant.ofEpochSecond(1_700_000_001L, 987_654_321L), attributes.creationTime().toInstant());
             assertEquals(Instant.ofEpochSecond(1_700_000_002L, 1L), attributes.lastAccessTime().toInstant());
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -2682,13 +2682,13 @@ public final class RarArkivoStreamingReaderTest {
         ));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry2682 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes attributes = readerEntry2682.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
 
             assertEquals(Instant.ofEpochSecond(1_700_000_010L, 100L), attributes.lastModifiedTime().toInstant());
             assertEquals(Instant.ofEpochSecond(1_700_000_011L, 200L), attributes.creationTime().toInstant());
             assertEquals(Instant.ofEpochSecond(1_700_000_012L, 300L), attributes.lastAccessTime().toInstant());
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -2705,14 +2705,14 @@ public final class RarArkivoStreamingReaderTest {
         ));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry2705 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes attributes = readerEntry2705.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes attributes = reader.readAttributes(RarArkivoEntryAttributes.class);
 
             byte @Nullable [] firstHash = attributes.blake2spHash();
             assertArrayEquals(hash, firstHash);
             Objects.requireNonNull(firstHash, "firstHash")[0] = 99;
             assertArrayEquals(hash, attributes.blake2spHash());
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -2732,9 +2732,9 @@ public final class RarArkivoStreamingReaderTest {
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive)
         )) {
-            var readerEntry2732 = java.util.Objects.requireNonNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             IOException exception = assertThrows(IOException.class, () -> {
-                try (InputStream input = readerEntry2732.openInputStream()) {
+                try (InputStream input = reader.openInputStream()) {
                     input.readAllBytes();
                 }
             });
@@ -2761,8 +2761,8 @@ public final class RarArkivoStreamingReaderTest {
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive)
         )) {
-            var readerEntry2761 = java.util.Objects.requireNonNull(reader.nextEntry());
-            IOException exception = assertThrows(IOException.class, reader::nextEntry);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            IOException exception = assertThrows(IOException.class, reader::next);
             assertEquals(true, exception.getMessage().contains("BLAKE2sp"));
         }
     }
@@ -2773,10 +2773,10 @@ public final class RarArkivoStreamingReaderTest {
         byte[] archive = archive(storedFile("no-hash.txt", 0, 0100644, new byte[0], null));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry2773 = java.util.Objects.requireNonNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
 
-            assertNull(readerEntry2773.attributes(RarArkivoEntryAttributes.class).blake2spHash());
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            assertNull(reader.readAttributes(RarArkivoEntryAttributes.class).blake2spHash());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -2786,7 +2786,7 @@ public final class RarArkivoStreamingReaderTest {
         byte[] archive = archive(storedFile("../evil.txt", 0, 0100644, new byte[0], null));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            IOException exception = assertThrows(IOException.class, reader::nextEntry);
+            IOException exception = assertThrows(IOException.class, reader::next);
 
             assertEquals(true, exception.getMessage().contains("must not contain .."));
         }
@@ -2812,9 +2812,9 @@ public final class RarArkivoStreamingReaderTest {
                 new ByteArrayInputStream(archive),
                 RarArchiveOptions.READ_DEFAULTS.withLegacyCharsetDetector(detector)
         )) {
-            var readerEntry2815 = java.util.Objects.requireNonNull(reader.nextEntry());
-            assertEquals(path, readerEntry2815.attributes(RarArkivoEntryAttributes.class).path());
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals(path, reader.readAttributes(RarArkivoEntryAttributes.class).path());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -2831,8 +2831,8 @@ public final class RarArkivoStreamingReaderTest {
                 new ByteArrayInputStream(archive),
                 RarArchiveOptions.READ_DEFAULTS.withLegacyCharsetDetector(detector)
         )) {
-            var readerEntry2837 = java.util.Objects.requireNonNull(reader.nextEntry());
-            assertEquals(path, readerEntry2837.attributes(RarArkivoEntryAttributes.class).path());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals(path, reader.readAttributes(RarArkivoEntryAttributes.class).path());
         }
     }
 
@@ -2852,16 +2852,16 @@ public final class RarArkivoStreamingReaderTest {
         );
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry2858 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes directory = readerEntry2858.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes directory = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals("dir/", directory.path());
             assertEquals(true, directory.isDirectory());
             assertEquals(RarArkivoEntryAttributes.HOST_OS_UNIX, directory.hostOs());
             assertEquals(0, directory.compressionMethod());
             assertEquals(FileTime.from(Instant.ofEpochSecond(modificationTime)), directory.lastModifiedTime());
 
-            var readerEntry2866 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes file = readerEntry2866.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes file = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals("dir/hello.txt", file.path());
             assertEquals(true, file.isRegularFile());
             assertEquals(RarArkivoEntryAttributes.HOST_OS_UNIX, file.hostOs());
@@ -2870,33 +2870,33 @@ public final class RarArkivoStreamingReaderTest {
             assertEquals(content.length, file.unpackedSize());
             assertEquals(crc32(content), file.dataCrc32());
             assertEquals(FileTime.from(Instant.ofEpochSecond(modificationTime)), file.lastModifiedTime());
-            try (var input = readerEntry2866.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
             }
 
-            var readerEntry2880 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes unicodeFile = readerEntry2880.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes unicodeFile = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals(unicodePath, unicodeFile.path());
             assertEquals(true, unicodeFile.isRegularFile());
             assertEquals(0, unicodeFile.compressionMethod());
             assertEquals(unicodeContent.length, unicodeFile.packedSize());
             assertEquals(unicodeContent.length, unicodeFile.unpackedSize());
             assertEquals(crc32(unicodeContent), unicodeFile.dataCrc32());
-            try (var input = readerEntry2880.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(unicodeContent, input.readAllBytes());
             }
 
-            var readerEntry2892 = java.util.Objects.requireNonNull(reader.nextEntry());
-            RarArkivoEntryAttributes link = readerEntry2892.attributes(RarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            RarArkivoEntryAttributes link = reader.readAttributes(RarArkivoEntryAttributes.class);
             assertEquals("link", link.path());
             assertEquals(true, link.isSymbolicLink());
             assertEquals("dir/hello.txt", link.linkName());
             assertEquals(RarArkivoEntryAttributes.REDIRECTION_TYPE_UNIX_SYMLINK, link.redirectionType());
-            try (var input = readerEntry2892.openInputStream()) {
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(new byte[0], input.readAllBytes());
             }
 
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
 
         Path archivePath = createTemporaryArchivePath("rar4-fs-");
@@ -2919,10 +2919,10 @@ public final class RarArkivoStreamingReaderTest {
         byte[] archive = archive(storedFileWithCrc("bad.txt", 0, 0100644, "bad".getBytes(StandardCharsets.UTF_8), 0));
 
         try (RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(new ByteArrayInputStream(archive))) {
-            var readerEntry2925 = java.util.Objects.requireNonNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
 
             IOException exception = assertThrows(IOException.class, () -> {
-                try (var input = readerEntry2925.openInputStream()) {
+                try (var input = reader.openInputStream()) {
                     input.readAllBytes();
                 }
             });
@@ -2937,11 +2937,11 @@ public final class RarArkivoStreamingReaderTest {
                 storedFile("hello.txt", 0, 0100644, "hello".getBytes(StandardCharsets.UTF_8), null)
         ));
         RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(source);
-        var readerEntry2943 = java.util.Objects.requireNonNull(reader.nextEntry());
+        org.junit.jupiter.api.Assertions.assertTrue(reader.next());
 
         IOException exception = assertThrows(IOException.class, reader::close);
         assertEquals("close failed", exception.getMessage());
-        assertThrows(IOException.class, reader::nextEntry);
+        assertThrows(IOException.class, reader::next);
         assertEquals(1, source.closeCount());
 
         reader.close();
@@ -2965,7 +2965,7 @@ public final class RarArkivoStreamingReaderTest {
                 true
         );
         RarArkivoStreamingReader reader = RarArkivoStreamingReader.open(source);
-        var readerEntry2971 = java.util.Objects.requireNonNull(reader.nextEntry());
+        org.junit.jupiter.api.Assertions.assertTrue(reader.next());
 
         IOException exception = assertThrows(IOException.class, reader::close);
         assertEquals("source close failed", exception.getMessage());

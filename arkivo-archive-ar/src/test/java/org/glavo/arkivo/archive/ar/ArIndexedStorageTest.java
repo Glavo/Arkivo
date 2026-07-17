@@ -67,8 +67,8 @@ public final class ArIndexedStorageTest {
         assertEquals(1, storage.closeCount());
         try (ArArkivoStreamingReader reader =
                      ArArkivoStreamingReader.open(new ByteArrayInputStream(archive.toByteArray()))) {
-            var readerEntry71 = java.util.Objects.requireNonNull(reader.nextEntry());
-            try (var input = readerEntry71.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(expected, input.readAllBytes());
             }
         }

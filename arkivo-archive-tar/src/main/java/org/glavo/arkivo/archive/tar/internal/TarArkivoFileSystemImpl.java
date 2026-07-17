@@ -10,11 +10,9 @@ import org.glavo.arkivo.archive.internal.ArchiveOption;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.ArkivoCommitTarget;
 import org.glavo.arkivo.archive.ArkivoEditStorage;
-import org.glavo.arkivo.archive.ArkivoFileSystem;
 import org.glavo.arkivo.archive.ArkivoFileSystemThreadSafety;
 import org.glavo.arkivo.archive.ArkivoSeekableChannelSource;
 import org.glavo.arkivo.archive.ArkivoStoredContent;
-import org.glavo.arkivo.archive.ArkivoStreamingReader;
 import org.glavo.arkivo.archive.ArkivoStreamingWriter;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
@@ -30,7 +28,6 @@ import org.glavo.arkivo.archive.internal.StoredContentSupport;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributeView;
 import org.glavo.arkivo.archive.tar.TarArkivoEntryAttributes;
 import org.glavo.arkivo.archive.tar.TarArkivoFileSystem;
-import org.glavo.arkivo.archive.tar.internal.TarArkivoFileSystemProvider;
 import org.glavo.arkivo.archive.tar.TarArkivoFormat;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingReader;
 import org.glavo.arkivo.archive.tar.TarArkivoStreamingWriter;
@@ -2266,47 +2263,41 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         nodes.put("", new Node("", syntheticDirectoryAttributes("/"), true, null, true));
 
         try (TarArkivoStreamingReader reader = new TarArkivoStreamingReaderImpl(input, options)) {
-            while (true) {
-                @Nullable ArkivoStreamingReader.Entry entry = reader.nextEntry();
-                if (entry == null) {
-                    break;
-                }
-                try (entry) {
-                    TarArkivoEntryAttributes attributes = entry.attributes(TarArkivoEntryAttributes.class);
-                    String path = normalizeEntryPath(attributes.path());
-                    ensureParents(nodes, path);
-                    TarArkivoEntryAttributes nodeAttributes = attributes;
-                    @Nullable ArkivoStoredContent content = null;
-                    if (attributes.isHardLink()) {
-                        String targetPath = normalizeHardLinkTargetPath(attributes);
-                        @Nullable Node target = nodes.get(targetPath);
-                        if (target == null || !target.attributes().isRegularFile()) {
-                            throw new IOException("TAR hard link target is not available: " + targetPath);
-                        }
-                        content = target.content();
-                        nodeAttributes = attributesWithSize(attributes, target.contentSize());
-                    } else if (attributes instanceof TarEntryAttributes internalAttributes
-                            && internalAttributes.bodySize() > 0L) {
-                        try (InputStream entryInput = entry.openInputStream()) {
-                            content = StoredContentSupport.storeInput(
-                                    editStorage,
-                                    ownedContents,
-                                    path,
-                                    internalAttributes.bodySize(),
-                                    entryInput
-                            );
-                        }
+            while (reader.next()) {
+                TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
+                String path = normalizeEntryPath(attributes.path());
+                ensureParents(nodes, path);
+                TarArkivoEntryAttributes nodeAttributes = attributes;
+                @Nullable ArkivoStoredContent content = null;
+                if (attributes.isHardLink()) {
+                    String targetPath = normalizeHardLinkTargetPath(attributes);
+                    @Nullable Node target = nodes.get(targetPath);
+                    if (target == null || !target.attributes().isRegularFile()) {
+                        throw new IOException("TAR hard link target is not available: " + targetPath);
                     }
-                    long contentSize = content != null ? content.size() : 0L;
-                    nodeAttributes = copyAttributes(
-                            nodeAttributes,
-                            path,
-                            nodeAttributes.typeFlag(),
-                            nodeAttributes.linkName(),
-                            contentSize
-                    );
-                    putNode(nodes, new Node(path, nodeAttributes, nodeAttributes.isDirectory(), content, false));
+                    content = target.content();
+                    nodeAttributes = attributesWithSize(attributes, target.contentSize());
+                } else if (attributes instanceof TarEntryAttributes internalAttributes
+                        && internalAttributes.bodySize() > 0L) {
+                    try (InputStream entryInput = reader.openInputStream()) {
+                        content = StoredContentSupport.storeInput(
+                                editStorage,
+                                ownedContents,
+                                path,
+                                internalAttributes.bodySize(),
+                                entryInput
+                        );
+                    }
                 }
+                long contentSize = content != null ? content.size() : 0L;
+                nodeAttributes = copyAttributes(
+                        nodeAttributes,
+                        path,
+                        nodeAttributes.typeFlag(),
+                        nodeAttributes.linkName(),
+                        contentSize
+                );
+                putNode(nodes, new Node(path, nodeAttributes, nodeAttributes.isDirectory(), content, false));
             }
         }
         return nodes;

@@ -14,7 +14,6 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
@@ -22,7 +21,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -79,16 +77,16 @@ final class TarArkivoSparseTest {
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive)
         )) {
-            var readerEntry84 = java.util.Objects.requireNonNull(reader.nextEntry());
-            BasicFileAttributes attributes = readerEntry84.attributes(BasicFileAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);
             assertEquals(logicalSize, attributes.size());
-            try (InputStream body = readerEntry84.openInputStream()) {
+            try (InputStream body = reader.openInputStream()) {
                 assertEquals(dataOffset, body.skip(dataOffset));
                 assertEquals('x', body.read());
                 assertEquals(0, body.read());
                 assertEquals(-1, body.read());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -110,20 +108,20 @@ final class TarArkivoSparseTest {
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive)
         )) {
-            var readerEntry115 = java.util.Objects.requireNonNull(reader.nextEntry());
-            TarArkivoEntryAttributes attributes = readerEntry115.attributes(TarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
             assertEquals("value.bin", attributes.path());
             assertEquals(EXPANDED_CONTENT.length, attributes.size());
-            try (InputStream body = readerEntry115.openInputStream()) {
+            try (InputStream body = reader.openInputStream()) {
                 assertArrayEquals(new byte[]{0, 0, 'a', 'b'}, body.readNBytes(4));
             }
 
-            var readerEntry123 = java.util.Objects.requireNonNull(reader.nextEntry());
-            assertEquals("next.txt", readerEntry123.attributes(TarArkivoEntryAttributes.class).path());
-            try (InputStream body = readerEntry123.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals("next.txt", reader.readAttributes(TarArkivoEntryAttributes.class).path());
+            try (InputStream body = reader.openInputStream()) {
                 assertArrayEquals("next".getBytes(StandardCharsets.UTF_8), body.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -145,8 +143,8 @@ final class TarArkivoSparseTest {
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive)
         )) {
-            var readerEntry150 = java.util.Objects.requireNonNull(reader.nextEntry());
-            TarArkivoEntryAttributes attributes = readerEntry150.attributes(TarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
             assertEquals("value.bin", attributes.path());
             assertEquals((byte) 'S', attributes.typeFlag());
             assertTrue(attributes.isRegularFile());
@@ -154,10 +152,10 @@ final class TarArkivoSparseTest {
             assertEquals(expandedContent.length, attributes.size());
             assertEquals(FileTime.from(Instant.ofEpochSecond(11L)), attributes.lastAccessTime());
             assertEquals(FileTime.from(Instant.ofEpochSecond(12L)), attributes.creationTime());
-            try (InputStream body = readerEntry150.openInputStream()) {
+            try (InputStream body = reader.openInputStream()) {
                 assertArrayEquals(expandedContent, body.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -177,17 +175,17 @@ final class TarArkivoSparseTest {
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive)
         )) {
-            var readerEntry182 = java.util.Objects.requireNonNull(reader.nextEntry());
-            try (InputStream body = readerEntry182.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            try (InputStream body = reader.openInputStream()) {
                 assertArrayEquals(new byte[]{0, 0, 'a', 'b'}, body.readNBytes(4));
             }
 
-            var readerEntry187 = java.util.Objects.requireNonNull(reader.nextEntry());
-            assertEquals("next.txt", readerEntry187.attributes(TarArkivoEntryAttributes.class).path());
-            try (InputStream body = readerEntry187.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            assertEquals("next.txt", reader.readAttributes(TarArkivoEntryAttributes.class).path());
+            try (InputStream body = reader.openInputStream()) {
                 assertArrayEquals("next".getBytes(StandardCharsets.UTF_8), body.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -262,20 +260,20 @@ final class TarArkivoSparseTest {
             }
 
             try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(Files.newInputStream(archivePath))) {
-                var readerEntry271 = java.util.Objects.requireNonNull(reader.nextEntry());
-                TarArkivoEntryAttributes attributes = readerEntry271.attributes(TarArkivoEntryAttributes.class);
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
                 assertEquals("value.bin", attributes.path());
                 assertEquals((byte) '0', attributes.typeFlag());
-                try (InputStream body = readerEntry271.openInputStream()) {
+                try (InputStream body = reader.openInputStream()) {
                     assertArrayEquals(EXPANDED_CONTENT, body.readAllBytes());
                 }
 
-                var readerEntry279 = java.util.Objects.requireNonNull(reader.nextEntry());
-                assertEquals("added.txt", readerEntry279.attributes(TarArkivoEntryAttributes.class).path());
-                try (InputStream body = readerEntry279.openInputStream()) {
+                org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+                assertEquals("added.txt", reader.readAttributes(TarArkivoEntryAttributes.class).path());
+                try (InputStream body = reader.openInputStream()) {
                     assertEquals("added", new String(body.readAllBytes(), StandardCharsets.UTF_8));
                 }
-                org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+                org.junit.jupiter.api.Assertions.assertFalse(reader.next());
             }
         } finally {
             Files.deleteIfExists(archivePath);
@@ -386,14 +384,14 @@ final class TarArkivoSparseTest {
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive)
         )) {
-            var readerEntry395 = java.util.Objects.requireNonNull(reader.nextEntry());
-            TarArkivoEntryAttributes attributes = readerEntry395.attributes(TarArkivoEntryAttributes.class);
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            TarArkivoEntryAttributes attributes = reader.readAttributes(TarArkivoEntryAttributes.class);
             assertEquals("value.bin", attributes.path());
             assertEquals(EXPANDED_CONTENT.length, attributes.size());
-            try (InputStream body = readerEntry395.openInputStream()) {
+            try (InputStream body = reader.openInputStream()) {
                 assertArrayEquals(EXPANDED_CONTENT, body.readAllBytes());
             }
-            org.junit.jupiter.api.Assertions.assertNull(reader.nextEntry());
+            org.junit.jupiter.api.Assertions.assertFalse(reader.next());
         }
     }
 
@@ -402,7 +400,7 @@ final class TarArkivoSparseTest {
         try (TarArkivoStreamingReader reader = TarArkivoStreamingReader.open(
                 new ByteArrayInputStream(archive)
         )) {
-            var readerEntry411 = reader.nextEntry();
+            reader.next();
         }
     }
 

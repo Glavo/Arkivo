@@ -45,8 +45,8 @@ public final class TarIndexedStorageTest {
         assertEquals(1, storage.closeCount());
         try (TarArkivoStreamingReader reader =
                      TarArkivoStreamingReader.open(new ByteArrayInputStream(archive.toByteArray()))) {
-            var readerEntry49 = java.util.Objects.requireNonNull(reader.nextEntry());
-            try (var input = readerEntry49.openInputStream()) {
+            org.junit.jupiter.api.Assertions.assertTrue(reader.next());
+            try (var input = reader.openInputStream()) {
                 assertArrayEquals(expected, input.readAllBytes());
             }
         }

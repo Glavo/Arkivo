@@ -25,7 +25,6 @@ org.glavo.arkivo.archive.ArkivoReadLimitKind
 org.glavo.arkivo.archive.ArkivoSeekableChannelSource
 org.glavo.arkivo.archive.ArkivoStoredContent
 org.glavo.arkivo.archive.ArkivoStreamingReader
-org.glavo.arkivo.archive.ArkivoStreamingReader$Entry
 org.glavo.arkivo.archive.ArkivoStreamingReaderFormat
 org.glavo.arkivo.archive.ArkivoStreamingWriter
 org.glavo.arkivo.archive.ArkivoStreamingWriter$Entry

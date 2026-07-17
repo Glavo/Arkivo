@@ -241,11 +241,11 @@ final class ArchiveVolumeInteroperabilityTest {
         ByteArrayOutputStream body = new ByteArrayOutputStream();
         int regularEntryCount = 0;
         try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(archivePath, options)) {
-            for (var readerEntry250 = reader.nextEntry(); readerEntry250 != null; readerEntry250 = reader.nextEntry()) {
-                BasicFileAttributes attributes = readerEntry250.attributes(BasicFileAttributes.class);
+            while (reader.next()) {
+                BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);
                 if (attributes.isRegularFile()) {
                     regularEntryCount++;
-                    try (InputStream input = readerEntry250.openInputStream()) {
+                    try (InputStream input = reader.openInputStream()) {
                         input.transferTo(body);
                     }
                 }

@@ -9,8 +9,8 @@ import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
-import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.ClosedChannelException;
@@ -20,37 +20,70 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttributeView;
 import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
-import java.util.Objects;
 import java.util.List;
+import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Verifies scoped entry handles preserve the forward-only reader and writer state machines.
+/// Verifies the forward-only reader cursor and scoped writer entry state machines.
 @NotNullByDefault
-public final class ArkivoStreamingEntryHandleTest {
-    /// Verifies advancing and closing a reader invalidate older entry handles.
+public final class ArkivoStreamingStateTest {
+    /// Verifies advancing is independent from lazy metadata access and preserves returned snapshots.
     @Test
-    void readerHandlesTrackTheCurrentEntry() throws Exception {
+    void readerCursorSeparatesAdvancementFromMetadata() throws Exception {
         TestReader reader = new TestReader();
 
-        ArkivoStreamingReader.Entry first = Objects.requireNonNull(reader.nextEntry());
-        assertEquals("first.bin", first.path());
-        assertTrue(first.attributes().isRegularFile());
-        try (InputStream input = first.openInputStream()) {
-            assertEquals(1, input.read());
-        }
+        assertThrows(IllegalStateException.class, reader::readAttributes);
+        assertThrows(IllegalStateException.class, reader::openChannel);
 
-        ArkivoStreamingReader.Entry second = Objects.requireNonNull(reader.nextEntry());
-        assertEquals("second.bin", second.path());
-        assertThrows(ClosedChannelException.class, first::attributes);
-        assertNull(reader.nextEntry());
-        assertThrows(ClosedChannelException.class, second::attributes);
+        assertTrue(reader.next());
+        assertEquals(0, reader.attributeReadCount);
+        ArchiveEntryAttributes first = reader.readAttributes();
+        assertEquals(1, reader.attributeReadCount);
+        assertEquals("first.bin", first.path());
+        assertTrue(first.isRegularFile());
+
+        assertTrue(reader.next());
+        assertEquals(1, reader.attributeReadCount);
+        assertEquals("first.bin", first.path());
+        assertEquals("second.bin", reader.readAttributes().path());
+        assertEquals(2, reader.attributeReadCount);
+
+        assertFalse(reader.next());
+        assertThrows(IllegalStateException.class, reader::readAttributes);
 
         reader.close();
+        assertTrue(reader.closed);
+        assertThrows(ClosedChannelException.class, reader::next);
+        assertThrows(ClosedChannelException.class, reader::readAttributes);
+    }
+
+    /// Verifies advancing and closing the reader close a body opened for the current cursor position.
+    @Test
+    void readerOwnsTheCurrentBodyLifecycle() throws Exception {
+        TestReader reader = new TestReader();
+
+        assertTrue(reader.next());
+        ReadableByteChannel firstBody = reader.openChannel();
+        TrackingReadableByteChannel firstDelegate = Objects.requireNonNull(reader.bodyChannel);
+        assertTrue(firstBody.isOpen());
+        assertThrows(IllegalStateException.class, reader::openChannel);
+
+        assertTrue(reader.next());
+        assertFalse(firstBody.isOpen());
+        assertFalse(firstDelegate.isOpen());
+
+        try (InputStream input = reader.openInputStream()) {
+            assertEquals(2, input.read());
+            TrackingReadableByteChannel secondDelegate = Objects.requireNonNull(reader.bodyChannel);
+            reader.close();
+
+            assertThrows(ClosedChannelException.class, input::read);
+            assertFalse(secondDelegate.isOpen());
+        }
         assertTrue(reader.closed);
     }
 
@@ -127,6 +160,12 @@ public final class ArkivoStreamingEntryHandleTest {
         /// Current entry index.
         private int index = -1;
 
+        /// Number of requested attribute materializations.
+        private int attributeReadCount;
+
+        /// Most recently opened format-specific body channel, or null before body access.
+        private @Nullable TrackingReadableByteChannel bodyChannel;
+
         /// Whether this reader has closed.
         private boolean closed;
 
@@ -140,6 +179,7 @@ public final class ArkivoStreamingEntryHandleTest {
         /// Returns current test entry attributes.
         @Override
         protected <A extends BasicFileAttributes> A readCurrentAttributes(Class<A> type) {
+            attributeReadCount++;
             TestAttributes current = attributes.get(index);
             if (!type.isInstance(current)) {
                 throw new UnsupportedOperationException("Unsupported test attribute type: " + type.getName());
@@ -150,13 +190,46 @@ public final class ArkivoStreamingEntryHandleTest {
         /// Opens a one-byte body containing the current entry number.
         @Override
         protected ReadableByteChannel openCurrentChannel() {
-            return Channels.newChannel(new ByteArrayInputStream(new byte[]{(byte) (index + 1)}));
+            TrackingReadableByteChannel channel =
+                    new TrackingReadableByteChannel(new byte[]{(byte) (index + 1)});
+            bodyChannel = channel;
+            return channel;
         }
 
         /// Marks this reader closed.
         @Override
         protected void closeReader() {
             closed = true;
+        }
+    }
+
+    /// Exposes whether a test body delegate has been closed by its owning reader.
+    @NotNullByDefault
+    private static final class TrackingReadableByteChannel implements ReadableByteChannel {
+        /// In-memory readable delegate.
+        private final ReadableByteChannel delegate;
+
+        /// Creates an open channel over the supplied bytes.
+        private TrackingReadableByteChannel(byte[] bytes) {
+            delegate = Channels.newChannel(new ByteArrayInputStream(Objects.requireNonNull(bytes, "bytes")));
+        }
+
+        /// Reads bytes from the in-memory delegate.
+        @Override
+        public int read(ByteBuffer target) throws java.io.IOException {
+            return delegate.read(Objects.requireNonNull(target, "target"));
+        }
+
+        /// Returns whether the in-memory delegate remains open.
+        @Override
+        public boolean isOpen() {
+            return delegate.isOpen();
+        }
+
+        /// Closes the in-memory delegate.
+        @Override
+        public void close() throws java.io.IOException {
+            delegate.close();
         }
     }
 

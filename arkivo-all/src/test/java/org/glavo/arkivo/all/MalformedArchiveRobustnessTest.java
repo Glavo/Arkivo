@@ -36,7 +36,6 @@ import java.util.SplittableRandom;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -192,10 +191,10 @@ final class MalformedArchiveRobustnessTest {
                 Channels.newChannel(new ByteArrayInputStream(archive)),
                 READ_OPTIONS
         )) {
-            for (var readerEntry196 = reader.nextEntry(); readerEntry196 != null; readerEntry196 = reader.nextEntry()) {
-                BasicFileAttributes attributes = readerEntry196.attributes(BasicFileAttributes.class);
+            while (reader.next()) {
+                BasicFileAttributes attributes = reader.readAttributes(BasicFileAttributes.class);
                 if (attributes.isRegularFile()) {
-                    try (ReadableByteChannel channel = readerEntry196.openChannel()) {
+                    try (ReadableByteChannel channel = reader.openChannel()) {
                         total = Math.addExact(total, consumeChannel(channel));
                     }
                     requireBounded(total);
