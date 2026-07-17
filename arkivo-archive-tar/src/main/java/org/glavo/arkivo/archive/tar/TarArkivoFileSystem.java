@@ -45,7 +45,7 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     /// Values may be a `CompressionCodec` or stable compression format name. Existing seekable archives auto-detect installed formats
     /// when this option is absent, while forward-only streaming readers treat an absent option as uncompressed because
     /// they cannot reliably undo a false compression match. New archives remain uncompressed when it is absent.
-    private static final ArchiveOption<CompressionCodec> COMPRESSION =
+    private static final ArchiveOption<CompressionCodec<?>> COMPRESSION =
             ArchiveOption.of(
                     "arkivo.tar",
                     "compression",
@@ -214,8 +214,8 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     }
 
     /// Converts a raw compression option value.
-    private static CompressionCodec compressionOptionValue(Object value) {
-        if (value instanceof CompressionCodec codec) {
+    private static CompressionCodec<?> compressionOptionValue(Object value) {
+        if (value instanceof CompressionCodec<?> codec) {
             return codec;
         }
         if (value instanceof String name) {
@@ -228,7 +228,7 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
 
     /// Returns the erased compression codec class token with its public wildcard type restored.
     @SuppressWarnings("unchecked")
-    private static Class<CompressionCodec> compressionCodecType() {
-        return (Class<CompressionCodec>) (Class<?>) CompressionCodec.class;
+    private static Class<CompressionCodec<?>> compressionCodecType() {
+        return (Class<CompressionCodec<?>>) (Class<?>) CompressionCodec.class;
     }
 }

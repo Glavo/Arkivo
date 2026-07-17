@@ -18,7 +18,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 @NotNullByDefault
 public final class BZip2Codec
         implements CompressionCodec.LevelConfigurable<BZip2Codec>,
-        CompressionCodec.Framed {
+        CompressionCodec.Framed<BZip2Codec> {
     /// The minimum BZip2 block-size level.
     public static final int MINIMUM_COMPRESSION_LEVEL = 1;
 

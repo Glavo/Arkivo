@@ -27,7 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @NotNullByDefault
 final class CompressionChannelContextTest {
     /// The identity codec used to isolate generic channel behavior.
-    private static final CompressionCodec.FlushableFramed CODEC = new IdentityCodec();
+    private static final CompressionCodec.FlushableFramed<IdentityCodec> CODEC = new IdentityCodec();
 
     /// Verifies explicit flush and frame operations with retained target ownership.
     @Test
@@ -151,7 +151,7 @@ final class CompressionChannelContextTest {
         assertFalse(CODEC instanceof CompressionCodec.LevelConfigurable<?>);
         assertFalse(CODEC instanceof CompressionCodec.StrategyConfigurable<?>);
         assertFalse(CODEC instanceof CompressionCodec.DictionaryConfigurable<?, ?>);
-        assertFalse(CODEC instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?>);
+        assertFalse(CODEC instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?, ?>);
     }
 
     /// Implements a writable byte-array channel that fails its first close attempt.
@@ -244,7 +244,7 @@ final class CompressionChannelContextTest {
     /// Implements transport-independent identity coding for generic channel tests.
     @NotNullByDefault
     private static final class IdentityCodec
-            implements CompressionCodec.FlushableFramed, CompressionFormat {
+            implements CompressionCodec.FlushableFramed<IdentityCodec>, CompressionFormat {
         /// Creates an identity codec.
         private IdentityCodec() {
         }
@@ -263,7 +263,7 @@ final class CompressionChannelContextTest {
 
         /// Returns this test object as the default codec configuration.
         @Override
-        public CompressionCodec defaultCodec() {
+        public CompressionCodec<?> defaultCodec() {
             return this;
         }
 

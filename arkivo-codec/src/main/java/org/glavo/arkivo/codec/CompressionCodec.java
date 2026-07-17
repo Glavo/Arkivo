@@ -24,8 +24,9 @@ import java.util.Objects;
 /// Implementations must be safe for concurrent use. Stateful encoding and decoding progress belongs exclusively to
 /// engines and channel contexts created by a codec.
 ///
+/// @param <C> the concrete immutable codec type represented by this configuration
 @NotNullByDefault
-public interface CompressionCodec {
+public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// The sentinel returned when a size cannot be calculated or is not known.
     long UNKNOWN_SIZE = -1L;
 
@@ -228,8 +229,9 @@ public interface CompressionCodec {
 
     /// Describes a format whose encoder can flush pending output without ending the active encoding.
     ///
+    /// @param <C> the concrete immutable codec type represented by this configuration
     @NotNullByDefault
-    interface Flushable extends CompressionCodec {
+    interface Flushable<C extends CompressionCodec<C>> extends CompressionCodec<C> {
         /// Creates a fresh flush-capable encoder.
         @Override
         CompressionEncoder.Flushable newEncoder() throws IOException;
@@ -256,8 +258,9 @@ public interface CompressionCodec {
 
     /// Describes a format composed of independently terminated, concatenable frames.
     ///
+    /// @param <C> the concrete immutable codec type represented by this configuration
     @NotNullByDefault
-    interface Framed extends CompressionCodec {
+    interface Framed<C extends CompressionCodec<C>> extends CompressionCodec<C> {
         /// Creates a fresh frame-capable encoder.
         @Override
         CompressionEncoder.Framed newEncoder() throws IOException;
@@ -369,8 +372,9 @@ public interface CompressionCodec {
 
     /// Describes a framed format whose encoder also supports nonterminal flushing.
     ///
+    /// @param <C> the concrete immutable codec type represented by this configuration
     @NotNullByDefault
-    interface FlushableFramed extends Flushable, Framed {
+    interface FlushableFramed<C extends CompressionCodec<C>> extends Flushable<C>, Framed<C> {
         /// Creates a fresh frame- and flush-capable encoder.
         @Override
         CompressionEncoder.FlushableFramed newEncoder() throws IOException;
@@ -399,7 +403,7 @@ public interface CompressionCodec {
     ///
     /// @param <C> the concrete immutable codec type returned by configuration methods
     @NotNullByDefault
-    interface LevelConfigurable<C extends CompressionCodec> extends CompressionCodec {
+    interface LevelConfigurable<C extends CompressionCodec<C>> extends CompressionCodec<C> {
         /// Returns the configured compression level.
         long compressionLevel();
 
@@ -420,7 +424,7 @@ public interface CompressionCodec {
     ///
     /// @param <C> the concrete immutable codec type returned by configuration methods
     @NotNullByDefault
-    interface StrategyConfigurable<C extends CompressionCodec> extends CompressionCodec {
+    interface StrategyConfigurable<C extends CompressionCodec<C>> extends CompressionCodec<C> {
         /// Returns the configured compression strategy.
         CompressionStrategy compressionStrategy();
 
@@ -434,9 +438,9 @@ public interface CompressionCodec {
     /// @param <D> the format-specific dictionary type accepted by this codec
     @NotNullByDefault
     interface DictionaryConfigurable<
-            C extends CompressionCodec,
+            C extends CompressionCodec<C>,
             D extends CompressionDictionary
-            > extends CompressionCodec {
+            > extends CompressionCodec<C> {
         /// Returns the configured dictionary, or `null` when dictionary-free operation is selected.
         @Nullable D dictionary();
 
@@ -449,11 +453,13 @@ public interface CompressionCodec {
 
     /// Creates encoders that can receive an exact uncompressed source size as operation-scoped metadata.
     ///
+    /// @param <C> the concrete immutable codec type represented by this configuration
     /// @param <E> the encoder capability type created by this codec
     @NotNullByDefault
     interface PledgedSourceSizeEncoderFactory<
+            C extends CompressionCodec<C>,
             E extends CompressionEncoder
-            > extends CompressionCodec {
+            > extends CompressionCodec<C> {
         /// Creates an encoder for a source with the requested exact byte count.
         ///
         /// `pledgedSourceSize` may be `CompressionCodec.UNKNOWN_SIZE` when the size is not known before encoding

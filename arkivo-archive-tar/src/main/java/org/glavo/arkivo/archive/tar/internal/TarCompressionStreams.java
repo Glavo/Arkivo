@@ -28,7 +28,7 @@ public final class TarCompressionStreams {
     /// Opens a decoded TAR input stream and closes the source if decoder setup fails.
     public static InputStream openArchiveInput(
             InputStream source,
-            @Nullable CompressionCodec compressionCodec,
+            @Nullable CompressionCodec<?> compressionCodec,
             ArchiveReadLimits readLimits
     ) throws IOException {
         Objects.requireNonNull(source, "source");
@@ -51,7 +51,7 @@ public final class TarCompressionStreams {
     /// Opens a decoded TAR channel and closes the source if decoder setup fails.
     public static ReadableByteChannel openArchiveInput(
             ReadableByteChannel source,
-            @Nullable CompressionCodec compressionCodec,
+            @Nullable CompressionCodec<?> compressionCodec,
             ArchiveReadLimits readLimits
     ) throws IOException {
         Objects.requireNonNull(source, "source");
@@ -74,7 +74,7 @@ public final class TarCompressionStreams {
     /// Opens an encoded TAR output stream and closes the target if encoder setup fails.
     public static OutputStream openArchiveOutput(
             OutputStream target,
-            @Nullable CompressionCodec compressionCodec
+            @Nullable CompressionCodec<?> compressionCodec
     ) throws IOException {
         Objects.requireNonNull(target, "target");
         if (compressionCodec == null) {
@@ -91,7 +91,7 @@ public final class TarCompressionStreams {
     /// Opens an encoded TAR channel and closes the target if encoder setup fails.
     public static WritableByteChannel openArchiveOutput(
             WritableByteChannel target,
-            @Nullable CompressionCodec compressionCodec
+            @Nullable CompressionCodec<?> compressionCodec
     ) throws IOException {
         Objects.requireNonNull(target, "target");
         if (compressionCodec == null) {

@@ -19,7 +19,7 @@ import java.util.Objects;
 
 /// Provides an immutable XZ configuration and pure Java transport-independent engines.
 @NotNullByDefault
-public final class XZCodec implements CompressionCodec.FlushableFramed {
+public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> {
     /// The default XZ LZMA2 dictionary size.
     public static final int DEFAULT_DICTIONARY_SIZE = XZChannelEncoder.DEFAULT_DICTIONARY_SIZE;
 

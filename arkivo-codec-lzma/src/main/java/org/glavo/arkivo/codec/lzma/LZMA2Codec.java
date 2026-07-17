@@ -17,7 +17,7 @@ import java.util.Objects;
 
 /// Provides an immutable raw LZMA2 configuration with externally declared model properties.
 @NotNullByDefault
-public final class LZMA2Codec implements CompressionCodec {
+public final class LZMA2Codec implements CompressionCodec<LZMA2Codec> {
     /// The default dictionary size used for LZMA2.
     public static final int DEFAULT_DICTIONARY_SIZE = 1 << 20;
 

@@ -22,7 +22,7 @@ public final class ZlibCodec
         implements CompressionCodec.LevelConfigurable<ZlibCodec>,
         CompressionCodec.StrategyConfigurable<ZlibCodec>,
         CompressionCodec.DictionaryConfigurable<ZlibCodec, ZlibDictionary>,
-        CompressionCodec.Flushable {
+        CompressionCodec.Flushable<ZlibCodec> {
     /// The minimum zlib Deflate match-search level.
     public static final int MINIMUM_COMPRESSION_LEVEL = 0;
 

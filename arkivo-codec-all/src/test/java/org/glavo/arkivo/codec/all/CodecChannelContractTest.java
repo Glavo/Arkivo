@@ -53,7 +53,7 @@ final class CodecChannelContractTest {
                 .getBytes(StandardCharsets.UTF_8);
 
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
 
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
             ReadableByteChannel uncompressedSource = Channels.newChannel(new ByteArrayInputStream(input));
@@ -70,7 +70,7 @@ final class CodecChannelContractTest {
                     new ByteArrayInputStream(compressedBytes.toByteArray())
             );
             WritableByteChannel decodedTarget = Channels.newChannel(decodedBytes);
-            CompressionCodec decoderCodec =
+            CompressionCodec<?> decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, input.length);
             CodecTransferResult decompression = decoderCodec.decompress(
                     compressedSource,
@@ -92,9 +92,9 @@ final class CodecChannelContractTest {
         ).repeat(256).getBytes(StandardCharsets.UTF_8);
 
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             byte[] compressed = compressFrame(codec, content);
-            CompressionCodec decoderCodec =
+            CompressionCodec<?> decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, content.length);
             try (DecompressingReadableByteChannel decoder = decoderCodec.newReadableByteChannel(
                     Channels.newChannel(new ByteArrayInputStream(compressed)),
@@ -132,7 +132,7 @@ final class CodecChannelContractTest {
         byte[] second = " and final segment".getBytes(StandardCharsets.UTF_8);
 
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             boolean flushable = hasFlushableEncoder(codec);
             assertEquals(flushCodecs.contains(codec.format().name()), flushable, codec.format().name());
             if (!flushable) {
@@ -141,7 +141,7 @@ final class CodecChannelContractTest {
 
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
             WritableByteChannel target = Channels.newChannel(compressedBytes);
-            CompressionCodec.Flushable flushableCodec = (CompressionCodec.Flushable) codec;
+            CompressionCodec.Flushable<?> flushableCodec = (CompressionCodec.Flushable<?>) codec;
             CompressingWritableByteChannel.Flushable encoder = flushableCodec.newWritableByteChannel(target);
             try {
                 ByteBuffer firstSource = ByteBuffer.allocateDirect(first.length).put(first).flip();
@@ -223,7 +223,7 @@ final class CodecChannelContractTest {
         byte[] second = "second independent frame".getBytes(StandardCharsets.UTF_8);
 
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             boolean expected = multiFrameCodecs.contains(codec.format().name());
             assertEquals(expected, hasFramedEncoder(codec), codec.format().name());
             assertEquals(
@@ -237,7 +237,7 @@ final class CodecChannelContractTest {
 
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
             WritableByteChannel target = Channels.newChannel(compressedBytes);
-            CompressionCodec.Framed framedCodec = (CompressionCodec.Framed) codec;
+            CompressionCodec.Framed<?> framedCodec = (CompressionCodec.Framed<?>) codec;
             CompressingWritableByteChannel.Framed encoder = framedCodec.newWritableByteChannel(target);
             CodecResult firstResult = encoder.finishFrame(ByteBuffer.wrap(first));
             int firstFrameSize = compressedBytes.size();
@@ -280,12 +280,12 @@ final class CodecChannelContractTest {
         byte[] content = "content after an explicit empty frame".getBytes(StandardCharsets.UTF_8);
 
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             if (!hasFramedEncoder(codec)) {
                 continue;
             }
 
-            CompressionCodec.Framed framedCodec = (CompressionCodec.Framed) codec;
+            CompressionCodec.Framed<?> framedCodec = (CompressionCodec.Framed<?>) codec;
             ByteArrayOutputStream compressed = new ByteArrayOutputStream();
             try (CompressingWritableByteChannel.Framed encoder = framedCodec.newWritableByteChannel(
                     Channels.newChannel(compressed),
@@ -349,7 +349,7 @@ final class CodecChannelContractTest {
         int totalOutputSize = frames[1].length + frames[2].length;
 
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             if (!hasFramedDecoder(codec)) {
                 continue;
             }
@@ -365,7 +365,7 @@ final class CodecChannelContractTest {
             byte[] compressedStream = compressed.toByteArray();
 
             try (DecompressingReadableByteChannel.Framed decoder =
-                         ((CompressionCodec.Framed) codec).newReadableByteChannel(
+                         ((CompressionCodec.Framed<?>) codec).newReadableByteChannel(
                                  Channels.newChannel(new ByteArrayInputStream(compressedStream)),
                     limits,
                     ResourceOwnership.BORROWED
@@ -417,7 +417,7 @@ final class CodecChannelContractTest {
         ).repeat(1_024).getBytes(StandardCharsets.UTF_8);
 
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             ByteBuffer source = ByteBuffer.allocateDirect(input.length + 4);
             source.position(2);
             source.put(input);
@@ -428,7 +428,7 @@ final class CodecChannelContractTest {
             assertEquals(0, compressed.position(), codec.format().name());
             assertTrue(compressed.hasRemaining(), codec.format().name());
 
-            CompressionCodec decoderCodec =
+            CompressionCodec<?> decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, input.length);
             ByteBuffer decoded = decoderCodec.decompress(compressed, input.length);
             if (CodecContractConfigurations.requiresDecoderConfiguration(codec)) {
@@ -449,7 +449,7 @@ final class CodecChannelContractTest {
             );
 
             ByteBuffer emptyCompressed = codec.compress(ByteBuffer.allocate(0));
-            CompressionCodec emptyDecoderCodec =
+            CompressionCodec<?> emptyDecoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, 0L);
             ByteBuffer emptyDecoded = emptyDecoderCodec.decompress(emptyCompressed, 0L);
             assertEquals(0, emptyDecoded.remaining(), codec.format().name());
@@ -467,8 +467,8 @@ final class CodecChannelContractTest {
         ).repeat(32).getBytes(StandardCharsets.UTF_8);
 
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
-            if (!(codec instanceof CompressionCodec.Framed framedCodec)
+            CompressionCodec<?> codec = format.defaultCodec();
+            if (!(codec instanceof CompressionCodec.Framed<?> framedCodec)
                     || CodecContractConfigurations.requiresDecoderConfiguration(codec)) {
                 continue;
             }
@@ -533,7 +533,7 @@ final class CodecChannelContractTest {
         byte[] input = ("fixed codec buffers " + "abcdef".repeat(256)).getBytes(StandardCharsets.UTF_8);
 
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
 
             assertFixedBufferRoundTrip(codec, input, false, false, false, false);
             assertFixedBufferRoundTrip(codec, input, false, true, true, true);
@@ -577,7 +577,7 @@ final class CodecChannelContractTest {
 
     /// Verifies one fixed-buffer layout while preserving nonzero source and target range offsets.
     private static void assertFixedBufferRoundTrip(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             byte[] input,
             boolean directSource,
             boolean directCompressed,
@@ -628,12 +628,12 @@ final class CodecChannelContractTest {
 
     /// Decompresses through a codec carrying any externally required stream metadata.
     private static void decompressFixed(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             ByteBuffer source,
             ByteBuffer target,
             long decodedSize
     ) throws IOException {
-        CompressionCodec decoderCodec =
+        CompressionCodec<?> decoderCodec =
                 CodecContractConfigurations.decoderCodec(codec, decodedSize);
         decoderCodec.decompress(source, target);
     }
@@ -650,7 +650,7 @@ final class CodecChannelContractTest {
         byte[] input = "configured compression level".getBytes(StandardCharsets.UTF_8);
 
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             assertEquals(
                     levelCodecs.contains(codec.format().name()),
                     codec instanceof CompressionCodec.LevelConfigurable<?>,
@@ -660,7 +660,7 @@ final class CodecChannelContractTest {
                 continue;
             }
 
-            CompressionCodec configured =
+            CompressionCodec<?> configured =
                     levelCodec.withCompressionLevel(levelCodec.defaultCompressionLevel());
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
             try (CompressingWritableByteChannel encoder = configured.newWritableByteChannel(
@@ -697,7 +697,7 @@ final class CodecChannelContractTest {
     /// @param <C> the codec's concrete self type
     /// @param codec the configurable codec
     /// @return a reconfigured codec with the same concrete type
-    private static <C extends CompressionCodec> C withMinimumCompressionLevel(
+    private static <C extends CompressionCodec<C>> C withMinimumCompressionLevel(
             CompressionCodec.LevelConfigurable<C> codec
     ) {
         return codec.withCompressionLevel(codec.minimumCompressionLevel());
@@ -712,7 +712,7 @@ final class CodecChannelContractTest {
         ).repeat(4_096).getBytes(StandardCharsets.UTF_8);
 
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             boolean expected = strategyCodecs.contains(codec.format().name());
             assertEquals(expected, codec instanceof CompressionCodec.StrategyConfigurable<?>, codec.format().name());
             if (!(codec instanceof CompressionCodec.StrategyConfigurable<?> strategyCodec)) {
@@ -722,7 +722,7 @@ final class CodecChannelContractTest {
             long defaultSize = CompressionCodec.UNKNOWN_SIZE;
             long huffmanOnlySize = CompressionCodec.UNKNOWN_SIZE;
             for (CompressionStrategy strategy : CompressionStrategy.values()) {
-                CompressionCodec configured =
+                CompressionCodec<?> configured =
                         strategyCodec.withCompressionStrategy(strategy);
                 ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
                 configured.compress(
@@ -749,7 +749,7 @@ final class CodecChannelContractTest {
                     CompressionStrategy.FILTERED,
                     CompressionStrategy.HUFFMAN_ONLY
             )) {
-                CompressionCodec configured =
+                CompressionCodec<?> configured =
                         strategyCodec.withCompressionStrategy(strategy);
                 ByteArrayOutputStream emptyCompressed = new ByteArrayOutputStream();
                 try (CompressingWritableByteChannel encoder = configured.newWritableByteChannel(
@@ -784,13 +784,13 @@ final class CodecChannelContractTest {
                         + "common-prefix/alpha/beta/gamma/0123456789;"
         ).getBytes(StandardCharsets.UTF_8);
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             assertEquals(
                     dictionaryCodecs.contains(codec.format().name()),
                     codec instanceof CompressionCodec.DictionaryConfigurable<?, ?>,
                     codec.format().name()
             );
-            CompressionCodec configured;
+            CompressionCodec<?> configured;
             if (codec instanceof DeflateCodec deflateCodec) {
                 configured = deflateCodec.withDictionary(RawCompressionDictionary.of(dictionaryBytes));
             } else if (codec instanceof ZlibCodec zlibCodec) {
@@ -827,14 +827,14 @@ final class CodecChannelContractTest {
         ).repeat(512).getBytes(StandardCharsets.UTF_8);
 
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             boolean expected = pledgedSizeCodecs.contains(codec.format().name());
             assertEquals(
                     expected,
-                    codec instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?>,
+                    codec instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?, ?>,
                     codec.format().name()
             );
-            if (!(codec instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?> pledgedCodec)) {
+            if (!(codec instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?, ?> pledgedCodec)) {
                 continue;
             }
 
@@ -848,7 +848,7 @@ final class CodecChannelContractTest {
                 encoder.finish();
             }
             ByteArrayOutputStream decoded = new ByteArrayOutputStream();
-            CompressionCodec decoderCodec =
+            CompressionCodec<?> decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, input.length);
             decoderCodec.decompress(
                     Channels.newChannel(new ByteArrayInputStream(compressed.toByteArray())),
@@ -881,12 +881,12 @@ final class CodecChannelContractTest {
         long smallerLimit = input.length - 1L;
 
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             DecompressionLimits exactLimits =
                     DecompressionLimits.ofMaximumOutputSize(input.length);
             DecompressionLimits smallerLimits =
                     DecompressionLimits.ofMaximumOutputSize(smallerLimit);
-            CompressionCodec decoderCodec =
+            CompressionCodec<?> decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, input.length);
 
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();
@@ -968,7 +968,7 @@ final class CodecChannelContractTest {
 
     /// Decodes exactly the caller-visible prefix available after an encoder flush.
     private static byte[] decodeAvailablePrefix(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             byte[] compressed,
             int expectedSize
     ) throws IOException {
@@ -989,7 +989,7 @@ final class CodecChannelContractTest {
     }
 
     /// Compresses one independent frame without closing the caller-owned target.
-    private static byte[] compressFrame(CompressionCodec codec, byte[] content) throws IOException {
+    private static byte[] compressFrame(CompressionCodec<?> codec, byte[] content) throws IOException {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         codec.compress(
                 Channels.newChannel(new ByteArrayInputStream(content)),
@@ -999,19 +999,19 @@ final class CodecChannelContractTest {
     }
 
     /// Returns whether a new encoder exposes incremental flush support.
-    private static boolean hasFlushableEncoder(CompressionCodec codec) {
-        return codec instanceof CompressionCodec.Flushable;
+    private static boolean hasFlushableEncoder(CompressionCodec<?> codec) {
+        return codec instanceof CompressionCodec.Flushable<?>;
     }
 
     /// Returns whether a new encoder can finish multiple independent frames.
-    private static boolean hasFramedEncoder(CompressionCodec codec) {
-        return codec instanceof CompressionCodec.Framed;
+    private static boolean hasFramedEncoder(CompressionCodec<?> codec) {
+        return codec instanceof CompressionCodec.Framed<?>;
     }
 
     /// Returns whether a new decoder can traverse concatenated independent frames.
-    private static boolean hasFramedDecoder(CompressionCodec codec) {
-        CompressionCodec decoderCodec = CodecContractConfigurations.decoderCodec(codec, 0L);
-        return decoderCodec instanceof CompressionCodec.Framed;
+    private static boolean hasFramedDecoder(CompressionCodec<?> codec) {
+        CompressionCodec<?> decoderCodec = CodecContractConfigurations.decoderCodec(codec, 0L);
+        return decoderCodec instanceof CompressionCodec.Framed<?>;
     }
 
     /// Writes all bytes to a channel while requiring forward progress.
@@ -1041,9 +1041,9 @@ final class CodecChannelContractTest {
         byte[] input = ("bounded decoding window " + "abcdefghijklmnop".repeat(256))
                 .getBytes(StandardCharsets.UTF_8);
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             boolean expected = windowCodecs.contains(codec.format().name());
-            CompressionCodec decoderCodec =
+            CompressionCodec<?> decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, input.length);
 
             ByteArrayOutputStream compressedBytes = new ByteArrayOutputStream();

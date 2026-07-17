@@ -94,7 +94,7 @@ final class TarArkivoCompressedStreamingTest {
     /// Verifies codec-object configuration through the TAR format facade.
     @Test
     void roundTripsRawDeflateThroughFormatFacade() throws IOException {
-        CompressionCodec codec = CompressionFormats.require("deflate").defaultCodec();
+        CompressionCodec<?> codec = CompressionFormats.require("deflate").defaultCodec();
         ByteArrayOutputStream archive = new ByteArrayOutputStream();
 
         try (TarArkivoStreamingWriter writer = TarArkivoStreamingWriter.open(

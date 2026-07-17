@@ -27,8 +27,8 @@ import java.util.Objects;
 public final class ZstdCodec
         implements CompressionCodec.LevelConfigurable<ZstdCodec>,
         CompressionCodec.DictionaryConfigurable<ZstdCodec, ZstdDictionary>,
-        CompressionCodec.PledgedSourceSizeEncoderFactory<CompressionEncoder.FlushableFramed>,
-        CompressionCodec.FlushableFramed {
+        CompressionCodec.PledgedSourceSizeEncoderFactory<ZstdCodec, CompressionEncoder.FlushableFramed>,
+        CompressionCodec.FlushableFramed<ZstdCodec> {
     /// The minimum compression level accepted by Zstandard 1.x.
     public static final int MINIMUM_COMPRESSION_LEVEL = -131_072;
 

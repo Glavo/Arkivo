@@ -15,7 +15,7 @@ final class CodecContractConfigurations {
     }
 
     /// Returns a decoder configuration matching a default encoding of the known uncompressed size.
-    static CompressionCodec decoderCodec(CompressionCodec codec, long decodedSize) {
+    static CompressionCodec<?> decoderCodec(CompressionCodec<?> codec, long decodedSize) {
         if (codec instanceof PPMdCodec ppmdCodec) {
             return ppmdCodec.withDecodedSize(decodedSize);
         }
@@ -23,7 +23,7 @@ final class CodecContractConfigurations {
     }
 
     /// Returns whether the codec requires an externally configured decoded size.
-    static boolean requiresDecoderConfiguration(CompressionCodec codec) {
+    static boolean requiresDecoderConfiguration(CompressionCodec<?> codec) {
         return codec instanceof PPMdCodec;
     }
 }

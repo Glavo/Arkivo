@@ -27,7 +27,7 @@ public final class DeflateCodec
         implements CompressionCodec.LevelConfigurable<DeflateCodec>,
         CompressionCodec.StrategyConfigurable<DeflateCodec>,
         CompressionCodec.DictionaryConfigurable<DeflateCodec, RawCompressionDictionary>,
-        CompressionCodec.Flushable {
+        CompressionCodec.Flushable<DeflateCodec> {
     /// The minimum raw Deflate match-search level.
     public static final int MINIMUM_COMPRESSION_LEVEL = 0;
 

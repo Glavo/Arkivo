@@ -96,7 +96,7 @@ import static org.glavo.arkivo.archive.tar.internal.TarCompressionStreams.openAr
 @NotNullByDefault
 public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     /// The internal NIO environment key for outer compression.
-    private static final ArchiveOption<CompressionCodec> COMPRESSION =
+    private static final ArchiveOption<CompressionCodec<?>> COMPRESSION =
             compressionOption();
     /// The supported file attribute view names.
     private static final @Unmodifiable Set<String> SUPPORTED_ATTRIBUTE_VIEWS = Set.of("basic", "owner", "posix", "tar");
@@ -147,7 +147,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     private final @Nullable ArkivoCommitTarget commitTarget;
 
     /// The compression codec wrapping the TAR stream, or `null` for an uncompressed archive.
-    private final @Nullable CompressionCodec compressionCodec;
+    private final @Nullable CompressionCodec<?> compressionCodec;
 
     /// Whether this file system is read-only.
     private final boolean readOnly;
@@ -197,7 +197,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             boolean readOnly,
             boolean updateMode,
             @Nullable ArkivoCommitTarget commitTarget,
-            @Nullable CompressionCodec compressionCodec,
+            @Nullable CompressionCodec<?> compressionCodec,
             Runnable closeAction
     ) {
         super(threadSafety);
@@ -245,7 +245,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         );
         Set<OpenOption> openOptions = options.getOrDefault(ArchiveEnvironmentOptions.OPEN_OPTIONS, Set.of(StandardOpenOption.READ)
         );
-        @Nullable CompressionCodec requestedCompression = options.get(COMPRESSION);
+        @Nullable CompressionCodec<?> requestedCompression = options.get(COMPRESSION);
         if (isArchiveUpdateOpen(openOptions)) {
             validateArchiveUpdateOptions(openOptions);
             ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(options);
@@ -253,7 +253,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
             try {
                 Map<String, Node> nodes;
                 boolean newArchive = !Files.exists(archivePath);
-                @Nullable CompressionCodec compressionCodec = requestedCompression;
+                @Nullable CompressionCodec<?> compressionCodec = requestedCompression;
                 if (!newArchive) {
                     if (compressionCodec == null) {
                         compressionCodec = detectCompression(archivePath, readLimits);
@@ -330,7 +330,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         ArkivoEditStorage editStorage = StoredContentSupport.selectStorage(options);
         Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
         try {
-            @Nullable CompressionCodec compressionCodec = requestedCompression;
+            @Nullable CompressionCodec<?> compressionCodec = requestedCompression;
             if (compressionCodec == null) {
                 compressionCodec = detectCompression(archivePath, readLimits);
             }
@@ -379,7 +379,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
         ArkivoFileSystemThreadSafety threadSafety;
         ArkivoEditStorage editStorage;
-        @Nullable CompressionCodec requestedCompression;
+        @Nullable CompressionCodec<?> requestedCompression;
         boolean updateMode;
         @Nullable ArkivoCommitTarget commitTarget;
         try {
@@ -409,7 +409,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
         Set<ArkivoStoredContent> ownedContents = StoredContentSupport.newIdentitySet();
         try {
-            @Nullable CompressionCodec compressionCodec = requestedCompression;
+            @Nullable CompressionCodec<?> compressionCodec = requestedCompression;
             if (compressionCodec == null) {
                 try (SeekableByteChannel probeChannel = source.openChannel()) {
                     compressionCodec = detectCompression(probeChannel, readLimits);
@@ -457,11 +457,11 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
 
     /// Returns the erased compression codec option type.
     @SuppressWarnings("unchecked")
-    private static ArchiveOption<CompressionCodec> compressionOption() {
+    private static ArchiveOption<CompressionCodec<?>> compressionOption() {
         return ArchiveOption.of(
                 "arkivo.tar",
                 "compression",
-                (Class<CompressionCodec>) (Class<?>) CompressionCodec.class
+                (Class<CompressionCodec<?>>) (Class<?>) CompressionCodec.class
         );
     }
 
@@ -2123,7 +2123,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     }
 
     /// Detects a compression codec whose decoded path prefix is a valid TAR archive.
-    private static @Nullable CompressionCodec detectCompression(
+    private static @Nullable CompressionCodec<?> detectCompression(
             Path path,
             ArchiveReadLimits readLimits
     ) throws IOException {
@@ -2133,7 +2133,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
     }
 
     /// Detects a compression codec whose decoded channel prefix is a valid TAR archive.
-    private static @Nullable CompressionCodec detectCompression(
+    private static @Nullable CompressionCodec<?> detectCompression(
             SeekableByteChannel channel,
             ArchiveReadLimits readLimits
     ) throws IOException {
@@ -2141,7 +2141,7 @@ public final class TarArkivoFileSystemImpl extends TarArkivoFileSystem {
         if (candidate == null) {
             return null;
         }
-        CompressionCodec codec = candidate.defaultCodec();
+        CompressionCodec<?> codec = candidate.defaultCodec();
         channel.position(0L);
         try (InputStream input = openArchiveInput(Channels.newInputStream(channel), codec, readLimits)) {
             byte[] probe = new byte[TarArkivoFormat.instance().probeSize()];

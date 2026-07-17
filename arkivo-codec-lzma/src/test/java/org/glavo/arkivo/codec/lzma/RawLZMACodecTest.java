@@ -185,7 +185,7 @@ public final class RawLZMACodecTest {
 
     /// Compresses one byte array with a public codec.
     private static byte[] compress(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             byte[] content
     ) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
@@ -198,7 +198,7 @@ public final class RawLZMACodecTest {
 
     /// Decompresses one byte array with a public codec.
     private static byte[] decompress(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             byte[] compressed
     ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();

@@ -19,7 +19,7 @@ import java.util.Objects;
 @NotNullByDefault
 public final class Deflate64Codec
         implements CompressionCodec.LevelConfigurable<Deflate64Codec>,
-        CompressionCodec.Flushable {
+        CompressionCodec.Flushable<Deflate64Codec> {
     /// The minimum Deflate64 match-search level.
     public static final int MINIMUM_COMPRESSION_LEVEL = 0;
 

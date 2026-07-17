@@ -21,7 +21,7 @@ public final class ByteBufferCodecSupport {
 
     /// Compresses remaining source bytes into a dynamically growing heap buffer.
     public static ByteBuffer compressAllocating(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             ByteBuffer source
     ) throws IOException {
         Objects.requireNonNull(codec, "codec");
@@ -31,7 +31,7 @@ public final class ByteBufferCodecSupport {
 
     /// Decompresses remaining source bytes into a dynamically growing bounded heap buffer.
     public static ByteBuffer decompressAllocating(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             ByteBuffer source,
             DecompressionLimits limits
     ) throws IOException {
@@ -48,7 +48,7 @@ public final class ByteBufferCodecSupport {
 
     /// Decompresses one frame into a dynamically growing bounded heap buffer.
     public static ByteBuffer decompressFrameAllocating(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             ByteBuffer source,
             DecompressionLimits limits
     ) throws IOException {
@@ -65,7 +65,7 @@ public final class ByteBufferCodecSupport {
 
     /// Compresses all remaining source bytes into a fixed caller-owned target.
     public static void compress(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             ByteBuffer source,
             ByteBuffer target
     ) throws IOException {
@@ -76,7 +76,7 @@ public final class ByteBufferCodecSupport {
 
     /// Decompresses all remaining source bytes into a fixed caller-owned target.
     public static void decompress(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             ByteBuffer source,
             ByteBuffer target,
             DecompressionLimits limits
@@ -89,7 +89,7 @@ public final class ByteBufferCodecSupport {
 
     /// Decompresses one complete frame into a fixed caller-owned target.
     public static void decompressFrame(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             ByteBuffer source,
             ByteBuffer target,
             DecompressionLimits limits

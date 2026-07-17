@@ -18,7 +18,7 @@ import java.util.Objects;
 /// Provides an immutable LZMA-alone configuration and transport-independent engines.
 @NotNullByDefault
 public final class LZMACodec
-        implements CompressionCodec.PledgedSourceSizeEncoderFactory<CompressionEncoder> {
+        implements CompressionCodec.PledgedSourceSizeEncoderFactory<LZMACodec, CompressionEncoder> {
     /// The default LZMA dictionary size used for encoding.
     public static final int DEFAULT_DICTIONARY_SIZE = 1 << 20;
 

@@ -47,5 +47,5 @@ public interface CompressionFormat {
     }
 
     /// Returns the immutable default codec configuration for this format.
-    CompressionCodec defaultCodec();
+    CompressionCodec<?> defaultCodec();
 }

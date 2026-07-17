@@ -50,7 +50,7 @@ public final class TarArchiveOptions {
     @NotNullByDefault
     public record Read(
             ArchiveReadOptions common,
-            @Nullable CompressionCodec compression,
+            @Nullable CompressionCodec<?> compression,
             ArchiveMetadataCharsetDetector metadataCharsetDetector
     ) {
         /// Validates the read configuration.
@@ -65,7 +65,7 @@ public final class TarArchiveOptions {
         }
 
         /// Returns a copy with the outer compression, or automatic detection when `null`.
-        public Read withCompression(@Nullable CompressionCodec value) {
+        public Read withCompression(@Nullable CompressionCodec<?> value) {
             return new Read(common, value, metadataCharsetDetector);
         }
 
@@ -80,7 +80,7 @@ public final class TarArchiveOptions {
     /// @param common      the format-independent creation configuration
     /// @param compression the outer compression, or `null` for an uncompressed TAR stream
     @NotNullByDefault
-    public record Create(ArchiveCreateOptions common, @Nullable CompressionCodec compression) {
+    public record Create(ArchiveCreateOptions common, @Nullable CompressionCodec<?> compression) {
         /// Validates the creation configuration.
         public Create {
             Objects.requireNonNull(common, "common");
@@ -92,7 +92,7 @@ public final class TarArchiveOptions {
         }
 
         /// Returns a copy with the outer compression, or no compression when `null`.
-        public Create withCompression(@Nullable CompressionCodec value) {
+        public Create withCompression(@Nullable CompressionCodec<?> value) {
             return new Create(common, value);
         }
     }
@@ -105,7 +105,7 @@ public final class TarArchiveOptions {
     @NotNullByDefault
     public record Update(
             ArchiveUpdateOptions common,
-            @Nullable CompressionCodec compression,
+            @Nullable CompressionCodec<?> compression,
             ArchiveMetadataCharsetDetector metadataCharsetDetector
     ) {
         /// Validates the update configuration.
@@ -120,7 +120,7 @@ public final class TarArchiveOptions {
         }
 
         /// Returns a copy with the outer compression, or no compression when `null`.
-        public Update withCompression(@Nullable CompressionCodec value) {
+        public Update withCompression(@Nullable CompressionCodec<?> value) {
             return new Update(common, value, metadataCharsetDetector);
         }
 

@@ -24,7 +24,7 @@ final class DirectByteBufferCodecSupportTest {
     /// Verifies allocating and fixed operations never open channel adapters.
     @Test
     void drivesBufferEnginesWithoutChannelAdapters() throws IOException {
-        CompressionCodec.FlushableFramed codec = new LengthPrefixedCodec();
+        CompressionCodec.FlushableFramed<LengthPrefixedCodec> codec = new LengthPrefixedCodec();
         byte[] content = new byte[200];
         for (int index = 0; index < content.length; index++) {
             content[index] = (byte) (index * 31);
@@ -84,7 +84,7 @@ final class DirectByteBufferCodecSupportTest {
     /// Verifies concatenated decoding and one-frame decoding use distinct direct-engine loops.
     @Test
     void preservesDirectFrameBoundaries() throws IOException {
-        CompressionCodec.FlushableFramed codec = new LengthPrefixedCodec();
+        CompressionCodec.FlushableFramed<LengthPrefixedCodec> codec = new LengthPrefixedCodec();
         byte[] first = new byte[]{1, 2, 3};
         byte[] second = new byte[]{4, 5};
         byte[] firstEncoded = bufferBytes(codec.compress(ByteBuffer.wrap(first)));
@@ -133,7 +133,7 @@ final class DirectByteBufferCodecSupportTest {
     /// Provides a length-prefixed identity format exclusively through buffer engines.
     @NotNullByDefault
     private static final class LengthPrefixedCodec
-            implements CompressionCodec.FlushableFramed, CompressionFormat {
+            implements CompressionCodec.FlushableFramed<LengthPrefixedCodec>, CompressionFormat {
         /// Returns the test compression format name.
         @Override
         public String name() {
@@ -148,7 +148,7 @@ final class DirectByteBufferCodecSupportTest {
 
         /// Returns this test object as the default codec configuration.
         @Override
-        public CompressionCodec defaultCodec() {
+        public CompressionCodec<?> defaultCodec() {
             return this;
         }
 

@@ -17,7 +17,7 @@ import java.util.Objects;
 
 /// Provides an immutable raw PPMd7 configuration with externally declared model parameters and decoded size.
 @NotNullByDefault
-public final class PPMdCodec implements CompressionCodec {
+public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
     /// The default maximum context order used for compression.
     public static final int DEFAULT_MAXIMUM_ORDER = 6;
 

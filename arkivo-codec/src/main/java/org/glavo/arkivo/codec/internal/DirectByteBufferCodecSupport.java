@@ -31,7 +31,7 @@ final class DirectByteBufferCodecSupport {
 
     /// Compresses all source bytes into a dynamically growing heap buffer.
     static ByteBuffer compressAllocating(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             ByteBuffer source
     ) throws IOException {
         int sourceSize = source.remaining();
@@ -47,7 +47,7 @@ final class DirectByteBufferCodecSupport {
 
     /// Compresses all source bytes into the fixed caller-owned target.
     static void compress(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             ByteBuffer source,
             ByteBuffer target
     ) throws IOException {
@@ -59,7 +59,7 @@ final class DirectByteBufferCodecSupport {
 
     /// Decompresses complete input into a dynamically growing bounded heap buffer.
     static ByteBuffer decompressAllocating(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             ByteBuffer source,
             int maximumOutputSize,
             DecompressionLimits limits
@@ -69,7 +69,7 @@ final class DirectByteBufferCodecSupport {
 
     /// Decompresses complete input into the fixed caller-owned target.
     static void decompress(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             ByteBuffer source,
             ByteBuffer target,
             DecompressionLimits limits
@@ -79,7 +79,7 @@ final class DirectByteBufferCodecSupport {
 
     /// Decompresses one frame into a dynamically growing bounded heap buffer.
     static ByteBuffer decompressFrameAllocating(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             ByteBuffer source,
             int maximumOutputSize,
             DecompressionLimits limits
@@ -89,7 +89,7 @@ final class DirectByteBufferCodecSupport {
 
     /// Decompresses one frame into the fixed caller-owned target.
     static void decompressFrame(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             ByteBuffer source,
             ByteBuffer target,
             DecompressionLimits limits
@@ -98,8 +98,8 @@ final class DirectByteBufferCodecSupport {
     }
 
     /// Creates an encoder and supplies the exact one-shot source size when the codec supports it.
-    private static CompressionEncoder newEncoder(CompressionCodec codec, long sourceSize) throws IOException {
-        if (codec instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?> pledgedSourceSizeCodec) {
+    private static CompressionEncoder newEncoder(CompressionCodec<?> codec, long sourceSize) throws IOException {
+        if (codec instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?, ?> pledgedSourceSizeCodec) {
             return pledgedSourceSizeCodec.newEncoder(sourceSize);
         }
         return codec.newEncoder();
@@ -206,7 +206,7 @@ final class DirectByteBufferCodecSupport {
 
     /// Drives one decoder into dynamically growing bounded output.
     private static ByteBuffer decodeAllocating(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             ByteBuffer source,
             int maximumOutputSize,
             DecompressionLimits limits,
@@ -259,7 +259,7 @@ final class DirectByteBufferCodecSupport {
 
     /// Drives one decoder into fixed output while enforcing a total operation output limit.
     private static void decode(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             ByteBuffer source,
             ByteBuffer target,
             DecompressionLimits limits,
@@ -377,7 +377,7 @@ final class DirectByteBufferCodecSupport {
     }
 
     /// Returns an initial compression capacity using a codec bound when available.
-    private static int compressionInitialCapacity(CompressionCodec codec, int sourceSize) {
+    private static int compressionInitialCapacity(CompressionCodec<?> codec, int sourceSize) {
         long bound = codec.maxCompressedSize(sourceSize);
         if (bound >= 0L && bound <= Integer.MAX_VALUE) {
             return (int) bound;

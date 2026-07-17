@@ -98,7 +98,7 @@ public final class CompressionFormatRegistryTest {
         private final int marker;
 
         /// The format's canonical default codec.
-        private final CompressionCodec defaultCodec;
+        private final CompressionCodec<?> defaultCodec;
 
         /// Creates a test format with explicit metadata.
         private TestFormat(
@@ -148,14 +148,14 @@ public final class CompressionFormatRegistryTest {
 
         /// Returns the canonical default codec.
         @Override
-        public CompressionCodec defaultCodec() {
+        public CompressionCodec<?> defaultCodec() {
             return defaultCodec;
         }
     }
 
     /// A small codec carrying its format identity.
     @NotNullByDefault
-    private static final class TestCodec implements CompressionCodec {
+    private static final class TestCodec implements CompressionCodec<TestCodec> {
         /// The owning format identity.
         private final CompressionFormat format;
 

@@ -46,7 +46,7 @@ public final class LZMACodecTest {
         LZMACodec codec = new LZMACodec();
         byte[] input = "hello lzma".getBytes(StandardCharsets.UTF_8);
 
-        assertEquals(true, codec instanceof CompressionCodec);
+        assertEquals(true, codec instanceof CompressionCodec<?>);
         assertEquals(LZMAFormat.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
@@ -577,7 +577,7 @@ public final class LZMACodecTest {
 
     /// Compresses bytes through one configured public codec.
     private static byte[] compress(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             byte[] content
     ) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
@@ -590,7 +590,7 @@ public final class LZMACodecTest {
 
     /// Decompresses bytes through one configured public codec.
     private static byte[] decompress(
-            CompressionCodec codec,
+            CompressionCodec<?> codec,
             byte[] compressed
     ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
@@ -601,7 +601,7 @@ public final class LZMACodecTest {
         return decoded.toByteArray();
     }
     /// Compresses and decompresses the given bytes.
-    private static byte[] roundTrip(CompressionCodec codec, byte[] input) throws IOException {
+    private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
         try (OutputStream output = codec.newOutputStream(compressed)) {
             output.write(input);

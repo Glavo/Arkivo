@@ -37,7 +37,7 @@ public final class BZip2CodecTest {
         BZip2Codec codec = new BZip2Codec();
         byte[] input = "hello bzip2".getBytes(StandardCharsets.UTF_8);
 
-        assertEquals(true, codec instanceof CompressionCodec);
+        assertEquals(true, codec instanceof CompressionCodec<?>);
         assertEquals(BZip2Format.NAME, codec.format().name());
         assertArrayEquals(input, roundTrip(codec, input));
     }
@@ -126,7 +126,7 @@ public final class BZip2CodecTest {
     }
 
     /// Compresses and decompresses the given bytes.
-    private static byte[] roundTrip(CompressionCodec codec, byte[] input) throws IOException {
+    private static byte[] roundTrip(CompressionCodec<?> codec, byte[] input) throws IOException {
         ByteArrayOutputStream compressed = new ByteArrayOutputStream();
         try (OutputStream output = codec.newOutputStream(compressed)) {
             output.write(input);

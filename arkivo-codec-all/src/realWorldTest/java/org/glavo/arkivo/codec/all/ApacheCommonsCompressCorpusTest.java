@@ -134,14 +134,14 @@ public final class ApacheCommonsCompressCorpusTest {
     }
 
     /// Decompresses one fixture path through the channel-first codec API.
-    private static byte[] decompress(CompressionCodec codec, Path compressed) throws IOException {
+    private static byte[] decompress(CompressionCodec<?> codec, Path compressed) throws IOException {
         try (InputStream input = Files.newInputStream(compressed)) {
             return decompress(codec, input);
         }
     }
 
     /// Decompresses one stream through the channel-first codec API.
-    private static byte[] decompress(CompressionCodec codec, InputStream compressed) throws IOException {
+    private static byte[] decompress(CompressionCodec<?> codec, InputStream compressed) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         codec.decompress(
                 Channels.newChannel(compressed),

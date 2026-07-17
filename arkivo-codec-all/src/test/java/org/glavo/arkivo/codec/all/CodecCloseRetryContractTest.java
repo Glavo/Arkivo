@@ -42,7 +42,7 @@ final class CodecCloseRetryContractTest {
     @Test
     void retriesEncoderTargetClosure() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
 
             FailingCloseWritableChannel target = new FailingCloseWritableChannel();
             CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
@@ -69,10 +69,10 @@ final class CodecCloseRetryContractTest {
     @Test
     void retriesDecoderSourceClosure() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
 
             FailingCloseReadableChannel source = new FailingCloseReadableChannel(compress(codec, CONTENT));
-            CompressionCodec decoderCodec =
+            CompressionCodec<?> decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
             DecompressingReadableByteChannel decoder = decoderCodec.newReadableByteChannel(
                     source,
@@ -95,7 +95,7 @@ final class CodecCloseRetryContractTest {
     @Test
     void closesOwnedEndpointsAfterSetupFailures() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             {
                 WriteFailingWritableChannel target = new WriteFailingWritableChannel();
                 @Nullable CompressingWritableByteChannel encoder = null;
@@ -136,7 +136,7 @@ final class CodecCloseRetryContractTest {
     @Test
     void retainsEndpointsAfterSetupFailures() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
             {
                 WriteFailingWritableChannel target = new WriteFailingWritableChannel();
                 @Nullable CompressingWritableByteChannel encoder = null;
@@ -174,7 +174,7 @@ final class CodecCloseRetryContractTest {
     }
 
     /// Returns a decoder configuration carrying required external stream metadata.
-    private static CompressionCodec decoderCodec(CompressionCodec codec, long decodedSize) {
+    private static CompressionCodec<?> decoderCodec(CompressionCodec<?> codec, long decodedSize) {
         return CodecContractConfigurations.decoderCodec(codec, decodedSize);
     }
 
@@ -182,7 +182,7 @@ final class CodecCloseRetryContractTest {
     @Test
     void retriesConvenienceOutputStreamClosure() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
 
             FailingCloseOutputStream target = new FailingCloseOutputStream();
             OutputStream output = codec.newOutputStream(target, ResourceOwnership.OWNED);
@@ -203,7 +203,7 @@ final class CodecCloseRetryContractTest {
     @Test
     void retriesConvenienceInputStreamClosure() throws IOException {
         for (CompressionFormat format : CompressionFormats.installed()) {
-            CompressionCodec codec = format.defaultCodec();
+            CompressionCodec<?> codec = format.defaultCodec();
 
             FailingCloseInputStream source = new FailingCloseInputStream(compress(codec, CONTENT));
             InputStream input = decoderCodec(codec, CONTENT.length).newInputStream(
@@ -221,7 +221,7 @@ final class CodecCloseRetryContractTest {
     }
 
     /// Compresses bytes without transferring endpoint ownership.
-    private static byte[] compress(CompressionCodec codec, byte[] input) throws IOException {
+    private static byte[] compress(CompressionCodec<?> codec, byte[] input) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         codec.compress(
                 Channels.newChannel(new ByteArrayInputStream(input)),
@@ -231,7 +231,7 @@ final class CodecCloseRetryContractTest {
     }
 
     /// Decompresses bytes without transferring endpoint ownership.
-    private static byte[] decompress(CompressionCodec codec, byte[] input) throws IOException {
+    private static byte[] decompress(CompressionCodec<?> codec, byte[] input) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         decoderCodec(codec, CONTENT.length).decompress(
                 Channels.newChannel(new ByteArrayInputStream(input)),
