@@ -4,6 +4,7 @@
 package org.glavo.arkivo.archive.zip.internal;
 
 import org.glavo.arkivo.archive.ArchiveReadLimits;
+import org.glavo.arkivo.archive.zip.ZipMethod;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -31,6 +32,13 @@ public final class ZipOptionalFormatProbe {
     public static void main(String @Unmodifiable [] arguments) throws Exception {
         requireDeflateFamilyFormats();
         for (String formatName : OPTIONAL_FORMAT_NAMES) {
+            ZipMethod method = switch (formatName) {
+                case "bzip2" -> ZipMethod.BZIP2;
+                case "xz" -> ZipMethod.XZ;
+                case "zstd" -> ZipMethod.ZSTANDARD;
+                default -> throw new AssertionError("Unexpected optional format: " + formatName);
+            };
+            requireMissingFormat(formatName, () -> ZipCompressionFormats.requireEncoderAvailable(method));
             requireMissingFormat(formatName, () -> ZipCompressionFormats.newReadableByteChannel(
                     formatName,
                     new ByteArrayInputStream(new byte[0]),
@@ -50,6 +58,7 @@ public final class ZipOptionalFormatProbe {
                 0L,
                 ArchiveReadLimits.UNLIMITED
         ));
+        requireMissingFormat("lzma-raw", () -> ZipCompressionFormats.requireEncoderAvailable(ZipMethod.LZMA));
         requireMissingFormat("lzma-raw", () -> ZipCompressionFormats.openRawLZMAEncoder(
                 1L << 20,
                 true,

@@ -122,7 +122,7 @@ final class ArchiveVolumeInteroperabilityTest {
                 ZipArkivoEntryAttributeView attributes = Objects.requireNonNull(
                         writerEntry119.attributeView(ZipArkivoEntryAttributeView.class)
                 );
-                attributes.setMethod(ZipMethod.stored());
+                attributes.setMethod(ZipMethod.STORED);
                 try (OutputStream body = writerEntry119.openOutputStream()) {
                     body.write(CONTENT);
                 }

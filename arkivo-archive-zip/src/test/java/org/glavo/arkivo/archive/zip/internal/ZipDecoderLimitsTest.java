@@ -116,7 +116,7 @@ public final class ZipDecoderLimitsTest {
             ZipArkivoEntryAttributeView attributes = Objects.requireNonNull(
                     entry.attributeView(ZipArkivoEntryAttributeView.class)
             );
-            attributes.setMethod(ZipMethod.lzma());
+            attributes.setMethod(ZipMethod.LZMA);
             try (OutputStream output = entry.openOutputStream()) {
                 output.write("resource-limited ZIP LZMA content".getBytes(java.nio.charset.StandardCharsets.UTF_8));
             }

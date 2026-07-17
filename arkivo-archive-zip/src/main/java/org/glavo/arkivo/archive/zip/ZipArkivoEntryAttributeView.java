@@ -45,7 +45,7 @@ public interface ZipArkivoEntryAttributeView extends PosixFileAttributeView {
         throw new UnsupportedOperationException("ZIP entry groups are synthesized and cannot be set through the ZIP view");
     }
 
-    /// Sets the ZIP compression method requested for the entry.
+    /// Sets a recognized ZIP compression method and verifies that the entry and runtime encoder support it.
     void setMethod(ZipMethod method) throws IOException;
 
     /// Sets the ZIP encryption method requested for the entry.

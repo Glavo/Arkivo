@@ -138,10 +138,16 @@ final class StreamingZipEntryAttributes implements ZipArkivoEntryAttributes {
         return 0;
     }
 
-    /// Returns the ZIP compression method.
+    /// Returns the numeric ZIP compression method identifier after resolving WinZip AES metadata.
     @Override
-    public ZipMethod method() {
-        return ZipMethod.of(ZipAesExtraField.compressionMethod(generalPurposeFlags, method, localExtraData));
+    public int compressionMethodId() {
+        return ZipAesExtraField.compressionMethod(generalPurposeFlags, method, localExtraData);
+    }
+
+    /// Returns the recognized ZIP compression method, or `null` when the method identifier is unknown.
+    @Override
+    public @Nullable ZipMethod compressionMethod() {
+        return ZipMethod.fromId(compressionMethodId());
     }
 
     /// Returns the recognized ZIP encryption method, or `null` when encrypted metadata is unrecognized or malformed.

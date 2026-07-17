@@ -5,6 +5,7 @@ package org.glavo.arkivo.archive.zip.internal;
 
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.internal.StreamChannelAdapters;
+import org.glavo.arkivo.archive.zip.ZipMethod;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
@@ -30,6 +31,28 @@ final class ZipCompressionFormats {
 
     /// Creates no instances.
     private ZipCompressionFormats() {
+    }
+
+    /// Requires the encoder implementation used by the given ZIP compression method to be installed.
+    static void requireEncoderAvailable(ZipMethod method) throws IOException {
+        Objects.requireNonNull(method, "method");
+        @Nullable String formatName = switch (method) {
+            case STORED -> null;
+            case DEFLATED -> "deflate";
+            case DEFLATE64 -> "deflate64";
+            case BZIP2 -> "bzip2";
+            case LZMA -> RAW_LZMA_NAME;
+            case DEPRECATED_ZSTANDARD, ZSTANDARD -> "zstd";
+            case XZ -> "xz";
+        };
+        if (formatName == null) {
+            return;
+        }
+
+        CompressionCodec<?> codec = requireDefaultCodec(formatName);
+        if (method == ZipMethod.LZMA && !(codec instanceof RawLZMACodec)) {
+            throw incompatibleCodec(formatName);
+        }
     }
 
     /// Creates a default compressing channel for a named format and retains the entry's compressed-data target.

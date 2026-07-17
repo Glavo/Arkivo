@@ -420,19 +420,19 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         requireSupportedEncryption(path, entry);
         long dataOffset = dataOffset(entry);
         int compressionMethod = entry.compressionMethod();
-        if (compressionMethod == ZipMethod.STORED_ID && !entry.encrypted()) {
+        if (compressionMethod == ZipMethod.STORED.id() && !entry.encrypted()) {
             return new ValidatingStoredEntryByteChannel(
                     new BoundedSeekableByteChannel(openArchiveChannel(), dataOffset, entry.compressedSize),
                     entry.crc32,
                     entry.uncompressedSize
             );
         }
-        if (compressionMethod == ZipMethod.STORED_ID
-                || compressionMethod == ZipMethod.DEFLATED_ID
-                || compressionMethod == ZipMethod.DEFLATE64_ID
-                || compressionMethod == ZipMethod.BZIP2_ID
-                || compressionMethod == ZipMethod.LZMA_ID
-                || compressionMethod == ZipMethod.XZ_ID
+        if (compressionMethod == ZipMethod.STORED.id()
+                || compressionMethod == ZipMethod.DEFLATED.id()
+                || compressionMethod == ZipMethod.DEFLATE64.id()
+                || compressionMethod == ZipMethod.BZIP2.id()
+                || compressionMethod == ZipMethod.LZMA.id()
+                || compressionMethod == ZipMethod.XZ.id()
                 || isZstandardMethod(compressionMethod)) {
             return newDecodedEntryByteChannel(path, entry, dataOffset);
         }
@@ -452,12 +452,12 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         ZipEntryRecord entry = requireReadableEntry(path);
         requireSupportedEncryption(path, entry);
         int compressionMethod = entry.compressionMethod();
-        if (compressionMethod != ZipMethod.STORED_ID
-                && compressionMethod != ZipMethod.DEFLATED_ID
-                && compressionMethod != ZipMethod.DEFLATE64_ID
-                && compressionMethod != ZipMethod.BZIP2_ID
-                && compressionMethod != ZipMethod.LZMA_ID
-                && compressionMethod != ZipMethod.XZ_ID
+        if (compressionMethod != ZipMethod.STORED.id()
+                && compressionMethod != ZipMethod.DEFLATED.id()
+                && compressionMethod != ZipMethod.DEFLATE64.id()
+                && compressionMethod != ZipMethod.BZIP2.id()
+                && compressionMethod != ZipMethod.LZMA.id()
+                && compressionMethod != ZipMethod.XZ.id()
                 && !isZstandardMethod(compressionMethod)) {
             throw new IOException("Unsupported ZIP compression method: " + compressionMethod);
         }
@@ -688,7 +688,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
         values.put("versionNeededToExtract", attributes.versionNeededToExtract());
         values.put("internalAttributes", attributes.internalAttributes());
         values.put("externalAttributes", attributes.externalAttributes());
-        values.put("method", attributes.method());
+        values.put("compressionMethodId", attributes.compressionMethodId());
+        values.put("compressionMethod", attributes.compressionMethod());
         values.put("encryption", attributes.encryption());
         values.put("localExtraData", attributes.localExtraData());
         values.put("centralDirectoryExtraData", attributes.centralDirectoryExtraData());
@@ -736,7 +737,8 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             case "versionNeededToExtract" -> requireZipView(values, name, zipView, attributes.versionNeededToExtract());
             case "internalAttributes" -> requireZipView(values, name, zipView, attributes.internalAttributes());
             case "externalAttributes" -> requireZipView(values, name, zipView, attributes.externalAttributes());
-            case "method" -> requireZipView(values, name, zipView, attributes.method());
+            case "compressionMethodId" -> requireZipView(values, name, zipView, attributes.compressionMethodId());
+            case "compressionMethod" -> requireZipView(values, name, zipView, attributes.compressionMethod());
             case "encryption" -> requireZipView(values, name, zipView, attributes.encryption());
             case "localExtraData" -> requireZipView(values, name, zipView, attributes.localExtraData());
             case "centralDirectoryExtraData" ->
@@ -1447,17 +1449,17 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
                         ? openAesDecryptingStream(path, entry, aes, input)
                         : openTraditionalDecryptingStream(path, entry, input);
             }
-            if (entry.compressionMethod() == ZipMethod.DEFLATED_ID) {
+            if (entry.compressionMethod() == ZipMethod.DEFLATED.id()) {
                 input = openDeflateInputStream(input, entry.uncompressedSize);
-            } else if (entry.compressionMethod() == ZipMethod.DEFLATE64_ID) {
+            } else if (entry.compressionMethod() == ZipMethod.DEFLATE64.id()) {
                 input = openDeflate64InputStream(input, entry.uncompressedSize);
-            } else if (entry.compressionMethod() == ZipMethod.BZIP2_ID) {
+            } else if (entry.compressionMethod() == ZipMethod.BZIP2.id()) {
                 input = openBzip2InputStream(input, entry.uncompressedSize);
             } else if (isZstandardMethod(entry.compressionMethod())) {
                 input = openZstandardInputStream(input, entry.uncompressedSize);
-            } else if (entry.compressionMethod() == ZipMethod.LZMA_ID) {
+            } else if (entry.compressionMethod() == ZipMethod.LZMA.id()) {
                 input = openLzmaInputStream(input, entry.uncompressedSize, entry.generalPurposeFlags);
-            } else if (entry.compressionMethod() == ZipMethod.XZ_ID) {
+            } else if (entry.compressionMethod() == ZipMethod.XZ.id()) {
                 input = openXzInputStream(input, entry.uncompressedSize);
             }
             long expectedCrc32 = aes != null ? ZipArkivoEntryAttributes.UNKNOWN_CRC32 : entry.crc32;
@@ -2942,11 +2944,17 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
             return record != null ? record.externalAttributes : 0;
         }
 
-        /// Returns the ZIP compression method.
+        /// Returns the numeric ZIP compression method identifier after resolving WinZip AES metadata.
         @Override
-        public ZipMethod method() {
+        public int compressionMethodId() {
             ZipEntryRecord record = entry;
-            return record != null ? ZipMethod.of(record.compressionMethod()) : ZipMethod.stored();
+            return record != null ? record.compressionMethod() : ZipMethod.STORED.id();
+        }
+
+        /// Returns the recognized ZIP compression method, or `null` when the method identifier is unknown.
+        @Override
+        public @Nullable ZipMethod compressionMethod() {
+            return ZipMethod.fromId(compressionMethodId());
         }
 
         /// Returns the recognized ZIP encryption method, or `null` when encrypted metadata is unrecognized or malformed.

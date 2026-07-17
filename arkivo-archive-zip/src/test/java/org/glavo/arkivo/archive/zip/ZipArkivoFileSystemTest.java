@@ -377,7 +377,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry353 = writer.beginFile("bzip2.txt");
                 ZipArkivoEntryAttributeView view = writerEntry353.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
-                view.setMethod(ZipMethod.bzip2());
+                view.setMethod(ZipMethod.BZIP2);
                 try (var output = writerEntry353.openOutputStream()) {
                     output.write(content);
                 }
@@ -387,7 +387,7 @@ public final class ZipArkivoFileSystemTest {
                 Path file = fileSystem.getPath("/bzip2.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
 
-                assertEquals(ZipMethod.bzip2(), attributes.method());
+                assertEquals(ZipMethod.BZIP2, attributes.compressionMethod());
                 assertEquals(content.length, attributes.size());
                 assertEquals(crc32(content), attributes.crc32());
                 assertEquals(true, (attributes.generalPurposeFlags() & (1 << 3)) != 0);
@@ -409,7 +409,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry385 = writer.beginFile("deflate64.txt");
                 ZipArkivoEntryAttributeView view = writerEntry385.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
-                view.setMethod(ZipMethod.deflate64());
+                view.setMethod(ZipMethod.DEFLATE64);
                 try (var output = writerEntry385.openOutputStream()) {
                     output.write(content);
                 }
@@ -419,7 +419,7 @@ public final class ZipArkivoFileSystemTest {
                 Path file = fileSystem.getPath("/deflate64.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
 
-                assertEquals(ZipMethod.deflate64(), attributes.method());
+                assertEquals(ZipMethod.DEFLATE64, attributes.compressionMethod());
                 assertEquals(DEFLATE64_VERSION_NEEDED, attributes.versionNeededToExtract());
                 assertEquals(content.length, attributes.size());
                 assertEquals(crc32(content), attributes.crc32());
@@ -430,7 +430,7 @@ public final class ZipArkivoFileSystemTest {
                     .setPath(archivePath)
                     .get()) {
                 var entry = Objects.requireNonNull(zipFile.getEntry("deflate64.txt"));
-                assertEquals(ZipMethod.DEFLATE64_ID, entry.getMethod());
+                assertEquals(ZipMethod.DEFLATE64.id(), entry.getMethod());
                 try (InputStream input = zipFile.getInputStream(entry)) {
                     assertArrayEquals(content, input.readAllBytes());
                 }
@@ -456,7 +456,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry432 = writer.beginFile("secret.txt");
                 ZipArkivoEntryAttributeView view = writerEntry432.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
-                view.setMethod(ZipMethod.deflate64());
+                view.setMethod(ZipMethod.DEFLATE64);
                 view.setEncryption(ZipEncryption.WINZIP_AES_256);
                 try (var output = writerEntry432.openOutputStream()) {
                     output.write(content);
@@ -475,7 +475,7 @@ public final class ZipArkivoFileSystemTest {
                         fileSystem.getPath("/secret.txt"),
                         ZipArkivoEntryAttributes.class
                 );
-                assertEquals(ZipMethod.deflate64(), attributes.method());
+                assertEquals(ZipMethod.DEFLATE64, attributes.compressionMethod());
                 assertEquals(ZipEncryption.WINZIP_AES_256, attributes.encryption());
             }
         } finally {
@@ -494,7 +494,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry470 = writer.beginFile("zstandard.txt");
                 ZipArkivoEntryAttributeView view = writerEntry470.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
-                view.setMethod(ZipMethod.zstandard());
+                view.setMethod(ZipMethod.ZSTANDARD);
                 try (var output = writerEntry470.openOutputStream()) {
                     output.write(content);
                 }
@@ -504,7 +504,7 @@ public final class ZipArkivoFileSystemTest {
                 Path file = fileSystem.getPath("/zstandard.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
 
-                assertEquals(ZipMethod.zstandard(), attributes.method());
+                assertEquals(ZipMethod.ZSTANDARD, attributes.compressionMethod());
                 assertEquals(content.length, attributes.size());
                 assertEquals(crc32(content), attributes.crc32());
                 assertEquals(true, (attributes.generalPurposeFlags() & (1 << 3)) != 0);
@@ -526,7 +526,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry502 = writer.beginFile("deprecated-zstandard.txt");
                 ZipArkivoEntryAttributeView view = writerEntry502.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
-                view.setMethod(ZipMethod.deprecatedZstandard());
+                view.setMethod(ZipMethod.DEPRECATED_ZSTANDARD);
                 try (var output = writerEntry502.openOutputStream()) {
                     output.write(content);
                 }
@@ -537,7 +537,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes streamingAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("deprecated-zstandard.txt", streamingAttributes.path());
-                assertEquals(ZipMethod.deprecatedZstandard(), streamingAttributes.method());
+                assertEquals(ZipMethod.DEPRECATED_ZSTANDARD, streamingAttributes.compressionMethod());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(content, input.readAllBytes());
                 }
@@ -548,7 +548,7 @@ public final class ZipArkivoFileSystemTest {
                 Path file = fileSystem.getPath("/deprecated-zstandard.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
 
-                assertEquals(ZipMethod.deprecatedZstandard(), attributes.method());
+                assertEquals(ZipMethod.DEPRECATED_ZSTANDARD, attributes.compressionMethod());
                 assertEquals(content.length, attributes.size());
                 assertEquals(crc32(content), attributes.crc32());
                 assertArrayEquals(content, Files.readAllBytes(file));
@@ -569,7 +569,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry545 = writer.beginFile("xz.txt");
                 ZipArkivoEntryAttributeView view = writerEntry545.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
-                view.setMethod(ZipMethod.xz());
+                view.setMethod(ZipMethod.XZ);
                 try (var output = writerEntry545.openOutputStream()) {
                     output.write(content);
                 }
@@ -579,7 +579,7 @@ public final class ZipArkivoFileSystemTest {
                 Path file = fileSystem.getPath("/xz.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
 
-                assertEquals(ZipMethod.xz(), attributes.method());
+                assertEquals(ZipMethod.XZ, attributes.compressionMethod());
                 assertEquals(content.length, attributes.size());
                 assertEquals(crc32(content), attributes.crc32());
                 assertEquals(true, (attributes.generalPurposeFlags() & (1 << 3)) != 0);
@@ -602,7 +602,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry578 = writer.beginFile("bzip2.txt");
                 ZipArkivoEntryAttributeView bzip2View = writerEntry578.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(bzip2View);
-                bzip2View.setMethod(ZipMethod.bzip2());
+                bzip2View.setMethod(ZipMethod.BZIP2);
                 try (var output = writerEntry578.openOutputStream()) {
                     output.write(bzip2Content);
                 }
@@ -610,7 +610,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry586 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry586.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry586.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -621,7 +621,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes bzip2Attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("bzip2.txt", bzip2Attributes.path());
-                assertEquals(ZipMethod.bzip2(), bzip2Attributes.method());
+                assertEquals(ZipMethod.BZIP2, bzip2Attributes.compressionMethod());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, bzip2Attributes.compressedSize());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, bzip2Attributes.size());
                 try (var input = reader.openInputStream()) {
@@ -631,7 +631,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
-                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                assertEquals(ZipMethod.STORED, afterAttributes.compressionMethod());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
@@ -653,7 +653,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry629 = writer.beginFile("lzma.txt");
                 ZipArkivoEntryAttributeView view = writerEntry629.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
-                view.setMethod(ZipMethod.lzma());
+                view.setMethod(ZipMethod.LZMA);
                 try (var output = writerEntry629.openOutputStream()) {
                     output.write(content);
                 }
@@ -663,7 +663,7 @@ public final class ZipArkivoFileSystemTest {
                 Path file = fileSystem.getPath("/lzma.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
 
-                assertEquals(ZipMethod.lzma(), attributes.method());
+                assertEquals(ZipMethod.LZMA, attributes.compressionMethod());
                 assertEquals(content.length, attributes.size());
                 assertEquals(crc32(content), attributes.crc32());
                 assertEquals(true, (attributes.generalPurposeFlags() & LZMA_EOS_MARKER_FLAG) != 0);
@@ -688,7 +688,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry664 = writer.beginFile("zstandard.txt");
                 ZipArkivoEntryAttributeView zstandardView = writerEntry664.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(zstandardView);
-                zstandardView.setMethod(ZipMethod.zstandard());
+                zstandardView.setMethod(ZipMethod.ZSTANDARD);
                 try (var output = writerEntry664.openOutputStream()) {
                     output.write(zstandardContent);
                 }
@@ -696,7 +696,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry672 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry672.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry672.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -707,7 +707,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes zstandardAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("zstandard.txt", zstandardAttributes.path());
-                assertEquals(ZipMethod.zstandard(), zstandardAttributes.method());
+                assertEquals(ZipMethod.ZSTANDARD, zstandardAttributes.compressionMethod());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, zstandardAttributes.compressedSize());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, zstandardAttributes.size());
                 try (var input = reader.openInputStream()) {
@@ -717,7 +717,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
-                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                assertEquals(ZipMethod.STORED, afterAttributes.compressionMethod());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
@@ -740,7 +740,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry716 = writer.beginFile("xz.txt");
                 ZipArkivoEntryAttributeView xzView = writerEntry716.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(xzView);
-                xzView.setMethod(ZipMethod.xz());
+                xzView.setMethod(ZipMethod.XZ);
                 try (var output = writerEntry716.openOutputStream()) {
                     output.write(xzContent);
                 }
@@ -748,7 +748,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry724 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry724.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry724.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -759,7 +759,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes xzAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("xz.txt", xzAttributes.path());
-                assertEquals(ZipMethod.xz(), xzAttributes.method());
+                assertEquals(ZipMethod.XZ, xzAttributes.compressionMethod());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, xzAttributes.compressedSize());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, xzAttributes.size());
                 try (var input = reader.openInputStream()) {
@@ -769,7 +769,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
-                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                assertEquals(ZipMethod.STORED, afterAttributes.compressionMethod());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
@@ -793,7 +793,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry769 = writer.beginFile("xz-descriptor-crc.txt");
                 ZipArkivoEntryAttributeView xzView = writerEntry769.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(xzView);
-                xzView.setMethod(ZipMethod.xz());
+                xzView.setMethod(ZipMethod.XZ);
                 try (var output = writerEntry769.openOutputStream()) {
                     output.write(xzContent);
                 }
@@ -801,7 +801,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry777 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry777.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry777.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -812,7 +812,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("xz-descriptor-crc.txt", firstAttributes.path());
-                assertEquals(ZipMethod.xz(), firstAttributes.method());
+                assertEquals(ZipMethod.XZ, firstAttributes.compressionMethod());
                 var firstInput = reader.openInputStream();
 
                 IOException exception = assertThrows(IOException.class, firstInput::readAllBytes);
@@ -822,7 +822,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", secondAttributes.path());
-                assertEquals(ZipMethod.stored(), secondAttributes.method());
+                assertEquals(ZipMethod.STORED, secondAttributes.compressionMethod());
                 try (var secondInput = reader.openInputStream()) {
                     assertArrayEquals(afterContent, secondInput.readAllBytes());
                 }
@@ -845,7 +845,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry821 = writer.beginFile("lzma.txt");
                 ZipArkivoEntryAttributeView lzmaView = writerEntry821.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(lzmaView);
-                lzmaView.setMethod(ZipMethod.lzma());
+                lzmaView.setMethod(ZipMethod.LZMA);
                 try (var output = writerEntry821.openOutputStream()) {
                     output.write(lzmaContent);
                 }
@@ -853,7 +853,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry829 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry829.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry829.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -864,7 +864,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes lzmaAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("lzma.txt", lzmaAttributes.path());
-                assertEquals(ZipMethod.lzma(), lzmaAttributes.method());
+                assertEquals(ZipMethod.LZMA, lzmaAttributes.compressionMethod());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, lzmaAttributes.compressedSize());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, lzmaAttributes.size());
                 assertEquals(true, (lzmaAttributes.generalPurposeFlags() & LZMA_EOS_MARKER_FLAG) != 0);
@@ -875,7 +875,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
-                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                assertEquals(ZipMethod.STORED, afterAttributes.compressionMethod());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
@@ -902,7 +902,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry878 = writer.beginFile("secret-xz.txt");
                 ZipArkivoEntryAttributeView xzView = writerEntry878.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(xzView);
-                xzView.setMethod(ZipMethod.xz());
+                xzView.setMethod(ZipMethod.XZ);
                 xzView.setEncryption(ZipEncryption.ZIP_CRYPTO);
                 try (var output = writerEntry878.openOutputStream()) {
                     output.write(xzContent);
@@ -911,7 +911,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry887 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry887.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry887.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -925,7 +925,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes xzAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("secret-xz.txt", xzAttributes.path());
-                assertEquals(ZipMethod.xz(), xzAttributes.method());
+                assertEquals(ZipMethod.XZ, xzAttributes.compressionMethod());
                 assertEquals(ZipEncryption.ZIP_CRYPTO, xzAttributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, xzAttributes.compressedSize());
                 try (var input = reader.openInputStream()) {
@@ -935,7 +935,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
-                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                assertEquals(ZipMethod.STORED, afterAttributes.compressionMethod());
                 assertEquals(ZipEncryption.NONE, afterAttributes.encryption());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
@@ -963,7 +963,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry939 = writer.beginFile("secret-lzma.txt");
                 ZipArkivoEntryAttributeView lzmaView = writerEntry939.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(lzmaView);
-                lzmaView.setMethod(ZipMethod.lzma());
+                lzmaView.setMethod(ZipMethod.LZMA);
                 lzmaView.setEncryption(ZipEncryption.ZIP_CRYPTO);
                 try (var output = writerEntry939.openOutputStream()) {
                     output.write(lzmaContent);
@@ -972,7 +972,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry948 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry948.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry948.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -986,7 +986,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes lzmaAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("secret-lzma.txt", lzmaAttributes.path());
-                assertEquals(ZipMethod.lzma(), lzmaAttributes.method());
+                assertEquals(ZipMethod.LZMA, lzmaAttributes.compressionMethod());
                 assertEquals(ZipEncryption.ZIP_CRYPTO, lzmaAttributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, lzmaAttributes.compressedSize());
                 try (var input = reader.openInputStream()) {
@@ -996,7 +996,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
-                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                assertEquals(ZipMethod.STORED, afterAttributes.compressionMethod());
                 assertEquals(ZipEncryption.NONE, afterAttributes.encryption());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
@@ -1024,7 +1024,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1000 = writer.beginFile("aes-xz.txt");
                 ZipArkivoEntryAttributeView xzView = writerEntry1000.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(xzView);
-                xzView.setMethod(ZipMethod.xz());
+                xzView.setMethod(ZipMethod.XZ);
                 xzView.setEncryption(ZipEncryption.WINZIP_AES_256);
                 try (var output = writerEntry1000.openOutputStream()) {
                     output.write(xzContent);
@@ -1033,7 +1033,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1009 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry1009.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry1009.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -1047,7 +1047,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes xzAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("aes-xz.txt", xzAttributes.path());
-                assertEquals(ZipMethod.xz(), xzAttributes.method());
+                assertEquals(ZipMethod.XZ, xzAttributes.compressionMethod());
                 assertEquals(ZipEncryption.WINZIP_AES_256, xzAttributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, xzAttributes.compressedSize());
                 try (var input = reader.openInputStream()) {
@@ -1057,7 +1057,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
-                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                assertEquals(ZipMethod.STORED, afterAttributes.compressionMethod());
                 assertEquals(ZipEncryption.NONE, afterAttributes.encryption());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
@@ -1082,7 +1082,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1058 = writer.beginFile("zstandard-descriptor-crc.txt");
                 ZipArkivoEntryAttributeView zstandardView = writerEntry1058.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(zstandardView);
-                zstandardView.setMethod(ZipMethod.zstandard());
+                zstandardView.setMethod(ZipMethod.ZSTANDARD);
                 try (var output = writerEntry1058.openOutputStream()) {
                     output.write(zstandardContent);
                 }
@@ -1090,7 +1090,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1066 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry1066.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry1066.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -1101,7 +1101,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("zstandard-descriptor-crc.txt", firstAttributes.path());
-                assertEquals(ZipMethod.zstandard(), firstAttributes.method());
+                assertEquals(ZipMethod.ZSTANDARD, firstAttributes.compressionMethod());
                 var firstInput = reader.openInputStream();
 
                 IOException exception = assertThrows(IOException.class, firstInput::readAllBytes);
@@ -1111,7 +1111,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", secondAttributes.path());
-                assertEquals(ZipMethod.stored(), secondAttributes.method());
+                assertEquals(ZipMethod.STORED, secondAttributes.compressionMethod());
                 try (var secondInput = reader.openInputStream()) {
                     assertArrayEquals(afterContent, secondInput.readAllBytes());
                 }
@@ -1138,7 +1138,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1114 = writer.beginFile("secret-zstandard.txt");
                 ZipArkivoEntryAttributeView zstandardView = writerEntry1114.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(zstandardView);
-                zstandardView.setMethod(ZipMethod.zstandard());
+                zstandardView.setMethod(ZipMethod.ZSTANDARD);
                 zstandardView.setEncryption(ZipEncryption.ZIP_CRYPTO);
                 try (var output = writerEntry1114.openOutputStream()) {
                     output.write(zstandardContent);
@@ -1147,7 +1147,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1123 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry1123.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry1123.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -1161,7 +1161,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes zstandardAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("secret-zstandard.txt", zstandardAttributes.path());
-                assertEquals(ZipMethod.zstandard(), zstandardAttributes.method());
+                assertEquals(ZipMethod.ZSTANDARD, zstandardAttributes.compressionMethod());
                 assertEquals(ZipEncryption.ZIP_CRYPTO, zstandardAttributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, zstandardAttributes.compressedSize());
                 try (var input = reader.openInputStream()) {
@@ -1171,7 +1171,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
-                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                assertEquals(ZipMethod.STORED, afterAttributes.compressionMethod());
                 assertEquals(ZipEncryption.NONE, afterAttributes.encryption());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
@@ -1200,7 +1200,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1176 = writer.beginFile("secret-zstandard-descriptor-crc.txt");
                 ZipArkivoEntryAttributeView zstandardView = writerEntry1176.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(zstandardView);
-                zstandardView.setMethod(ZipMethod.zstandard());
+                zstandardView.setMethod(ZipMethod.ZSTANDARD);
                 zstandardView.setEncryption(ZipEncryption.ZIP_CRYPTO);
                 try (var output = writerEntry1176.openOutputStream()) {
                     output.write(zstandardContent);
@@ -1209,7 +1209,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1185 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry1185.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry1185.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -1223,7 +1223,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("secret-zstandard-descriptor-crc.txt", firstAttributes.path());
-                assertEquals(ZipMethod.zstandard(), firstAttributes.method());
+                assertEquals(ZipMethod.ZSTANDARD, firstAttributes.compressionMethod());
                 assertEquals(ZipEncryption.ZIP_CRYPTO, firstAttributes.encryption());
                 var firstInput = reader.openInputStream();
 
@@ -1234,7 +1234,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", secondAttributes.path());
-                assertEquals(ZipMethod.stored(), secondAttributes.method());
+                assertEquals(ZipMethod.STORED, secondAttributes.compressionMethod());
                 assertEquals(ZipEncryption.NONE, secondAttributes.encryption());
                 try (var secondInput = reader.openInputStream()) {
                     assertArrayEquals(afterContent, secondInput.readAllBytes());
@@ -1262,7 +1262,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1238 = writer.beginFile("aes-lzma.txt");
                 ZipArkivoEntryAttributeView lzmaView = writerEntry1238.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(lzmaView);
-                lzmaView.setMethod(ZipMethod.lzma());
+                lzmaView.setMethod(ZipMethod.LZMA);
                 lzmaView.setEncryption(ZipEncryption.WINZIP_AES_256);
                 try (var output = writerEntry1238.openOutputStream()) {
                     output.write(lzmaContent);
@@ -1271,7 +1271,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1247 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry1247.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry1247.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -1285,7 +1285,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes lzmaAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("aes-lzma.txt", lzmaAttributes.path());
-                assertEquals(ZipMethod.lzma(), lzmaAttributes.method());
+                assertEquals(ZipMethod.LZMA, lzmaAttributes.compressionMethod());
                 assertEquals(ZipEncryption.WINZIP_AES_256, lzmaAttributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, lzmaAttributes.compressedSize());
                 try (var input = reader.openInputStream()) {
@@ -1295,7 +1295,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
-                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                assertEquals(ZipMethod.STORED, afterAttributes.compressionMethod());
                 assertEquals(ZipEncryption.NONE, afterAttributes.encryption());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
@@ -1327,7 +1327,7 @@ public final class ZipArkivoFileSystemTest {
             )) {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
-                assertEquals(ZipMethod.deflated(), attributes.method());
+                assertEquals(ZipMethod.DEFLATED, attributes.compressionMethod());
                 assertEquals(encryption, attributes.encryption());
                 try (InputStream input = reader.openInputStream()) {
                     assertEquals(Byte.toUnsignedInt(content[0]), input.read());
@@ -1459,7 +1459,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1451 = writer.beginFile("aes-zstandard.txt");
                 ZipArkivoEntryAttributeView zstandardView = writerEntry1451.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(zstandardView);
-                zstandardView.setMethod(ZipMethod.zstandard());
+                zstandardView.setMethod(ZipMethod.ZSTANDARD);
                 zstandardView.setEncryption(ZipEncryption.WINZIP_AES_256);
                 try (var output = writerEntry1451.openOutputStream()) {
                     output.write(zstandardContent);
@@ -1468,7 +1468,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1460 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry1460.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry1460.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -1482,7 +1482,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes zstandardAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("aes-zstandard.txt", zstandardAttributes.path());
-                assertEquals(ZipMethod.zstandard(), zstandardAttributes.method());
+                assertEquals(ZipMethod.ZSTANDARD, zstandardAttributes.compressionMethod());
                 assertEquals(ZipEncryption.WINZIP_AES_256, zstandardAttributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, zstandardAttributes.compressedSize());
                 try (var input = reader.openInputStream()) {
@@ -1492,7 +1492,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
-                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                assertEquals(ZipMethod.STORED, afterAttributes.compressionMethod());
                 assertEquals(ZipEncryption.NONE, afterAttributes.encryption());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
@@ -1521,7 +1521,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1513 = writer.beginFile("aes-zstandard-descriptor-crc.txt");
                 ZipArkivoEntryAttributeView zstandardView = writerEntry1513.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(zstandardView);
-                zstandardView.setMethod(ZipMethod.zstandard());
+                zstandardView.setMethod(ZipMethod.ZSTANDARD);
                 zstandardView.setEncryption(ZipEncryption.WINZIP_AES_256);
                 try (var output = writerEntry1513.openOutputStream()) {
                     output.write(zstandardContent);
@@ -1530,7 +1530,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1522 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry1522.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry1522.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -1544,7 +1544,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("aes-zstandard-descriptor-crc.txt", firstAttributes.path());
-                assertEquals(ZipMethod.zstandard(), firstAttributes.method());
+                assertEquals(ZipMethod.ZSTANDARD, firstAttributes.compressionMethod());
                 assertEquals(ZipEncryption.WINZIP_AES_256, firstAttributes.encryption());
                 var firstInput = reader.openInputStream();
 
@@ -1555,7 +1555,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", secondAttributes.path());
-                assertEquals(ZipMethod.stored(), secondAttributes.method());
+                assertEquals(ZipMethod.STORED, secondAttributes.compressionMethod());
                 assertEquals(ZipEncryption.NONE, secondAttributes.encryption());
                 try (var secondInput = reader.openInputStream()) {
                     assertArrayEquals(afterContent, secondInput.readAllBytes());
@@ -1580,7 +1580,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1572 = writer.beginFile("bzip2-descriptor-crc.txt");
                 ZipArkivoEntryAttributeView bzip2View = writerEntry1572.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(bzip2View);
-                bzip2View.setMethod(ZipMethod.bzip2());
+                bzip2View.setMethod(ZipMethod.BZIP2);
                 try (var output = writerEntry1572.openOutputStream()) {
                     output.write(bzip2Content);
                 }
@@ -1588,7 +1588,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1580 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry1580.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry1580.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -1599,7 +1599,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("bzip2-descriptor-crc.txt", firstAttributes.path());
-                assertEquals(ZipMethod.bzip2(), firstAttributes.method());
+                assertEquals(ZipMethod.BZIP2, firstAttributes.compressionMethod());
                 var firstInput = reader.openInputStream();
 
                 IOException exception = assertThrows(IOException.class, firstInput::readAllBytes);
@@ -1609,7 +1609,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", secondAttributes.path());
-                assertEquals(ZipMethod.stored(), secondAttributes.method());
+                assertEquals(ZipMethod.STORED, secondAttributes.compressionMethod());
                 try (var secondInput = reader.openInputStream()) {
                     assertArrayEquals(afterContent, secondInput.readAllBytes());
                 }
@@ -1636,7 +1636,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1628 = writer.beginFile("secret-bzip2.txt");
                 ZipArkivoEntryAttributeView bzip2View = writerEntry1628.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(bzip2View);
-                bzip2View.setMethod(ZipMethod.bzip2());
+                bzip2View.setMethod(ZipMethod.BZIP2);
                 bzip2View.setEncryption(ZipEncryption.ZIP_CRYPTO);
                 try (var output = writerEntry1628.openOutputStream()) {
                     output.write(bzip2Content);
@@ -1645,7 +1645,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1637 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry1637.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry1637.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -1659,7 +1659,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes bzip2Attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("secret-bzip2.txt", bzip2Attributes.path());
-                assertEquals(ZipMethod.bzip2(), bzip2Attributes.method());
+                assertEquals(ZipMethod.BZIP2, bzip2Attributes.compressionMethod());
                 assertEquals(ZipEncryption.ZIP_CRYPTO, bzip2Attributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, bzip2Attributes.compressedSize());
                 try (var input = reader.openInputStream()) {
@@ -1669,7 +1669,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
-                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                assertEquals(ZipMethod.STORED, afterAttributes.compressionMethod());
                 assertEquals(ZipEncryption.NONE, afterAttributes.encryption());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
@@ -1698,7 +1698,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1690 = writer.beginFile("secret-bzip2-descriptor-crc.txt");
                 ZipArkivoEntryAttributeView bzip2View = writerEntry1690.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(bzip2View);
-                bzip2View.setMethod(ZipMethod.bzip2());
+                bzip2View.setMethod(ZipMethod.BZIP2);
                 bzip2View.setEncryption(ZipEncryption.ZIP_CRYPTO);
                 try (var output = writerEntry1690.openOutputStream()) {
                     output.write(bzip2Content);
@@ -1707,7 +1707,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1699 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry1699.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry1699.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -1721,7 +1721,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("secret-bzip2-descriptor-crc.txt", firstAttributes.path());
-                assertEquals(ZipMethod.bzip2(), firstAttributes.method());
+                assertEquals(ZipMethod.BZIP2, firstAttributes.compressionMethod());
                 assertEquals(ZipEncryption.ZIP_CRYPTO, firstAttributes.encryption());
                 var firstInput = reader.openInputStream();
 
@@ -1732,7 +1732,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", secondAttributes.path());
-                assertEquals(ZipMethod.stored(), secondAttributes.method());
+                assertEquals(ZipMethod.STORED, secondAttributes.compressionMethod());
                 assertEquals(ZipEncryption.NONE, secondAttributes.encryption());
                 try (var secondInput = reader.openInputStream()) {
                     assertArrayEquals(afterContent, secondInput.readAllBytes());
@@ -1760,7 +1760,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1752 = writer.beginFile("aes-bzip2.txt");
                 ZipArkivoEntryAttributeView bzip2View = writerEntry1752.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(bzip2View);
-                bzip2View.setMethod(ZipMethod.bzip2());
+                bzip2View.setMethod(ZipMethod.BZIP2);
                 bzip2View.setEncryption(ZipEncryption.WINZIP_AES_256);
                 try (var output = writerEntry1752.openOutputStream()) {
                     output.write(bzip2Content);
@@ -1769,7 +1769,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1761 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry1761.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry1761.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -1783,7 +1783,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes bzip2Attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("aes-bzip2.txt", bzip2Attributes.path());
-                assertEquals(ZipMethod.bzip2(), bzip2Attributes.method());
+                assertEquals(ZipMethod.BZIP2, bzip2Attributes.compressionMethod());
                 assertEquals(ZipEncryption.WINZIP_AES_256, bzip2Attributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, bzip2Attributes.compressedSize());
                 try (var input = reader.openInputStream()) {
@@ -1793,7 +1793,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
-                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                assertEquals(ZipMethod.STORED, afterAttributes.compressionMethod());
                 assertEquals(ZipEncryption.NONE, afterAttributes.encryption());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
@@ -1822,7 +1822,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1814 = writer.beginFile("aes-bzip2-descriptor-crc.txt");
                 ZipArkivoEntryAttributeView bzip2View = writerEntry1814.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(bzip2View);
-                bzip2View.setMethod(ZipMethod.bzip2());
+                bzip2View.setMethod(ZipMethod.BZIP2);
                 bzip2View.setEncryption(ZipEncryption.WINZIP_AES_256);
                 try (var output = writerEntry1814.openOutputStream()) {
                     output.write(bzip2Content);
@@ -1831,7 +1831,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1823 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry1823.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry1823.openOutputStream()) {
                     output.write(afterContent);
                 }
@@ -1845,7 +1845,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("aes-bzip2-descriptor-crc.txt", firstAttributes.path());
-                assertEquals(ZipMethod.bzip2(), firstAttributes.method());
+                assertEquals(ZipMethod.BZIP2, firstAttributes.compressionMethod());
                 assertEquals(ZipEncryption.WINZIP_AES_256, firstAttributes.encryption());
                 var firstInput = reader.openInputStream();
 
@@ -1856,7 +1856,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", secondAttributes.path());
-                assertEquals(ZipMethod.stored(), secondAttributes.method());
+                assertEquals(ZipMethod.STORED, secondAttributes.compressionMethod());
                 assertEquals(ZipEncryption.NONE, secondAttributes.encryption());
                 try (var secondInput = reader.openInputStream()) {
                     assertArrayEquals(afterContent, secondInput.readAllBytes());
@@ -1912,7 +1912,7 @@ public final class ZipArkivoFileSystemTest {
                 assertThrows(UserPrincipalNotFoundException.class, () -> posixView.setOwner(() -> "missing"));
                 assertThrows(UserPrincipalNotFoundException.class, () -> posixView.setGroup(() -> "missing"));
 
-                zipView.setMethod(ZipMethod.deflated());
+                zipView.setMethod(ZipMethod.DEFLATED);
                 zipView.setRawComment(rawComment);
                 Set<PosixFilePermission> permissions = Set.of(
                         PosixFilePermission.OWNER_READ,
@@ -1934,13 +1934,13 @@ public final class ZipArkivoFileSystemTest {
                 assertEquals("pending comment", attributes.comment());
                 assertArrayEquals(rawComment, attributes.rawComment());
                 assertEquals(true, (attributes.generalPurposeFlags() & (1 << 11)) != 0);
-                assertEquals(ZipMethod.deflated(), attributes.method());
+                assertEquals(ZipMethod.DEFLATED, attributes.compressionMethod());
                 assertEquals(permissions, attributes.permissions());
 
                 try (var output = writerEntry1892.openOutputStream()) {
                     output.write("hello".getBytes(StandardCharsets.UTF_8));
                 }
-                assertThrows(IllegalStateException.class, () -> zipView.setMethod(ZipMethod.stored()));
+                assertThrows(IllegalStateException.class, () -> zipView.setMethod(ZipMethod.STORED));
             }
 
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
@@ -1986,7 +1986,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry1978 = writer.beginFile("meta/stored.bin");
                 ZipArkivoEntryAttributeView fileView = writerEntry1978.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(fileView);
-                fileView.setMethod(ZipMethod.stored());
+                fileView.setMethod(ZipMethod.STORED);
                 fileView.setTimes(lastModifiedTime, null, null);
                 fileView.setUncompressedSizeAndCrc32(content.length, crc32);
                 fileView.setInternalAttributes(1);
@@ -2006,7 +2006,7 @@ public final class ZipArkivoFileSystemTest {
                 ZipArkivoEntryAttributes directoryAttributes =
                         Files.readAttributes(fileSystem.getPath("/meta"), ZipArkivoEntryAttributes.class);
                 assertEquals(true, directoryAttributes.isDirectory());
-                assertEquals(ZipMethod.stored(), directoryAttributes.method());
+                assertEquals(ZipMethod.STORED, directoryAttributes.compressionMethod());
                 assertArrayEquals(rawComment, directoryAttributes.rawComment());
                 assertEquals(lastModifiedTime, directoryAttributes.lastModifiedTime());
                 Files.copy(fileSystem.getPath("/meta"), copiedDirectory);
@@ -2020,7 +2020,7 @@ public final class ZipArkivoFileSystemTest {
                 ZipArkivoEntryAttributes fileAttributes =
                         Files.readAttributes(fileSystem.getPath("/meta/stored.bin"), ZipArkivoEntryAttributes.class);
                 assertArrayEquals(content, Files.readAllBytes(fileSystem.getPath("/meta/stored.bin")));
-                assertEquals(ZipMethod.stored(), fileAttributes.method());
+                assertEquals(ZipMethod.STORED, fileAttributes.compressionMethod());
                 assertEquals(content.length, fileAttributes.compressedSize());
                 assertEquals(content.length, fileAttributes.size());
                 assertEquals(crc32, fileAttributes.crc32());
@@ -2126,7 +2126,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry2125 = writer.beginFile("stored.bin");
                 ZipArkivoEntryAttributeView view = writerEntry2125.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
-                view.setMethod(ZipMethod.stored());
+                view.setMethod(ZipMethod.STORED);
                 view.setEncryption(ZipEncryption.ZIP_CRYPTO);
                 view.setUncompressedSizeAndCrc32(content.length, crc32);
                 try (var output = writerEntry2125.openOutputStream()) {
@@ -2141,7 +2141,7 @@ public final class ZipArkivoFileSystemTest {
                 Path file = fileSystem.getPath("/stored.bin");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
 
-                assertEquals(ZipMethod.stored(), attributes.method());
+                assertEquals(ZipMethod.STORED, attributes.compressionMethod());
                 assertEquals(ZipEncryption.ZIP_CRYPTO, attributes.encryption());
                 assertEquals(content.length + 12L, attributes.compressedSize());
                 assertEquals(content.length, attributes.size());
@@ -2180,7 +2180,7 @@ public final class ZipArkivoFileSystemTest {
                 Path file = fileSystem.getPath("/secure/aes.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
 
-                assertEquals(ZipMethod.deflated(), attributes.method());
+                assertEquals(ZipMethod.DEFLATED, attributes.compressionMethod());
                 assertEquals(ZipEncryption.WINZIP_AES_256, attributes.encryption());
                 assertEquals(content.length, attributes.size());
                 assertArrayEquals(content, Files.readAllBytes(file));
@@ -2198,7 +2198,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("secure/aes.txt", attributes.path());
-                assertEquals(ZipMethod.deflated(), attributes.method());
+                assertEquals(ZipMethod.DEFLATED, attributes.compressionMethod());
                 assertEquals(ZipEncryption.WINZIP_AES_256, attributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.compressedSize());
                 try (var input = reader.openInputStream()) {
@@ -2288,7 +2288,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry2295 = writer.beginFile("stored-aes.bin");
                 ZipArkivoEntryAttributeView view = writerEntry2295.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
-                view.setMethod(ZipMethod.stored());
+                view.setMethod(ZipMethod.STORED);
                 view.setEncryption(ZipEncryption.WINZIP_AES_128);
                 view.setUncompressedSizeAndCrc32(content.length, crc32);
                 try (var output = writerEntry2295.openOutputStream()) {
@@ -2303,7 +2303,7 @@ public final class ZipArkivoFileSystemTest {
                 Path file = fileSystem.getPath("/stored-aes.bin");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
 
-                assertEquals(ZipMethod.stored(), attributes.method());
+                assertEquals(ZipMethod.STORED, attributes.compressionMethod());
                 assertEquals(ZipEncryption.WINZIP_AES_128, attributes.encryption());
                 assertEquals(content.length + 20L, attributes.compressedSize());
                 assertEquals(content.length, attributes.size());
@@ -2319,7 +2319,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("stored-aes.bin", attributes.path());
-                assertEquals(ZipMethod.stored(), attributes.method());
+                assertEquals(ZipMethod.STORED, attributes.compressionMethod());
                 assertEquals(ZipEncryption.WINZIP_AES_128, attributes.encryption());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(content, input.readAllBytes());
@@ -2346,7 +2346,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry2353 = writer.beginFile("stored-aes-descriptor.bin");
                 ZipArkivoEntryAttributeView view = writerEntry2353.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
-                view.setMethod(ZipMethod.stored());
+                view.setMethod(ZipMethod.STORED);
                 view.setEncryption(ZipEncryption.WINZIP_AES_192);
                 try (var output = writerEntry2353.openOutputStream()) {
                     output.write(content);
@@ -2360,7 +2360,7 @@ public final class ZipArkivoFileSystemTest {
                 Path file = fileSystem.getPath("/stored-aes-descriptor.bin");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
 
-                assertEquals(ZipMethod.stored(), attributes.method());
+                assertEquals(ZipMethod.STORED, attributes.compressionMethod());
                 assertEquals(ZipEncryption.WINZIP_AES_192, attributes.encryption());
                 assertEquals(content.length + 24L, attributes.compressedSize());
                 assertEquals(content.length, attributes.size());
@@ -2375,7 +2375,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("stored-aes-descriptor.bin", attributes.path());
-                assertEquals(ZipMethod.stored(), attributes.method());
+                assertEquals(ZipMethod.STORED, attributes.compressionMethod());
                 assertEquals(ZipEncryption.WINZIP_AES_192, attributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.compressedSize());
                 try (var input = reader.openInputStream()) {
@@ -2416,7 +2416,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("aes-stored-descriptor.bin", attributes.path());
-            assertEquals(ZipMethod.stored(), attributes.method());
+            assertEquals(ZipMethod.STORED, attributes.compressionMethod());
             assertEquals(ZipEncryption.WINZIP_AES_256, attributes.encryption());
             assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.compressedSize());
             try (var input = reader.openInputStream()) {
@@ -2440,7 +2440,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("aes-stored-descriptor.bin", attributes.path());
-            assertEquals(ZipMethod.stored(), attributes.method());
+            assertEquals(ZipMethod.STORED, attributes.compressionMethod());
             assertEquals(ZipEncryption.WINZIP_AES_256, attributes.encryption());
             assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.compressedSize());
             try (var input = reader.openInputStream()) {
@@ -2478,7 +2478,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("after.txt", secondAttributes.path());
-            assertEquals(ZipMethod.stored(), secondAttributes.method());
+            assertEquals(ZipMethod.STORED, secondAttributes.compressionMethod());
             try (var secondInput = reader.openInputStream()) {
                 assertArrayEquals(secondContent, secondInput.readAllBytes());
             }
@@ -2506,7 +2506,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("aes-zip64-stored-descriptor-crc.bin", firstAttributes.path());
-            assertEquals(ZipMethod.stored(), firstAttributes.method());
+            assertEquals(ZipMethod.STORED, firstAttributes.compressionMethod());
             assertEquals(ZipEncryption.WINZIP_AES_256, firstAttributes.encryption());
             var firstInput = reader.openInputStream();
 
@@ -2517,7 +2517,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("after.txt", secondAttributes.path());
-            assertEquals(ZipMethod.stored(), secondAttributes.method());
+            assertEquals(ZipMethod.STORED, secondAttributes.compressionMethod());
             try (var secondInput = reader.openInputStream()) {
                 assertArrayEquals(secondContent, secondInput.readAllBytes());
             }
@@ -2732,23 +2732,30 @@ public final class ZipArkivoFileSystemTest {
                 );
                 ZipArkivoEntryAttributeView fileAttributeView =
                         Files.getFileAttributeView(file, ZipArkivoEntryAttributeView.class);
-                Map<String, Object> namedAttributes = Files.readAttributes(file, "zip:size,compressedSize,method");
+                Map<String, Object> namedAttributes = Files.readAttributes(
+                        file,
+                        "zip:size,compressedSize,compressionMethodId,compressionMethod"
+                );
                 ArrayList<String> rootChildren = new ArrayList<>();
                 ArrayList<String> directoryChildren = new ArrayList<>();
 
                 assertEquals(true, directoryAttributes.isDirectory());
                 assertEquals(true, fileAttributes.isRegularFile());
                 assertEquals(5L, fileAttributes.size());
-                assertEquals(ZipMethod.deflated(), fileAttributes.method());
+                assertEquals(ZipMethod.DEFLATED, fileAttributes.compressionMethod());
                 assertEquals(false, linkAttributes.isRegularFile());
                 assertEquals(true, linkAttributes.isSymbolicLink());
                 assertEquals(fileSystem.getPath("hello.txt"), Files.readSymbolicLink(link));
                 assertThrows(NotLinkException.class, () -> Files.readSymbolicLink(file));
                 assertNotNull(fileAttributeView);
                 assertEquals(5L, fileAttributeView.readAttributes().size());
-                assertEquals(Set.of("size", "compressedSize", "method"), namedAttributes.keySet());
+                assertEquals(
+                        Set.of("size", "compressedSize", "compressionMethodId", "compressionMethod"),
+                        namedAttributes.keySet()
+                );
                 assertEquals(5L, namedAttributes.get("size"));
-                assertEquals(ZipMethod.deflated(), namedAttributes.get("method"));
+                assertEquals(ZipMethod.DEFLATED.id(), namedAttributes.get("compressionMethodId"));
+                assertEquals(ZipMethod.DEFLATED, namedAttributes.get("compressionMethod"));
 
                 try (DirectoryStream<Path> stream = Files.newDirectoryStream(fileSystem.getPath("/"))) {
                     for (Path child : stream) {
@@ -3507,7 +3514,7 @@ public final class ZipArkivoFileSystemTest {
                 ZipArkivoEntryAttributes beforeRejectedChanges = existingView.readAttributes();
                 assertThrows(
                         UnsupportedOperationException.class,
-                        () -> existingView.setMethod(ZipMethod.stored())
+                        () -> existingView.setMethod(ZipMethod.STORED)
                 );
                 assertThrows(
                         UnsupportedOperationException.class,
@@ -3517,7 +3524,10 @@ public final class ZipArkivoFileSystemTest {
                         IllegalArgumentException.class,
                         () -> existingView.setInternalAttributes(0x1_0000)
                 );
-                assertEquals(beforeRejectedChanges.method(), existingView.readAttributes().method());
+                assertEquals(
+                        beforeRejectedChanges.compressionMethod(),
+                        existingView.readAttributes().compressionMethod()
+                );
                 assertEquals(7, existingView.readAttributes().internalAttributes());
                 assertArrayEquals(linkComment, linkView.readAttributes().rawComment());
 
@@ -4042,7 +4052,7 @@ public final class ZipArkivoFileSystemTest {
             var writerEntry4192 = writer.beginFile("padding.bin");
             ZipArkivoEntryAttributeView view = writerEntry4192.attributeView(ZipArkivoEntryAttributeView.class);
             assertNotNull(view);
-            view.setMethod(ZipMethod.stored());
+            view.setMethod(ZipMethod.STORED);
             try (OutputStream output = writerEntry4192.openOutputStream()) {
                 output.write(splitTestContent(TEST_SPLIT_SIZE * 2));
             }
@@ -4068,7 +4078,7 @@ public final class ZipArkivoFileSystemTest {
             var writerEntry4221 = writer.beginFile("content.bin");
             ZipArkivoEntryAttributeView view = writerEntry4221.attributeView(ZipArkivoEntryAttributeView.class);
             assertNotNull(view);
-            view.setMethod(ZipMethod.stored());
+            view.setMethod(ZipMethod.STORED);
             try (OutputStream output = writerEntry4221.openOutputStream()) {
                 output.write(content);
             }
@@ -4272,7 +4282,7 @@ public final class ZipArkivoFileSystemTest {
         var writerEntry4425 = writer.beginFile("content.bin");
         ZipArkivoEntryAttributeView view = writerEntry4425.attributeView(ZipArkivoEntryAttributeView.class);
         assertNotNull(view);
-        view.setMethod(ZipMethod.stored());
+        view.setMethod(ZipMethod.STORED);
         OutputStream output = writerEntry4425.openOutputStream();
 
         assertThrows(IOException.class, () -> output.write(content));
@@ -4836,7 +4846,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("bzip2-streaming.txt", attributes.path());
-            assertEquals(ZipMethod.bzip2(), attributes.method());
+            assertEquals(ZipMethod.BZIP2, attributes.compressionMethod());
             assertEquals(compressed.length, attributes.compressedSize());
             assertEquals(content.length, attributes.size());
             try (var input = reader.openInputStream()) {
@@ -4855,7 +4865,7 @@ public final class ZipArkivoFileSystemTest {
         byte[] archive = streamingZstandardArchiveWithContent(
                 name,
                 compressed,
-                ZipMethod.ZSTANDARD_ID,
+                ZipMethod.ZSTANDARD.id(),
                 crc32(content),
                 compressed.length,
                 content.length
@@ -4865,7 +4875,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("zstandard-streaming.txt", attributes.path());
-            assertEquals(ZipMethod.zstandard(), attributes.method());
+            assertEquals(ZipMethod.ZSTANDARD, attributes.compressionMethod());
             assertEquals(compressed.length, attributes.compressedSize());
             assertEquals(content.length, attributes.size());
             try (var input = reader.openInputStream()) {
@@ -4893,7 +4903,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("xz-streaming.txt", attributes.path());
-            assertEquals(ZipMethod.xz(), attributes.method());
+            assertEquals(ZipMethod.XZ, attributes.compressionMethod());
             assertEquals(compressed.length, attributes.compressedSize());
             assertEquals(content.length, attributes.size());
             try (var input = reader.openInputStream()) {
@@ -4921,7 +4931,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("lzma-streaming.txt", attributes.path());
-            assertEquals(ZipMethod.lzma(), attributes.method());
+            assertEquals(ZipMethod.LZMA, attributes.compressionMethod());
             assertEquals(compressed.length, attributes.compressedSize());
             assertEquals(content.length, attributes.size());
             assertEquals(LZMA_VERSION_NEEDED, attributes.versionNeededToExtract());
@@ -4941,7 +4951,7 @@ public final class ZipArkivoFileSystemTest {
         byte[] archive = streamingZstandardArchiveWithContent(
                 name,
                 compressed,
-                ZipMethod.DEPRECATED_ZSTANDARD_ID,
+                ZipMethod.DEPRECATED_ZSTANDARD.id(),
                 crc32(content),
                 compressed.length,
                 content.length
@@ -4951,7 +4961,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("deprecated-zstandard-streaming.txt", attributes.path());
-            assertEquals(ZipMethod.of(ZipMethod.DEPRECATED_ZSTANDARD_ID), attributes.method());
+            assertEquals(ZipMethod.DEPRECATED_ZSTANDARD, attributes.compressionMethod());
             assertEquals(compressed.length, attributes.compressedSize());
             assertEquals(content.length, attributes.size());
             try (var input = reader.openInputStream()) {
@@ -4979,7 +4989,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("deflate64-streaming.txt", attributes.path());
-            assertEquals(ZipMethod.deflate64(), attributes.method());
+            assertEquals(ZipMethod.DEFLATE64, attributes.compressionMethod());
             assertEquals(compressed.length, attributes.compressedSize());
             assertEquals(content.length, attributes.size());
             try (var input = reader.openInputStream()) {
@@ -5010,7 +5020,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("deflate64-descriptor.txt", attributes.path());
-                assertEquals(ZipMethod.deflate64(), attributes.method());
+                assertEquals(ZipMethod.DEFLATE64, attributes.compressionMethod());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.compressedSize());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.size());
                 try (InputStream input = reader.openInputStream()) {
@@ -5070,7 +5080,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry5234 = writer.beginFile("secret.txt");
                 ZipArkivoEntryAttributeView view = writerEntry5234.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
-                view.setMethod(ZipMethod.deflate64());
+                view.setMethod(ZipMethod.DEFLATE64);
                 view.setEncryption(encryption);
                 try (OutputStream output = writerEntry5234.openOutputStream()) {
                     output.write(content);
@@ -5079,7 +5089,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry5243 = writer.beginFile("after.txt");
                 view = writerEntry5243.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
-                view.setMethod(ZipMethod.stored());
+                view.setMethod(ZipMethod.STORED);
                 try (OutputStream output = writerEntry5243.openOutputStream()) {
                     output.write(after);
                 }
@@ -5091,7 +5101,7 @@ public final class ZipArkivoFileSystemTest {
             )) {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
-                assertEquals(ZipMethod.deflate64(), attributes.method());
+                assertEquals(ZipMethod.DEFLATE64, attributes.compressionMethod());
                 assertEquals(encryption, attributes.encryption());
                 try (InputStream input = reader.openInputStream()) {
                     assertArrayEquals(content, input.readAllBytes());
@@ -5214,7 +5224,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry5378 = writer.beginFile("stored.txt");
                 ZipArkivoEntryAttributeView view = writerEntry5378.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
-                view.setMethod(ZipMethod.stored());
+                view.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry5378.openOutputStream()) {
                     output.write(content);
                 }
@@ -5225,7 +5235,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("stored.txt", attributes.path());
-                assertEquals(ZipMethod.stored(), attributes.method());
+                assertEquals(ZipMethod.STORED, attributes.compressionMethod());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.compressedSize());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(content, input.readAllBytes());
@@ -5310,7 +5320,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("after.txt", secondAttributes.path());
-            assertEquals(ZipMethod.stored(), secondAttributes.method());
+            assertEquals(ZipMethod.STORED, secondAttributes.compressionMethod());
             try (var secondInput = reader.openInputStream()) {
                 assertArrayEquals(secondContent, secondInput.readAllBytes());
             }
@@ -5332,7 +5342,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry5502 = writer.beginFile("encrypted-stored-descriptor-crc.txt");
                 ZipArkivoEntryAttributeView firstView = writerEntry5502.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(firstView);
-                firstView.setMethod(ZipMethod.stored());
+                firstView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry5502.openOutputStream()) {
                     output.write(firstContent);
                 }
@@ -5340,7 +5350,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry5510 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView secondView = writerEntry5510.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(secondView);
-                secondView.setMethod(ZipMethod.stored());
+                secondView.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry5510.openOutputStream()) {
                     output.write(secondContent);
                 }
@@ -5354,7 +5364,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("encrypted-stored-descriptor-crc.txt", firstAttributes.path());
-                assertEquals(ZipMethod.stored(), firstAttributes.method());
+                assertEquals(ZipMethod.STORED, firstAttributes.compressionMethod());
                 assertEquals(ZipEncryption.ZIP_CRYPTO, firstAttributes.encryption());
                 var firstInput = reader.openInputStream();
 
@@ -5365,7 +5375,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", secondAttributes.path());
-                assertEquals(ZipMethod.stored(), secondAttributes.method());
+                assertEquals(ZipMethod.STORED, secondAttributes.compressionMethod());
                 assertEquals(ZipEncryption.ZIP_CRYPTO, secondAttributes.encryption());
                 try (var secondInput = reader.openInputStream()) {
                     assertArrayEquals(secondContent, secondInput.readAllBytes());
@@ -5387,7 +5397,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("zip64.txt", attributes.path());
-            assertEquals(ZipMethod.deflated(), attributes.method());
+            assertEquals(ZipMethod.DEFLATED, attributes.compressionMethod());
             assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, attributes.compressedSize());
             try (var input = reader.openInputStream()) {
                 assertArrayEquals(content, input.readAllBytes());
@@ -5408,7 +5418,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("zip64-stored-descriptor-crc.txt", firstAttributes.path());
-            assertEquals(ZipMethod.stored(), firstAttributes.method());
+            assertEquals(ZipMethod.STORED, firstAttributes.compressionMethod());
             var firstInput = reader.openInputStream();
 
             IOException exception = assertThrows(IOException.class, firstInput::close);
@@ -5418,7 +5428,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("after.txt", secondAttributes.path());
-            assertEquals(ZipMethod.stored(), secondAttributes.method());
+            assertEquals(ZipMethod.STORED, secondAttributes.compressionMethod());
             try (var secondInput = reader.openInputStream()) {
                 assertArrayEquals(secondContent, secondInput.readAllBytes());
             }
@@ -5437,7 +5447,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes firstAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("zip64-extra.txt", firstAttributes.path());
-            assertEquals(ZipMethod.deflated(), firstAttributes.method());
+            assertEquals(ZipMethod.DEFLATED, firstAttributes.compressionMethod());
             try (var input = reader.openInputStream()) {
                 assertArrayEquals(firstContent, input.readAllBytes());
             }
@@ -5445,7 +5455,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes secondAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("after.txt", secondAttributes.path());
-            assertEquals(ZipMethod.stored(), secondAttributes.method());
+            assertEquals(ZipMethod.STORED, secondAttributes.compressionMethod());
             assertEquals(secondContent.length, secondAttributes.size());
             try (var input = reader.openInputStream()) {
                 assertArrayEquals(secondContent, input.readAllBytes());
@@ -5464,7 +5474,7 @@ public final class ZipArkivoFileSystemTest {
             org.junit.jupiter.api.Assertions.assertTrue(reader.next());
             ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
             assertEquals("zip64-stored.txt", attributes.path());
-            assertEquals(ZipMethod.stored(), attributes.method());
+            assertEquals(ZipMethod.STORED, attributes.compressionMethod());
             assertEquals(content.length, attributes.compressedSize());
             assertEquals(content.length, attributes.size());
             try (var input = reader.openInputStream()) {
@@ -5494,7 +5504,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("deflated.txt", attributes.path());
-                assertEquals(ZipMethod.deflated(), attributes.method());
+                assertEquals(ZipMethod.DEFLATED, attributes.compressionMethod());
                 IOException exception = assertThrows(IOException.class, () -> {
                     try (var input = reader.openInputStream()) {
                         input.readAllBytes();
@@ -5585,7 +5595,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry5761 = writer.beginFile("stored.txt");
                 ZipArkivoEntryAttributeView view = writerEntry5761.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
-                view.setMethod(ZipMethod.stored());
+                view.setMethod(ZipMethod.STORED);
                 try (var output = writerEntry5761.openOutputStream()) {
                     output.write(storedContent);
                 }
@@ -5599,7 +5609,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes deflatedAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("deflated.txt", deflatedAttributes.path());
-                assertEquals(ZipMethod.deflated(), deflatedAttributes.method());
+                assertEquals(ZipMethod.DEFLATED, deflatedAttributes.compressionMethod());
                 assertEquals(ZipEncryption.ZIP_CRYPTO, deflatedAttributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, deflatedAttributes.compressedSize());
                 try (var input = reader.openInputStream()) {
@@ -5609,7 +5619,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes storedAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("stored.txt", storedAttributes.path());
-                assertEquals(ZipMethod.stored(), storedAttributes.method());
+                assertEquals(ZipMethod.STORED, storedAttributes.compressionMethod());
                 assertEquals(ZipEncryption.ZIP_CRYPTO, storedAttributes.encryption());
                 assertEquals(ZipArkivoEntryAttributes.UNKNOWN_SIZE, storedAttributes.compressedSize());
                 try (var input = reader.openInputStream()) {
@@ -5639,7 +5649,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry5815 = writer.beginFile("secret.txt");
                 ZipArkivoEntryAttributeView secretView = writerEntry5815.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(secretView);
-                secretView.setMethod(ZipMethod.stored());
+                secretView.setMethod(ZipMethod.STORED);
                 secretView.setEncryption(ZipEncryption.ZIP_CRYPTO);
                 secretView.setUncompressedSizeAndCrc32(secretContent.length, crc32(secretContent));
                 try (var output = writerEntry5815.openOutputStream()) {
@@ -5649,7 +5659,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry5825 = writer.beginFile("after.txt");
                 ZipArkivoEntryAttributeView afterView = writerEntry5825.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(afterView);
-                afterView.setMethod(ZipMethod.stored());
+                afterView.setMethod(ZipMethod.STORED);
                 afterView.setUncompressedSizeAndCrc32(afterContent.length, crc32(afterContent));
                 try (var output = writerEntry5825.openOutputStream()) {
                     output.write(afterContent);
@@ -5671,7 +5681,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes secretAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("secret.txt", secretAttributes.path());
-                assertEquals(ZipMethod.stored(), secretAttributes.method());
+                assertEquals(ZipMethod.STORED, secretAttributes.compressionMethod());
                 assertEquals(ZipEncryption.ZIP_CRYPTO, secretAttributes.encryption());
 
                 IOException exception = assertThrows(IOException.class, reader::openInputStream);
@@ -5680,7 +5690,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes afterAttributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("after.txt", afterAttributes.path());
-                assertEquals(ZipMethod.stored(), afterAttributes.method());
+                assertEquals(ZipMethod.STORED, afterAttributes.compressionMethod());
                 try (var input = reader.openInputStream()) {
                     assertArrayEquals(afterContent, input.readAllBytes());
                 }
@@ -5715,7 +5725,7 @@ public final class ZipArkivoFileSystemTest {
                 org.junit.jupiter.api.Assertions.assertTrue(reader.next());
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
                 assertEquals("deflated.txt", attributes.path());
-                assertEquals(ZipMethod.deflated(), attributes.method());
+                assertEquals(ZipMethod.DEFLATED, attributes.compressionMethod());
                 assertEquals(ZipEncryption.ZIP_CRYPTO, attributes.encryption());
                 IOException exception = assertThrows(IOException.class, () -> {
                     try (var input = reader.openInputStream()) {
@@ -5745,7 +5755,7 @@ public final class ZipArkivoFileSystemTest {
                 Path file = fileSystem.getPath("/aes.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
 
-                assertEquals(ZipMethod.deflated(), attributes.method());
+                assertEquals(ZipMethod.DEFLATED, attributes.compressionMethod());
                 assertEquals(ZipEncryption.WINZIP_AES_256, attributes.encryption());
                 assertEquals(content.length, attributes.size());
                 assertEquals(true, attributes.compressedSize() > content.length);
@@ -5768,7 +5778,7 @@ public final class ZipArkivoFileSystemTest {
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
 
                 assertEquals("aes.txt", attributes.path());
-                assertEquals(ZipMethod.deflated(), attributes.method());
+                assertEquals(ZipMethod.DEFLATED, attributes.compressionMethod());
                 assertEquals(ZipEncryption.WINZIP_AES_256, attributes.encryption());
                 assertEquals(content.length, attributes.size());
                 try (var input = reader.openInputStream()) {
@@ -5848,7 +5858,8 @@ public final class ZipArkivoFileSystemTest {
                 Path file = fileSystem.getPath("/bad-aes.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
 
-                assertEquals(ZipMethod.of(99), attributes.method());
+                assertEquals(99, attributes.compressionMethodId());
+                assertNull(attributes.compressionMethod());
                 assertNull(attributes.encryption());
                 IOException exception = assertThrows(IOException.class, () -> Files.readAllBytes(file));
                 assertEquals(true, exception.getMessage().contains("Unsupported ZIP encryption method"));
@@ -5859,7 +5870,8 @@ public final class ZipArkivoFileSystemTest {
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
 
                 assertEquals("bad-aes.txt", attributes.path());
-                assertEquals(ZipMethod.of(99), attributes.method());
+                assertEquals(99, attributes.compressionMethodId());
+                assertNull(attributes.compressionMethod());
                 assertNull(attributes.encryption());
                 IOException exception = assertThrows(IOException.class, () -> {
                     try (var input = reader.openInputStream()) {
@@ -5884,7 +5896,8 @@ public final class ZipArkivoFileSystemTest {
                 Path file = fileSystem.getPath("/unencrypted-aes.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
 
-                assertEquals(ZipMethod.of(99), attributes.method());
+                assertEquals(99, attributes.compressionMethodId());
+                assertNull(attributes.compressionMethod());
                 assertEquals(ZipEncryption.NONE, attributes.encryption());
                 IOException exception = assertThrows(IOException.class, () -> Files.readAllBytes(file));
                 assertEquals(true, exception.getMessage().contains("Unsupported ZIP compression method"));
@@ -5895,7 +5908,8 @@ public final class ZipArkivoFileSystemTest {
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
 
                 assertEquals("unencrypted-aes.txt", attributes.path());
-                assertEquals(ZipMethod.of(99), attributes.method());
+                assertEquals(99, attributes.compressionMethodId());
+                assertNull(attributes.compressionMethod());
                 assertEquals(ZipEncryption.NONE, attributes.encryption());
                 IOException exception = assertThrows(IOException.class, () -> {
                     try (var input = reader.openInputStream()) {
@@ -5920,7 +5934,8 @@ public final class ZipArkivoFileSystemTest {
                 Path file = fileSystem.getPath("/bad-aes.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
 
-                assertEquals(ZipMethod.of(99), attributes.method());
+                assertEquals(99, attributes.compressionMethodId());
+                assertNull(attributes.compressionMethod());
                 assertNull(attributes.encryption());
                 IOException exception = assertThrows(IOException.class, () -> Files.readAllBytes(file));
                 assertEquals(true, exception.getMessage().contains("Unsupported ZIP encryption method"));
@@ -5931,7 +5946,8 @@ public final class ZipArkivoFileSystemTest {
                 ZipArkivoEntryAttributes attributes = reader.readAttributes(ZipArkivoEntryAttributes.class);
 
                 assertEquals("bad-aes.txt", attributes.path());
-                assertEquals(ZipMethod.of(99), attributes.method());
+                assertEquals(99, attributes.compressionMethodId());
+                assertNull(attributes.compressionMethod());
                 assertNull(attributes.encryption());
                 IOException exception = assertThrows(IOException.class, () -> {
                     try (var input = reader.openInputStream()) {
@@ -6516,8 +6532,8 @@ public final class ZipArkivoFileSystemTest {
                 name,
                 0,
                 1 << 11,
-                ZipMethod.STORED_ID,
-                ZipMethod.STORED_ID
+                ZipMethod.STORED.id(),
+                ZipMethod.STORED.id()
         ));
 
         try {
@@ -6543,8 +6559,8 @@ public final class ZipArkivoFileSystemTest {
                 name,
                 1 << 3,
                 0,
-                ZipMethod.STORED_ID,
-                ZipMethod.STORED_ID
+                ZipMethod.STORED.id(),
+                ZipMethod.STORED.id()
         ));
 
         try {
@@ -6569,8 +6585,8 @@ public final class ZipArkivoFileSystemTest {
                 name,
                 0,
                 0,
-                ZipMethod.DEFLATED_ID,
-                ZipMethod.STORED_ID
+                ZipMethod.DEFLATED.id(),
+                ZipMethod.STORED.id()
         ));
 
         try {
@@ -6596,8 +6612,8 @@ public final class ZipArkivoFileSystemTest {
                 name,
                 0,
                 0,
-                ZipMethod.STORED_ID,
-                ZipMethod.STORED_ID,
+                ZipMethod.STORED.id(),
+                ZipMethod.STORED.id(),
                 1,
                 0,
                 0,
@@ -6629,8 +6645,8 @@ public final class ZipArkivoFileSystemTest {
                 name,
                 0,
                 0,
-                ZipMethod.STORED_ID,
-                ZipMethod.STORED_ID,
+                ZipMethod.STORED.id(),
+                ZipMethod.STORED.id(),
                 0,
                 0,
                 1,
@@ -6689,8 +6705,8 @@ public final class ZipArkivoFileSystemTest {
                 name,
                 0,
                 0,
-                ZipMethod.STORED_ID,
-                ZipMethod.STORED_ID,
+                ZipMethod.STORED.id(),
+                ZipMethod.STORED.id(),
                 0,
                 0,
                 0,
@@ -6750,8 +6766,8 @@ public final class ZipArkivoFileSystemTest {
                 name,
                 0,
                 0,
-                ZipMethod.DEFLATED_ID,
-                ZipMethod.DEFLATED_ID,
+                ZipMethod.DEFLATED.id(),
+                ZipMethod.DEFLATED.id(),
                 0,
                 0,
                 0,
@@ -6782,7 +6798,7 @@ public final class ZipArkivoFileSystemTest {
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithEntryBody(
                 name,
                 content,
-                ZipMethod.STORED_ID,
+                ZipMethod.STORED.id(),
                 crc32,
                 content.length,
                 content.length
@@ -6812,7 +6828,7 @@ public final class ZipArkivoFileSystemTest {
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithEntryBody(
                 name,
                 compressed,
-                ZipMethod.BZIP2_ID,
+                ZipMethod.BZIP2.id(),
                 crc32(content),
                 compressed.length,
                 content.length
@@ -6822,7 +6838,7 @@ public final class ZipArkivoFileSystemTest {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
                 Path file = fileSystem.getPath("/bzip2.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
-                assertEquals(ZipMethod.bzip2(), attributes.method());
+                assertEquals(ZipMethod.BZIP2, attributes.compressionMethod());
                 assertEquals(compressed.length, attributes.compressedSize());
                 assertEquals(content.length, attributes.size());
                 assertArrayEquals(content, Files.readAllBytes(file));
@@ -6851,7 +6867,7 @@ public final class ZipArkivoFileSystemTest {
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithEntryBody(
                 name,
                 compressed,
-                ZipMethod.ZSTANDARD_ID,
+                ZipMethod.ZSTANDARD.id(),
                 crc32(content),
                 compressed.length,
                 content.length
@@ -6861,7 +6877,7 @@ public final class ZipArkivoFileSystemTest {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
                 Path file = fileSystem.getPath("/zstandard.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
-                assertEquals(ZipMethod.zstandard(), attributes.method());
+                assertEquals(ZipMethod.ZSTANDARD, attributes.compressionMethod());
                 assertEquals(compressed.length, attributes.compressedSize());
                 assertEquals(content.length, attributes.size());
                 assertArrayEquals(content, Files.readAllBytes(file));
@@ -6890,7 +6906,7 @@ public final class ZipArkivoFileSystemTest {
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithEntryBody(
                 name,
                 compressed,
-                ZipMethod.XZ_ID,
+                ZipMethod.XZ.id(),
                 crc32(content),
                 compressed.length,
                 content.length
@@ -6900,7 +6916,7 @@ public final class ZipArkivoFileSystemTest {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
                 Path file = fileSystem.getPath("/xz.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
-                assertEquals(ZipMethod.xz(), attributes.method());
+                assertEquals(ZipMethod.XZ, attributes.compressionMethod());
                 assertEquals(compressed.length, attributes.compressedSize());
                 assertEquals(content.length, attributes.size());
                 assertArrayEquals(content, Files.readAllBytes(file));
@@ -6929,7 +6945,7 @@ public final class ZipArkivoFileSystemTest {
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithEntryBody(
                 name,
                 compressed,
-                ZipMethod.LZMA_ID,
+                ZipMethod.LZMA.id(),
                 LZMA_EOS_MARKER_FLAG,
                 crc32(content),
                 compressed.length,
@@ -6940,7 +6956,7 @@ public final class ZipArkivoFileSystemTest {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
                 Path file = fileSystem.getPath("/lzma.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
-                assertEquals(ZipMethod.lzma(), attributes.method());
+                assertEquals(ZipMethod.LZMA, attributes.compressionMethod());
                 assertEquals(compressed.length, attributes.compressedSize());
                 assertEquals(content.length, attributes.size());
                 assertEquals(LZMA_VERSION_NEEDED, attributes.versionNeededToExtract());
@@ -6970,7 +6986,7 @@ public final class ZipArkivoFileSystemTest {
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithEntryBody(
                 name,
                 compressed,
-                ZipMethod.DEPRECATED_ZSTANDARD_ID,
+                ZipMethod.DEPRECATED_ZSTANDARD.id(),
                 crc32(content),
                 compressed.length,
                 content.length
@@ -6980,7 +6996,7 @@ public final class ZipArkivoFileSystemTest {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
                 Path file = fileSystem.getPath("/deprecated-zstandard.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
-                assertEquals(ZipMethod.of(ZipMethod.DEPRECATED_ZSTANDARD_ID), attributes.method());
+                assertEquals(ZipMethod.DEPRECATED_ZSTANDARD, attributes.compressionMethod());
                 assertEquals(compressed.length, attributes.compressedSize());
                 assertEquals(content.length, attributes.size());
                 assertArrayEquals(content, Files.readAllBytes(file));
@@ -6999,7 +7015,7 @@ public final class ZipArkivoFileSystemTest {
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithEntryBody(
                 name,
                 compressed,
-                ZipMethod.DEFLATE64_ID,
+                ZipMethod.DEFLATE64.id(),
                 crc32(content),
                 compressed.length,
                 content.length
@@ -7009,7 +7025,7 @@ public final class ZipArkivoFileSystemTest {
             try (ZipArkivoFileSystem fileSystem = ZipArkivoFileSystem.open(archivePath)) {
                 Path file = fileSystem.getPath("/deflate64.txt");
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
-                assertEquals(ZipMethod.deflate64(), attributes.method());
+                assertEquals(ZipMethod.DEFLATE64, attributes.compressionMethod());
                 assertEquals(compressed.length, attributes.compressedSize());
                 assertEquals(content.length, attributes.size());
                 assertArrayEquals(content, Files.readAllBytes(file));
@@ -7038,7 +7054,7 @@ public final class ZipArkivoFileSystemTest {
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithEntryBody(
                 name,
                 compressed,
-                ZipMethod.DEFLATED_ID,
+                ZipMethod.DEFLATED.id(),
                 crc32(content),
                 compressed.length,
                 content.length + 1L
@@ -7156,7 +7172,7 @@ public final class ZipArkivoFileSystemTest {
         Path archivePath = createTemporaryArchiveContent(singleEntryZipWithEntryBody(
                 name,
                 compressed,
-                ZipMethod.DEFLATED_ID,
+                ZipMethod.DEFLATED.id(),
                 0,
                 compressed.length,
                 compressed.length
@@ -7305,13 +7321,20 @@ public final class ZipArkivoFileSystemTest {
 
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
                 assertEquals(5L, attributes.size());
-                assertEquals(ZipMethod.deflated(), attributes.method());
+                assertEquals(ZipMethod.DEFLATED, attributes.compressionMethod());
                 assertEquals(true, attributes.compressedSize() > 0);
 
-                Map<String, Object> namedAttributes = Files.readAttributes(file, "zip:size,compressedSize,method");
-                assertEquals(Set.of("size", "compressedSize", "method"), namedAttributes.keySet());
+                Map<String, Object> namedAttributes = Files.readAttributes(
+                        file,
+                        "zip:size,compressedSize,compressionMethodId,compressionMethod"
+                );
+                assertEquals(
+                        Set.of("size", "compressedSize", "compressionMethodId", "compressionMethod"),
+                        namedAttributes.keySet()
+                );
                 assertEquals(5L, namedAttributes.get("size"));
-                assertEquals(ZipMethod.deflated(), namedAttributes.get("method"));
+                assertEquals(ZipMethod.DEFLATED.id(), namedAttributes.get("compressionMethodId"));
+                assertEquals(ZipMethod.DEFLATED, namedAttributes.get("compressionMethod"));
                 assertEquals(true, ((Long) namedAttributes.get("compressedSize")) > 0);
 
                 Map<String, Object> ownerAttributes = Files.readAttributes(file, "owner:owner");
@@ -7474,7 +7497,7 @@ public final class ZipArkivoFileSystemTest {
                 }
 
                 assertEquals(List.of("/hello.txt"), rootChildren);
-                assertEquals(ZipMethod.stored(), attributes.method());
+                assertEquals(ZipMethod.STORED, attributes.compressionMethod());
                 assertEquals("split", Files.readString(file, StandardCharsets.UTF_8));
             }
         } finally {
@@ -7698,7 +7721,7 @@ public final class ZipArkivoFileSystemTest {
                 var writerEntry7904 = writer.beginFile("stored.bin");
                 ZipArkivoEntryAttributeView view = writerEntry7904.attributeView(ZipArkivoEntryAttributeView.class);
                 assertNotNull(view);
-                view.setMethod(ZipMethod.stored());
+                view.setMethod(ZipMethod.STORED);
                 view.setUncompressedSizeAndCrc32(content.length, crc32(content));
                 try (var output = writerEntry7904.openOutputStream()) {
                     output.write(content);
@@ -8140,7 +8163,7 @@ public final class ZipArkivoFileSystemTest {
         );
         constructor.setAccessible(true);
         return constructor.newInstance(
-                ZipMethod.STORED_ID,
+                ZipMethod.STORED.id(),
                 ZipEncryption.NONE,
                 null,
                 20,
@@ -8187,7 +8210,7 @@ public final class ZipArkivoFileSystemTest {
                 name,
                 rawName,
                 1 << 11,
-                ZipMethod.STORED_ID,
+                ZipMethod.STORED.id(),
                 0,
                 0,
                 0L,
@@ -8498,8 +8521,8 @@ public final class ZipArkivoFileSystemTest {
 
         ByteBuffer buffer = ByteBuffer.allocate(localHeaderSize + centralDirectorySize + 22)
                 .order(ByteOrder.LITTLE_ENDIAN);
-        writeLocalHeader(buffer, name, 0, ZipMethod.STORED_ID, 0, 0, 0, localExtraData);
-        writeCentralDirectoryEntry(buffer, name, 0, ZipMethod.STORED_ID, 0, 0, 0, 0, centralExtraData);
+        writeLocalHeader(buffer, name, 0, ZipMethod.STORED.id(), 0, 0, 0, localExtraData);
+        writeCentralDirectoryEntry(buffer, name, 0, ZipMethod.STORED.id(), 0, 0, 0, 0, centralExtraData);
 
         buffer.putInt(0x06054b50);
         buffer.putShort((short) 0);
@@ -8525,12 +8548,12 @@ public final class ZipArkivoFileSystemTest {
 
         ByteBuffer buffer = ByteBuffer.allocate(localHeaderSize + centralDirectorySize + 22)
                 .order(ByteOrder.LITTLE_ENDIAN);
-        writeLocalHeader(buffer, name, flags, ZipMethod.STORED_ID);
+        writeLocalHeader(buffer, name, flags, ZipMethod.STORED.id());
         writeCentralDirectoryEntry(
                 buffer,
                 name,
                 flags,
-                ZipMethod.STORED_ID,
+                ZipMethod.STORED.id(),
                 0,
                 0,
                 0,
@@ -8568,7 +8591,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 45);
         buffer.putShort((short) 0);
-        buffer.putShort((short) ZipMethod.STORED_ID);
+        buffer.putShort((short) ZipMethod.STORED.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt(0);
@@ -8583,7 +8606,7 @@ public final class ZipArkivoFileSystemTest {
                 buffer,
                 name,
                 0,
-                ZipMethod.STORED_ID,
+                ZipMethod.STORED.id(),
                 0,
                 0,
                 centralCompressedSize,
@@ -8630,12 +8653,12 @@ public final class ZipArkivoFileSystemTest {
 
     /// Writes a minimal stored local header with no content.
     private static void writeStoredLocalHeader(ByteBuffer buffer, byte[] name) {
-        writeLocalHeader(buffer, name, 0, ZipMethod.STORED_ID);
+        writeLocalHeader(buffer, name, 0, ZipMethod.STORED.id());
     }
 
     /// Returns the ZIP version needed to extract field for the method.
     private static int zipVersionNeeded(int method) {
-        return method == ZipMethod.LZMA_ID ? LZMA_VERSION_NEEDED : 20;
+        return method == ZipMethod.LZMA.id() ? LZMA_VERSION_NEEDED : 20;
     }
 
     /// Writes a minimal local header with no content.
@@ -8684,7 +8707,7 @@ public final class ZipArkivoFileSystemTest {
 
     /// Writes a minimal stored central directory entry with no content.
     private static void writeStoredCentralDirectoryEntry(ByteBuffer buffer, byte[] name, int localHeaderOffset) {
-        writeCentralDirectoryEntry(buffer, name, 0, ZipMethod.STORED_ID, localHeaderOffset);
+        writeCentralDirectoryEntry(buffer, name, 0, ZipMethod.STORED.id(), localHeaderOffset);
     }
 
     /// Writes a minimal central directory entry with no content.
@@ -8808,7 +8831,7 @@ public final class ZipArkivoFileSystemTest {
 
         ByteBuffer buffer = ByteBuffer.allocate(directoryHeaderSize + 16 + fileHeaderSize + content.length)
                 .order(ByteOrder.LITTLE_ENDIAN);
-        writeLocalHeader(buffer, directoryName, 1 << 3 | 1 << 11, ZipMethod.STORED_ID, 0, 0, 0);
+        writeLocalHeader(buffer, directoryName, 1 << 3 | 1 << 11, ZipMethod.STORED.id(), 0, 0, 0);
         buffer.putInt(0x08074b50);
         buffer.putInt(0);
         buffer.putInt(0);
@@ -8817,7 +8840,7 @@ public final class ZipArkivoFileSystemTest {
                 buffer,
                 fileName,
                 1 << 11,
-                ZipMethod.STORED_ID,
+                ZipMethod.STORED.id(),
                 fileCrc32,
                 content.length,
                 content.length
@@ -8840,7 +8863,7 @@ public final class ZipArkivoFileSystemTest {
                 buffer,
                 name,
                 1 << 11,
-                ZipMethod.STORED_ID,
+                ZipMethod.STORED.id(),
                 contentCrc32,
                 content.length,
                 content.length
@@ -8854,7 +8877,7 @@ public final class ZipArkivoFileSystemTest {
                 buffer,
                 name,
                 1 << 3 | 1 << 11,
-                ZipMethod.STORED_ID,
+                ZipMethod.STORED.id(),
                 0,
                 contentCrc32,
                 content.length,
@@ -8882,7 +8905,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 20);
         buffer.putShort((short) flags);
-        buffer.putShort((short) ZipMethod.STORED_ID);
+        buffer.putShort((short) ZipMethod.STORED.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt(0);
@@ -8907,7 +8930,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 20);
         buffer.putShort((short) 0);
-        buffer.putShort((short) ZipMethod.STORED_ID);
+        buffer.putShort((short) ZipMethod.STORED.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt((int) crc32);
@@ -8943,7 +8966,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 20);
         buffer.putShort((short) 0);
-        buffer.putShort((short) ZipMethod.DEFLATED_ID);
+        buffer.putShort((short) ZipMethod.DEFLATED.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt((int) crc32);
@@ -8968,7 +8991,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 20);
         buffer.putShort((short) 0);
-        buffer.putShort((short) ZipMethod.BZIP2_ID);
+        buffer.putShort((short) ZipMethod.BZIP2.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt((int) crc32);
@@ -9019,7 +9042,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 20);
         buffer.putShort((short) 0);
-        buffer.putShort((short) ZipMethod.XZ_ID);
+        buffer.putShort((short) ZipMethod.XZ.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt((int) crc32);
@@ -9044,7 +9067,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) LZMA_VERSION_NEEDED);
         buffer.putShort((short) LZMA_EOS_MARKER_FLAG);
-        buffer.putShort((short) ZipMethod.LZMA_ID);
+        buffer.putShort((short) ZipMethod.LZMA.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt((int) crc32);
@@ -9069,7 +9092,7 @@ public final class ZipArkivoFileSystemTest {
             var writerEntry9279 = writer.beginFile("deflated.txt");
             ZipArkivoEntryAttributeView view = writerEntry9279.attributeView(ZipArkivoEntryAttributeView.class);
             assertNotNull(view);
-            view.setMethod(ZipMethod.deflated());
+            view.setMethod(ZipMethod.DEFLATED);
             view.setEncryption(encryption);
             try (OutputStream output = writerEntry9279.openOutputStream()) {
                 output.write(content);
@@ -9078,7 +9101,7 @@ public final class ZipArkivoFileSystemTest {
             var writerEntry9288 = writer.beginFile("after.txt");
             view = writerEntry9288.attributeView(ZipArkivoEntryAttributeView.class);
             assertNotNull(view);
-            view.setMethod(ZipMethod.stored());
+            view.setMethod(ZipMethod.STORED);
             try (OutputStream output = writerEntry9288.openOutputStream()) {
                 output.write(after);
             }
@@ -9098,7 +9121,7 @@ public final class ZipArkivoFileSystemTest {
             var writerEntry9312 = writer.beginFile("lzma.txt");
             ZipArkivoEntryAttributeView view = writerEntry9312.attributeView(ZipArkivoEntryAttributeView.class);
             assertNotNull(view);
-            view.setMethod(ZipMethod.lzma());
+            view.setMethod(ZipMethod.LZMA);
             view.setEncryption(encryption);
             try (OutputStream output = writerEntry9312.openOutputStream()) {
                 output.write(content);
@@ -9107,7 +9130,7 @@ public final class ZipArkivoFileSystemTest {
             var writerEntry9321 = writer.beginFile("after.txt");
             view = writerEntry9321.attributeView(ZipArkivoEntryAttributeView.class);
             assertNotNull(view);
-            view.setMethod(ZipMethod.stored());
+            view.setMethod(ZipMethod.STORED);
             try (OutputStream output = writerEntry9321.openOutputStream()) {
                 output.write(after);
             }
@@ -9133,7 +9156,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) DEFLATE64_VERSION_NEEDED);
         buffer.putShort((short) (1 << 3));
-        buffer.putShort((short) ZipMethod.DEFLATE64_ID);
+        buffer.putShort((short) ZipMethod.DEFLATE64.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt(0);
@@ -9153,7 +9176,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 20);
         buffer.putShort((short) 0);
-        buffer.putShort((short) ZipMethod.STORED_ID);
+        buffer.putShort((short) ZipMethod.STORED.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt((int) crc32(secondContent));
@@ -9178,7 +9201,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 20);
         buffer.putShort((short) 0);
-        buffer.putShort((short) ZipMethod.DEFLATE64_ID);
+        buffer.putShort((short) ZipMethod.DEFLATE64.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt((int) crc32);
@@ -9212,7 +9235,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 20);
         buffer.putShort((short) 0);
-        buffer.putShort((short) ZipMethod.DEFLATED_ID);
+        buffer.putShort((short) ZipMethod.DEFLATED.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt((int) firstCrc32);
@@ -9226,7 +9249,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 20);
         buffer.putShort((short) 0);
-        buffer.putShort((short) ZipMethod.STORED_ID);
+        buffer.putShort((short) ZipMethod.STORED.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt((int) secondCrc32);
@@ -9257,7 +9280,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 20);
         buffer.putShort((short) (1 << 3 | 1 << 11));
-        buffer.putShort((short) ZipMethod.STORED_ID);
+        buffer.putShort((short) ZipMethod.STORED.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt(0);
@@ -9275,7 +9298,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 20);
         buffer.putShort((short) 0);
-        buffer.putShort((short) ZipMethod.STORED_ID);
+        buffer.putShort((short) ZipMethod.STORED.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt((int) secondCrc32);
@@ -9301,7 +9324,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 45);
         buffer.putShort((short) (1 << 3 | 1 << 11));
-        buffer.putShort((short) ZipMethod.DEFLATED_ID);
+        buffer.putShort((short) ZipMethod.DEFLATED.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt(0);
@@ -9338,7 +9361,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 45);
         buffer.putShort((short) (1 << 3 | 1 << 11));
-        buffer.putShort((short) ZipMethod.STORED_ID);
+        buffer.putShort((short) ZipMethod.STORED.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt(0);
@@ -9357,7 +9380,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 20);
         buffer.putShort((short) 0);
-        buffer.putShort((short) ZipMethod.STORED_ID);
+        buffer.putShort((short) ZipMethod.STORED.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt((int) secondCrc32);
@@ -9395,7 +9418,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 45);
         buffer.putShort((short) (1 << 3 | 1 << 11));
-        buffer.putShort((short) ZipMethod.DEFLATED_ID);
+        buffer.putShort((short) ZipMethod.DEFLATED.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt(0);
@@ -9414,7 +9437,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 20);
         buffer.putShort((short) (1 << 11));
-        buffer.putShort((short) ZipMethod.STORED_ID);
+        buffer.putShort((short) ZipMethod.STORED.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt((int) secondCrc32);
@@ -9439,7 +9462,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 45);
         buffer.putShort((short) (1 << 11));
-        buffer.putShort((short) ZipMethod.STORED_ID);
+        buffer.putShort((short) ZipMethod.STORED.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt((int) crc32);
@@ -9466,7 +9489,7 @@ public final class ZipArkivoFileSystemTest {
     /// Returns a minimal streaming ZIP archive containing one WinZip AES-256 stored entry with a data descriptor.
     private static byte[] winZipAesStoredDataDescriptorArchive(byte[] password, byte[] content) throws IOException {
         byte[] name = "aes-stored-descriptor.bin".getBytes(StandardCharsets.UTF_8);
-        byte[] aesExtra = winZipAesExtraData(2, ZipMethod.STORED_ID);
+        byte[] aesExtra = winZipAesExtraData(2, ZipMethod.STORED.id());
         byte[] encryptedBody = winZipAesEncryptedBody(password, content);
         long crc32 = crc32(content);
         int localHeaderSize = 30 + name.length + aesExtra.length;
@@ -9502,7 +9525,7 @@ public final class ZipArkivoFileSystemTest {
     ) throws IOException {
         byte[] firstName = "aes-zip64-stored-descriptor-crc.bin".getBytes(StandardCharsets.UTF_8);
         byte[] secondName = "after.txt".getBytes(StandardCharsets.UTF_8);
-        byte[] aesExtra = winZipAesExtraData(2, ZipMethod.STORED_ID);
+        byte[] aesExtra = winZipAesExtraData(2, ZipMethod.STORED.id());
         byte[] encryptedBody = winZipAesEncryptedBody(password, firstContent);
         byte[] zip64Extra = zip64ExtendedInformationExtra(encryptedBody.length, firstContent.length);
         long firstCrc32 = crc32(firstContent);
@@ -9536,7 +9559,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 20);
         buffer.putShort((short) 0);
-        buffer.putShort((short) ZipMethod.STORED_ID);
+        buffer.putShort((short) ZipMethod.STORED.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt((int) secondCrc32);
@@ -9590,7 +9613,7 @@ public final class ZipArkivoFileSystemTest {
         buffer.putInt(0x04034b50);
         buffer.putShort((short) 20);
         buffer.putShort((short) 0);
-        buffer.putShort((short) ZipMethod.STORED_ID);
+        buffer.putShort((short) ZipMethod.STORED.id());
         buffer.putShort((short) 0);
         buffer.putShort((short) 0);
         buffer.putInt((int) secondCrc32);
@@ -9729,8 +9752,8 @@ public final class ZipArkivoFileSystemTest {
     /// Returns a minimal ZIP archive whose local and central WinZip AES extra fields conflict.
     private static byte[] winZipAesArchiveWithMismatchedLocalExtra() {
         byte[] name = "aes-mismatch.txt".getBytes(StandardCharsets.UTF_8);
-        byte[] localAesExtra = winZipAesExtraData(2, ZipMethod.STORED_ID);
-        byte[] centralAesExtra = winZipAesExtraData(2, ZipMethod.DEFLATED_ID);
+        byte[] localAesExtra = winZipAesExtraData(2, ZipMethod.STORED.id());
+        byte[] centralAesExtra = winZipAesExtraData(2, ZipMethod.DEFLATED.id());
         int localHeaderOffset = 0;
         int localHeaderSize = 30 + name.length + localAesExtra.length;
         int centralDirectoryOffset = localHeaderSize;
@@ -9850,7 +9873,7 @@ public final class ZipArkivoFileSystemTest {
     /// Returns a minimal ZIP archive with an unencrypted method-99 entry and valid WinZip AES metadata.
     private static byte[] unencryptedWinZipAesMethodArchive() {
         byte[] name = "unencrypted-aes.txt".getBytes(StandardCharsets.UTF_8);
-        byte[] aesExtra = winZipAesExtraData(2, ZipMethod.STORED_ID);
+        byte[] aesExtra = winZipAesExtraData(2, ZipMethod.STORED.id());
         int localHeaderOffset = 0;
         int localHeaderSize = 30 + name.length + aesExtra.length;
         int centralDirectoryOffset = localHeaderSize;
@@ -10103,7 +10126,7 @@ public final class ZipArkivoFileSystemTest {
 
     /// Returns a WinZip AES extra field with the given vendor version.
     private static byte[] winZipAesExtraData(int vendorVersion) {
-        return winZipAesExtraData(vendorVersion, ZipMethod.DEFLATED_ID);
+        return winZipAesExtraData(vendorVersion, ZipMethod.DEFLATED.id());
     }
 
     /// Returns a WinZip AES extra field with the given vendor version and compression method.
@@ -10563,7 +10586,7 @@ public final class ZipArkivoFileSystemTest {
         var writerEntry10777 = writer.beginFile(entryName);
         ZipArkivoEntryAttributeView view = writerEntry10777.attributeView(ZipArkivoEntryAttributeView.class);
         assertNotNull(view);
-        view.setMethod(ZipMethod.stored());
+        view.setMethod(ZipMethod.STORED);
         view.setUncompressedSizeAndCrc32(content.length, crc32(content));
         try (OutputStream output = writerEntry10777.openOutputStream()) {
             output.write(content);

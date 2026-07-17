@@ -1651,7 +1651,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
         values.put("versionNeededToExtract", attributes.versionNeededToExtract());
         values.put("internalAttributes", attributes.internalAttributes());
         values.put("externalAttributes", attributes.externalAttributes());
-        values.put("method", attributes.method());
+        values.put("compressionMethodId", attributes.compressionMethodId());
+        values.put("compressionMethod", attributes.compressionMethod());
         values.put("encryption", attributes.encryption());
         values.put("localExtraData", attributes.localExtraData());
         values.put("centralDirectoryExtraData", attributes.centralDirectoryExtraData());
@@ -1699,7 +1700,8 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             case "versionNeededToExtract" -> requireZipView(values, name, zipView, attributes.versionNeededToExtract());
             case "internalAttributes" -> requireZipView(values, name, zipView, attributes.internalAttributes());
             case "externalAttributes" -> requireZipView(values, name, zipView, attributes.externalAttributes());
-            case "method" -> requireZipView(values, name, zipView, attributes.method());
+            case "compressionMethodId" -> requireZipView(values, name, zipView, attributes.compressionMethodId());
+            case "compressionMethod" -> requireZipView(values, name, zipView, attributes.compressionMethod());
             case "encryption" -> requireZipView(values, name, zipView, attributes.encryption());
             case "localExtraData" -> requireZipView(values, name, zipView, attributes.localExtraData());
             case "centralDirectoryExtraData" ->
@@ -4812,14 +4814,20 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
             return externalAttributes;
         }
 
-        /// Returns the ZIP compression method.
+        /// Returns the numeric ZIP compression method identifier after resolving WinZip AES metadata.
         @Override
-        public ZipMethod method() {
-            return ZipMethod.of(ZipAesExtraField.compressionMethod(
+        public int compressionMethodId() {
+            return ZipAesExtraField.compressionMethod(
                     generalPurposeFlags,
                     method,
                     centralDirectoryExtraData
-            ));
+            );
+        }
+
+        /// Returns the recognized ZIP compression method, or `null` when the method identifier is unknown.
+        @Override
+        public @Nullable ZipMethod compressionMethod() {
+            return ZipMethod.fromId(compressionMethodId());
         }
 
         /// Returns the recognized ZIP encryption method, or `null` when encrypted metadata is unrecognized or malformed.

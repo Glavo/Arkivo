@@ -48,8 +48,11 @@ public interface ZipArkivoEntryAttributes extends PosixFileAttributes, ArchiveEn
     /// Returns the ZIP external file attributes.
     long externalAttributes();
 
-    /// Returns the ZIP compression method.
-    ZipMethod method();
+    /// Returns the numeric ZIP compression method identifier after resolving WinZip AES metadata.
+    int compressionMethodId();
+
+    /// Returns the recognized ZIP compression method, or `null` when the method identifier is unknown.
+    @Nullable ZipMethod compressionMethod();
 
     /// Returns [ZipEncryption#NONE] for an unencrypted entry, a recognized encryption method otherwise, or `null`
     /// when encrypted metadata is unrecognized or malformed.

@@ -6,124 +6,60 @@ package org.glavo.arkivo.archive.zip;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.Objects;
-
-/// Identifies a ZIP compression method.
+/// Identifies a ZIP compression method recognized by Arkivo.
 @NotNullByDefault
-public final class ZipMethod {
-    /// The stored method identifier.
-    public static final int STORED_ID = 0;
+public enum ZipMethod {
+    /// Stores entry data without compression.
+    STORED(0, "stored"),
 
-    /// The deflated method identifier.
-    public static final int DEFLATED_ID = 8;
+    /// Compresses entry data with Deflate.
+    DEFLATED(8, "deflated"),
 
-    /// The Deflate64 method identifier.
-    public static final int DEFLATE64_ID = 9;
+    /// Compresses entry data with Deflate64.
+    DEFLATE64(9, "deflate64"),
 
-    /// The BZIP2 method identifier.
-    public static final int BZIP2_ID = 12;
+    /// Compresses entry data with BZIP2.
+    BZIP2(12, "bzip2"),
 
-    /// The LZMA method identifier.
-    public static final int LZMA_ID = 14;
+    /// Compresses entry data with ZIP LZMA.
+    LZMA(14, "lzma"),
 
-    /// The deprecated Zstandard method identifier from APPNOTE 6.3.7.
-    public static final int DEPRECATED_ZSTANDARD_ID = 20;
+    /// Compresses entry data with the deprecated Zstandard method identifier from APPNOTE 6.3.7.
+    DEPRECATED_ZSTANDARD(20, "zstandard-deprecated"),
 
-    /// The Zstandard method identifier.
-    public static final int ZSTANDARD_ID = 93;
+    /// Compresses entry data with Zstandard.
+    ZSTANDARD(93, "zstandard"),
 
-    /// The XZ method identifier.
-    public static final int XZ_ID = 95;
-
-    /// The stored ZIP method.
-    private static final ZipMethod STORED = new ZipMethod(STORED_ID, "stored");
-
-    /// The deflated ZIP method.
-    private static final ZipMethod DEFLATED = new ZipMethod(DEFLATED_ID, "deflated");
-
-    /// The Deflate64 ZIP method.
-    private static final ZipMethod DEFLATE64 = new ZipMethod(DEFLATE64_ID, "deflate64");
-
-    /// The BZIP2 ZIP method.
-    private static final ZipMethod BZIP2 = new ZipMethod(BZIP2_ID, "bzip2");
-
-    /// The LZMA ZIP method.
-    private static final ZipMethod LZMA = new ZipMethod(LZMA_ID, "lzma");
-
-    /// The deprecated Zstandard ZIP method.
-    private static final ZipMethod DEPRECATED_ZSTANDARD =
-            new ZipMethod(DEPRECATED_ZSTANDARD_ID, "zstandard-deprecated");
-
-    /// The Zstandard ZIP method.
-    private static final ZipMethod ZSTANDARD = new ZipMethod(ZSTANDARD_ID, "zstandard");
-
-    /// The XZ ZIP method.
-    private static final ZipMethod XZ = new ZipMethod(XZ_ID, "xz");
+    /// Compresses entry data with XZ.
+    XZ(95, "xz");
 
     /// The numeric ZIP compression method identifier.
     private final int id;
 
-    /// The stable display name for the method.
-    private final String name;
+    /// The stable display name for this method.
+    private final String displayName;
 
     /// Creates a ZIP compression method.
-    private ZipMethod(int id, String name) {
+    ZipMethod(int id, String displayName) {
         this.id = id;
-        this.name = name;
+        this.displayName = displayName;
     }
 
-    /// Returns the stored ZIP method.
-    public static ZipMethod stored() {
-        return STORED;
-    }
-
-    /// Returns the deflated ZIP method.
-    public static ZipMethod deflated() {
-        return DEFLATED;
-    }
-
-    /// Returns the Deflate64 ZIP method.
-    public static ZipMethod deflate64() {
-        return DEFLATE64;
-    }
-
-    /// Returns the BZIP2 ZIP method.
-    public static ZipMethod bzip2() {
-        return BZIP2;
-    }
-
-    /// Returns the LZMA ZIP method.
-    public static ZipMethod lzma() {
-        return LZMA;
-    }
-
-    /// Returns the deprecated Zstandard ZIP method from APPNOTE 6.3.7.
-    public static ZipMethod deprecatedZstandard() {
-        return DEPRECATED_ZSTANDARD;
-    }
-
-    /// Returns the Zstandard ZIP method.
-    public static ZipMethod zstandard() {
-        return ZSTANDARD;
-    }
-
-    /// Returns the XZ ZIP method.
-    public static ZipMethod xz() {
-        return XZ;
-    }
-
-    /// Returns a ZIP method for the given numeric identifier.
-    public static ZipMethod of(int id) {
+    /// Returns the recognized ZIP method for the given unsigned 16-bit identifier, or `null` when it is unknown.
+    public static @Nullable ZipMethod fromId(int id) {
+        if (id < 0 || id > 0xffff) {
+            throw new IllegalArgumentException("ZIP compression method identifier must be between 0 and 65535: " + id);
+        }
         return switch (id) {
-            case STORED_ID -> STORED;
-            case DEFLATED_ID -> DEFLATED;
-            case DEFLATE64_ID -> DEFLATE64;
-            case BZIP2_ID -> BZIP2;
-            case LZMA_ID -> LZMA;
-            case DEPRECATED_ZSTANDARD_ID -> DEPRECATED_ZSTANDARD;
-            case ZSTANDARD_ID -> ZSTANDARD;
-            case XZ_ID -> XZ;
-            default -> new ZipMethod(id, "method-" + id);
+            case 0 -> STORED;
+            case 8 -> DEFLATED;
+            case 9 -> DEFLATE64;
+            case 12 -> BZIP2;
+            case 14 -> LZMA;
+            case 20 -> DEPRECATED_ZSTANDARD;
+            case 93 -> ZSTANDARD;
+            case 95 -> XZ;
+            default -> null;
         };
     }
 
@@ -132,26 +68,9 @@ public final class ZipMethod {
         return id;
     }
 
-    /// Returns the stable display name for the method.
-    public String name() {
-        return name;
-    }
-
-    /// Compares this method with another object.
-    @Override
-    public boolean equals(@Nullable Object object) {
-        return object instanceof ZipMethod that && id == that.id && name.equals(that.name);
-    }
-
-    /// Returns the hash code for this method.
-    @Override
-    public int hashCode() {
-        return Objects.hash(id, name);
-    }
-
     /// Returns the stable display name for this method.
     @Override
     public String toString() {
-        return name;
+        return displayName;
     }
 }

@@ -582,7 +582,15 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             lock();
             try {
                 entry.ensurePending();
-                this.method = Objects.requireNonNull(method, "method");
+                ZipMethod requestedMethod = Objects.requireNonNull(method, "method");
+                if (entry.type == EntryType.DIRECTORY && requestedMethod != ZipMethod.STORED) {
+                    throw new UnsupportedOperationException("ZIP directory entries must use the stored method");
+                }
+                if (entry.type == EntryType.SYMBOLIC_LINK && requestedMethod != ZipMethod.STORED) {
+                    throw new UnsupportedOperationException("ZIP symbolic link entries must use the stored method");
+                }
+                ZipCompressionFormats.requireEncoderAvailable(requestedMethod);
+                this.method = requestedMethod;
             } finally {
                 unlock();
             }
@@ -694,14 +702,14 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
 
         /// Requires the configured metadata to be supported for the current streaming directory writer.
         private void requireSupportedDirectory() {
-            if (!method().equals(ZipMethod.stored())) {
+            if (method() != ZipMethod.STORED) {
                 throw new UnsupportedOperationException("ZIP directory entries must use the stored method");
             }
         }
 
         /// Requires the configured metadata to be supported for the current streaming symbolic link writer.
         private void requireSupportedSymbolicLink() {
-            if (!method().equals(ZipMethod.stored())) {
+            if (method() != ZipMethod.STORED) {
                 throw new UnsupportedOperationException("ZIP symbolic link entries must use the stored method");
             }
         }
@@ -712,7 +720,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             if (configuredMethod != null) {
                 return configuredMethod;
             }
-            return entry.type == EntryType.FILE ? ZipMethod.deflated() : ZipMethod.stored();
+            return entry.type == EntryType.FILE ? ZipMethod.DEFLATED : ZipMethod.STORED;
         }
 
         /// Returns the effective ZIP encryption method.
@@ -726,7 +734,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             ZipEncryption effectiveEncryption = encryption();
             long expectedSize = uncompressedSize;
             long expectedCrc32 = crc32;
-            if (emptyFile && effectiveMethod.equals(ZipMethod.stored())) {
+            if (emptyFile && effectiveMethod == ZipMethod.STORED) {
                 expectedSize = 0;
                 expectedCrc32 = 0;
             }
@@ -879,7 +887,7 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         @Override
         public int generalPurposeFlags() {
             int flags = ZipConstants.UTF8_FLAG;
-            if (method.id() == ZipMethod.LZMA_ID) {
+            if (method == ZipMethod.LZMA) {
                 flags |= ZipConstants.LZMA_EOS_MARKER_FLAG;
             }
             if (encryption != ZipEncryption.NONE) {
@@ -897,10 +905,10 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
         /// Returns the ZIP version needed to extract field.
         @Override
         public int versionNeededToExtract() {
-            if (method.id() == ZipMethod.LZMA_ID) {
+            if (method == ZipMethod.LZMA) {
                 return ZipConstants.LZMA_VERSION_NEEDED;
             }
-            if (method.id() == ZipMethod.DEFLATE64_ID) {
+            if (method == ZipMethod.DEFLATE64) {
                 return ZipConstants.DEFLATE64_VERSION_NEEDED;
             }
             return ZipConstants.VERSION_NEEDED;
@@ -925,9 +933,15 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
             return type == EntryType.DIRECTORY ? 0x10L : 0L;
         }
 
-        /// Returns the ZIP compression method.
+        /// Returns the numeric ZIP compression method identifier.
         @Override
-        public ZipMethod method() {
+        public int compressionMethodId() {
+            return method.id();
+        }
+
+        /// Returns the recognized ZIP compression method.
+        @Override
+        public ZipMethod compressionMethod() {
             return method;
         }
 

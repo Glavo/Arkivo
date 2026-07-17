@@ -166,7 +166,7 @@ public final class LibarchiveArchiveCorpusTest {
                 Path entry = fileSystem.getPath("/" + expectedEntry.getKey());
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(entry, ZipArkivoEntryAttributes.class);
                 byte[] content = Files.readAllBytes(entry);
-                assertEquals(expectedMethod, attributes.method());
+                assertEquals(expectedMethod, attributes.compressionMethod());
                 assertEquals(expectedEntry.getValue().longValue(), attributes.crc32());
                 assertEquals(expectedEntry.getValue().longValue(), crc32(content));
             }
@@ -182,7 +182,7 @@ public final class LibarchiveArchiveCorpusTest {
                 }
                 Long expectedCrc32 = expectedEntries.get(attributes.path());
                 assertTrue(expectedCrc32 != null, attributes.path());
-                assertEquals(expectedMethod, attributes.method());
+                assertEquals(expectedMethod, attributes.compressionMethod());
                 assertEquals(expectedCrc32.longValue(), attributes.crc32());
                 try (InputStream input = reader.openInputStream()) {
                     assertEquals(expectedCrc32.longValue(), crc32(input.readAllBytes()));
@@ -253,7 +253,7 @@ public final class LibarchiveArchiveCorpusTest {
                     Path entry = fileSystem.getPath("/" + expectedEntry.getKey());
                     ZipArkivoEntryAttributes attributes = Files.readAttributes(entry, ZipArkivoEntryAttributes.class);
                     assertEquals(expectedEncryption, attributes.encryption());
-                    assertEquals(expectedMethod, attributes.method());
+                    assertEquals(expectedMethod, attributes.compressionMethod());
                     assertEquals(expectedEntry.getValue().longValue(), attributes.size());
                     assertThrows(IOException.class, () -> Files.readAllBytes(entry));
                 }
@@ -268,7 +268,7 @@ public final class LibarchiveArchiveCorpusTest {
                 Path entry = fileSystem.getPath("/" + expectedEntry.getKey());
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(entry, ZipArkivoEntryAttributes.class);
                 assertEquals(expectedEncryption, attributes.encryption());
-                assertEquals(expectedMethod, attributes.method());
+                assertEquals(expectedMethod, attributes.compressionMethod());
                 assertEquals(expectedEntry.getValue().longValue(), Files.readAllBytes(entry).length);
             }
         }
@@ -299,7 +299,7 @@ public final class LibarchiveArchiveCorpusTest {
                 Long expectedSize = expectedEntries.get(attributes.path());
                 assertTrue(expectedSize != null, attributes.path());
                 assertEquals(expectedEncryption, attributes.encryption());
-                assertEquals(expectedMethod, attributes.method());
+                assertEquals(expectedMethod, attributes.compressionMethod());
                 try (InputStream input = reader.openInputStream()) {
                     assertEquals(expectedSize.longValue(), input.readAllBytes().length);
                 }
@@ -630,18 +630,18 @@ public final class LibarchiveArchiveCorpusTest {
                 "vimrc", 0xba8e3baaL
         );
         return Stream.of(
-                Arguments.of("test_read_format_zip_bzip2.zipx.uu", ZipMethod.bzip2(), singleEntry),
-                Arguments.of("test_read_format_zip_bzip2_multi.zipx.uu", ZipMethod.bzip2(), multiEntry),
-                Arguments.of("test_read_format_zip_lzma.zipx.uu", ZipMethod.lzma(), singleEntry),
-                Arguments.of("test_read_format_zip_lzma_multi.zipx.uu", ZipMethod.lzma(), multiEntry),
-                Arguments.of("test_read_format_zip_lzma_stream_end.zipx.uu", ZipMethod.lzma(), singleEntry),
-                Arguments.of("test_read_format_zip_xz_multi.zipx.uu", ZipMethod.xz(), Map.of(
+                Arguments.of("test_read_format_zip_bzip2.zipx.uu", ZipMethod.BZIP2, singleEntry),
+                Arguments.of("test_read_format_zip_bzip2_multi.zipx.uu", ZipMethod.BZIP2, multiEntry),
+                Arguments.of("test_read_format_zip_lzma.zipx.uu", ZipMethod.LZMA, singleEntry),
+                Arguments.of("test_read_format_zip_lzma_multi.zipx.uu", ZipMethod.LZMA, multiEntry),
+                Arguments.of("test_read_format_zip_lzma_stream_end.zipx.uu", ZipMethod.LZMA, singleEntry),
+                Arguments.of("test_read_format_zip_xz_multi.zipx.uu", ZipMethod.XZ, Map.of(
                         "bash.bashrc", 0xf751b8c9L,
                         "pacman.conf", 0xb20b7f88L,
                         "profile", 0x2329f054L
                 )),
-                Arguments.of("test_read_format_zip_zstd.zipx.uu", ZipMethod.zstandard(), singleEntry),
-                Arguments.of("test_read_format_zip_zstd_multi.zipx.uu", ZipMethod.zstandard(), multiEntry)
+                Arguments.of("test_read_format_zip_zstd.zipx.uu", ZipMethod.ZSTANDARD, singleEntry),
+                Arguments.of("test_read_format_zip_zstd_multi.zipx.uu", ZipMethod.ZSTANDARD, multiEntry)
         );
     }
 
@@ -660,28 +660,28 @@ public final class LibarchiveArchiveCorpusTest {
                         "test_read_format_zip_traditional_encryption_data.zip.uu",
                         "12345678",
                         ZipEncryption.ZIP_CRYPTO,
-                        ZipMethod.deflated(),
+                        ZipMethod.DEFLATED,
                         Map.of("bar.txt", 495L, "foo.txt", 495L)
                 ),
                 Arguments.of(
                         "test_read_format_zip_winzip_aes128.zip.uu",
                         "password",
                         ZipEncryption.WINZIP_AES_128,
-                        ZipMethod.deflated(),
+                        ZipMethod.DEFLATED,
                         Map.of("README", 6818L)
                 ),
                 Arguments.of(
                         "test_read_format_zip_winzip_aes256.zip.uu",
                         "password",
                         ZipEncryption.WINZIP_AES_256,
-                        ZipMethod.deflated(),
+                        ZipMethod.DEFLATED,
                         Map.of("README", 6818L)
                 ),
                 Arguments.of(
                         "test_read_format_zip_winzip_aes256_large.zip.uu",
                         "password",
                         ZipEncryption.WINZIP_AES_256,
-                        ZipMethod.deflated(),
+                        ZipMethod.DEFLATED,
                         Map.of(
                                 "Makefile", 1_456_747L,
                                 "NEWS", 29_357L,
@@ -693,7 +693,7 @@ public final class LibarchiveArchiveCorpusTest {
                         "test_read_format_zip_winzip_aes256_stored.zip.uu",
                         "password",
                         ZipEncryption.WINZIP_AES_256,
-                        ZipMethod.stored(),
+                        ZipMethod.STORED,
                         Map.of("README", 6818L)
                 )
         );

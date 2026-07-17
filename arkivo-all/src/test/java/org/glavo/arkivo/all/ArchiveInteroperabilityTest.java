@@ -272,7 +272,7 @@ final class ArchiveInteroperabilityTest {
                 Path file = fileSystem.getPath("/" + MODERN_PATH);
                 ZipArkivoEntryAttributes attributes = Files.readAttributes(file, ZipArkivoEntryAttributes.class);
                 assertEquals(MODERN_PATH, attributes.path());
-                assertEquals(ZipMethod.deflated(), attributes.method());
+                assertEquals(ZipMethod.DEFLATED, attributes.compressionMethod());
                 assertArrayEquals(CONTENT, Files.readAllBytes(file));
                 Path link = fileSystem.getPath("/link");
                 assertTrue(Files.isSymbolicLink(link));
