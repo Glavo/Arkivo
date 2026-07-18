@@ -67,6 +67,7 @@ final class LZ4BlockDecompression {
         byte[] output = new byte[initialCapacity];
         int outputSize = 0;
         int inputPosition = 0;
+        boolean decodedMatch = false;
 
         while (inputPosition < compressed.length) {
             int token = Byte.toUnsignedInt(compressed[inputPosition++]);
@@ -101,6 +102,9 @@ final class LZ4BlockDecompression {
             if (inputPosition == compressed.length) {
                 if (matchCode != 0) {
                     throw new IOException("Final LZ4 sequence declares a missing match");
+                }
+                if (decodedMatch && literalLength < 5) {
+                    throw new IOException("Final LZ4 sequence contains fewer than five literals");
                 }
                 return new Result(output, outputSize);
             }
@@ -142,6 +146,7 @@ final class LZ4BlockDecompression {
                         : output[sourcePosition];
             }
             outputSize = requiredOutput;
+            decodedMatch = true;
             if (inputPosition == compressed.length) {
                 throw new IOException("LZ4 block is missing its final literal sequence");
             }

@@ -337,7 +337,8 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
         blockHeader.flip();
         int value = readInt(blockHeader, 0);
         blockHeader.clear();
-        if (value == 0) {
+        int size = value & 0x7fff_ffff;
+        if (size == 0) {
             validateContentSize();
             if (contentChecksum) {
                 checksum.clear();
@@ -349,7 +350,6 @@ public final class LZ4FrameDecoder implements CompressionDecoder.Framed {
         }
 
         uncompressedBlock = value < 0;
-        int size = value & 0x7fff_ffff;
         if (size > maximumBlockSize) {
             throw new IOException("LZ4 physical block exceeds its descriptor maximum");
         }
