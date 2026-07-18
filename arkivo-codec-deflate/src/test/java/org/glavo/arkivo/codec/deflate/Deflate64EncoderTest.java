@@ -7,6 +7,7 @@ import org.apache.commons.compress.compressors.deflate64.Deflate64CompressorInpu
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -132,6 +133,7 @@ final class Deflate64EncoderTest {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                 Channels.newChannel(bytes),
+                EncodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         )) {
             encoder.write(ByteBuffer.wrap(input));

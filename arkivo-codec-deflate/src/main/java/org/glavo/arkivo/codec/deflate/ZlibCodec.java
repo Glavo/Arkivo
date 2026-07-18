@@ -6,7 +6,8 @@ package org.glavo.arkivo.codec.deflate;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionStrategy;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.ZlibDecoder;
 import org.glavo.arkivo.codec.deflate.internal.ZlibEncoder;
@@ -156,25 +157,26 @@ public final class ZlibCodec
 
     /// Creates a transport-independent zlib stream encoder.
     @Override
-    public CompressionEncoder.Flushable newEncoder() {
+    public CompressionEncoder.Flushable newEncoder(EncodingOptions options) {
+        Objects.requireNonNull(options, "options");
         return new ZlibEncoder(compressionLevel, dictionary, compressionStrategy);
     }
 
     /// Creates an unrestricted dictionary-aware zlib stream decoder.
     @Override
     public CompressionDecoder.DictionaryAware<ZlibDictionary, ZlibDictionaryRequest> newDecoder() {
-        return newDecoder(DecompressionLimits.UNLIMITED);
+        return newDecoder(DecodingOptions.DEFAULT);
     }
 
     /// Creates a dictionary-aware zlib stream decoder with operation-scoped limits.
     @Override
     public CompressionDecoder.DictionaryAware<ZlibDictionary, ZlibDictionaryRequest> newDecoder(
-            DecompressionLimits limits
+            DecodingOptions options
     ) {
-        Objects.requireNonNull(limits, "limits");
+        Objects.requireNonNull(options, "options");
         return CompressionDecoderSupport.limitEngineOutput(
-                new ZlibDecoder(limits.effectiveMaximumWindowSize(), dictionary),
-                limits.maximumOutputSize()
+                new ZlibDecoder(options.effectiveMaximumWindowSize(), dictionary),
+                options.maximumOutputSize()
         );
     }
 }

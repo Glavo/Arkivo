@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.nio.BufferOverflowException;
 import java.nio.ByteBuffer;
 import java.nio.ReadOnlyBufferException;
+import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -102,6 +103,7 @@ final class CompressionCodecBufferTest {
                 () -> codec.decompress(ByteBuffer.allocate(0), (long) Integer.MAX_VALUE + 1L)
         );
     }
+
     /// Verifies one-shot operations preserve trailing input and failed decoder construction.
     @Test
     void restoresReadAheadSourcePositions() throws IOException {
@@ -195,19 +197,21 @@ final class CompressionCodecBufferTest {
 
         /// Creates a fresh identity encoder.
         @Override
-        public CompressionEncoder newEncoder() {
+        public CompressionEncoder newEncoder(EncodingOptions options) {
+            Objects.requireNonNull(options, "options");
             return new IdentityEncoder();
         }
 
         /// Creates a prefix decoder or fails before consuming caller input.
         @Override
-        public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
+        public CompressionDecoder newDecoder(DecodingOptions options) throws IOException {
+            Objects.requireNonNull(options, "options");
             if (failOpen) {
                 throw new IOException("Read-ahead decoder construction failed");
             }
             return CompressionDecoderSupport.limitEngineOutput(
                     new PrefixDecoder(decodedSize),
-                    limits.maximumOutputSize()
+                    options.maximumOutputSize()
             );
         }
     }
@@ -239,16 +243,17 @@ final class CompressionCodecBufferTest {
 
         /// Creates a fresh identity encoder.
         @Override
-        public CompressionEncoder newEncoder() {
+        public CompressionEncoder newEncoder(EncodingOptions options) {
+            Objects.requireNonNull(options, "options");
             return new IdentityEncoder();
         }
 
         /// Creates a fresh identity decoder with the requested output limit.
         @Override
-        public CompressionDecoder newDecoder(DecompressionLimits limits) {
+        public CompressionDecoder newDecoder(DecodingOptions options) {
             return CompressionDecoderSupport.limitEngineOutput(
                     new IdentityDecoder(),
-                    limits.maximumOutputSize()
+                    options.maximumOutputSize()
             );
         }
     }

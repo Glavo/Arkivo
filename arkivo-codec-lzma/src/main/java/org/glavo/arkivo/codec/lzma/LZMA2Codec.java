@@ -6,7 +6,8 @@ package org.glavo.arkivo.codec.lzma;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2Decoder;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2Encoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
@@ -83,18 +84,19 @@ public final class LZMA2Codec implements CompressionCodec<LZMA2Codec> {
 
     /// Creates a raw LZMA2 encoder.
     @Override
-    public CompressionEncoder newEncoder() {
+    public CompressionEncoder newEncoder(EncodingOptions options) {
+        Objects.requireNonNull(options, "options");
         return new LZMA2Encoder(properties);
     }
 
     /// Creates a raw LZMA2 decoder with operation-scoped safety limits.
     @Override
-    public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
-        Objects.requireNonNull(limits, "limits");
-        limits.requireWindowSize(properties.dictionarySize());
+    public CompressionDecoder newDecoder(DecodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
+        options.requireWindowSize(properties.dictionarySize());
         return CompressionDecoderSupport.limitEngineOutput(
                 new LZMA2Decoder(properties.dictionarySize()),
-                limits.maximumOutputSize()
+                options.maximumOutputSize()
         );
     }
 }

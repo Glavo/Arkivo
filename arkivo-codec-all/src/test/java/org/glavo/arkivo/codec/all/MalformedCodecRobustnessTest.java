@@ -8,7 +8,7 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -58,7 +58,7 @@ final class MalformedCodecRobustnessTest {
             byte[] validFrame = compress(codec);
             CompressionCodec<?> decoderCodec =
                     CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
-            DecompressionLimits limits = boundedLimits();
+            DecodingOptions limits = boundedLimits();
             assertArrayEquals(CONTENT, decodeNamed(decoderCodec, validFrame, limits), codec.format().name());
             boolean detectable = codec.format().matches(ByteBuffer.wrap(validFrame).asReadOnlyBuffer());
             if (detectable) {
@@ -89,8 +89,8 @@ final class MalformedCodecRobustnessTest {
     }
 
     /// Returns the defensive limits applied to every damaged-frame decoder.
-    private static DecompressionLimits boundedLimits() {
-        return new DecompressionLimits(MAX_OUTPUT_SIZE, MAX_WINDOW_SIZE, MAX_WINDOW_SIZE);
+    private static DecodingOptions boundedLimits() {
+        return new DecodingOptions(MAX_OUTPUT_SIZE, MAX_WINDOW_SIZE, MAX_WINDOW_SIZE);
     }
 
     /// Exercises signature detection and every applicable decoder factory for one damaged frame.
@@ -98,7 +98,7 @@ final class MalformedCodecRobustnessTest {
             CompressionCodec<?> codec,
             CompressionCodec<?> decoderCodec,
             byte[] frame,
-            DecompressionLimits limits,
+            DecodingOptions limits,
             boolean detectable,
             String variant
     ) {
@@ -123,7 +123,7 @@ final class MalformedCodecRobustnessTest {
     private static byte[] decodeNamed(
             CompressionCodec<?> codec,
             byte[] frame,
-            DecompressionLimits limits
+            DecodingOptions limits
     ) throws IOException {
         try (DecompressingReadableByteChannel decoder = codec.newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(frame)),
@@ -135,10 +135,11 @@ final class MalformedCodecRobustnessTest {
     }
 
     /// Decodes a frame through generic signature detection.
-    private static byte[] decodeDetected(byte[] frame, DecompressionLimits limits) throws IOException {
+    private static byte[] decodeDetected(byte[] frame, DecodingOptions limits) throws IOException {
         try (DecompressingReadableByteChannel decoder = CompressionFormats.newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(frame)),
-                limits
+                limits,
+                ResourceOwnership.BORROWED
         )) {
             return consumeDecoder(decoder);
         }

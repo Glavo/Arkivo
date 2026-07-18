@@ -6,7 +6,8 @@ package org.glavo.arkivo.archive.tar.internal;
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 
@@ -46,7 +47,7 @@ public final class TarCompressionStreams {
         try {
             return compressionCodec.newInputStream(
                     source,
-                    decompressionLimits(readLimits),
+                    decodingOptions(readLimits),
                     ResourceOwnership.OWNED
             );
         } catch (IOException | RuntimeException | Error exception) {
@@ -76,7 +77,7 @@ public final class TarCompressionStreams {
         try {
             return compressionCodec.newReadableByteChannel(
                     source,
-                    decompressionLimits(readLimits),
+                    decodingOptions(readLimits),
                     ResourceOwnership.OWNED
             );
         } catch (IOException | RuntimeException | Error exception) {
@@ -101,7 +102,11 @@ public final class TarCompressionStreams {
             return target;
         }
         try {
-            return compressionCodec.newOutputStream(target, ResourceOwnership.OWNED);
+            return compressionCodec.newOutputStream(
+                    target,
+                    EncodingOptions.DEFAULT,
+                    ResourceOwnership.OWNED
+            );
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterOpenFailure(target, exception);
             throw exception;
@@ -124,7 +129,11 @@ public final class TarCompressionStreams {
             return target;
         }
         try {
-            return compressionCodec.newWritableByteChannel(target, ResourceOwnership.OWNED);
+            return compressionCodec.newWritableByteChannel(
+                    target,
+                    EncodingOptions.DEFAULT,
+                    ResourceOwnership.OWNED
+            );
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterOpenFailure(target, exception);
             throw exception;
@@ -132,9 +141,9 @@ public final class TarCompressionStreams {
     }
 
     /// Converts archive resource limits to the limits understood by compression codecs.
-    private static DecompressionLimits decompressionLimits(ArchiveReadLimits readLimits) {
-        return new DecompressionLimits(
-                DecompressionLimits.UNLIMITED_SIZE,
+    private static DecodingOptions decodingOptions(ArchiveReadLimits readLimits) {
+        return new DecodingOptions(
+                DecodingOptions.UNLIMITED_SIZE,
                 readLimits.maximumCompressionWindowSize(),
                 readLimits.maximumDecoderMemorySize()
         );

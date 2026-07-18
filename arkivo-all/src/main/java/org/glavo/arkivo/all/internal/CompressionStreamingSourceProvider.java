@@ -11,7 +11,7 @@ import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.CompressionProbeResult;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -45,8 +45,8 @@ public final class CompressionStreamingSourceProvider implements ArkivoStreaming
             ArchiveReadLimits readLimits = options.limits();
             DecompressingReadableByteChannel decoder = format.defaultCodec().newReadableByteChannel(
                     replay,
-                    new DecompressionLimits(
-                            DecompressionLimits.UNLIMITED_SIZE,
+                    new DecodingOptions(
+                            DecodingOptions.UNLIMITED_SIZE,
                             readLimits.maximumCompressionWindowSize(),
                             readLimits.maximumDecoderMemorySize()
                     ),

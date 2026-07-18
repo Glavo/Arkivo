@@ -6,7 +6,9 @@ package org.glavo.arkivo.codec.bzip2;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -72,6 +74,7 @@ public final class BZip2CodecTest {
 
         CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                 compressedTarget,
+                EncodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         );
         assertEquals(input.length, encoder.write(source));
@@ -86,6 +89,7 @@ public final class BZip2CodecTest {
         WritableByteChannel ownedTarget = Channels.newChannel(new ByteArrayOutputStream());
         CompressingWritableByteChannel owningEncoder = new BZip2Codec().newWritableByteChannel(
                 ownedTarget,
+                EncodingOptions.DEFAULT,
                 ResourceOwnership.OWNED
         );
         owningEncoder.finish();
@@ -97,6 +101,7 @@ public final class BZip2CodecTest {
         );
         DecompressingReadableByteChannel decoder = new BZip2Codec().newReadableByteChannel(
                 compressedSource,
+                DecodingOptions.DEFAULT,
                 ResourceOwnership.OWNED
         );
         ByteBuffer decoded = ByteBuffer.allocateDirect(input.length);

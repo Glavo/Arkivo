@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.lz4;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -147,7 +147,7 @@ public final class LZ4FrameDictionaryAndLegacyTest {
         LZ4Dictionary dictionary = LZ4Dictionary.rawContent(dictionaryBytes());
         LZ4Codec codec = new LZ4Codec().withDictionary(dictionary);
         byte[] frame = compress(codec, new byte[]{1});
-        DecompressionLimits limits = DecompressionLimits.ofMaximumMemorySize(dictionary.size());
+        DecodingOptions limits = DecodingOptions.ofMaximumMemorySize(dictionary.size());
         try (CompressionDecoder decoder = codec.newDecoder(limits)) {
             assertThrows(
                     DecompressionMemoryLimitException.class,
@@ -158,7 +158,7 @@ public final class LZ4FrameDictionaryAndLegacyTest {
         LZ4Dictionary required = LZ4Dictionary.identified(17L, dictionaryBytes());
         LZ4Dictionary initial = LZ4Dictionary.identified(18L, dictionaryBytes());
         byte[] identifiedFrame = compress(new LZ4Codec().withDictionary(required), new byte[]{1});
-        DecompressionLimits twoDictionaryLimit = DecompressionLimits.ofMaximumMemorySize(
+        DecodingOptions twoDictionaryLimit = DecodingOptions.ofMaximumMemorySize(
                 2L * dictionary.size() - 1L
         );
         try (CompressionDecoder.FramedDictionaryAware<LZ4Dictionary, LZ4DictionaryRequest> decoder =

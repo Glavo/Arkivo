@@ -7,6 +7,7 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -113,7 +114,9 @@ public final class RawLZMABufferEngineTest {
         encoder.close();
         assertThrows(IllegalStateException.class, encoder::reset);
 
-        CompressionEncoder incomplete = CODEC.newEncoder(content.length + 1L);
+        CompressionEncoder incomplete = CODEC.newEncoder(
+                EncodingOptions.ofSourceSize(content.length + 1L)
+        );
         ByteArrayOutputStream ignored = new ByteArrayOutputStream();
         encodeSource(incomplete, ByteBuffer.wrap(content), ignored, 7);
         assertThrows(IOException.class, () -> incomplete.finish(ByteBuffer.allocate(32)));
@@ -129,7 +132,9 @@ public final class RawLZMABufferEngineTest {
             int sourceFragmentSize,
             int targetSize
     ) throws IOException {
-        try (CompressionEncoder encoder = codec.newEncoder(pledgedSourceSize)) {
+        try (CompressionEncoder encoder = codec.newEncoder(
+                EncodingOptions.ofSourceSize(pledgedSourceSize)
+        )) {
             return encodeWithEncoder(encoder, content, sourceFragmentSize, targetSize);
         }
     }

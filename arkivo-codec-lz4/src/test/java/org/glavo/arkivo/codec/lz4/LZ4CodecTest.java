@@ -7,7 +7,7 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFormats;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -159,7 +159,7 @@ public final class LZ4CodecTest {
     @Test
     public void enforcesMemoryLimitsBeforeRetainingPayloads() throws IOException {
         int maximumMemorySize = 65_535;
-        DecompressionLimits limits = DecompressionLimits.ofMaximumMemorySize(maximumMemorySize);
+        DecodingOptions limits = DecodingOptions.ofMaximumMemorySize(maximumMemorySize);
         try (CompressionDecoder decoder = new LZ4BlockCodec()
                 .withMaximumBlockSize(128 * 1024L)
                 .newDecoder(limits)) {

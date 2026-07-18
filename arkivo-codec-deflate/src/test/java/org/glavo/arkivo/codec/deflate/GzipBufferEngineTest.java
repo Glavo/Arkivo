@@ -6,7 +6,7 @@ package org.glavo.arkivo.codec.deflate;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionLimitException;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -141,10 +141,10 @@ public final class GzipBufferEngineTest {
         byte[] encoded = encodeInFragments(input, 11, 3, false);
         byte[] corrupted = encoded.clone();
         corrupted[corrupted.length - 8] ^= 1;
-        assertThrows(IOException.class, () -> decode(corrupted, 2, DecompressionLimits.UNLIMITED));
+        assertThrows(IOException.class, () -> decode(corrupted, 2, DecodingOptions.DEFAULT));
         assertThrows(
                 IOException.class,
-                () -> decode(Arrays.copyOf(encoded, encoded.length - 1), 2, DecompressionLimits.UNLIMITED)
+                () -> decode(Arrays.copyOf(encoded, encoded.length - 1), 2, DecodingOptions.DEFAULT)
         );
 
         CompressionEncoder.FlushableFramed encoder = CODEC.newEncoder();
@@ -166,10 +166,10 @@ public final class GzipBufferEngineTest {
     public void framedEncoderAndOutputLimit() throws IOException {
         byte[] input = testData();
         byte[] encoded = encodeInFragments(input, 13, 5, false);
-        DecompressionLimits exactLimits =
-                DecompressionLimits.ofMaximumOutputSize(input.length);
-        DecompressionLimits shortLimits =
-                DecompressionLimits.ofMaximumOutputSize(input.length - 1L);
+        DecodingOptions exactLimits =
+                DecodingOptions.ofMaximumOutputSize(input.length);
+        DecodingOptions shortLimits =
+                DecodingOptions.ofMaximumOutputSize(input.length - 1L);
 
         assertArrayEquals(input, decode(encoded, 1, exactLimits));
         assertThrows(DecompressionLimitException.class, () -> decode(encoded, 1, shortLimits));
@@ -246,7 +246,7 @@ public final class GzipBufferEngineTest {
     private static byte[] decode(
             byte[] encoded,
             int targetSize,
-            DecompressionLimits limits
+            DecodingOptions limits
     ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         ByteBuffer source = ByteBuffer.wrap(encoded);

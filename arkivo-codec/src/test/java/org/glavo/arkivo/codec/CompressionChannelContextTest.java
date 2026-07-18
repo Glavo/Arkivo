@@ -74,6 +74,7 @@ final class CompressionChannelContextTest {
         WritableByteChannel target = Channels.newChannel(new ByteArrayOutputStream());
         try (CompressingWritableByteChannel.Framed encoder = CODEC.newWritableByteChannel(
                 target,
+                EncodingOptions.DEFAULT,
                 ResourceOwnership.OWNED
         )) {
             encoder.finishFrame(ByteBuffer.wrap(new byte[]{1}));
@@ -83,6 +84,7 @@ final class CompressionChannelContextTest {
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(new byte[]{1}));
         try (DecompressingReadableByteChannel decoder = CODEC.newReadableByteChannel(
                 source,
+                DecodingOptions.DEFAULT,
                 ResourceOwnership.OWNED
         )) {
             decoder.decode(ByteBuffer.allocate(1));
@@ -96,6 +98,7 @@ final class CompressionChannelContextTest {
         FailingCloseWritableChannel target = new FailingCloseWritableChannel();
         CompressingWritableByteChannel encoder = CODEC.newWritableByteChannel(
                 target,
+                EncodingOptions.DEFAULT,
                 ResourceOwnership.OWNED
         );
         encoder.write(ByteBuffer.wrap(new byte[]{1, 2, 3}));
@@ -110,6 +113,7 @@ final class CompressionChannelContextTest {
         FailingCloseReadableChannel source = new FailingCloseReadableChannel(new byte[]{4, 5, 6});
         DecompressingReadableByteChannel decoder = CODEC.newReadableByteChannel(
                 source,
+                DecodingOptions.DEFAULT,
                 ResourceOwnership.OWNED
         );
         assertThrows(IOException.class, decoder::close);
@@ -157,14 +161,18 @@ final class CompressionChannelContextTest {
     /// Verifies every codec accepts source-size metadata while capability subinterfaces preserve covariant types.
     @Test
     void acceptsSourceSizeMetadataThroughGenericFactories() throws IOException {
-        try (CompressionEncoder.FlushableFramed ignored = CODEC.newEncoder(3L)) {
+        try (CompressionEncoder.FlushableFramed ignored = CODEC.newEncoder(
+                EncodingOptions.ofSourceSize(3L)
+        )) {
             assertInstanceOf(IdentityEncoder.class, ignored);
         }
         assertThrows(
                 IllegalArgumentException.class,
                 () -> {
                     try (CompressionEncoder ignored =
-                                 CODEC.newEncoder(CompressionCodec.UNKNOWN_SIZE - 1L)) {
+                                 CODEC.newEncoder(EncodingOptions.ofSourceSize(
+                                         CompressionCodec.UNKNOWN_SIZE - 1L
+                                 ))) {
                         ignored.reset();
                     }
                 }
@@ -174,7 +182,8 @@ final class CompressionChannelContextTest {
         ByteArrayOutputStream channelBytes = new ByteArrayOutputStream();
         try (CompressingWritableByteChannel.FlushableFramed encoder = CODEC.newWritableByteChannel(
                 Channels.newChannel(channelBytes),
-                input.length
+                EncodingOptions.ofSourceSize(input.length),
+                ResourceOwnership.BORROWED
         )) {
             assertEquals(input.length, encoder.write(ByteBuffer.wrap(input)));
             encoder.finish();
@@ -182,7 +191,11 @@ final class CompressionChannelContextTest {
         assertArrayEquals(input, channelBytes.toByteArray());
 
         ByteArrayOutputStream streamBytes = new ByteArrayOutputStream();
-        try (var encoder = CODEC.newOutputStream(streamBytes, input.length)) {
+        try (var encoder = CODEC.newOutputStream(
+                streamBytes,
+                EncodingOptions.ofSourceSize(input.length),
+                ResourceOwnership.BORROWED
+        )) {
             encoder.write(input);
         }
         assertArrayEquals(input, streamBytes.toByteArray());
@@ -303,16 +316,17 @@ final class CompressionChannelContextTest {
 
         /// Creates a fresh identity encoder.
         @Override
-        public CompressionEncoder.FlushableFramed newEncoder() {
+        public CompressionEncoder.FlushableFramed newEncoder(EncodingOptions options) {
+            Objects.requireNonNull(options, "options");
             return new IdentityEncoder();
         }
 
         /// Creates a fresh identity decoder with the requested output limit.
         @Override
-        public CompressionDecoder.Framed newDecoder(DecompressionLimits limits) {
+        public CompressionDecoder.Framed newDecoder(DecodingOptions options) {
             return CompressionDecoderSupport.limitEngineOutput(
                     new IdentityDecoder(),
-                    limits.maximumOutputSize()
+                    options.maximumOutputSize()
             );
         }
     }

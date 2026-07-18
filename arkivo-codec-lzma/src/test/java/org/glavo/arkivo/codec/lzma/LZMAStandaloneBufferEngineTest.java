@@ -7,6 +7,7 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -92,7 +93,9 @@ public final class LZMAStandaloneBufferEngineTest {
             int targetSize
     ) throws IOException {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-        try (CompressionEncoder encoder = CODEC.newEncoder(pledgedSourceSize)) {
+        try (CompressionEncoder encoder = CODEC.newEncoder(
+                EncodingOptions.ofSourceSize(pledgedSourceSize)
+        )) {
             int offset = 0;
             while (offset < content.length) {
                 int length = Math.min(sourceFragmentSize, content.length - offset);

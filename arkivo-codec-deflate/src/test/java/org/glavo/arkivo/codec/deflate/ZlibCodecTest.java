@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.deflate;
 
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -77,7 +77,7 @@ public final class ZlibCodecTest {
         codec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(compressed)),
                 Channels.newChannel(decodedBytes),
-                DecompressionLimits.ofMaximumWindowSize(256L)
+                DecodingOptions.ofMaximumWindowSize(256L)
         );
         assertArrayEquals(content, decodedBytes.toByteArray());
 
@@ -86,7 +86,7 @@ public final class ZlibCodecTest {
                 () -> codec.decompress(
                         Channels.newChannel(new ByteArrayInputStream(compressed)),
                         Channels.newChannel(new ByteArrayOutputStream()),
-                        DecompressionLimits.ofMaximumWindowSize(255L)
+                        DecodingOptions.ofMaximumWindowSize(255L)
                 )
         );
         assertEquals(255L, exception.maximumWindowSize());
@@ -97,7 +97,7 @@ public final class ZlibCodecTest {
                 () -> codec.decompress(
                         Channels.newChannel(new ByteArrayInputStream(new byte[]{0x78, 0x00})),
                         Channels.newChannel(new ByteArrayOutputStream()),
-                        DecompressionLimits.ofMaximumWindowSize(0L)
+                        DecodingOptions.ofMaximumWindowSize(0L)
                 )
         );
         assertFalse(malformed instanceof DecompressionWindowLimitException);

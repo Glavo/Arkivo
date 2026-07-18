@@ -5,7 +5,7 @@ package org.glavo.arkivo.archive.sevenzip.internal;
 
 import org.glavo.arkivo.archive.ArchiveReadLimits;
 import org.glavo.arkivo.archive.PasswordPurpose;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -89,18 +89,18 @@ public final class SevenZipLZMADecoderTest {
 
     /// Verifies 7z coder output, window, and memory bounds are combined without losing either archive limit.
     @Test
-    public void combinesCodecDecompressionLimits() {
+    public void combinesCodecDecodingOptions() {
         ArchiveReadLimits readLimits = ArchiveReadLimits.builder()
                 .maximumCompressionWindowSize(8_192L)
                 .maximumDecoderMemorySize(4_096L)
                 .build();
 
-        DecompressionLimits limits = SevenZipCompressionFormats.decompressionLimits(123L, readLimits);
+        DecodingOptions options = SevenZipCompressionFormats.decodingOptions(123L, readLimits);
 
-        assertEquals(123L, limits.maximumOutputSize());
-        assertEquals(8_192L, limits.maximumWindowSize());
-        assertEquals(4_096L, limits.maximumMemorySize());
-        assertEquals(4_096L, limits.effectiveMaximumWindowSize());
+        assertEquals(123L, options.maximumOutputSize());
+        assertEquals(8_192L, options.maximumWindowSize());
+        assertEquals(4_096L, options.maximumMemorySize());
+        assertEquals(4_096L, options.effectiveMaximumWindowSize());
     }
 
     /// Verifies folder decoding rejects PPMd model memory above the archive decoder-memory ceiling.

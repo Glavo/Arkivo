@@ -5,7 +5,8 @@ package org.glavo.arkivo.codec.lzma;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.lzma.internal.LZMADecoder;
 import org.glavo.arkivo.codec.lzma.internal.LZMAEncoder;
@@ -80,33 +81,21 @@ public final class LZMACodec implements CompressionCodec<LZMACodec> {
         return withProperties(properties.withDictionarySize(dictionarySize));
     }
 
-    /// Creates an LZMA-alone encoder without a known source size.
+    /// Creates an LZMA-alone encoder using operation-scoped options.
     @Override
-    public CompressionEncoder newEncoder() {
-        return newEncoder(UNKNOWN_SIZE);
-    }
-
-    /// Creates an LZMA-alone encoder with optional exact source-size metadata.
-    @Override
-    public CompressionEncoder newEncoder(long sourceSize) {
-        requireSourceSize(sourceSize);
-        return new LZMAEncoder(properties, sourceSize);
+    public CompressionEncoder newEncoder(EncodingOptions options) {
+        Objects.requireNonNull(options, "options");
+        return new LZMAEncoder(properties, options.sourceSize());
     }
 
     /// Creates an LZMA-alone decoder with operation-scoped safety limits.
     @Override
-    public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
-        Objects.requireNonNull(limits, "limits");
+    public CompressionDecoder newDecoder(DecodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
         return CompressionDecoderSupport.limitEngineOutput(
-                new LZMADecoder(limits.effectiveMaximumWindowSize()),
-                limits.maximumOutputSize()
+                new LZMADecoder(options.effectiveMaximumWindowSize()),
+                options.maximumOutputSize()
         );
     }
 
-    /// Validates a known or unknown exact source size.
-    private static void requireSourceSize(long sourceSize) {
-        if (sourceSize < UNKNOWN_SIZE) {
-            throw new IllegalArgumentException("sourceSize must be non-negative or UNKNOWN_SIZE");
-        }
-    }
 }

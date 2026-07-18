@@ -7,9 +7,10 @@ import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.lzip.internal.LzipSupport;
 import org.glavo.arkivo.internal.ByteArrayAccess;
@@ -136,6 +137,7 @@ public final class LzipCodecTest {
 
         try (CompressingWritableByteChannel.Framed output = codec.newWritableByteChannel(
                 Channels.newChannel(encoded),
+                EncodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         )) {
             output.write(ByteBuffer.wrap(first));
@@ -174,6 +176,7 @@ public final class LzipCodecTest {
 
         try (DecompressingReadableByteChannel.Framed input = new LzipCodec().newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(stream)),
+                DecodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         )) {
             ByteBuffer target = ByteBuffer.allocate(16);
@@ -212,14 +215,14 @@ public final class LzipCodecTest {
                 () -> new LzipCodec().decompress(
                         ByteBuffer.wrap(encoded),
                         ByteBuffer.allocate(content.length),
-                        DecompressionLimits.ofMaximumWindowSize(TEST_DICTIONARY_SIZE / 2L)
+                        DecodingOptions.ofMaximumWindowSize(TEST_DICTIONARY_SIZE / 2L)
                 )
         );
         assertThrows(
                 DecompressionOutputLimitException.class,
                 () -> new LzipCodec().decompress(
                         ByteBuffer.wrap(encoded),
-                        DecompressionLimits.ofMaximumOutputSize(content.length - 1L)
+                        DecodingOptions.ofMaximumOutputSize(content.length - 1L)
                 )
         );
     }

@@ -5,7 +5,8 @@ package org.glavo.arkivo.codec.lzma;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.lzma.internal.LZMARawDecoder;
 import org.glavo.arkivo.codec.lzma.internal.LZMARawEncoder;
@@ -135,34 +136,22 @@ public final class RawLZMACodec implements CompressionCodec<RawLZMACodec> {
                 : new RawLZMACodec(properties, endMarker, decodedSize);
     }
 
-    /// Creates a raw LZMA encoder without a known source size.
+    /// Creates a raw LZMA encoder using operation-scoped options.
     @Override
-    public CompressionEncoder newEncoder() {
-        return newEncoder(UNKNOWN_SIZE);
-    }
-
-    /// Creates a raw LZMA encoder with optional exact source-size metadata.
-    @Override
-    public CompressionEncoder newEncoder(long sourceSize) {
-        requireSourceSize(sourceSize);
-        return new LZMARawEncoder(properties, sourceSize, endMarker);
+    public CompressionEncoder newEncoder(EncodingOptions options) {
+        Objects.requireNonNull(options, "options");
+        return new LZMARawEncoder(properties, options.sourceSize(), endMarker);
     }
 
     /// Creates a raw LZMA decoder with operation-scoped safety limits.
     @Override
-    public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
-        Objects.requireNonNull(limits, "limits");
-        limits.requireWindowSize(properties.dictionarySize());
+    public CompressionDecoder newDecoder(DecodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
+        options.requireWindowSize(properties.dictionarySize());
         return CompressionDecoderSupport.limitEngineOutput(
-                new LZMARawDecoder(properties, decodedSize, limits.effectiveMaximumWindowSize()),
-                limits.maximumOutputSize()
+                new LZMARawDecoder(properties, decodedSize, options.effectiveMaximumWindowSize()),
+                options.maximumOutputSize()
         );
     }
 
-    /// Validates a known or unknown exact source size.
-    private static void requireSourceSize(long sourceSize) {
-        if (sourceSize < UNKNOWN_SIZE) {
-            throw new IllegalArgumentException("sourceSize must be non-negative or UNKNOWN_SIZE");
-        }
-    }
 }

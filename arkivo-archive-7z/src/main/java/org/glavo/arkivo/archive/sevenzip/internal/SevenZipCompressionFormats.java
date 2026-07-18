@@ -8,7 +8,8 @@ import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.lzma.LZMA2Codec;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.lzma.RawLZMACodec;
@@ -111,7 +112,7 @@ final class SevenZipCompressionFormats {
         return CompressionFormats.newInputStream(
                 formatName,
                 source,
-                decompressionLimits(maximumOutputSize, readLimits),
+                decodingOptions(maximumOutputSize, readLimits),
                 ResourceOwnership.OWNED
         );
     }
@@ -135,7 +136,7 @@ final class SevenZipCompressionFormats {
         return newOwningInputStream(
                 configured,
                 source,
-                decompressionLimits(decodedSize, readLimits)
+                decodingOptions(decodedSize, readLimits)
         );
     }
 
@@ -161,7 +162,7 @@ final class SevenZipCompressionFormats {
         return newOwningInputStream(
                 configured,
                 source,
-                decompressionLimits(decodedSize, readLimits)
+                decodingOptions(decodedSize, readLimits)
         );
     }
 
@@ -179,17 +180,17 @@ final class SevenZipCompressionFormats {
         return newOwningInputStream(
                 lzma2Codec.withDictionarySize(Math.toIntExact(dictionarySize)),
                 source,
-                decompressionLimits(maximumOutputSize, readLimits)
+                decodingOptions(maximumOutputSize, readLimits)
         );
     }
 
     /// Combines one coder output bound with archive-wide decoder resource limits.
-    static DecompressionLimits decompressionLimits(
+    static DecodingOptions decodingOptions(
             long maximumOutputSize,
             ArchiveReadLimits readLimits
     ) {
         Objects.requireNonNull(readLimits, "readLimits");
-        return new DecompressionLimits(
+        return new DecodingOptions(
                 maximumOutputSize,
                 readLimits.maximumCompressionWindowSize(),
                 readLimits.maximumDecoderMemorySize()
@@ -203,21 +204,21 @@ final class SevenZipCompressionFormats {
     ) throws IOException {
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(target, "target");
-        return codec.newOutputStream(target, ResourceOwnership.OWNED);
+        return codec.newOutputStream(target, EncodingOptions.DEFAULT, ResourceOwnership.OWNED);
     }
 
     /// Creates an owning input-stream view over a configured codec.
     private static InputStream newOwningInputStream(
             CompressionCodec<?> codec,
             InputStream source,
-            DecompressionLimits limits
+            DecodingOptions options
     ) throws IOException {
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(limits, "limits");
+        Objects.requireNonNull(options, "options");
         return codec.newInputStream(
                 source,
-                limits,
+                options,
                 ResourceOwnership.OWNED
         );
     }

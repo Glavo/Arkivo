@@ -4,7 +4,7 @@
 package org.glavo.arkivo.codec.xz;
 
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.lzma.LZMACodec;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -20,7 +20,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.stream.Stream;
@@ -204,7 +203,7 @@ public final class XZUtilsOfficialCorpusTest {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         try (var source = Files.newByteChannel(sourcePath);
              var target = Channels.newChannel(decoded)) {
-            codec.decompress(source, target, DecompressionLimits.ofMaximumOutputSize(MAXIMUM_OUTPUT_SIZE));
+            codec.decompress(source, target, DecodingOptions.ofMaximumOutputSize(MAXIMUM_OUTPUT_SIZE));
         }
         return decoded.toByteArray();
     }

@@ -6,7 +6,8 @@ package org.glavo.arkivo.codec.lz4;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.lz4.internal.LZ4FrameDecoder;
 import org.glavo.arkivo.codec.lz4.internal.LZ4FrameEncoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
@@ -211,7 +212,8 @@ public final class LZ4Codec
 
     /// Creates a transport-independent, flush-capable LZ4 frame encoder.
     @Override
-    public CompressionEncoder.FlushableFramed newEncoder() {
+    public CompressionEncoder.FlushableFramed newEncoder(EncodingOptions options) {
+        Objects.requireNonNull(options, "options");
         return new LZ4FrameEncoder(
                 blockSize,
                 independentBlocks,
@@ -224,24 +226,24 @@ public final class LZ4Codec
     /// Creates a transport-independent LZ4 frame decoder with operation-scoped limits.
     @Override
     public CompressionDecoder.FramedDictionaryAware<LZ4Dictionary, LZ4DictionaryRequest> newDecoder(
-            DecompressionLimits limits
+            DecodingOptions options
     ) {
-        Objects.requireNonNull(limits, "limits");
+        Objects.requireNonNull(options, "options");
         return CompressionDecoderSupport.limitEngineOutput(
                 new LZ4FrameDecoder(
                         dictionary,
-                        limits.effectiveMaximumWindowSize(),
-                        limits.maximumMemorySize(),
+                        options.effectiveMaximumWindowSize(),
+                        options.maximumMemorySize(),
                         verifyChecksums
                 ),
-                limits.maximumOutputSize()
+                options.maximumOutputSize()
         );
     }
 
     /// Creates a dictionary-aware decoder without operation-scoped safety limits.
     @Override
     public CompressionDecoder.FramedDictionaryAware<LZ4Dictionary, LZ4DictionaryRequest> newDecoder() {
-        return newDecoder(DecompressionLimits.UNLIMITED);
+        return newDecoder(DecodingOptions.DEFAULT);
     }
 
     /// Builds immutable standard LZ4 frame configurations.

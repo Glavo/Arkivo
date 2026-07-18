@@ -5,7 +5,8 @@ package org.glavo.arkivo.codec.xz;
 
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
@@ -188,17 +189,18 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
 
     /// Creates a flushable transport-independent XZ stream encoder.
     @Override
-    public CompressionEncoder.FlushableFramed newEncoder() throws IOException {
+    public CompressionEncoder.FlushableFramed newEncoder(EncodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
         return new XZEncoder(properties, checkType.flag(), filterChain, blockSize);
     }
 
     /// Creates a transport-independent XZ stream decoder with operation-scoped limits.
     @Override
-    public CompressionDecoder.Framed newDecoder(DecompressionLimits limits) throws IOException {
-        Objects.requireNonNull(limits, "limits");
+    public CompressionDecoder.Framed newDecoder(DecodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
         return CompressionDecoderSupport.limitEngineOutput(
-                new XZDecoder(limits.effectiveMaximumWindowSize(), verifyChecksums),
-                limits.maximumOutputSize()
+                new XZDecoder(options.effectiveMaximumWindowSize(), verifyChecksums),
+                options.maximumOutputSize()
         );
     }
 

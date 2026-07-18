@@ -9,8 +9,9 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 import org.tukaani.xz.ARM64Options;
@@ -332,6 +333,7 @@ public final class XZCodecTest {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         try (DecompressingReadableByteChannel.Framed decoder = new XZCodec().newReadableByteChannel(
                 source,
+                DecodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         )) {
             ByteBuffer target = ByteBuffer.allocate(4096);
@@ -442,6 +444,7 @@ public final class XZCodecTest {
                 .build();
         CompressingWritableByteChannel encoder = configured.newWritableByteChannel(
                 compressedTarget,
+                EncodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         );
         ByteBuffer source = ByteBuffer.allocateDirect(content.length).put(content).flip();
@@ -462,6 +465,7 @@ public final class XZCodecTest {
         ReadableByteChannel compressedSource = Channels.newChannel(new ByteArrayInputStream(encoded));
         DecompressingReadableByteChannel decoder = new XZCodec().newReadableByteChannel(
                 compressedSource,
+                DecodingOptions.DEFAULT,
                 ResourceOwnership.OWNED
         );
         ByteBuffer decoded = ByteBuffer.allocateDirect(content.length);
@@ -481,7 +485,11 @@ public final class XZCodecTest {
         ByteArrayOutputStream uncheckedBytes = new ByteArrayOutputStream();
         try (CompressingWritableByteChannel unchecked = new XZCodec()
                 .withCheckType(XZCheckType.NONE)
-                .newWritableByteChannel(Channels.newChannel(uncheckedBytes), ResourceOwnership.BORROWED)) {
+                .newWritableByteChannel(
+                        Channels.newChannel(uncheckedBytes),
+                        EncodingOptions.DEFAULT,
+                        ResourceOwnership.BORROWED
+                )) {
             unchecked.finish();
         }
         assertEquals(XZ.CHECK_NONE, Byte.toUnsignedInt(uncheckedBytes.toByteArray()[7]));
@@ -549,7 +557,7 @@ public final class XZCodecTest {
         codec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
                 Channels.newChannel(decodedBytes),
-                DecompressionLimits.ofMaximumWindowSize(dictionarySize)
+                DecodingOptions.ofMaximumWindowSize(dictionarySize)
         );
         assertArrayEquals(content, decodedBytes.toByteArray());
 
@@ -558,7 +566,7 @@ public final class XZCodecTest {
                 () -> codec.decompress(
                         Channels.newChannel(new ByteArrayInputStream(compressedBytes.toByteArray())),
                         Channels.newChannel(new ByteArrayOutputStream()),
-                        DecompressionLimits.ofMaximumWindowSize(dictionarySize - 1L)
+                        DecodingOptions.ofMaximumWindowSize(dictionarySize - 1L)
                 )
         );
         assertEquals(dictionarySize - 1L, exception.maximumWindowSize());

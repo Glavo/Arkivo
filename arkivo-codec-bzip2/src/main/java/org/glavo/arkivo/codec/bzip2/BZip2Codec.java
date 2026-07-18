@@ -5,13 +5,16 @@ package org.glavo.arkivo.codec.bzip2;
 
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2ChannelEncoder;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2Decoder;
 import org.glavo.arkivo.codec.bzip2.internal.BZip2Encoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.jetbrains.annotations.NotNullByDefault;
+
+import java.util.Objects;
 
 
 /// Provides an immutable BZip2 compression configuration and creates transport-independent engines.
@@ -20,7 +23,7 @@ import org.jetbrains.annotations.NotNullByDefault;
 /// 900,000-byte blocks. It affects newly created encoders; decoders read the block size from each stream header.
 ///
 /// Instances contain no stream state and are safe for concurrent use. Every [#newEncoder()] or [#newDecoder(
-/// DecompressionLimits)] call returns an independent, mutable engine. A completed encoder frame is one complete BZip2
+///DecodingOptions)] call returns an independent, mutable engine. A completed encoder frame is one complete BZip2
 /// stream, including its combined CRC trailer.
 @NotNullByDefault
 public final class BZip2Codec
@@ -98,7 +101,8 @@ public final class BZip2Codec
 
     /// Creates a transport-independent BZip2 framed encoder.
     @Override
-    public CompressionEncoder.Framed newEncoder() {
+    public CompressionEncoder.Framed newEncoder(EncodingOptions options) {
+        Objects.requireNonNull(options, "options");
         return new BZip2Encoder(compressionLevel);
     }
 
@@ -108,10 +112,11 @@ public final class BZip2Codec
     /// `maximumWindowSize` or `maximumMemorySize`; it selects its working buffers from the member's 100,000- through
     /// 900,000-byte block-size digit.
     @Override
-    public CompressionDecoder.Framed newDecoder(DecompressionLimits limits) {
+    public CompressionDecoder.Framed newDecoder(DecodingOptions options) {
+        Objects.requireNonNull(options, "options");
         return CompressionDecoderSupport.limitEngineOutput(
                 new BZip2Decoder(),
-                limits.maximumOutputSize()
+                options.maximumOutputSize()
         );
     }
 }

@@ -195,7 +195,7 @@ public final class CompressionFormats {
         }
     }
 
-    /// Creates a compressing writable channel for the named format while retaining the target channel.
+    /// Creates a compressing channel for the named format using default options and borrowing the target.
     ///
     /// @param formatName the stable name or alias of an installed format
     /// @param target     the channel that receives compressed bytes and remains open after the returned channel closes
@@ -205,28 +205,36 @@ public final class CompressionFormats {
             String formatName,
             WritableByteChannel target
     ) throws IOException {
-        return newWritableByteChannel(formatName, target, ResourceOwnership.BORROWED);
+        return newWritableByteChannel(
+                formatName,
+                target,
+                EncodingOptions.DEFAULT,
+                ResourceOwnership.BORROWED
+        );
     }
 
-    /// Creates a compressing writable channel for the named format with explicit target ownership.
+    /// Creates a compressing channel for the named format using options and explicit target ownership.
     ///
-    /// After argument validation, OWNED transfers ownership before codec lookup and setup.
+    /// After argument validation, `OWNED` transfers ownership before codec lookup and setup.
     ///
     /// @param formatName the stable name or alias of an installed format
     /// @param target     the channel that receives compressed bytes
+    /// @param options    the parameters for this encoding session
     /// @param ownership  whether closing the returned channel also closes `target`
     /// @return a new compressing channel using the format's default codec
     /// @throws IOException if the format is unknown, the encoder cannot be initialized, or ownership cleanup fails
     public static CompressingWritableByteChannel newWritableByteChannel(
             String formatName,
             WritableByteChannel target,
+            EncodingOptions options,
             ResourceOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(options, "options");
         Objects.requireNonNull(ownership, "ownership");
         try {
-            return requireDefaultCodec(formatName).newWritableByteChannel(target, ownership);
+            return requireDefaultCodec(formatName).newWritableByteChannel(target, options, ownership);
         } catch (IOException | RuntimeException | Error exception) {
             if (ownership == ResourceOwnership.OWNED) {
                 closeAfterOpenFailure(target, exception);
@@ -235,11 +243,11 @@ public final class CompressionFormats {
         }
     }
 
-    /// Creates an unlimited decompressing readable channel for the named format while retaining the source channel.
+    /// Creates a decompressing channel for the named format using default options and borrowing the source.
     ///
     /// @param formatName the stable name or alias of an installed format
     /// @param source     the channel supplying compressed bytes and remaining open after the returned channel closes
-    /// @return a new unlimited decompressing channel using the format's default codec
+    /// @return a new decompressing channel using the format's default codec
     /// @throws IOException if the format is unknown or the decoder cannot be initialized
     public static DecompressingReadableByteChannel newReadableByteChannel(
             String formatName,
@@ -248,64 +256,34 @@ public final class CompressionFormats {
         return newReadableByteChannel(
                 formatName,
                 source,
-                DecompressionLimits.UNLIMITED,
+                DecodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         );
     }
 
-    /// Creates an unlimited decompressing readable channel for the named format with explicit source ownership.
-    ///
-    /// @param formatName the stable name or alias of an installed format
-    /// @param source     the channel supplying compressed bytes
-    /// @param ownership  whether closing the returned channel also closes `source`
-    /// @return a new unlimited decompressing channel using the format's default codec
-    /// @throws IOException if the format is unknown, the decoder cannot be initialized, or ownership cleanup fails
-    public static DecompressingReadableByteChannel newReadableByteChannel(
-            String formatName,
-            ReadableByteChannel source,
-            ResourceOwnership ownership
-    ) throws IOException {
-        return newReadableByteChannel(formatName, source, DecompressionLimits.UNLIMITED, ownership);
-    }
-
-    /// Creates a limited decompressing readable channel for the named format while retaining the source channel.
-    ///
-    /// @param formatName the stable name or alias of an installed format
-    /// @param source     the channel supplying compressed bytes and remaining open after the returned channel closes
-    /// @param limits     the output, window, and memory limits for the decoding session
-    /// @return a new limited decompressing channel using the format's default codec
-    /// @throws IOException if the format is unknown or the decoder cannot be initialized
-    public static DecompressingReadableByteChannel newReadableByteChannel(
-            String formatName,
-            ReadableByteChannel source,
-            DecompressionLimits limits
-    ) throws IOException {
-        return newReadableByteChannel(formatName, source, limits, ResourceOwnership.BORROWED);
-    }
-
-    /// Creates a limited decompressing readable channel for the named format with explicit source ownership.
+    /// Creates a decompressing channel for the named format using options and explicit source ownership.
     ///
     /// This method bypasses signature detection. After argument validation, OWNED transfers ownership before codec
     /// lookup and setup.
     ///
     /// @param formatName the stable name or alias of an installed format
     /// @param source     the channel supplying compressed bytes
-    /// @param limits     the output, window, and memory limits for the decoding session
+    /// @param options    the parameters for this decoding session
     /// @param ownership  whether closing the returned channel also closes `source`
-    /// @return a new limited decompressing channel using the format's default codec
+    /// @return a new decompressing channel using the format's default codec
     /// @throws IOException if the format is unknown, the decoder cannot be initialized, or ownership cleanup fails
     public static DecompressingReadableByteChannel newReadableByteChannel(
             String formatName,
             ReadableByteChannel source,
-            DecompressionLimits limits,
+            DecodingOptions options,
             ResourceOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(limits, "limits");
+        Objects.requireNonNull(options, "options");
         Objects.requireNonNull(ownership, "ownership");
         try {
-            return requireDefaultCodec(formatName).newReadableByteChannel(source, limits, ownership);
+            return requireDefaultCodec(formatName).newReadableByteChannel(source, options, ownership);
         } catch (IOException | RuntimeException | Error exception) {
             if (ownership == ResourceOwnership.OWNED) {
                 closeAfterOpenFailure(source, exception);
@@ -314,61 +292,35 @@ public final class CompressionFormats {
         }
     }
 
-    /// Detects a signed stream and creates an unlimited decompressing channel while retaining the source channel.
+    /// Detects a signed stream and creates a decompressing channel using default options while borrowing the source.
     ///
     /// @param source the channel supplying signed compressed bytes and remaining open after the returned channel closes
-    /// @return a new unlimited decompressing channel using the detected format's default codec
+    /// @return a new decompressing channel using the detected format's default codec
     /// @throws IOException if probing fails, the format is unrecognized, or the decoder cannot be initialized
     public static DecompressingReadableByteChannel newReadableByteChannel(
             ReadableByteChannel source
     ) throws IOException {
-        return newReadableByteChannel(source, DecompressionLimits.UNLIMITED, ResourceOwnership.BORROWED);
+        return newReadableByteChannel(source, DecodingOptions.DEFAULT, ResourceOwnership.BORROWED);
     }
 
-    /// Detects a signed stream and creates a limited decompressing channel while retaining the source channel.
-    ///
-    /// @param source the channel supplying signed compressed bytes and remaining open after the returned channel closes
-    /// @param limits the output, window, and memory limits for the decoding session
-    /// @return a new limited decompressing channel using the detected format's default codec
-    /// @throws IOException if probing fails, the format is unrecognized, or the decoder cannot be initialized
-    public static DecompressingReadableByteChannel newReadableByteChannel(
-            ReadableByteChannel source,
-            DecompressionLimits limits
-    ) throws IOException {
-        return newReadableByteChannel(source, limits, ResourceOwnership.BORROWED);
-    }
-
-    /// Detects a signed stream and creates an unlimited decompressing channel with explicit source ownership.
-    ///
-    /// @param source    the channel supplying signed compressed bytes
-    /// @param ownership whether closing the returned channel also closes `source`
-    /// @return a new unlimited decompressing channel using the detected format's default codec
-    /// @throws IOException if probing fails, the format is unrecognized, decoder setup fails, or ownership cleanup fails
-    public static DecompressingReadableByteChannel newReadableByteChannel(
-            ReadableByteChannel source,
-            ResourceOwnership ownership
-    ) throws IOException {
-        return newReadableByteChannel(source, DecompressionLimits.UNLIMITED, ownership);
-    }
-
-    /// Detects a signed stream and creates a limited decompressing channel with explicit source ownership.
+    /// Detects a signed stream and creates a decompressing channel using options and explicit source ownership.
     ///
     /// The decoder receives every byte consumed by detection. Formats without a reliable signature must be opened by
     /// name. Closing the decoder closes its replay channel; that channel applies the requested ownership to the original
     /// source.
     ///
     /// @param source    the channel supplying signed compressed bytes
-    /// @param limits    the output, window, and memory limits for the decoding session
+    /// @param options   the parameters for this decoding session
     /// @param ownership whether closing the returned channel also closes `source`
-    /// @return a new limited decompressing channel using the detected format's default codec
+    /// @return a new decompressing channel using the detected format's default codec
     /// @throws IOException if probing fails, the format is unrecognized, decoder setup fails, or ownership cleanup fails
     public static DecompressingReadableByteChannel newReadableByteChannel(
             ReadableByteChannel source,
-            DecompressionLimits limits,
+            DecodingOptions options,
             ResourceOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(limits, "limits");
+        Objects.requireNonNull(options, "options");
         Objects.requireNonNull(ownership, "ownership");
 
         CompressionProbeResult probe = probe(source, ownership);
@@ -378,7 +330,7 @@ public final class CompressionFormats {
             if (format == null) {
                 throw new IOException("Unrecognized compression format");
             }
-            return format.defaultCodec().newReadableByteChannel(replay, limits, ResourceOwnership.OWNED);
+            return format.defaultCodec().newReadableByteChannel(replay, options, ResourceOwnership.OWNED);
         } catch (IOException | RuntimeException | Error exception) {
             closeAfterOpenFailure(replay, exception);
             throw exception;
@@ -397,10 +349,28 @@ public final class CompressionFormats {
             ReadableByteChannel source,
             WritableByteChannel target
     ) throws IOException {
+        return compress(formatName, source, target, EncodingOptions.DEFAULT);
+    }
+
+    /// Compresses all source bytes with the named format and operation-scoped options.
+    ///
+    /// @param formatName the stable name or alias of an installed format
+    /// @param source     the channel supplying uncompressed bytes until end-of-input
+    /// @param target     the channel receiving the complete compressed encoding
+    /// @param options    the parameters for this encoding operation
+    /// @return the uncompressed input and compressed output byte counts
+    /// @throws IOException if the format is unknown or channel I/O, encoding, finalization, or progress fails
+    public static CodecTransferResult compress(
+            String formatName,
+            ReadableByteChannel source,
+            WritableByteChannel target,
+            EncodingOptions options
+    ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
-        return requireDefaultCodec(formatName).compress(source, target);
+        Objects.requireNonNull(options, "options");
+        return requireDefaultCodec(formatName).compress(source, target, options);
     }
 
     /// Decompresses all source bytes with the named format while retaining both channels.
@@ -415,28 +385,28 @@ public final class CompressionFormats {
             ReadableByteChannel source,
             WritableByteChannel target
     ) throws IOException {
-        return decompress(formatName, source, target, DecompressionLimits.UNLIMITED);
+        return decompress(formatName, source, target, DecodingOptions.DEFAULT);
     }
 
-    /// Decompresses all source bytes with the named format and operation-scoped limits.
+    /// Decompresses all source bytes with the named format and operation-scoped options.
     ///
     /// @param formatName the stable name or alias of an installed format
     /// @param source     the channel supplying compressed bytes
     /// @param target     the channel receiving decoded bytes
-    /// @param limits     the output, window, and memory limits for this operation
+    /// @param options    the parameters for this decoding operation
     /// @return the compressed input and decoded output byte counts
     /// @throws IOException if the format is unknown or channel I/O, decoding, a configured limit, or progress fails
     public static CodecTransferResult decompress(
             String formatName,
             ReadableByteChannel source,
             WritableByteChannel target,
-            DecompressionLimits limits
+            DecodingOptions options
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(limits, "limits");
-        return requireDefaultCodec(formatName).decompress(source, target, limits);
+        Objects.requireNonNull(options, "options");
+        return requireDefaultCodec(formatName).decompress(source, target, options);
     }
 
     /// Detects a signed stream and decompresses all bytes while retaining both channels.
@@ -449,26 +419,26 @@ public final class CompressionFormats {
             ReadableByteChannel source,
             WritableByteChannel target
     ) throws IOException {
-        return decompress(source, target, DecompressionLimits.UNLIMITED);
+        return decompress(source, target, DecodingOptions.DEFAULT);
     }
 
-    /// Detects a signed stream and decompresses all bytes with operation-scoped limits.
+    /// Detects a signed stream and decompresses all bytes with operation-scoped options.
     ///
-    /// @param source the channel supplying signed compressed bytes
-    /// @param target the channel receiving decoded bytes
-    /// @param limits the output, window, and memory limits for this operation
+    /// @param source  the channel supplying signed compressed bytes
+    /// @param target  the channel receiving decoded bytes
+    /// @param options the parameters for this decoding operation
     /// @return the compressed input and decoded output byte counts
     /// @throws IOException if probing fails, the format is unrecognized, or channel I/O, decoding, or a limit fails
     public static CodecTransferResult decompress(
             ReadableByteChannel source,
             WritableByteChannel target,
-            DecompressionLimits limits
+            DecodingOptions options
     ) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(limits, "limits");
+        Objects.requireNonNull(options, "options");
         try (DecompressingReadableByteChannel decoder =
-                     newReadableByteChannel(source, limits, ResourceOwnership.BORROWED)) {
+                     newReadableByteChannel(source, options, ResourceOwnership.BORROWED)) {
             return CodecTransferSupport.decompress(decoder, target);
         }
     }
@@ -480,149 +450,106 @@ public final class CompressionFormats {
     /// @return a new compressing stream using the format's default codec
     /// @throws IOException if the format is unknown or the encoder cannot be initialized
     public static OutputStream newOutputStream(String formatName, OutputStream target) throws IOException {
-        return newOutputStream(formatName, target, ResourceOwnership.BORROWED);
+        return newOutputStream(
+                formatName,
+                target,
+                EncodingOptions.DEFAULT,
+                ResourceOwnership.BORROWED
+        );
     }
 
-    /// Creates a compressing output stream for the named format with explicit target ownership.
+    /// Creates a compressing output stream for the named format using options and explicit target ownership.
     ///
     /// @param formatName the stable name or alias of an installed format
     /// @param target     the stream receiving compressed bytes
+    /// @param options    the parameters for this encoding session
     /// @param ownership  whether closing the returned stream also closes `target`
     /// @return a new compressing stream using the format's default codec
     /// @throws IOException if the format is unknown, encoder setup fails, or ownership cleanup fails
     public static OutputStream newOutputStream(
             String formatName,
             OutputStream target,
+            EncodingOptions options,
             ResourceOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(formatName, "formatName");
         Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(options, "options");
         Objects.requireNonNull(ownership, "ownership");
         return StreamChannelAdapters.outputStream(
-                newWritableByteChannel(formatName, StreamChannelAdapters.writableChannel(target), ownership)
-        );
-    }
-
-    /// Creates an unlimited decompressing input stream for the named format while retaining the source stream.
-    ///
-    /// @param formatName the stable name or alias of an installed format
-    /// @param source     the stream supplying compressed bytes and remaining open after the returned stream closes
-    /// @return a new unlimited decompressing stream using the format's default codec
-    /// @throws IOException if the format is unknown or the decoder cannot be initialized
-    public static InputStream newInputStream(String formatName, InputStream source) throws IOException {
-        return newInputStream(formatName, source, DecompressionLimits.UNLIMITED, ResourceOwnership.BORROWED);
-    }
-
-    /// Creates a limited decompressing input stream for the named format while retaining the source stream.
-    ///
-    /// @param formatName the stable name or alias of an installed format
-    /// @param source     the stream supplying compressed bytes and remaining open after the returned stream closes
-    /// @param limits     the output, window, and memory limits for the decoding session
-    /// @return a new limited decompressing stream using the format's default codec
-    /// @throws IOException if the format is unknown or the decoder cannot be initialized
-    public static InputStream newInputStream(
-            String formatName,
-            InputStream source,
-            DecompressionLimits limits
-    ) throws IOException {
-        return newInputStream(formatName, source, limits, ResourceOwnership.BORROWED);
-    }
-
-    /// Creates an unlimited decompressing input stream for the named format with explicit source ownership.
-    ///
-    /// @param formatName the stable name or alias of an installed format
-    /// @param source     the stream supplying compressed bytes
-    /// @param ownership  whether closing the returned stream also closes `source`
-    /// @return a new unlimited decompressing stream using the format's default codec
-    /// @throws IOException if the format is unknown, decoder setup fails, or ownership cleanup fails
-    public static InputStream newInputStream(
-            String formatName,
-            InputStream source,
-            ResourceOwnership ownership
-    ) throws IOException {
-        return newInputStream(formatName, source, DecompressionLimits.UNLIMITED, ownership);
-    }
-
-    /// Creates a limited decompressing input stream for the named format with explicit source ownership.
-    ///
-    /// @param formatName the stable name or alias of an installed format
-    /// @param source     the stream supplying compressed bytes
-    /// @param limits     the output, window, and memory limits for the decoding session
-    /// @param ownership  whether closing the returned stream also closes `source`
-    /// @return a new limited decompressing stream using the format's default codec
-    /// @throws IOException if the format is unknown, decoder setup fails, or ownership cleanup fails
-    public static InputStream newInputStream(
-            String formatName,
-            InputStream source,
-            DecompressionLimits limits,
-            ResourceOwnership ownership
-    ) throws IOException {
-        Objects.requireNonNull(formatName, "formatName");
-        Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(limits, "limits");
-        Objects.requireNonNull(ownership, "ownership");
-        return StreamChannelAdapters.inputStream(
-                newReadableByteChannel(
+                newWritableByteChannel(
                         formatName,
-                        StreamChannelAdapters.readableChannel(source),
-                        limits,
+                        StreamChannelAdapters.writableChannel(target),
+                        options,
                         ownership
                 )
         );
     }
 
-    /// Detects a signed stream and creates an unlimited decompressing input stream while retaining the source stream.
+    /// Creates a decompressing input stream for the named format using default options while borrowing the source.
     ///
-    /// @param source the stream supplying signed compressed bytes and remaining open after the returned stream closes
-    /// @return a new unlimited decompressing stream using the detected format's default codec
-    /// @throws IOException if probing fails, the format is unrecognized, or the decoder cannot be initialized
-    public static InputStream newInputStream(InputStream source) throws IOException {
-        return newInputStream(source, DecompressionLimits.UNLIMITED, ResourceOwnership.BORROWED);
+    /// @param formatName the stable name or alias of an installed format
+    /// @param source     the stream supplying compressed bytes and remaining open after the returned stream closes
+    /// @return a new decompressing stream using the format's default codec
+    /// @throws IOException if the format is unknown or the decoder cannot be initialized
+    public static InputStream newInputStream(String formatName, InputStream source) throws IOException {
+        return newInputStream(formatName, source, DecodingOptions.DEFAULT, ResourceOwnership.BORROWED);
     }
 
-    /// Detects a signed stream and creates a limited decompressing input stream while retaining the source stream.
+    /// Creates a decompressing input stream for the named format using options and explicit source ownership.
     ///
-    /// @param source the stream supplying signed compressed bytes and remaining open after the returned stream closes
-    /// @param limits the output, window, and memory limits for the decoding session
-    /// @return a new limited decompressing stream using the detected format's default codec
-    /// @throws IOException if probing fails, the format is unrecognized, or the decoder cannot be initialized
+    /// @param formatName the stable name or alias of an installed format
+    /// @param source     the stream supplying compressed bytes
+    /// @param options    the parameters for this decoding session
+    /// @param ownership  whether closing the returned stream also closes `source`
+    /// @return a new decompressing stream using the format's default codec
+    /// @throws IOException if the format is unknown, decoder setup fails, or ownership cleanup fails
     public static InputStream newInputStream(
+            String formatName,
             InputStream source,
-            DecompressionLimits limits
-    ) throws IOException {
-        return newInputStream(source, limits, ResourceOwnership.BORROWED);
-    }
-
-    /// Detects a signed stream and creates an unlimited decompressing input stream with explicit source ownership.
-    ///
-    /// @param source    the stream supplying signed compressed bytes
-    /// @param ownership whether closing the returned stream also closes `source`
-    /// @return a new unlimited decompressing stream using the detected format's default codec
-    /// @throws IOException if probing fails, the format is unrecognized, decoder setup fails, or ownership cleanup fails
-    public static InputStream newInputStream(
-            InputStream source,
+            DecodingOptions options,
             ResourceOwnership ownership
     ) throws IOException {
-        return newInputStream(source, DecompressionLimits.UNLIMITED, ownership);
+        Objects.requireNonNull(formatName, "formatName");
+        Objects.requireNonNull(source, "source");
+        Objects.requireNonNull(options, "options");
+        Objects.requireNonNull(ownership, "ownership");
+        return StreamChannelAdapters.inputStream(
+                newReadableByteChannel(
+                        formatName,
+                        StreamChannelAdapters.readableChannel(source),
+                        options,
+                        ownership
+                )
+        );
     }
 
-    /// Detects a signed stream and creates a limited decompressing input stream with explicit source ownership.
+    /// Detects a signed stream and creates a decompressing input stream using default options while borrowing the source.
+    ///
+    /// @param source the stream supplying signed compressed bytes and remaining open after the returned stream closes
+    /// @return a new decompressing stream using the detected format's default codec
+    /// @throws IOException if probing fails, the format is unrecognized, or the decoder cannot be initialized
+    public static InputStream newInputStream(InputStream source) throws IOException {
+        return newInputStream(source, DecodingOptions.DEFAULT, ResourceOwnership.BORROWED);
+    }
+
+    /// Detects a signed stream and creates a decompressing input stream using options and explicit source ownership.
     ///
     /// @param source    the stream supplying signed compressed bytes
-    /// @param limits    the output, window, and memory limits for the decoding session
+    /// @param options   the parameters for this decoding session
     /// @param ownership whether closing the returned stream also closes `source`
-    /// @return a new limited decompressing stream using the detected format's default codec
+    /// @return a new decompressing stream using the detected format's default codec
     /// @throws IOException if probing fails, the format is unrecognized, decoder setup fails, or ownership cleanup fails
     public static InputStream newInputStream(
             InputStream source,
-            DecompressionLimits limits,
+            DecodingOptions options,
             ResourceOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(limits, "limits");
+        Objects.requireNonNull(options, "options");
         Objects.requireNonNull(ownership, "ownership");
         return StreamChannelAdapters.inputStream(
-                newReadableByteChannel(StreamChannelAdapters.readableChannel(source), limits, ownership)
+                newReadableByteChannel(StreamChannelAdapters.readableChannel(source), options, ownership)
         );
     }
 

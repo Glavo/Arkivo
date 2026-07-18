@@ -12,7 +12,7 @@ import org.glavo.arkivo.archive.zip.ZipArkivoFileSystem;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingReader;
 import org.glavo.arkivo.archive.zip.ZipArkivoStreamingWriter;
 import org.glavo.arkivo.archive.zip.ZipMethod;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
@@ -41,17 +41,17 @@ public final class ZipDecoderLimitsTest {
 
     /// Verifies ZIP maps decoded size, effective window size, and decoder memory independently.
     @Test
-    void mapsArchiveLimitsToCodecLimits() {
+    void mapsArchiveLimitsToDecodingOptions() {
         ArchiveReadLimits archiveLimits = ArchiveReadLimits.builder()
                 .maximumCompressionWindowSize(8192L)
                 .maximumDecoderMemorySize(4096L)
                 .build();
 
-        DecompressionLimits codecLimits = ZipCompressionFormats.decompressionLimits(123L, archiveLimits);
+        DecodingOptions options = ZipCompressionFormats.decodingOptions(123L, archiveLimits);
 
-        assertEquals(123L, codecLimits.maximumOutputSize());
-        assertEquals(4096L, codecLimits.maximumWindowSize());
-        assertEquals(4096L, codecLimits.maximumMemorySize());
+        assertEquals(123L, options.maximumOutputSize());
+        assertEquals(4096L, options.maximumWindowSize());
+        assertEquals(4096L, options.maximumMemorySize());
     }
 
     /// Verifies strongly typed ZIP read and update options retain their archive read limits.

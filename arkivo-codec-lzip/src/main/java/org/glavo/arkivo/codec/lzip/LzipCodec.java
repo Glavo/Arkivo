@@ -6,7 +6,8 @@ package org.glavo.arkivo.codec.lzip;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.lzip.internal.LzipDecoder;
 import org.glavo.arkivo.codec.lzip.internal.LzipEncoder;
 import org.glavo.arkivo.codec.lzip.internal.LzipSupport;
@@ -79,20 +80,21 @@ public final class LzipCodec implements CompressionCodec.Framed<LzipCodec> {
 
     /// Creates a frame-capable lzip member encoder.
     @Override
-    public CompressionEncoder.Framed newEncoder() {
+    public CompressionEncoder.Framed newEncoder(EncodingOptions options) {
+        Objects.requireNonNull(options, "options");
         return new LzipEncoder(dictionarySize);
     }
 
     /// Creates a frame-capable lzip member decoder with operation-scoped safety limits.
     @Override
-    public CompressionDecoder.Framed newDecoder(DecompressionLimits limits) throws IOException {
-        Objects.requireNonNull(limits, "limits");
-        DecompressionLimits payloadLimits = limits.withMaximumOutputSize(
-                DecompressionLimits.UNLIMITED_SIZE
+    public CompressionDecoder.Framed newDecoder(DecodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
+        DecodingOptions payloadOptions = options.withMaximumOutputSize(
+                DecodingOptions.UNLIMITED_SIZE
         );
         return CompressionDecoderSupport.limitEngineOutput(
-                new LzipDecoder(payloadLimits),
-                limits.maximumOutputSize()
+                new LzipDecoder(payloadOptions),
+                options.maximumOutputSize()
         );
     }
 }

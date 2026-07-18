@@ -6,7 +6,8 @@ package org.glavo.arkivo.codec.ppmd;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7Decoder;
 import org.glavo.arkivo.codec.ppmd.internal.PPMd7Encoder;
@@ -126,21 +127,22 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
 
     /// Creates a raw PPMd7 encoder.
     @Override
-    public CompressionEncoder newEncoder() throws IOException {
+    public CompressionEncoder newEncoder(EncodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
         return new PPMd7Encoder(maximumOrder, memorySize);
     }
 
     /// Creates an exactly sized raw PPMd7 decoder with operation-scoped limits.
     @Override
-    public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
-        Objects.requireNonNull(limits, "limits");
+    public CompressionDecoder newDecoder(DecodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
         if (decodedSize == UNKNOWN_SIZE) {
             throw new IllegalStateException(
                     "Raw PPMd decompression requires an externally declared decoded size"
             );
         }
-        limits.requireMemorySize(memorySize);
-        long maximumOutputSize = limits.maximumOutputSize();
+        options.requireMemorySize(memorySize);
+        long maximumOutputSize = options.maximumOutputSize();
         if (maximumOutputSize >= 0L && decodedSize > maximumOutputSize) {
             throw new DecompressionOutputLimitException(maximumOutputSize);
         }

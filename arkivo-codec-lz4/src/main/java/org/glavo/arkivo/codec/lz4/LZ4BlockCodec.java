@@ -6,7 +6,8 @@ package org.glavo.arkivo.codec.lz4;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.lz4.internal.LZ4BlockDecoder;
 import org.glavo.arkivo.codec.lz4.internal.LZ4BlockEncoder;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
@@ -90,23 +91,24 @@ public final class LZ4BlockCodec implements CompressionCodec<LZ4BlockCodec> {
 
     /// Creates a transport-independent encoder for one bounded raw LZ4 block.
     @Override
-    public CompressionEncoder newEncoder() {
+    public CompressionEncoder newEncoder(EncodingOptions options) {
+        Objects.requireNonNull(options, "options");
         return new LZ4BlockEncoder(maximumBlockSize);
     }
 
     /// Creates a transport-independent raw LZ4 block decoder with operation-scoped limits.
     @Override
-    public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
-        Objects.requireNonNull(limits, "limits");
-        limits.requireWindowSize(65_535L);
+    public CompressionDecoder newDecoder(DecodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
+        options.requireWindowSize(65_535L);
         return CompressionDecoderSupport.limitEngineOutput(
                 new LZ4BlockDecoder(
                         maximumBlockSize,
                         Math.toIntExact(maxCompressedSize(maximumBlockSize)),
-                        limits.effectiveMaximumWindowSize(),
-                        limits.maximumMemorySize()
+                        options.effectiveMaximumWindowSize(),
+                        options.maximumMemorySize()
                 ),
-                limits.maximumOutputSize()
+                options.maximumOutputSize()
         );
     }
 }

@@ -8,6 +8,7 @@ import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -258,7 +259,7 @@ public final class ZstdCodecTest {
 
         CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(
                 Channels.newChannel(compressed),
-                frame.length,
+                EncodingOptions.ofSourceSize(frame.length),
                 ResourceOwnership.BORROWED
         );
         encoder.finishFrame(ByteBuffer.wrap(frame));
@@ -326,7 +327,8 @@ public final class ZstdCodecTest {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         try (CompressingWritableByteChannel encoder = checksumCodec.newWritableByteChannel(
                 Channels.newChannel(encoded),
-                content.length
+                EncodingOptions.ofSourceSize(content.length),
+                ResourceOwnership.BORROWED
         )) {
             encoder.write(ByteBuffer.wrap(content));
         }
@@ -354,7 +356,8 @@ public final class ZstdCodecTest {
         ByteArrayOutputStream noContentEncoded = new ByteArrayOutputStream();
         try (CompressingWritableByteChannel encoder = noContentSize.newWritableByteChannel(
                 Channels.newChannel(noContentEncoded),
-                content.length
+                EncodingOptions.ofSourceSize(content.length),
+                ResourceOwnership.BORROWED
         )) {
             encoder.write(ByteBuffer.wrap(content));
         }
@@ -456,6 +459,7 @@ public final class ZstdCodecTest {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         try (CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(
                 Channels.newChannel(encoded),
+                EncodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         )) {
             encoder.write(ByteBuffer.wrap(first));

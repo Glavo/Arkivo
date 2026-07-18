@@ -6,7 +6,7 @@ package org.glavo.arkivo.codec.bzip2;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionLimitException;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
@@ -15,7 +15,6 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -148,8 +147,8 @@ public final class BZip2BufferEngineTest {
         encoder.close();
         assertThrows(IllegalStateException.class, encoder::reset);
 
-        DecompressionLimits limits =
-                DecompressionLimits.ofMaximumOutputSize(content.length - 1L);
+        DecodingOptions limits =
+                DecodingOptions.ofMaximumOutputSize(content.length - 1L);
         assertThrows(
                 DecompressionLimitException.class,
                 () -> CODEC.decompress(ByteBuffer.wrap(first.toByteArray()), limits)

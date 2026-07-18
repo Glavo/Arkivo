@@ -7,6 +7,7 @@ import com.github.luben.zstd.Zstd;
 import com.github.luben.zstd.ZstdDecompressCtx;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Unmodifiable;
 import org.junit.jupiter.api.Test;
@@ -298,7 +299,7 @@ public final class ZstdPureJavaEncoderTest {
         int firstFrameSize;
         try (CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(
                 Channels.newChannel(encoded),
-                input.length,
+                EncodingOptions.ofSourceSize(input.length),
                 ResourceOwnership.BORROWED
         )) {
             encoder.write(ByteBuffer.wrap(input));
@@ -383,6 +384,7 @@ public final class ZstdPureJavaEncoderTest {
         ZstdCodec codec = new ZstdCodec();
         try (CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(
                 Channels.newChannel(encoded),
+                EncodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         )) {
             encoder.write(ByteBuffer.wrap(first));
@@ -420,6 +422,7 @@ public final class ZstdPureJavaEncoderTest {
                 .build();
         try (CompressingWritableByteChannel.FlushableFramed encoder = codec.newWritableByteChannel(
                 Channels.newChannel(encoded),
+                EncodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         )) {
             encoder.write(ByteBuffer.wrap(first));
@@ -988,7 +991,8 @@ public final class ZstdPureJavaEncoderTest {
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         try (CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                 Channels.newChannel(encoded),
-                pledgedSourceSize
+                EncodingOptions.ofSourceSize(pledgedSourceSize),
+                ResourceOwnership.BORROWED
         )) {
             encoder.write(ByteBuffer.wrap(input));
         }

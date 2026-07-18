@@ -8,7 +8,7 @@ import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFormats;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
@@ -142,20 +142,20 @@ public final class UnixCompressCodecTest {
         byte[] encoded = encode(codec, randomBytes(4096));
         assertThrows(
                 DecompressionOutputLimitException.class,
-                () -> codec.decompress(ByteBuffer.wrap(encoded), DecompressionLimits.ofMaximumOutputSize(1024))
+                () -> codec.decompress(ByteBuffer.wrap(encoded), DecodingOptions.ofMaximumOutputSize(1024))
         );
         assertThrows(
                 DecompressionWindowLimitException.class,
                 () -> codec.decompress(
                         ByteBuffer.wrap(encoded),
-                        new DecompressionLimits(8192, 65_535, DecompressionLimits.UNLIMITED_SIZE)
+                        new DecodingOptions(8192, 65_535, DecodingOptions.UNLIMITED_SIZE)
                 )
         );
         assertThrows(
                 DecompressionMemoryLimitException.class,
                 () -> codec.decompress(
                         ByteBuffer.wrap(encoded),
-                        new DecompressionLimits(8192, DecompressionLimits.UNLIMITED_SIZE, 393_215)
+                        new DecodingOptions(8192, DecodingOptions.UNLIMITED_SIZE, 393_215)
                 )
         );
     }

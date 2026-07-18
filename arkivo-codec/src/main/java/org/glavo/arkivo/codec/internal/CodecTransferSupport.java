@@ -7,8 +7,9 @@ import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecTransferResult;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -29,22 +30,25 @@ public final class CodecTransferSupport {
 
     /// Compresses bytes between channels without taking ownership of either channel.
     ///
-    /// @param codec the immutable codec configuration
-    /// @param source the borrowed uncompressed source read through end of input
-    /// @param target the borrowed channel receiving the complete encoded stream
+    /// @param codec   the immutable codec configuration
+    /// @param source  the borrowed uncompressed source read through end of input
+    /// @param target  the borrowed channel receiving the complete encoded stream
+    /// @param options the parameters for this encoding operation
     /// @return the total uncompressed input and compressed output byte counts
     /// @throws IOException if reading, encoding, finalization, or output fails or makes no progress
     public static CodecTransferResult compress(
             CompressionCodec<?> codec,
             ReadableByteChannel source,
-            WritableByteChannel target
+            WritableByteChannel target,
+            EncodingOptions options
     ) throws IOException {
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(options, "options");
 
         try (CompressingWritableByteChannel encoder =
-                     codec.newWritableByteChannel(target, ResourceOwnership.BORROWED)) {
+                     codec.newWritableByteChannel(target, options, ResourceOwnership.BORROWED)) {
             transferIntoEncoder(source, encoder);
             encoder.finish();
             return new CodecTransferResult(encoder.inputBytes(), encoder.outputBytes());
@@ -53,25 +57,25 @@ public final class CodecTransferSupport {
 
     /// Decompresses bytes between channels without taking ownership of either channel.
     ///
-    /// @param codec the immutable codec configuration
-    /// @param source the borrowed compressed source read through the encoding boundary
-    /// @param target the borrowed channel receiving every decoded byte
-    /// @param limits the operation-scoped output, window, and memory limits
+    /// @param codec   the immutable codec configuration
+    /// @param source  the borrowed compressed source read through the encoding boundary
+    /// @param target  the borrowed channel receiving every decoded byte
+    /// @param options the parameters for this decoding operation
     /// @return the logically consumed compressed input and decoded output byte counts
     /// @throws IOException if reading, decoding, or output fails or makes no progress
     public static CodecTransferResult decompress(
             CompressionCodec<?> codec,
             ReadableByteChannel source,
             WritableByteChannel target,
-            DecompressionLimits limits
+            DecodingOptions options
     ) throws IOException {
         Objects.requireNonNull(codec, "codec");
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(limits, "limits");
+        Objects.requireNonNull(options, "options");
 
         try (DecompressingReadableByteChannel decoder =
-                     codec.newReadableByteChannel(source, limits, ResourceOwnership.BORROWED)) {
+                     codec.newReadableByteChannel(source, options, ResourceOwnership.BORROWED)) {
             return decompress(decoder, target);
         }
     }
@@ -79,7 +83,7 @@ public final class CodecTransferSupport {
     /// Transfers every decoded byte without closing the decoder or target channel.
     ///
     /// @param decoder the open borrowed decoder channel
-    /// @param target the borrowed channel receiving every decoded byte
+    /// @param target  the borrowed channel receiving every decoded byte
     /// @return the decoder's cumulative logical input count and this transfer's decoded output count
     /// @throws IOException if decoding or target output fails or makes no progress
     public static CodecTransferResult decompress(

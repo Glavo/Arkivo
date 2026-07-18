@@ -7,7 +7,9 @@ import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -47,6 +49,7 @@ final class CodecCloseRetryContractTest {
             FailingCloseWritableChannel target = new FailingCloseWritableChannel();
             CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                     target,
+                    EncodingOptions.DEFAULT,
                     ResourceOwnership.OWNED
             );
             encoder.write(ByteBuffer.wrap(CONTENT));
@@ -76,6 +79,7 @@ final class CodecCloseRetryContractTest {
                     CodecContractConfigurations.decoderCodec(codec, CONTENT.length);
             DecompressingReadableByteChannel decoder = decoderCodec.newReadableByteChannel(
                     source,
+                    DecodingOptions.DEFAULT,
                     ResourceOwnership.OWNED
             );
 
@@ -100,7 +104,11 @@ final class CodecCloseRetryContractTest {
                 WriteFailingWritableChannel target = new WriteFailingWritableChannel();
                 @Nullable CompressingWritableByteChannel encoder = null;
                 try {
-                    encoder = codec.newWritableByteChannel(target, ResourceOwnership.OWNED);
+                    encoder = codec.newWritableByteChannel(
+                            target,
+                            EncodingOptions.DEFAULT,
+                            ResourceOwnership.OWNED
+                    );
                     assertThrows(IOException.class, encoder::finish, codec.format().name());
                 } catch (IOException exception) {
                     assertEquals("write failed", exception.getMessage(), codec.format().name());
@@ -118,7 +126,11 @@ final class CodecCloseRetryContractTest {
                 ReadFailingReadableChannel source = new ReadFailingReadableChannel();
                 @Nullable DecompressingReadableByteChannel decoder = null;
                 try {
-                    decoder = decoderCodec(codec, 0L).newReadableByteChannel(source, ResourceOwnership.OWNED);
+                    decoder = decoderCodec(codec, 0L).newReadableByteChannel(
+                            source,
+                            DecodingOptions.DEFAULT,
+                            ResourceOwnership.OWNED
+                    );
                 } catch (IOException exception) {
                     assertEquals("read failed", exception.getMessage(), codec.format().name());
                 } finally {
@@ -141,7 +153,11 @@ final class CodecCloseRetryContractTest {
                 WriteFailingWritableChannel target = new WriteFailingWritableChannel();
                 @Nullable CompressingWritableByteChannel encoder = null;
                 try {
-                    encoder = codec.newWritableByteChannel(target, ResourceOwnership.BORROWED);
+                    encoder = codec.newWritableByteChannel(
+                            target,
+                            EncodingOptions.DEFAULT,
+                            ResourceOwnership.BORROWED
+                    );
                     assertThrows(IOException.class, encoder::finish, codec.format().name());
                 } catch (IOException exception) {
                     assertEquals("write failed", exception.getMessage(), codec.format().name());
@@ -159,7 +175,11 @@ final class CodecCloseRetryContractTest {
                 ReadFailingReadableChannel source = new ReadFailingReadableChannel();
                 @Nullable DecompressingReadableByteChannel decoder = null;
                 try {
-                    decoder = decoderCodec(codec, 0L).newReadableByteChannel(source, ResourceOwnership.BORROWED);
+                    decoder = decoderCodec(codec, 0L).newReadableByteChannel(
+                            source,
+                            DecodingOptions.DEFAULT,
+                            ResourceOwnership.BORROWED
+                    );
                 } catch (IOException exception) {
                     assertEquals("read failed", exception.getMessage(), codec.format().name());
                 } finally {
@@ -185,7 +205,11 @@ final class CodecCloseRetryContractTest {
             CompressionCodec<?> codec = format.defaultCodec();
 
             FailingCloseOutputStream target = new FailingCloseOutputStream();
-            OutputStream output = codec.newOutputStream(target, ResourceOwnership.OWNED);
+            OutputStream output = codec.newOutputStream(
+                    target,
+                    EncodingOptions.DEFAULT,
+                    ResourceOwnership.OWNED
+            );
             output.write(CONTENT);
             IOException failure = assertThrows(IOException.class, output::close, codec.format().name());
             assertEquals("close failed", failure.getMessage(), codec.format().name());
@@ -208,6 +232,7 @@ final class CodecCloseRetryContractTest {
             FailingCloseInputStream source = new FailingCloseInputStream(compress(codec, CONTENT));
             InputStream input = decoderCodec(codec, CONTENT.length).newInputStream(
                     source,
+                    DecodingOptions.DEFAULT,
                     ResourceOwnership.OWNED
             );
             assertArrayEquals(CONTENT, input.readAllBytes(), codec.format().name());

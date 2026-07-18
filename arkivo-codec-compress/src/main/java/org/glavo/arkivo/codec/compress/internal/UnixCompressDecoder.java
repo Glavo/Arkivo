@@ -5,7 +5,7 @@ package org.glavo.arkivo.codec.compress.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.compress.UnixCompressFormat;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -20,7 +20,7 @@ import java.util.Objects;
 @NotNullByDefault
 public final class UnixCompressDecoder implements CompressionDecoder {
     /// Operation-scoped output, history, and working-memory limits.
-    private final DecompressionLimits limits;
+    private final DecodingOptions options;
 
     /// Incrementally collected fixed stream header.
     private final byte[] header = new byte[UnixCompressSupport.HEADER_SIZE];
@@ -78,9 +78,9 @@ public final class UnixCompressDecoder implements CompressionDecoder {
 
     /// Creates a decoder that enforces the supplied operation-scoped limits after reading the header.
     ///
-    /// @param limits the output, LZW-table, and working-memory limits for this session
-    public UnixCompressDecoder(DecompressionLimits limits) {
-        this.limits = Objects.requireNonNull(limits, "limits");
+    /// @param options the output, LZW-table, and working-memory limits for this session
+    public UnixCompressDecoder(DecodingOptions options) {
+        this.options = Objects.requireNonNull(options, "options");
         initializeBitState();
     }
 
@@ -214,8 +214,8 @@ public final class UnixCompressDecoder implements CompressionDecoder {
         }
         blockMode = (flags & UnixCompressSupport.BLOCK_MODE_MASK) != 0;
         tableLimit = UnixCompressSupport.tableCapacity(maximumCodeWidth);
-        limits.requireWindowSize(tableLimit);
-        limits.requireMemorySize(UnixCompressSupport.decoderMemorySize(maximumCodeWidth));
+        options.requireWindowSize(tableLimit);
+        options.requireMemorySize(UnixCompressSupport.decoderMemorySize(maximumCodeWidth));
 
         prefixes = new int[tableLimit];
         Arrays.fill(prefixes, -1);

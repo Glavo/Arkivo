@@ -9,7 +9,8 @@ import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimitException;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -75,10 +76,18 @@ public final class ZstdBufferEngineTest {
                 .frameChecksum(true)
                 .frameFormat(ZstdFrameFormat.MAGICLESS)
                 .build();
-        byte[] encoded = encode(input, codec.newEncoder(input.length), 8191, 17, false);
+        byte[] encoded = encode(
+                input,
+                codec.newEncoder(EncodingOptions.ofSourceSize(input.length)),
+                8191,
+                17,
+                false
+        );
         assertArrayEquals(input, decode(encoded, codec, 19));
 
-        CompressionEncoder encoder = CODEC.newEncoder((long) input.length + 1L);
+        CompressionEncoder encoder = CODEC.newEncoder(
+                EncodingOptions.ofSourceSize((long) input.length + 1L)
+        );
         try {
             ByteArrayOutputStream ignored = new ByteArrayOutputStream();
             encodeSource(encoder, ByteBuffer.wrap(input), ignored, 64);
@@ -97,12 +106,18 @@ public final class ZstdBufferEngineTest {
         ZstdDictionary dictionary = trainer.train();
         byte[] input = Arrays.copyOfRange(samples, 1024, 3072);
         ZstdCodec encoderCodec = CODEC.withDictionary(dictionary);
-        byte[] encoded = encode(input, encoderCodec.newEncoder(input.length), 31, 3, false);
+        byte[] encoded = encode(
+                input,
+                encoderCodec.newEncoder(EncodingOptions.ofSourceSize(input.length)),
+                31,
+                3,
+                false
+        );
         ByteBuffer source = ByteBuffer.wrap(encoded);
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
 
         try (CompressionDecoder.DictionaryAware<ZstdDictionary, ZstdDictionaryRequest> decoder =
-                     CODEC.newDecoder(DecompressionLimits.ofMaximumOutputSize(input.length))) {
+                     CODEC.newDecoder(DecodingOptions.ofMaximumOutputSize(input.length))) {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocate(7);
@@ -142,9 +157,9 @@ public final class ZstdBufferEngineTest {
 
         byte[] input = testData(4097);
         byte[] encoded = encode(input, CODEC.newEncoder(), 101, 5, false);
-        DecompressionLimits exact = DecompressionLimits.ofMaximumOutputSize(input.length);
-        DecompressionLimits shortLimit =
-                DecompressionLimits.ofMaximumOutputSize((long) input.length - 1L);
+        DecodingOptions exact = DecodingOptions.ofMaximumOutputSize(input.length);
+        DecodingOptions shortLimit =
+                DecodingOptions.ofMaximumOutputSize((long) input.length - 1L);
         assertArrayEquals(input, decode(encoded, CODEC, exact, 1));
         assertThrows(
                 DecompressionLimitException.class,
@@ -165,7 +180,7 @@ public final class ZstdBufferEngineTest {
         corrupt[corrupt.length - 1] ^= 1;
         assertThrows(IOException.class, () -> decode(corrupt, codec, 17));
 
-        DecompressionLimits smallWindow = DecompressionLimits.ofMaximumWindowSize(1024L);
+        DecodingOptions smallWindow = DecodingOptions.ofMaximumWindowSize(1024L);
         assertThrows(IOException.class, () -> decode(encoded, codec, smallWindow, 17));
     }
 
@@ -200,7 +215,9 @@ public final class ZstdBufferEngineTest {
     @Test
     public void resetProducesDeterministicOutput() throws IOException {
         byte[] input = testData(20_003);
-        CompressionEncoder encoder = CODEC.newEncoder();
+        CompressionEncoder encoder = CODEC.newEncoder(
+                EncodingOptions.ofSourceSize(input.length)
+        );
         ByteArrayOutputStream first = new ByteArrayOutputStream();
         encodeSource(encoder, ByteBuffer.wrap(input), first, 13);
         finish(encoder, first, 7);
@@ -220,7 +237,9 @@ public final class ZstdBufferEngineTest {
         byte[] second = testData(17_009);
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
 
-        try (CompressionEncoder.Framed encoder = CODEC.newEncoder()) {
+        try (CompressionEncoder.Framed encoder = CODEC.newEncoder(
+                EncodingOptions.ofSourceSize(first.length)
+        )) {
             encodeSource(encoder, ByteBuffer.wrap(first), encoded, 11);
             finishFrame(encoder, encoded, 3);
             int firstEnd = encoded.size();
@@ -242,6 +261,14 @@ public final class ZstdBufferEngineTest {
                     secondEnd - firstEnd,
                     CODEC.frameCompressedSize(ByteBuffer.wrap(frames, firstEnd, secondEnd - firstEnd).slice())
             );
+            ZstdStandardFrameInfo firstInfo = (ZstdStandardFrameInfo) CODEC.frameInfo(
+                    ByteBuffer.wrap(frames, 0, firstEnd)
+            );
+            ZstdStandardFrameInfo secondInfo = (ZstdStandardFrameInfo) CODEC.frameInfo(
+                    ByteBuffer.wrap(frames, firstEnd, secondEnd - firstEnd).slice()
+            );
+            assertEquals(first.length, firstInfo.contentSize());
+            assertEquals(EncodingOptions.DEFAULT.sourceSize(), secondInfo.contentSize());
             assertArrayEquals(first, decode(Arrays.copyOfRange(frames, 0, firstEnd), CODEC, 2));
             assertArrayEquals(second, decode(Arrays.copyOfRange(frames, firstEnd, secondEnd), CODEC, 2));
         }
@@ -327,14 +354,14 @@ public final class ZstdBufferEngineTest {
 
     /// Decodes one frame from one complete source buffer.
     private static byte[] decode(byte[] encoded, ZstdCodec codec, int targetSize) throws IOException {
-        return decode(encoded, codec, DecompressionLimits.UNLIMITED, targetSize);
+        return decode(encoded, codec, DecodingOptions.DEFAULT, targetSize);
     }
 
     /// Decodes one frame from one complete source buffer with operation-scoped limits.
     private static byte[] decode(
             byte[] encoded,
             ZstdCodec codec,
-            DecompressionLimits limits,
+            DecodingOptions limits,
             int targetSize
     ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();

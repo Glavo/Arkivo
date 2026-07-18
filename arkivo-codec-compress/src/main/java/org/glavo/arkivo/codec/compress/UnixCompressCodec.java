@@ -6,7 +6,8 @@ package org.glavo.arkivo.codec.compress;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.compress.internal.UnixCompressDecoder;
 import org.glavo.arkivo.codec.compress.internal.UnixCompressEncoder;
 import org.glavo.arkivo.codec.compress.internal.UnixCompressSupport;
@@ -20,7 +21,7 @@ import java.util.Objects;
 ///
 /// The maximum code width and block-mode flag are written to new `.Z` headers and govern encoding. Decoders instead
 /// read these parameters from each input header, then check the resulting LZW table and working-memory requirements
-/// against the supplied [DecompressionLimits].
+/// against the supplied [DecodingOptions].
 ///
 /// Codec instances are safe for concurrent use and contain no stream state. Each created engine represents one mutable
 /// `.Z` stream session and is not safe for concurrent use.
@@ -132,17 +133,18 @@ public final class UnixCompressCodec implements CompressionCodec<UnixCompressCod
 
     /// Creates a transport-independent Unix compress encoder.
     @Override
-    public CompressionEncoder newEncoder() {
+    public CompressionEncoder newEncoder(EncodingOptions options) {
+        Objects.requireNonNull(options, "options");
         return new UnixCompressEncoder(maximumCodeWidth, blockMode);
     }
 
     /// Creates a transport-independent Unix compress decoder with operation-scoped limits.
     @Override
-    public CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException {
-        Objects.requireNonNull(limits, "limits");
+    public CompressionDecoder newDecoder(DecodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
         return CompressionDecoderSupport.limitEngineOutput(
-                new UnixCompressDecoder(limits),
-                limits.maximumOutputSize()
+                new UnixCompressDecoder(options),
+                options.maximumOutputSize()
         );
     }
 }

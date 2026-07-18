@@ -172,13 +172,13 @@ public final class CompressionFormatRegistryTest {
 
         /// Rejects encoder creation because registry tests only exercise metadata.
         @Override
-        public CompressionEncoder newEncoder() {
+        public CompressionEncoder newEncoder(EncodingOptions options) {
             throw new UnsupportedOperationException("Test codec has no encoder");
         }
 
         /// Rejects decoder creation because registry tests only exercise metadata.
         @Override
-        public CompressionDecoder newDecoder(DecompressionLimits limits) {
+        public CompressionDecoder newDecoder(DecodingOptions options) {
             throw new UnsupportedOperationException("Test codec has no decoder");
         }
     }

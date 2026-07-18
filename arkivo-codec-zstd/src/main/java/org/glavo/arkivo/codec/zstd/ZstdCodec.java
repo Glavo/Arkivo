@@ -6,7 +6,8 @@ package org.glavo.arkivo.codec.zstd;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.zstd.internal.ZstdDecoder;
 import org.glavo.arkivo.codec.zstd.internal.ZstdEncoder;
@@ -272,7 +273,7 @@ public final class ZstdCodec
     ///
     /// @param dictionary the raw or formatted dictionary representation to copy
     /// @return a new codec using the copied dictionary
-    /// @throws NullPointerException if {@code dictionary} is {@code null}
+    /// @throws NullPointerException     if {@code dictionary} is {@code null}
     /// @throws IllegalArgumentException if the representation is too short or has invalid formatted metadata
     public ZstdCodec withDictionary(byte[] dictionary) {
         return withDictionary(ZstdDictionary.of(dictionary));
@@ -368,9 +369,9 @@ public final class ZstdCodec
         return overlapLog;
     }
 
-    /// Returns whether known source sizes are emitted.
+    /// Returns whether available frame source-size metadata is emitted.
     ///
-    /// @return {@code true} if a known source size is written to each frame header
+    /// @return `true` if a frame header includes its source size when the encoding operation supplies one
     public boolean emitsContentSize() {
         return contentSize;
     }
@@ -476,7 +477,7 @@ public final class ZstdCodec
     ///
     /// @param source the buffer whose remaining bytes begin with the frame header; its state is not changed
     /// @return immutable metadata parsed from the header
-    /// @throws IOException if the header is truncated, malformed, or incompatible with the configured format
+    /// @throws IOException          if the header is truncated, malformed, or incompatible with the configured format
     /// @throws NullPointerException if {@code source} is {@code null}
     public ZstdFrameInfo frameInfo(ByteBuffer source) throws IOException {
         return frameFormat.frameInfo(source);
@@ -486,24 +487,18 @@ public final class ZstdCodec
     ///
     /// @param source the buffer whose remaining bytes contain the complete frame; its state is not changed
     /// @return the complete frame size in bytes, including header, blocks, and any checksum
-    /// @throws IOException if the frame is truncated, malformed, or incompatible with the configured format
+    /// @throws IOException          if the frame is truncated, malformed, or incompatible with the configured format
     /// @throws NullPointerException if {@code source} is {@code null}
     public long frameCompressedSize(ByteBuffer source) throws IOException {
         return frameFormat.frameCompressedSize(source);
     }
 
-    /// Creates a framed encoder without a known source size.
+    /// Creates a framed encoder using operation-scoped options for its first frame.
     @Override
-    public CompressionEncoder.FlushableFramed newEncoder() throws IOException {
-        return newEncoder(UNKNOWN_SIZE);
-    }
-
-    /// Creates a framed encoder with optional exact source-size metadata for every frame.
-    @Override
-    public CompressionEncoder.FlushableFramed newEncoder(long sourceSize) throws IOException {
-        requireSourceSize(sourceSize);
+    public CompressionEncoder.FlushableFramed newEncoder(EncodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
         return new ZstdEncoder(
-                createEncoderParameters(sourceSize),
+                createEncoderParameters(options.sourceSize()),
                 frameFormat == ZstdFrameFormat.MAGICLESS
         );
     }
@@ -511,23 +506,23 @@ public final class ZstdCodec
     /// Creates an unrestricted dictionary-aware framed decoder.
     @Override
     public CompressionDecoder.FramedDictionaryAware<ZstdDictionary, ZstdDictionaryRequest> newDecoder() throws IOException {
-        return newDecoder(DecompressionLimits.UNLIMITED);
+        return newDecoder(DecodingOptions.DEFAULT);
     }
 
     /// Creates a framed decoder with operation-scoped safety limits.
     @Override
     public CompressionDecoder.FramedDictionaryAware<ZstdDictionary, ZstdDictionaryRequest> newDecoder(
-            DecompressionLimits limits
+            DecodingOptions options
     ) throws IOException {
-        Objects.requireNonNull(limits, "limits");
+        Objects.requireNonNull(options, "options");
         return CompressionDecoderSupport.limitEngineOutput(
                 new ZstdDecoder(
                         dictionary,
-                        limits.effectiveMaximumWindowSize(),
+                        options.effectiveMaximumWindowSize(),
                         frameFormat == ZstdFrameFormat.MAGICLESS,
                         verifyChecksums
                 ),
-                limits.maximumOutputSize()
+                options.maximumOutputSize()
         );
     }
 
@@ -566,13 +561,6 @@ public final class ZstdCodec
                     "Zstandard compressionLevel must be between "
                             + MINIMUM_COMPRESSION_LEVEL + " and " + MAXIMUM_COMPRESSION_LEVEL
             );
-        }
-    }
-
-    /// Validates a known or unknown exact source size.
-    private static void requireSourceSize(long sourceSize) {
-        if (sourceSize < UNKNOWN_SIZE) {
-            throw new IllegalArgumentException("sourceSize must be non-negative or UNKNOWN_SIZE");
         }
     }
 
@@ -729,7 +717,7 @@ public final class ZstdCodec
         ///
         /// @param dictionary the raw or formatted dictionary representation to copy
         /// @return this builder
-        /// @throws NullPointerException if {@code dictionary} is {@code null}
+        /// @throws NullPointerException     if {@code dictionary} is {@code null}
         /// @throws IllegalArgumentException if the representation is too short or has invalid formatted metadata
         public Builder dictionary(byte[] dictionary) {
             return dictionary(ZstdDictionary.of(dictionary));

@@ -8,8 +8,9 @@ import org.glavo.arkivo.codec.CodecTransferResult;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
 import org.glavo.arkivo.codec.DecompressionLimitException;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionMemoryLimitException;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.junit.jupiter.api.Test;
 
@@ -133,7 +134,11 @@ final class PPMdCodecTest {
 
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         WritableByteChannel ownedTarget = Channels.newChannel(encoded);
-        try (var encoder = modelCodec().newWritableByteChannel(ownedTarget, ResourceOwnership.OWNED)) {
+        try (var encoder = modelCodec().newWritableByteChannel(
+                ownedTarget,
+                EncodingOptions.DEFAULT,
+                ResourceOwnership.OWNED
+        )) {
             encoder.write(ByteBuffer.wrap(new byte[]{1, 2, 3, 4}));
             assertEquals(4L, encoder.inputBytes());
         }
@@ -148,7 +153,11 @@ final class PPMdCodecTest {
         ReadableByteChannel missingOptions = Channels.newChannel(new ByteArrayInputStream(new byte[0]));
         assertThrows(
                 IllegalStateException.class,
-                () -> codec.newReadableByteChannel(missingOptions, ResourceOwnership.BORROWED)
+                () -> codec.newReadableByteChannel(
+                        missingOptions,
+                        DecodingOptions.DEFAULT,
+                        ResourceOwnership.BORROWED
+                )
         );
 
         ByteBuffer singleByteFrame = modelCodec().compress(ByteBuffer.wrap(new byte[]{1}));
@@ -156,7 +165,7 @@ final class PPMdCodecTest {
         singleByteFrame.get(singleByteFrameBytes);
         try (DecompressingReadableByteChannel limitedDecoder = decoderCodec(1L).newReadableByteChannel(
                 Channels.newChannel(new ByteArrayInputStream(singleByteFrameBytes)),
-                DecompressionLimits.ofMaximumOutputSize(0L),
+                DecodingOptions.ofMaximumOutputSize(0L),
                 ResourceOwnership.BORROWED
         )) {
             assertThrows(
@@ -168,6 +177,7 @@ final class PPMdCodecTest {
         ReadableByteChannel source = Channels.newChannel(new ByteArrayInputStream(new byte[5]));
         try (DecompressingReadableByteChannel decoder = decoderCodec(0L).newReadableByteChannel(
                 source,
+                DecodingOptions.DEFAULT,
                 ResourceOwnership.OWNED
         )) {
             assertEquals(-1, decoder.read(ByteBuffer.allocateDirect(1)));
@@ -185,7 +195,7 @@ final class PPMdCodecTest {
 
         DecompressionMemoryLimitException exception = assertThrows(
                 DecompressionMemoryLimitException.class,
-                () -> codec.newDecoder(DecompressionLimits.ofMaximumMemorySize(maximumMemorySize))
+                () -> codec.newDecoder(DecodingOptions.ofMaximumMemorySize(maximumMemorySize))
         );
 
         assertEquals(maximumMemorySize, exception.maximumMemorySize());

@@ -3,6 +3,7 @@
 
 package org.glavo.arkivo.codec.zstd.internal;
 
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.zstd.ZstdDictionary;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
@@ -78,7 +79,7 @@ public final class ZstdEncoderParameters {
     /// Frame-tail bytes reloaded as the match prefix of a later parallel job.
     private final int overlapSize;
 
-    /// Exact source size pledged for every frame, or the unknown sentinel.
+    /// Exact source size pledged for the frame, or the unknown sentinel.
     private final long pledgedSourceSize;
 
     /// Parsed dictionary context.
@@ -86,27 +87,27 @@ public final class ZstdEncoderParameters {
 
     /// Creates validated pure Java encoder parameters.
     ///
-    /// @param compressionLevel requested compression level
-    /// @param windowLog requested window logarithm, or zero for an encoder-selected value
-    /// @param hashLog requested hash-table logarithm, or zero for an encoder-selected value
-    /// @param chainLog requested chain-table logarithm, or zero for an encoder-selected value
-    /// @param searchLog requested search-depth logarithm, or zero for an encoder-selected value
-    /// @param minimumMatch requested minimum match length, or zero for an encoder-selected value
-    /// @param targetLength requested target match length, or zero for no explicit target
-    /// @param strategy match-finding strategy number from one through nine, or zero for a level-derived default
-    /// @param checksum whether frame checksums are emitted
-    /// @param contentSize whether a known pledged source size is emitted
-    /// @param dictionaryId whether a known dictionary identifier is emitted
-    /// @param longDistanceMatching whether long-distance matching was requested
-    /// @param longDistanceHashLog requested LDM hash-table logarithm, or zero for `windowLog - 7`
-    /// @param longDistanceMinimumMatch requested LDM minimum match length, or zero for 64
+    /// @param compressionLevel          requested compression level
+    /// @param windowLog                 requested window logarithm, or zero for an encoder-selected value
+    /// @param hashLog                   requested hash-table logarithm, or zero for an encoder-selected value
+    /// @param chainLog                  requested chain-table logarithm, or zero for an encoder-selected value
+    /// @param searchLog                 requested search-depth logarithm, or zero for an encoder-selected value
+    /// @param minimumMatch              requested minimum match length, or zero for an encoder-selected value
+    /// @param targetLength              requested target match length, or zero for no explicit target
+    /// @param strategy                  match-finding strategy number from one through nine, or zero for a level-derived default
+    /// @param checksum                  whether frame checksums are emitted
+    /// @param contentSize               whether a known pledged source size is emitted
+    /// @param dictionaryId              whether a known dictionary identifier is emitted
+    /// @param longDistanceMatching      whether long-distance matching was requested
+    /// @param longDistanceHashLog       requested LDM hash-table logarithm, or zero for `windowLog - 7`
+    /// @param longDistanceMinimumMatch  requested LDM minimum match length, or zero for 64
     /// @param longDistanceBucketSizeLog requested LDM bucket-size logarithm, or zero for three
-    /// @param longDistanceHashRateLog requested LDM sampling-rate logarithm, or zero for an automatic value
-    /// @param workerCount number of parallel job-compression workers, or zero for synchronous compression
-    /// @param jobSize requested parallel job size in bytes, or zero for an encoder-selected value
-    /// @param overlapLog requested worker overlap logarithm from zero through nine
-    /// @param pledgedSourceSize exact source size for every frame, or the unknown sentinel
-    /// @param dictionary configured dictionary, or null
+    /// @param longDistanceHashRateLog   requested LDM sampling-rate logarithm, or zero for an automatic value
+    /// @param workerCount               number of parallel job-compression workers, or zero for synchronous compression
+    /// @param jobSize                   requested parallel job size in bytes, or zero for an encoder-selected value
+    /// @param overlapLog                requested worker overlap logarithm from zero through nine
+    /// @param pledgedSourceSize         exact source size for the frame, or the unknown sentinel
+    /// @param dictionary                configured dictionary, or null
     /// @throws IOException if the configured dictionary representation cannot initialize an encoding context
     public ZstdEncoderParameters(
             int compressionLevel,
@@ -144,6 +145,9 @@ public final class ZstdEncoderParameters {
         }
         if (overlapLog < 0 || overlapLog > 9) {
             throw new IllegalArgumentException("Zstandard overlap log must be between zero and nine");
+        }
+        if (pledgedSourceSize < CompressionCodec.UNKNOWN_SIZE) {
+            throw new IllegalArgumentException("pledgedSourceSize must be non-negative or UNKNOWN_SIZE");
         }
         this.windowLog = windowLog != 0 ? windowLog : longDistanceMatching ? 27 : 17;
         this.hashLog = hashLog != 0 ? hashLog : defaultHashLog(compressionLevel);
@@ -207,6 +211,44 @@ public final class ZstdEncoderParameters {
         }
     }
 
+    /// Creates a copy with different exact source-size metadata.
+    ///
+    /// @param pledgedSourceSize exact source size for the frame, or [CompressionCodec#UNKNOWN_SIZE]
+    /// @return this instance when unchanged, otherwise parameters carrying `pledgedSourceSize`
+    /// @throws IllegalArgumentException if `pledgedSourceSize` is less than [CompressionCodec#UNKNOWN_SIZE]
+    ZstdEncoderParameters withPledgedSourceSize(long pledgedSourceSize) {
+        if (pledgedSourceSize < CompressionCodec.UNKNOWN_SIZE) {
+            throw new IllegalArgumentException("pledgedSourceSize must be non-negative or UNKNOWN_SIZE");
+        }
+        return pledgedSourceSize == this.pledgedSourceSize
+                ? this
+                : new ZstdEncoderParameters(this, pledgedSourceSize);
+    }
+
+    /// Copies resolved parameters while replacing frame-specific source-size metadata.
+    private ZstdEncoderParameters(ZstdEncoderParameters source, long pledgedSourceSize) {
+        windowLog = source.windowLog;
+        hashLog = source.hashLog;
+        chainLimit = source.chainLimit;
+        searchDepth = source.searchDepth;
+        minimumMatch = source.minimumMatch;
+        targetLength = source.targetLength;
+        strategy = source.strategy;
+        checksum = source.checksum;
+        contentSize = source.contentSize;
+        dictionaryId = source.dictionaryId;
+        longDistanceMatching = source.longDistanceMatching;
+        longDistanceHashLog = source.longDistanceHashLog;
+        longDistanceMinimumMatch = source.longDistanceMinimumMatch;
+        longDistanceBucketSizeLog = source.longDistanceBucketSizeLog;
+        longDistanceHashRateLog = source.longDistanceHashRateLog;
+        workerCount = source.workerCount;
+        jobSize = source.jobSize;
+        overlapSize = source.overlapSize;
+        this.pledgedSourceSize = pledgedSourceSize;
+        dictionary = source.dictionary;
+    }
+
     /// Creates the ordinary single-threaded parameters used to analyze dictionary samples.
     static ZstdEncoderParameters forDictionaryTraining(int compressionLevel) {
         try {
@@ -230,7 +272,7 @@ public final class ZstdEncoderParameters {
                     0,
                     0,
                     0,
-                    -1L,
+                    CompressionCodec.UNKNOWN_SIZE,
                     null
             );
         } catch (IOException exception) {
@@ -331,7 +373,7 @@ public final class ZstdEncoderParameters {
         return overlapSize;
     }
 
-    /// Returns the exact source size pledged for every frame, or the unknown sentinel.
+    /// Returns the exact source size pledged for the frame, or the unknown sentinel.
     long pledgedSourceSize() {
         return pledgedSourceSize;
     }

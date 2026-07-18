@@ -6,7 +6,7 @@ package org.glavo.arkivo.codec.deflate;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.DecompressionLimitException;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -106,7 +106,7 @@ public final class ZlibBufferEngineTest {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
 
         try (CompressionDecoder.DictionaryAware<ZlibDictionary, ZlibDictionaryRequest> decoder =
-                     CODEC.newDecoder(DecompressionLimits.ofMaximumOutputSize(input.length))) {
+                     CODEC.newDecoder(DecodingOptions.ofMaximumOutputSize(input.length))) {
             CodecOutcome outcome;
             do {
                 ByteBuffer target = ByteBuffer.allocate(5);
@@ -134,7 +134,7 @@ public final class ZlibBufferEngineTest {
         assertArrayEquals(input, decoded.toByteArray());
         assertArrayEquals(
                 input,
-                decode(encoded, 2, dictionaryCodec, DecompressionLimits.UNLIMITED)
+                decode(encoded, 2, dictionaryCodec, DecodingOptions.DEFAULT)
         );
     }
 
@@ -163,7 +163,7 @@ public final class ZlibBufferEngineTest {
         byte[] expected = new byte[first.length + second.length];
         System.arraycopy(first, 0, expected, 0, first.length);
         System.arraycopy(second, 0, expected, first.length, second.length);
-        assertArrayEquals(expected, decode(encoded.toByteArray(), 2, CODEC, DecompressionLimits.UNLIMITED));
+        assertArrayEquals(expected, decode(encoded.toByteArray(), 2, CODEC, DecodingOptions.DEFAULT));
         assertArrayEquals(expected, inflateFlushedStream(encoded.toByteArray()));
     }
 
@@ -172,8 +172,8 @@ public final class ZlibBufferEngineTest {
     public void declaredWindowLimit() throws IOException {
         byte[] input = "small zlib buffer window".getBytes(StandardCharsets.UTF_8);
         byte[] encoded = withMinimumWindowHeader(encodeInFragments(input, CODEC, 5, 2));
-        DecompressionLimits exactLimits = DecompressionLimits.ofMaximumWindowSize(256L);
-        DecompressionLimits shortLimits = DecompressionLimits.ofMaximumWindowSize(255L);
+        DecodingOptions exactLimits = DecodingOptions.ofMaximumWindowSize(256L);
+        DecodingOptions shortLimits = DecodingOptions.ofMaximumWindowSize(255L);
 
         assertArrayEquals(input, decode(encoded, 1, CODEC, exactLimits));
         DecompressionWindowLimitException exception = assertThrows(
@@ -189,7 +189,7 @@ public final class ZlibBufferEngineTest {
                         new byte[]{0x78, 0x00},
                         1,
                         CODEC,
-                        DecompressionLimits.ofMaximumWindowSize(0L)
+                        DecodingOptions.ofMaximumWindowSize(0L)
                 )
         );
         assertFalse(malformed instanceof DecompressionWindowLimitException);
@@ -202,7 +202,7 @@ public final class ZlibBufferEngineTest {
         byte[] encoded = encodeInFragments(content, CODEC, 29, 7);
         byte[] corrupted = encoded.clone();
         corrupted[corrupted.length - 1] ^= 1;
-        assertThrows(IOException.class, () -> decode(corrupted, 3, CODEC, DecompressionLimits.UNLIMITED));
+        assertThrows(IOException.class, () -> decode(corrupted, 3, CODEC, DecodingOptions.DEFAULT));
 
         byte[] distantMatch = new byte[1_280];
         new Random(0x7a1bL).nextBytes(distantMatch);
@@ -210,7 +210,7 @@ public final class ZlibBufferEngineTest {
         byte[] limitedWindow = withMinimumWindowHeader(
                 encodeInFragments(distantMatch, CODEC, 113, 11)
         );
-        assertThrows(IOException.class, () -> decode(limitedWindow, 5, CODEC, DecompressionLimits.UNLIMITED));
+        assertThrows(IOException.class, () -> decode(limitedWindow, 5, CODEC, DecodingOptions.DEFAULT));
     }
 
     /// Verifies output limiting, reset, terminal state, and non-framed engine capabilities.
@@ -218,10 +218,10 @@ public final class ZlibBufferEngineTest {
     public void lifecycleAndCapabilities() throws IOException {
         byte[] input = testData();
         byte[] encoded = encodeInFragments(input, CODEC, 13, 5);
-        DecompressionLimits exactLimits =
-                DecompressionLimits.ofMaximumOutputSize(input.length);
-        DecompressionLimits shortLimits =
-                DecompressionLimits.ofMaximumOutputSize(input.length - 1L);
+        DecodingOptions exactLimits =
+                DecodingOptions.ofMaximumOutputSize(input.length);
+        DecodingOptions shortLimits =
+                DecodingOptions.ofMaximumOutputSize(input.length - 1L);
         assertArrayEquals(input, decode(encoded, 1, CODEC, exactLimits));
         assertThrows(
                 DecompressionLimitException.class,
@@ -300,7 +300,7 @@ public final class ZlibBufferEngineTest {
             byte[] encoded,
             int targetSize,
             ZlibCodec codec,
-            DecompressionLimits limits
+            DecodingOptions limits
     ) throws IOException {
         ByteArrayOutputStream decoded = new ByteArrayOutputStream();
         ByteBuffer source = ByteBuffer.wrap(encoded);

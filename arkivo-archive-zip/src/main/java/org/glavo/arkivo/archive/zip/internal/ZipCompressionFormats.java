@@ -12,7 +12,8 @@ import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.DecompressingReadableByteChannel;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.lzma.RawLZMACodec;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -63,6 +64,7 @@ final class ZipCompressionFormats {
         return CompressionFormats.newWritableByteChannel(
                 formatName,
                 StreamChannelAdapters.writableChannel(target),
+                EncodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         );
     }
@@ -77,7 +79,7 @@ final class ZipCompressionFormats {
         return CompressionFormats.newReadableByteChannel(
                 formatName,
                 StreamChannelAdapters.readableChannel(source),
-                decompressionLimits(decodedSize, readLimits),
+                decodingOptions(decodedSize, readLimits),
                 ResourceOwnership.OWNED
         );
     }
@@ -112,6 +114,7 @@ final class ZipCompressionFormats {
                 .withEndMarker(endMarker);
         CompressingWritableByteChannel encoder = configured.newWritableByteChannel(
                 StreamChannelAdapters.writableChannel(target),
+                EncodingOptions.DEFAULT,
                 ResourceOwnership.BORROWED
         );
         return StreamChannelAdapters.outputStream(encoder);
@@ -159,18 +162,18 @@ final class ZipCompressionFormats {
         }
         return configured.newReadableByteChannel(
                 StreamChannelAdapters.readableChannel(source),
-                decompressionLimits(entryDecodedSize, readLimits),
+                decodingOptions(entryDecodedSize, readLimits),
                 ResourceOwnership.OWNED
         );
     }
 
     /// Maps archive read limits to one codec decoder operation.
-    static DecompressionLimits decompressionLimits(long decodedSize, ArchiveReadLimits readLimits) {
+    static DecodingOptions decodingOptions(long decodedSize, ArchiveReadLimits readLimits) {
         Objects.requireNonNull(readLimits, "readLimits");
-        if (decodedSize < DecompressionLimits.UNLIMITED_SIZE) {
+        if (decodedSize < DecodingOptions.UNLIMITED_SIZE) {
             throw new IllegalArgumentException("decodedSize must be non-negative or UNLIMITED_SIZE");
         }
-        return new DecompressionLimits(
+        return new DecodingOptions(
                 decodedSize,
                 readLimits.effectiveCompressionWindowSize(),
                 readLimits.maximumDecoderMemorySize()

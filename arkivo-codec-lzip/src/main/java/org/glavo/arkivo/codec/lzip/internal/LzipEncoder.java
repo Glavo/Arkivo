@@ -4,8 +4,8 @@
 package org.glavo.arkivo.codec.lzip.internal;
 
 import org.glavo.arkivo.codec.CodecOutcome;
-import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.lzma.RawLZMACodec;
 import org.glavo.arkivo.internal.ByteArrayAccess;
 import org.jetbrains.annotations.NotNullByDefault;
@@ -190,7 +190,7 @@ public final class LzipEncoder implements CompressionEncoder.Framed {
         payloadEncoder = new RawLZMACodec()
                 .withDictionarySize(dictionarySize)
                 .withEndMarker(true)
-                .newEncoder(CompressionCodec.UNKNOWN_SIZE);
+                .newEncoder(EncodingOptions.DEFAULT);
         state = State.ACTIVE;
     }
 

@@ -6,6 +6,7 @@ package org.glavo.arkivo.codec.zstd.internal;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecOutcome;
 import org.glavo.arkivo.codec.CompressionEncoder;
+import org.glavo.arkivo.codec.CompressionCodec;
 import org.jetbrains.annotations.NotNullByDefault;
 
 import java.io.IOException;
@@ -17,8 +18,14 @@ import java.util.Objects;
 /// Incrementally encodes a sequence of Zstandard frames without binding caller-visible state to a channel.
 @NotNullByDefault
 public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
-    /// Validated immutable encoder parameters.
-    private final ZstdEncoderParameters parameters;
+    /// Validated parameters restored by reset for the initial frame.
+    private final ZstdEncoderParameters initialParameters;
+
+    /// Parameters used by frames after the initial frame.
+    private final ZstdEncoderParameters subsequentParameters;
+
+    /// Parameters used by the active or lazily initialized frame.
+    private ZstdEncoderParameters parameters;
 
     /// Whether standard frame magic is omitted.
     private final boolean magicless;
@@ -35,9 +42,11 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
     /// Creates a pure Java Zstandard buffer encoder.
     ///
     /// @param parameters validated encoder parameters
-    /// @param magicless whether standard frame magic is omitted
+    /// @param magicless  whether standard frame magic is omitted
     public ZstdEncoder(ZstdEncoderParameters parameters, boolean magicless) {
-        this.parameters = Objects.requireNonNull(parameters, "parameters");
+        this.initialParameters = Objects.requireNonNull(parameters, "parameters");
+        this.subsequentParameters = parameters.withPledgedSourceSize(CompressionCodec.UNKNOWN_SIZE);
+        this.parameters = parameters;
         this.magicless = magicless;
         this.encoder = createEncoder();
     }
@@ -152,6 +161,7 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
         if (output.hasRemaining()) {
             return CodecOutcome.NEEDS_OUTPUT;
         }
+        parameters = subsequentParameters;
         encoder = createEncoder();
         state = State.BETWEEN_FRAMES;
         return CodecOutcome.BOUNDARY_REACHED;
@@ -163,6 +173,7 @@ public final class ZstdEncoder implements CompressionEncoder.FlushableFramed {
         requireOpen();
         encoder.abort();
         output.clearPending();
+        parameters = initialParameters;
         encoder = createEncoder();
         state = State.ACTIVE;
     }

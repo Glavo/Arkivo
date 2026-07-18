@@ -8,7 +8,7 @@ import org.apache.commons.compress.archivers.zip.ZipFile;
 import org.apache.commons.compress.compressors.lz4.BlockLZ4CompressorInputStream;
 import org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorInputStream;
 import org.glavo.arkivo.codec.CompressionCodec;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
 import org.glavo.arkivo.codec.DecompressionOutputLimitException;
 import org.glavo.arkivo.codec.DecompressionWindowLimitException;
 import org.glavo.arkivo.codec.bzip2.BZip2Codec;
@@ -135,7 +135,7 @@ final class CommonsCompressCodecCorpusTest {
                                 CommonsCompressTestResources.read("COMPRESS-382")
                         )),
                         Channels.newChannel(new ByteArrayOutputStream()),
-                        DecompressionLimits.ofMaximumMemorySize(maximumMemorySize)
+                        DecodingOptions.ofMaximumMemorySize(maximumMemorySize)
                 )
         );
         assertEquals(maximumMemorySize, exception.maximumWindowSize());
@@ -583,7 +583,7 @@ final class CommonsCompressCodecCorpusTest {
         codec.decompress(
                 Channels.newChannel(new ByteArrayInputStream(compressed)),
                 Channels.newChannel(new ByteArrayOutputStream()),
-                DecompressionLimits.ofMaximumOutputSize(EXPANSION_FIXTURE_OUTPUT_LIMIT)
+                DecodingOptions.ofMaximumOutputSize(EXPANSION_FIXTURE_OUTPUT_LIMIT)
         );
     }
 

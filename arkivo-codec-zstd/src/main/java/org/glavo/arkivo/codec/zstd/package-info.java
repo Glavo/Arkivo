@@ -14,8 +14,9 @@
 /// operations are synchronized for concurrent callers.
 ///
 /// Encoder `flush` completes the current compressed block without ending the frame. `finishFrame` writes the final
-/// block and optional checksum, then preserves the configuration for another frame; terminal `finish` ends the complete
-/// session. A known source size is exact and, when enabled, may be written to the frame header.
+/// block and optional checksum, then preserves the codec configuration for another frame; terminal `finish` ends the
+/// complete session. A known source size is exact and, when enabled, may be written to the first frame header. Frames
+/// started after `finishFrame` have no declared source size.
 ///
 /// Full dictionaries carry an identifier that a decoder can request from a standard frame; raw-content dictionaries
 /// must be configured out of band. Decoder limits bound output and the declared history window, and checksum verification

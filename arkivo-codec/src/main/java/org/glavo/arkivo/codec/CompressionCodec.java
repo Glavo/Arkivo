@@ -60,283 +60,164 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         return UNKNOWN_SIZE;
     }
 
-    /// Creates a fresh transport-independent encoder using this immutable configuration.
+    /// Creates a fresh transport-independent encoder using operation-scoped options.
     ///
     /// Each successful call returns independent mutable state owned by the caller. Closing the engine does not affect
-    /// this codec or engines created by other calls. The source-size semantics are equivalent to
-    /// `newEncoder(UNKNOWN_SIZE)`.
+    /// this codec or engines created by other calls. For a framed encoder, [EncodingOptions#sourceSize()] describes the
+    /// first frame only; later frames begin without exact source-size metadata.
+    ///
+    /// @param options the parameters for this encoder session
+    /// @return a fresh encoder with independent mutable state
+    /// @throws IOException if the encoder's resources cannot be initialized
+    CompressionEncoder newEncoder(EncodingOptions options) throws IOException;
+
+    /// Creates a fresh encoder using default operation options.
     ///
     /// @return a fresh encoder with independent mutable state
     /// @throws IOException if the encoder's resources cannot be initialized
-    CompressionEncoder newEncoder() throws IOException;
-
-    /// Creates a fresh encoder and supplies the exact uncompressed source size as operation metadata.
-    ///
-    /// `sourceSize` describes each complete encoding unit produced by the returned encoder. It may be [#UNKNOWN_SIZE]
-    /// when the byte count is not known before encoding begins. Every codec accepts this metadata, but an implementation
-    /// may ignore it when the format cannot record it and the algorithm cannot use it. Implementations that use the size
-    /// may reject input whose actual byte count differs from it.
-    ///
-    /// The default implementation validates and ignores `sourceSize` before creating an ordinary encoder.
-    ///
-    /// @param sourceSize the exact nonnegative input size, or [#UNKNOWN_SIZE] when unknown
-    /// @return a fresh encoder supplied with the source size when the implementation uses it
-    /// @throws IOException              if the encoder's resources cannot be initialized
-    /// @throws IllegalArgumentException if `sourceSize` is less than [#UNKNOWN_SIZE]
-    default CompressionEncoder newEncoder(long sourceSize) throws IOException {
-        requireSourceSize(sourceSize);
-        return newEncoder();
+    default CompressionEncoder newEncoder() throws IOException {
+        return newEncoder(EncodingOptions.DEFAULT);
     }
 
-    /// Creates a fresh transport-independent decoder using operation-scoped safety limits.
+    /// Creates a fresh transport-independent decoder using operation-scoped options.
     ///
-    /// The returned engine owns its algorithm resources but no caller buffer or transport. Each finite value requests a
-    /// ceiling for decoded output, a history window, or decoder working memory. Codecs enforce the limits applicable to
-    /// the structures and allocations they can account for and document any format-specific exclusions;
-    /// `maximumMemorySize` is not a general JVM allocation budget. Applied limits cover this decoder session and are
-    /// reset when the engine itself is reset.
+    /// The returned engine owns its algorithm resources but no caller buffer or transport. Codecs enforce the finite
+    /// safety limits applicable to the structures and allocations they can account for and document format-specific
+    /// exclusions. `maximumMemorySize` is not a general JVM allocation budget. The options cover this decoder session
+    /// and are restored when the engine itself is reset.
     ///
-    /// @param limits the output, window, and memory limits for the decoder session
+    /// @param options the parameters for this decoder session
     /// @return a fresh decoder with independent mutable state
     /// @throws IOException if the decoder's resources cannot be initialized
-    CompressionDecoder newDecoder(DecompressionLimits limits) throws IOException;
+    CompressionDecoder newDecoder(DecodingOptions options) throws IOException;
 
-    /// Creates a fresh decoder without operation-scoped safety limits.
+    /// Creates a fresh decoder using default operation options.
     ///
-    /// @return a fresh unlimited decoder with independent mutable state
+    /// @return a fresh decoder with independent mutable state
     /// @throws IOException if the decoder's resources cannot be initialized
     default CompressionDecoder newDecoder() throws IOException {
-        return newDecoder(DecompressionLimits.UNLIMITED);
+        return newDecoder(DecodingOptions.DEFAULT);
     }
 
-    /// Creates a compressing writable channel with explicit target ownership.
+    /// Creates a compressing channel using operation options and explicit target ownership.
     ///
-    /// @param target the channel that receives compressed bytes
+    /// @param target    the channel that receives compressed bytes
+    /// @param options   the parameters for this encoding session
     /// @param ownership whether closing the returned channel also closes `target`
     /// @return a new compressing channel
     /// @throws IOException if the encoder cannot be initialized or ownership cleanup fails
     default CompressingWritableByteChannel newWritableByteChannel(
             WritableByteChannel target,
+            EncodingOptions options,
             ResourceOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(options, "options");
         Objects.requireNonNull(ownership, "ownership");
-        return CodecChannelAdapters.newWritableByteChannel(target, ownership, this::newEncoder);
+        return CodecChannelAdapters.newWritableByteChannel(target, ownership, () -> newEncoder(options));
     }
 
-    /// Creates a compressing channel with exact uncompressed source-size metadata and explicit target ownership.
-    ///
-    /// @param target     the channel that receives compressed bytes
-    /// @param sourceSize the exact nonnegative input size, or [#UNKNOWN_SIZE] when unknown
-    /// @param ownership  whether closing the returned channel also closes `target`
-    /// @return a new compressing channel supplied with the source size
-    /// @throws IOException              if the encoder cannot be initialized or ownership cleanup fails
-    /// @throws IllegalArgumentException if `sourceSize` is less than [#UNKNOWN_SIZE]
-    default CompressingWritableByteChannel newWritableByteChannel(
-            WritableByteChannel target,
-            long sourceSize,
-            ResourceOwnership ownership
-    ) throws IOException {
-        Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(ownership, "ownership");
-        return CodecChannelAdapters.newWritableByteChannel(target, ownership, () -> newEncoder(sourceSize));
-    }
-
-    /// Creates a compressing writable channel that borrows the target channel.
+    /// Creates a compressing channel using default options and borrowing the target channel.
     ///
     /// @param target the channel that receives compressed bytes and remains open after the returned channel closes
     /// @return a new compressing channel
     /// @throws IOException if the encoder cannot be initialized
     default CompressingWritableByteChannel newWritableByteChannel(WritableByteChannel target) throws IOException {
-        return newWritableByteChannel(target, ResourceOwnership.BORROWED);
+        return newWritableByteChannel(target, EncodingOptions.DEFAULT, ResourceOwnership.BORROWED);
     }
 
-    /// Creates a compressing channel with exact source-size metadata that borrows the target channel.
-    ///
-    /// @param target     the channel that receives compressed bytes and remains open after the returned channel closes
-    /// @param sourceSize the exact nonnegative input size, or [#UNKNOWN_SIZE] when unknown
-    /// @return a new compressing channel supplied with the source size
-    /// @throws IOException              if the encoder cannot be initialized
-    /// @throws IllegalArgumentException if `sourceSize` is less than [#UNKNOWN_SIZE]
-    default CompressingWritableByteChannel newWritableByteChannel(
-            WritableByteChannel target,
-            long sourceSize
-    ) throws IOException {
-        return newWritableByteChannel(target, sourceSize, ResourceOwnership.BORROWED);
-    }
-
-    /// Creates a decompressing readable channel with operation-scoped safety limits and explicit source ownership.
+    /// Creates a decompressing channel using operation options and explicit source ownership.
     ///
     /// @param source    the channel that supplies compressed bytes
-    /// @param limits    the output, window, and memory limits for the decoding session
+    /// @param options   the parameters for this decoding session
     /// @param ownership whether closing the returned channel also closes `source`
-    /// @return a new limited decompressing channel
+    /// @return a new decompressing channel
     /// @throws IOException if the decoder cannot be initialized or ownership cleanup fails
     default DecompressingReadableByteChannel newReadableByteChannel(
             ReadableByteChannel source,
-            DecompressionLimits limits,
+            DecodingOptions options,
             ResourceOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(limits, "limits");
+        Objects.requireNonNull(options, "options");
         Objects.requireNonNull(ownership, "ownership");
 
         // Enforce output across the complete channel session rather than resetting the limit at each frame.
-        DecompressionLimits engineLimits =
-                limits.withMaximumOutputSize(DecompressionLimits.UNLIMITED_SIZE);
+        DecodingOptions engineOptions =
+                options.withMaximumOutputSize(DecodingOptions.UNLIMITED_SIZE);
         DecompressingReadableByteChannel decoder = CodecChannelAdapters.newReadableByteChannel(
                 source,
                 ownership,
-                () -> newDecoder(engineLimits)
+                () -> newDecoder(engineOptions)
         );
-        return CompressionDecoderSupport.limitChannelOutput(decoder, limits.maximumOutputSize());
+        return CompressionDecoderSupport.limitChannelOutput(decoder, options.maximumOutputSize());
     }
 
-    /// Creates a limited decompressing readable channel that borrows the source channel.
+    /// Creates a decompressing channel using default options and borrowing the source channel.
     ///
     /// @param source the channel that supplies compressed bytes and remains open after the returned channel closes
-    /// @param limits the output, window, and memory limits for the decoding session
-    /// @return a new limited decompressing channel
-    /// @throws IOException if the decoder cannot be initialized
-    default DecompressingReadableByteChannel newReadableByteChannel(
-            ReadableByteChannel source,
-            DecompressionLimits limits
-    ) throws IOException {
-        return newReadableByteChannel(source, limits, ResourceOwnership.BORROWED);
-    }
-
-    /// Creates an unlimited decompressing readable channel with explicit source ownership.
-    ///
-    /// @param source    the channel that supplies compressed bytes
-    /// @param ownership whether closing the returned channel also closes `source`
-    /// @return a new unlimited decompressing channel
-    /// @throws IOException if the decoder cannot be initialized or ownership cleanup fails
-    default DecompressingReadableByteChannel newReadableByteChannel(
-            ReadableByteChannel source,
-            ResourceOwnership ownership
-    ) throws IOException {
-        return newReadableByteChannel(source, DecompressionLimits.UNLIMITED, ownership);
-    }
-
-    /// Creates an unlimited decompressing readable channel that borrows the source channel.
-    ///
-    /// @param source the channel that supplies compressed bytes and remains open after the returned channel closes
-    /// @return a new unlimited decompressing channel
+    /// @return a new decompressing channel
     /// @throws IOException if the decoder cannot be initialized
     default DecompressingReadableByteChannel newReadableByteChannel(ReadableByteChannel source) throws IOException {
-        return newReadableByteChannel(source, DecompressionLimits.UNLIMITED, ResourceOwnership.BORROWED);
+        return newReadableByteChannel(source, DecodingOptions.DEFAULT, ResourceOwnership.BORROWED);
     }
 
-    /// Creates a compressing output stream with explicit target ownership.
+    /// Creates a compressing output stream using operation options and explicit target ownership.
     ///
     /// @param target    the stream that receives compressed bytes
+    /// @param options   the parameters for this encoding session
     /// @param ownership whether closing the returned stream also closes `target`
     /// @return a new compressing output stream
     /// @throws IOException if the encoder cannot be initialized or ownership cleanup fails
     default OutputStream newOutputStream(
             OutputStream target,
+            EncodingOptions options,
             ResourceOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(options, "options");
         Objects.requireNonNull(ownership, "ownership");
         return StreamChannelAdapters.outputStream(
-                newWritableByteChannel(StreamChannelAdapters.writableChannel(target), ownership)
+                newWritableByteChannel(StreamChannelAdapters.writableChannel(target), options, ownership)
         );
     }
 
-    /// Creates a compressing output stream with exact source-size metadata and explicit target ownership.
-    ///
-    /// @param target     the stream that receives compressed bytes
-    /// @param sourceSize the exact nonnegative input size, or [#UNKNOWN_SIZE] when unknown
-    /// @param ownership  whether closing the returned stream also closes `target`
-    /// @return a new compressing output stream supplied with the source size
-    /// @throws IOException              if the encoder cannot be initialized or ownership cleanup fails
-    /// @throws IllegalArgumentException if `sourceSize` is less than [#UNKNOWN_SIZE]
-    default OutputStream newOutputStream(
-            OutputStream target,
-            long sourceSize,
-            ResourceOwnership ownership
-    ) throws IOException {
-        Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(ownership, "ownership");
-        return StreamChannelAdapters.outputStream(
-                newWritableByteChannel(StreamChannelAdapters.writableChannel(target), sourceSize, ownership)
-        );
-    }
-
-    /// Creates a compressing output stream that borrows the target stream.
+    /// Creates a compressing output stream using default options and borrowing the target stream.
     ///
     /// @param target the stream that receives compressed bytes and remains open after the returned stream closes
     /// @return a new compressing output stream
     /// @throws IOException if the encoder cannot be initialized
     default OutputStream newOutputStream(OutputStream target) throws IOException {
-        return newOutputStream(target, ResourceOwnership.BORROWED);
+        return newOutputStream(target, EncodingOptions.DEFAULT, ResourceOwnership.BORROWED);
     }
 
-    /// Creates a compressing output stream with exact source-size metadata that borrows the target stream.
-    ///
-    /// @param target     the stream that receives compressed bytes and remains open after the returned stream closes
-    /// @param sourceSize the exact nonnegative input size, or [#UNKNOWN_SIZE] when unknown
-    /// @return a new compressing output stream supplied with the source size
-    /// @throws IOException              if the encoder cannot be initialized
-    /// @throws IllegalArgumentException if `sourceSize` is less than [#UNKNOWN_SIZE]
-    default OutputStream newOutputStream(OutputStream target, long sourceSize) throws IOException {
-        return newOutputStream(target, sourceSize, ResourceOwnership.BORROWED);
-    }
-
-    /// Creates a decompressing input stream with operation-scoped limits and explicit source ownership.
+    /// Creates a decompressing input stream using operation options and explicit source ownership.
     ///
     /// @param source    the stream that supplies compressed bytes
-    /// @param limits    the output, window, and memory limits for the decoding session
+    /// @param options   the parameters for this decoding session
     /// @param ownership whether closing the returned stream also closes `source`
-    /// @return a new limited decompressing input stream
+    /// @return a new decompressing input stream
     /// @throws IOException if the decoder cannot be initialized or ownership cleanup fails
     default InputStream newInputStream(
             InputStream source,
-            DecompressionLimits limits,
+            DecodingOptions options,
             ResourceOwnership ownership
     ) throws IOException {
         Objects.requireNonNull(source, "source");
-        Objects.requireNonNull(limits, "limits");
+        Objects.requireNonNull(options, "options");
         Objects.requireNonNull(ownership, "ownership");
         return StreamChannelAdapters.inputStream(
-                newReadableByteChannel(StreamChannelAdapters.readableChannel(source), limits, ownership)
+                newReadableByteChannel(StreamChannelAdapters.readableChannel(source), options, ownership)
         );
     }
 
-    /// Creates a limited decompressing input stream that borrows the source stream.
+    /// Creates a decompressing input stream using default options and borrowing the source stream.
     ///
     /// @param source the stream that supplies compressed bytes and remains open after the returned stream closes
-    /// @param limits the output, window, and memory limits for the decoding session
-    /// @return a new limited decompressing input stream
-    /// @throws IOException if the decoder cannot be initialized
-    default InputStream newInputStream(
-            InputStream source,
-            DecompressionLimits limits
-    ) throws IOException {
-        return newInputStream(source, limits, ResourceOwnership.BORROWED);
-    }
-
-    /// Creates an unlimited decompressing input stream with explicit source ownership.
-    ///
-    /// @param source    the stream that supplies compressed bytes
-    /// @param ownership whether closing the returned stream also closes `source`
-    /// @return a new unlimited decompressing input stream
-    /// @throws IOException if the decoder cannot be initialized or ownership cleanup fails
-    default InputStream newInputStream(
-            InputStream source,
-            ResourceOwnership ownership
-    ) throws IOException {
-        return newInputStream(source, DecompressionLimits.UNLIMITED, ownership);
-    }
-
-    /// Creates an unlimited decompressing input stream that borrows the source stream.
-    ///
-    /// @param source the stream that supplies compressed bytes and remains open after the returned stream closes
-    /// @return a new unlimited decompressing input stream
+    /// @return a new decompressing input stream
     /// @throws IOException if the decoder cannot be initialized
     default InputStream newInputStream(InputStream source) throws IOException {
-        return newInputStream(source, DecompressionLimits.UNLIMITED, ResourceOwnership.BORROWED);
+        return newInputStream(source, DecodingOptions.DEFAULT, ResourceOwnership.BORROWED);
     }
 
     /// Compresses bytes through source end-of-input without closing either channel.
@@ -352,7 +233,22 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
             ReadableByteChannel source,
             WritableByteChannel target
     ) throws IOException {
-        return CodecTransferSupport.compress(this, source, target);
+        return compress(source, target, EncodingOptions.DEFAULT);
+    }
+
+    /// Compresses bytes with operation-scoped options without closing either channel.
+    ///
+    /// @param source  the channel supplying uncompressed bytes until end-of-input
+    /// @param target  the channel receiving the complete compressed encoding
+    /// @param options the parameters for this encoding operation
+    /// @return the uncompressed input and compressed output byte counts
+    /// @throws IOException if channel I/O, encoding, finalization, or transport progress fails
+    default CodecTransferResult compress(
+            ReadableByteChannel source,
+            WritableByteChannel target,
+            EncodingOptions options
+    ) throws IOException {
+        return CodecTransferSupport.compress(this, source, target, options);
     }
 
     /// Decompresses through the logical end of compressed input without limits or channel ownership transfer.
@@ -365,7 +261,7 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
             ReadableByteChannel source,
             WritableByteChannel target
     ) throws IOException {
-        return decompress(source, target, DecompressionLimits.UNLIMITED);
+        return decompress(source, target, DecodingOptions.DEFAULT);
     }
 
     /// Decompresses with operation-scoped limits without closing either channel.
@@ -374,17 +270,17 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// logical frame boundary; use a readable channel context and [DecompressingReadableByteChannel#unconsumedInput()]
     /// when trailing compressed bytes must be recovered.
     ///
-    /// @param source the channel supplying compressed bytes
-    /// @param target the channel receiving decoded bytes
-    /// @param limits the output, window, and memory limits for this operation
+    /// @param source  the channel supplying compressed bytes
+    /// @param target  the channel receiving decoded bytes
+    /// @param options the parameters for this decoding operation
     /// @return the compressed input and decoded output byte counts
     /// @throws IOException if channel I/O, decoding, a configured limit, or transport progress fails
     default CodecTransferResult decompress(
             ReadableByteChannel source,
             WritableByteChannel target,
-            DecompressionLimits limits
+            DecodingOptions options
     ) throws IOException {
-        return CodecTransferSupport.decompress(this, source, target, limits);
+        return CodecTransferSupport.decompress(this, source, target, options);
     }
 
     /// Compresses all remaining source bytes into a newly allocated heap buffer.
@@ -410,7 +306,7 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// @throws IOException              if the encoding is invalid, truncated, or exceeds a configured limit
     /// @throws IllegalArgumentException if `maximumOutputSize` is negative or exceeds [Integer#MAX_VALUE]
     default ByteBuffer decompress(ByteBuffer source, long maximumOutputSize) throws IOException {
-        return decompress(source, DecompressionLimits.ofMaximumOutputSize(maximumOutputSize));
+        return decompress(source, DecodingOptions.ofMaximumOutputSize(maximumOutputSize));
     }
 
     /// Decompresses all remaining source bytes using operation-scoped limits.
@@ -419,13 +315,13 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// heap buffer has position zero and its limit equals the decoded size. A non-framed decoder leaves trailing bytes
     /// after its first completed encoding unconsumed; a framed decoder treats remaining input as concatenated frames.
     ///
-    /// @param source the buffer supplying the compressed encoding
-    /// @param limits the output, window, and memory limits for this operation
+    /// @param source  the buffer supplying the compressed encoding
+    /// @param options the parameters for this decoding operation
     /// @return a newly allocated heap buffer containing the decoded bytes
     /// @throws IOException              if the encoding is invalid, truncated, or exceeds a configured limit
     /// @throws IllegalArgumentException if the maximum output limit is unlimited or exceeds [Integer#MAX_VALUE]
-    default ByteBuffer decompress(ByteBuffer source, DecompressionLimits limits) throws IOException {
-        return ByteBufferCodecSupport.decompressAllocating(this, source, limits);
+    default ByteBuffer decompress(ByteBuffer source, DecodingOptions options) throws IOException {
+        return ByteBufferCodecSupport.decompressAllocating(this, source, options);
     }
 
     /// Compresses all remaining bytes from source into target.
@@ -452,7 +348,7 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// @throws IllegalArgumentException         when source and target are the same buffer
     /// @throws IOException                      if the encoding is invalid, truncated, or cannot be decoded
     default void decompress(ByteBuffer source, ByteBuffer target) throws IOException {
-        decompress(source, target, DecompressionLimits.UNLIMITED);
+        decompress(source, target, DecodingOptions.DEFAULT);
     }
 
     /// Decompresses a complete encoding from source into target using operation-scoped limits.
@@ -461,9 +357,9 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// The buffers must be distinct and the target must be writable. A non-framed decoder stops at its first completed
     /// encoding, while a framed decoder consumes concatenated frames until source exhaustion.
     ///
-    /// @param source the buffer supplying the compressed encoding
-    /// @param target the distinct writable buffer receiving decoded bytes
-    /// @param limits the output, window, and memory limits for this operation
+    /// @param source  the buffer supplying the compressed encoding
+    /// @param target  the distinct writable buffer receiving decoded bytes
+    /// @param options the parameters for this decoding operation
     /// @throws java.nio.BufferOverflowException when the target cannot hold the decoded output
     /// @throws java.nio.ReadOnlyBufferException when the target is read-only
     /// @throws IllegalArgumentException         when source and target are the same buffer
@@ -471,9 +367,9 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     default void decompress(
             ByteBuffer source,
             ByteBuffer target,
-            DecompressionLimits limits
+            DecodingOptions options
     ) throws IOException {
-        ByteBufferCodecSupport.decompress(this, source, target, limits);
+        ByteBufferCodecSupport.decompress(this, source, target, options);
     }
 
     /// Describes a format whose encoder can flush pending output without ending the active encoding.
@@ -481,59 +377,49 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// @param <C> the concrete immutable codec type represented by this configuration
     @NotNullByDefault
     interface Flushable<C extends CompressionCodec<C>> extends CompressionCodec<C> {
-        /// Creates a fresh flush-capable encoder.
+        /// Creates a fresh flush-capable encoder using operation-scoped options.
+        ///
+        /// @param options the parameters for this encoder session
+        /// @return a fresh flush-capable encoder
+        /// @throws IOException if the encoder's resources cannot be initialized
         @Override
-        CompressionEncoder.Flushable newEncoder() throws IOException;
+        CompressionEncoder.Flushable newEncoder(EncodingOptions options) throws IOException;
 
-        /// Creates a fresh flush-capable encoder with exact source-size operation metadata.
+        /// Creates a fresh flush-capable encoder using default operation options.
         @Override
-        default CompressionEncoder.Flushable newEncoder(long sourceSize) throws IOException {
-            CompressionCodec.requireSourceSize(sourceSize);
-            return newEncoder();
+        default CompressionEncoder.Flushable newEncoder() throws IOException {
+            return newEncoder(EncodingOptions.DEFAULT);
         }
 
-        /// Creates a flush-capable compressing channel with explicit target ownership.
+        /// Creates a flush-capable channel using operation options and explicit target ownership.
+        ///
+        /// @param target    the channel that receives compressed bytes
+        /// @param options   the parameters for this encoding session
+        /// @param ownership whether closing the returned channel also closes `target`
+        /// @return a new flush-capable compressing channel
+        /// @throws IOException if the encoder cannot be initialized or ownership cleanup fails
         @Override
         default CompressingWritableByteChannel.Flushable newWritableByteChannel(
                 WritableByteChannel target,
+                EncodingOptions options,
                 ResourceOwnership ownership
         ) throws IOException {
             Objects.requireNonNull(target, "target");
-            Objects.requireNonNull(ownership, "ownership");
-            return CodecChannelAdapters.newFlushableWritableByteChannel(target, ownership, this::newEncoder);
-        }
-
-        /// Creates a flush-capable compressing channel with exact source-size metadata and explicit target ownership.
-        @Override
-        default CompressingWritableByteChannel.Flushable newWritableByteChannel(
-                WritableByteChannel target,
-                long sourceSize,
-                ResourceOwnership ownership
-        ) throws IOException {
-            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(options, "options");
             Objects.requireNonNull(ownership, "ownership");
             return CodecChannelAdapters.newFlushableWritableByteChannel(
                     target,
                     ownership,
-                    () -> newEncoder(sourceSize)
+                    () -> newEncoder(options)
             );
         }
 
-        /// Creates a flush-capable compressing channel that borrows the target channel.
+        /// Creates a flush-capable channel using default options and borrowing the target channel.
         @Override
         default CompressingWritableByteChannel.Flushable newWritableByteChannel(
                 WritableByteChannel target
         ) throws IOException {
-            return newWritableByteChannel(target, ResourceOwnership.BORROWED);
-        }
-
-        /// Creates a flush-capable compressing channel with exact source-size metadata that borrows the target channel.
-        @Override
-        default CompressingWritableByteChannel.Flushable newWritableByteChannel(
-                WritableByteChannel target,
-                long sourceSize
-        ) throws IOException {
-            return newWritableByteChannel(target, sourceSize, ResourceOwnership.BORROWED);
+            return newWritableByteChannel(target, EncodingOptions.DEFAULT, ResourceOwnership.BORROWED);
         }
     }
 
@@ -545,116 +431,101 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// @param <C> the concrete immutable codec type represented by this configuration
     @NotNullByDefault
     interface Framed<C extends CompressionCodec<C>> extends CompressionCodec<C> {
-        /// Creates a fresh frame-capable encoder.
+        /// Creates a fresh frame-capable encoder using operation-scoped options.
+        ///
+        /// [EncodingOptions#sourceSize()] describes the first frame only. Frames started after
+        /// [CompressionEncoder.Framed#finishFrame(ByteBuffer)] do not inherit the first frame's source size.
+        ///
+        /// @param options the parameters for this encoder session
+        /// @return a fresh frame-capable encoder
+        /// @throws IOException if the encoder's resources cannot be initialized
         @Override
-        CompressionEncoder.Framed newEncoder() throws IOException;
+        CompressionEncoder.Framed newEncoder(EncodingOptions options) throws IOException;
 
-        /// Creates a fresh frame-capable encoder with an exact source size for every frame it produces.
+        /// Creates a fresh frame-capable encoder using default operation options.
         @Override
-        default CompressionEncoder.Framed newEncoder(long sourceSize) throws IOException {
-            CompressionCodec.requireSourceSize(sourceSize);
-            return newEncoder();
+        default CompressionEncoder.Framed newEncoder() throws IOException {
+            return newEncoder(EncodingOptions.DEFAULT);
         }
 
-        /// Creates a fresh frame-capable decoder using operation-scoped safety limits.
+        /// Creates a fresh frame-capable decoder using operation-scoped options.
+        ///
+        /// @param options the parameters for this decoder session
+        /// @return a fresh frame-capable decoder
+        /// @throws IOException if the decoder's resources cannot be initialized
         @Override
-        CompressionDecoder.Framed newDecoder(DecompressionLimits limits) throws IOException;
+        CompressionDecoder.Framed newDecoder(DecodingOptions options) throws IOException;
 
-        /// Creates a fresh frame-capable decoder without operation-scoped safety limits.
+        /// Creates a fresh frame-capable decoder using default operation options.
         @Override
         default CompressionDecoder.Framed newDecoder() throws IOException {
-            return newDecoder(DecompressionLimits.UNLIMITED);
+            return newDecoder(DecodingOptions.DEFAULT);
         }
 
-        /// Creates a frame-capable compressing channel with explicit target ownership.
+        /// Creates a frame-capable channel using operation options and explicit target ownership.
+        ///
+        /// @param target    the channel that receives compressed bytes
+        /// @param options   the parameters for this encoding session
+        /// @param ownership whether closing the returned channel also closes `target`
+        /// @return a new frame-capable compressing channel
+        /// @throws IOException if the encoder cannot be initialized or ownership cleanup fails
         @Override
         default CompressingWritableByteChannel.Framed newWritableByteChannel(
                 WritableByteChannel target,
+                EncodingOptions options,
                 ResourceOwnership ownership
         ) throws IOException {
             Objects.requireNonNull(target, "target");
-            Objects.requireNonNull(ownership, "ownership");
-            return CodecChannelAdapters.newFramedWritableByteChannel(target, ownership, this::newEncoder);
-        }
-
-        /// Creates a frame-capable compressing channel with an exact source size for every frame and explicit ownership.
-        @Override
-        default CompressingWritableByteChannel.Framed newWritableByteChannel(
-                WritableByteChannel target,
-                long sourceSize,
-                ResourceOwnership ownership
-        ) throws IOException {
-            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(options, "options");
             Objects.requireNonNull(ownership, "ownership");
             return CodecChannelAdapters.newFramedWritableByteChannel(
                     target,
                     ownership,
-                    () -> newEncoder(sourceSize)
+                    () -> newEncoder(options)
             );
         }
 
-        /// Creates a frame-capable compressing channel that borrows the target channel.
+        /// Creates a frame-capable channel using default options and borrowing the target channel.
         @Override
         default CompressingWritableByteChannel.Framed newWritableByteChannel(
                 WritableByteChannel target
         ) throws IOException {
-            return newWritableByteChannel(target, ResourceOwnership.BORROWED);
+            return newWritableByteChannel(target, EncodingOptions.DEFAULT, ResourceOwnership.BORROWED);
         }
 
-        /// Creates a frame-capable compressing channel with an exact source size for every frame and a borrowed target.
-        @Override
-        default CompressingWritableByteChannel.Framed newWritableByteChannel(
-                WritableByteChannel target,
-                long sourceSize
-        ) throws IOException {
-            return newWritableByteChannel(target, sourceSize, ResourceOwnership.BORROWED);
-        }
-
-        /// Creates a frame-capable decompressing channel with limits and explicit source ownership.
+        /// Creates a frame-capable decompressing channel using options and explicit source ownership.
+        ///
+        /// @param source    the channel that supplies compressed bytes
+        /// @param options   the parameters for this decoding session
+        /// @param ownership whether closing the returned channel also closes `source`
+        /// @return a new frame-capable decompressing channel
+        /// @throws IOException if the decoder cannot be initialized or ownership cleanup fails
         @Override
         default DecompressingReadableByteChannel.Framed newReadableByteChannel(
                 ReadableByteChannel source,
-                DecompressionLimits limits,
+                DecodingOptions options,
                 ResourceOwnership ownership
         ) throws IOException {
             Objects.requireNonNull(source, "source");
-            Objects.requireNonNull(limits, "limits");
+            Objects.requireNonNull(options, "options");
             Objects.requireNonNull(ownership, "ownership");
 
-            DecompressionLimits engineLimits =
-                    limits.withMaximumOutputSize(DecompressionLimits.UNLIMITED_SIZE);
+            DecodingOptions engineOptions =
+                    options.withMaximumOutputSize(DecodingOptions.UNLIMITED_SIZE);
             DecompressingReadableByteChannel.Framed decoder = CodecChannelAdapters.newFramedReadableByteChannel(
                     source,
                     ownership,
-                    () -> newDecoder(engineLimits)
+                    () -> newDecoder(engineOptions)
             );
-            return CompressionDecoderSupport.limitChannelOutput(decoder, limits.maximumOutputSize());
+            return CompressionDecoderSupport.limitChannelOutput(decoder, options.maximumOutputSize());
         }
 
-        /// Creates a limited frame-capable decompressing channel that borrows the source channel.
-        @Override
-        default DecompressingReadableByteChannel.Framed newReadableByteChannel(
-                ReadableByteChannel source,
-                DecompressionLimits limits
-        ) throws IOException {
-            return newReadableByteChannel(source, limits, ResourceOwnership.BORROWED);
-        }
-
-        /// Creates an unlimited frame-capable decompressing channel with explicit source ownership.
-        @Override
-        default DecompressingReadableByteChannel.Framed newReadableByteChannel(
-                ReadableByteChannel source,
-                ResourceOwnership ownership
-        ) throws IOException {
-            return newReadableByteChannel(source, DecompressionLimits.UNLIMITED, ownership);
-        }
-
-        /// Creates an unlimited frame-capable decompressing channel that borrows the source channel.
+        /// Creates a frame-capable decompressing channel using default options and borrowing the source channel.
         @Override
         default DecompressingReadableByteChannel.Framed newReadableByteChannel(
                 ReadableByteChannel source
         ) throws IOException {
-            return newReadableByteChannel(source, DecompressionLimits.UNLIMITED, ResourceOwnership.BORROWED);
+            return newReadableByteChannel(source, DecodingOptions.DEFAULT, ResourceOwnership.BORROWED);
         }
 
         /// Decompresses one frame into a newly allocated bounded heap buffer.
@@ -668,23 +539,23 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         /// @throws IOException              if the frame is invalid, truncated, or exceeds a configured limit
         /// @throws IllegalArgumentException if `maximumOutputSize` is negative or exceeds [Integer#MAX_VALUE]
         default ByteBuffer decompressFrame(ByteBuffer source, long maximumOutputSize) throws IOException {
-            return decompressFrame(source, DecompressionLimits.ofMaximumOutputSize(maximumOutputSize));
+            return decompressFrame(source, DecodingOptions.ofMaximumOutputSize(maximumOutputSize));
         }
 
-        /// Decompresses one frame using operation-scoped limits.
+        /// Decompresses one frame using operation-scoped options.
         ///
         /// The source position stops after the first complete frame, preserving following frames or trailing bytes. The
         /// returned heap buffer has position zero and its limit equals the decoded frame size. Allocating decompression
         /// requires a finite `maximumOutputSize` between zero and [Integer#MAX_VALUE]. If `source` has no remaining
         /// bytes, this operation returns an empty buffer without creating a decoder.
         ///
-        /// @param source the buffer beginning with the compressed frame, or an empty buffer representing no frame
-        /// @param limits the output, window, and memory limits for this frame
+        /// @param source  the buffer beginning with the compressed frame, or an empty buffer representing no frame
+        /// @param options the parameters for this frame
         /// @return a newly allocated heap buffer containing the decoded frame
         /// @throws IOException              if the frame is invalid, truncated, or exceeds a configured limit
         /// @throws IllegalArgumentException if the maximum output limit is unlimited or exceeds [Integer#MAX_VALUE]
-        default ByteBuffer decompressFrame(ByteBuffer source, DecompressionLimits limits) throws IOException {
-            return ByteBufferCodecSupport.decompressFrameAllocating(this, source, limits);
+        default ByteBuffer decompressFrame(ByteBuffer source, DecodingOptions options) throws IOException {
+            return ByteBufferCodecSupport.decompressFrameAllocating(this, source, options);
         }
 
         /// Decompresses one frame into target without operation-scoped limits.
@@ -698,18 +569,18 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         /// @throws IllegalArgumentException         when source and target are the same buffer
         /// @throws IOException                      if the frame is invalid, truncated, or cannot be decoded
         default void decompressFrame(ByteBuffer source, ByteBuffer target) throws IOException {
-            decompressFrame(source, target, DecompressionLimits.UNLIMITED);
+            decompressFrame(source, target, DecodingOptions.DEFAULT);
         }
 
-        /// Decompresses one frame into target using operation-scoped limits.
+        /// Decompresses one frame into target using operation-scoped options.
         ///
         /// The source position stops after the first complete frame. Both buffer limits are unchanged, and the target
         /// must be distinct from the source, writable, and large enough for the complete decoded frame.
         /// If `source` has no remaining bytes, neither buffer position changes and no decoder is created.
         ///
-        /// @param source the buffer beginning with the compressed frame, or an empty buffer representing no frame
-        /// @param target the distinct writable buffer receiving the decoded frame
-        /// @param limits the output, window, and memory limits for this frame
+        /// @param source  the buffer beginning with the compressed frame, or an empty buffer representing no frame
+        /// @param target  the distinct writable buffer receiving the decoded frame
+        /// @param options the parameters for this frame
         /// @throws java.nio.BufferOverflowException when the target cannot hold the complete frame
         /// @throws java.nio.ReadOnlyBufferException when the target is read-only
         /// @throws IllegalArgumentException         when source and target are the same buffer
@@ -717,9 +588,9 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         default void decompressFrame(
                 ByteBuffer source,
                 ByteBuffer target,
-                DecompressionLimits limits
+                DecodingOptions options
         ) throws IOException {
-            ByteBufferCodecSupport.decompressFrame(this, source, target, limits);
+            ByteBufferCodecSupport.decompressFrame(this, source, target, options);
         }
     }
 
@@ -728,59 +599,49 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// @param <C> the concrete immutable codec type represented by this configuration
     @NotNullByDefault
     interface FlushableFramed<C extends CompressionCodec<C>> extends Flushable<C>, Framed<C> {
-        /// Creates a fresh frame- and flush-capable encoder.
+        /// Creates a fresh frame- and flush-capable encoder using operation-scoped options.
+        ///
+        /// @param options the parameters for this encoder session
+        /// @return a fresh frame- and flush-capable encoder
+        /// @throws IOException if the encoder's resources cannot be initialized
         @Override
-        CompressionEncoder.FlushableFramed newEncoder() throws IOException;
+        CompressionEncoder.FlushableFramed newEncoder(EncodingOptions options) throws IOException;
 
-        /// Creates a fresh frame- and flush-capable encoder with an exact source size for every frame it produces.
+        /// Creates a fresh frame- and flush-capable encoder using default operation options.
         @Override
-        default CompressionEncoder.FlushableFramed newEncoder(long sourceSize) throws IOException {
-            CompressionCodec.requireSourceSize(sourceSize);
-            return newEncoder();
+        default CompressionEncoder.FlushableFramed newEncoder() throws IOException {
+            return newEncoder(EncodingOptions.DEFAULT);
         }
 
-        /// Creates a frame- and flush-capable compressing channel with explicit target ownership.
+        /// Creates a frame- and flush-capable channel using operation options and explicit target ownership.
+        ///
+        /// @param target    the channel that receives compressed bytes
+        /// @param options   the parameters for this encoding session
+        /// @param ownership whether closing the returned channel also closes `target`
+        /// @return a new frame- and flush-capable compressing channel
+        /// @throws IOException if the encoder cannot be initialized or ownership cleanup fails
         @Override
         default CompressingWritableByteChannel.FlushableFramed newWritableByteChannel(
                 WritableByteChannel target,
+                EncodingOptions options,
                 ResourceOwnership ownership
         ) throws IOException {
             Objects.requireNonNull(target, "target");
-            Objects.requireNonNull(ownership, "ownership");
-            return CodecChannelAdapters.newFlushableFramedWritableByteChannel(target, ownership, this::newEncoder);
-        }
-
-        /// Creates a frame- and flush-capable channel with an exact source size for every frame and explicit ownership.
-        @Override
-        default CompressingWritableByteChannel.FlushableFramed newWritableByteChannel(
-                WritableByteChannel target,
-                long sourceSize,
-                ResourceOwnership ownership
-        ) throws IOException {
-            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(options, "options");
             Objects.requireNonNull(ownership, "ownership");
             return CodecChannelAdapters.newFlushableFramedWritableByteChannel(
                     target,
                     ownership,
-                    () -> newEncoder(sourceSize)
+                    () -> newEncoder(options)
             );
         }
 
-        /// Creates a frame- and flush-capable compressing channel that borrows the target channel.
+        /// Creates a frame- and flush-capable channel using default options and borrowing the target channel.
         @Override
         default CompressingWritableByteChannel.FlushableFramed newWritableByteChannel(
                 WritableByteChannel target
         ) throws IOException {
-            return newWritableByteChannel(target, ResourceOwnership.BORROWED);
-        }
-
-        /// Creates a frame- and flush-capable channel with an exact source size for every frame and a borrowed target.
-        @Override
-        default CompressingWritableByteChannel.FlushableFramed newWritableByteChannel(
-                WritableByteChannel target,
-                long sourceSize
-        ) throws IOException {
-            return newWritableByteChannel(target, sourceSize, ResourceOwnership.BORROWED);
+            return newWritableByteChannel(target, EncodingOptions.DEFAULT, ResourceOwnership.BORROWED);
         }
     }
 
@@ -860,10 +721,4 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         C withoutDictionary();
     }
 
-    /// Validates known or unknown exact source-size metadata.
-    private static void requireSourceSize(long sourceSize) {
-        if (sourceSize < UNKNOWN_SIZE) {
-            throw new IllegalArgumentException("sourceSize must be non-negative or UNKNOWN_SIZE");
-        }
-    }
 }

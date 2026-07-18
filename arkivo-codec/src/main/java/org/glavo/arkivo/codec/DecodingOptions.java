@@ -5,19 +5,19 @@ package org.glavo.arkivo.codec;
 
 import org.jetbrains.annotations.NotNullByDefault;
 
-/// Defines requested operation-scoped safety limits for decompression.
+/// Defines immutable parameters for one decoding operation.
 ///
-/// A field equal to `UNLIMITED_SIZE` requests no bound. Limits belong to a decoder operation rather than an immutable
-/// codec configuration, so the same codec can safely serve callers with different trust boundaries. Each codec
-/// documents which format structures and allocations it can account for. In particular, `maximumMemorySize` bounds
-/// codec-accounted decoder working memory; it is neither a JVM heap limit nor a guarantee that every allocation made
-/// while decoding is included.
+/// Each size field is a safety limit and accepts `UNLIMITED_SIZE` to request no bound. These options belong to one
+/// decoder session rather than an immutable codec configuration, so the same codec can serve operations with different
+/// trust boundaries. Each codec documents which format structures and allocations it can account for. In particular,
+/// `maximumMemorySize` bounds codec-accounted decoder working memory; it is neither a JVM heap limit nor a guarantee
+/// that every allocation made while decoding is included.
 ///
 /// @param maximumOutputSize the maximum decoded byte count, or `UNLIMITED_SIZE`
 /// @param maximumWindowSize the maximum algorithm history-window size, or `UNLIMITED_SIZE`
 /// @param maximumMemorySize the maximum decoder working-memory size, or `UNLIMITED_SIZE`
 @NotNullByDefault
-public record DecompressionLimits(
+public record DecodingOptions(
         long maximumOutputSize,
         long maximumWindowSize,
         long maximumMemorySize
@@ -25,69 +25,77 @@ public record DecompressionLimits(
     /// The sentinel used for a size that is not limited.
     public static final long UNLIMITED_SIZE = -1L;
 
-    /// A reusable limits value that imposes no output, window, or memory restriction.
-    public static final DecompressionLimits UNLIMITED =
-            new DecompressionLimits(UNLIMITED_SIZE, UNLIMITED_SIZE, UNLIMITED_SIZE);
+    /// The default options, which impose no output, window, or memory restriction.
+    public static final DecodingOptions DEFAULT =
+            new DecodingOptions(UNLIMITED_SIZE, UNLIMITED_SIZE, UNLIMITED_SIZE);
 
-    /// Validates every limit value.
-    public DecompressionLimits {
+    /// Validates all operation parameters.
+    ///
+    /// @throws IllegalArgumentException if any size is less than [#UNLIMITED_SIZE]
+    public DecodingOptions {
         validateLimit(maximumOutputSize, "maximumOutputSize");
         validateLimit(maximumWindowSize, "maximumWindowSize");
         validateLimit(maximumMemorySize, "maximumMemorySize");
     }
 
-    /// Creates limits containing only a decoded-output bound.
+    /// Creates options containing only a decoded-output bound.
     ///
-    /// @param maximumOutputSize the non-negative decoded byte limit, or {@link #UNLIMITED_SIZE}
-    /// @return limits containing only the requested output bound
-    public static DecompressionLimits ofMaximumOutputSize(long maximumOutputSize) {
-        return new DecompressionLimits(maximumOutputSize, UNLIMITED_SIZE, UNLIMITED_SIZE);
+    /// @param maximumOutputSize the non-negative decoded byte limit, or [#UNLIMITED_SIZE]
+    /// @return options containing only the requested output bound
+    /// @throws IllegalArgumentException if `maximumOutputSize` is less than [#UNLIMITED_SIZE]
+    public static DecodingOptions ofMaximumOutputSize(long maximumOutputSize) {
+        return new DecodingOptions(maximumOutputSize, UNLIMITED_SIZE, UNLIMITED_SIZE);
     }
 
-    /// Creates limits containing only a history-window bound.
+    /// Creates options containing only a history-window bound.
     ///
-    /// @param maximumWindowSize the non-negative history-window byte limit, or {@link #UNLIMITED_SIZE}
-    /// @return limits containing only the requested window bound
-    public static DecompressionLimits ofMaximumWindowSize(long maximumWindowSize) {
-        return new DecompressionLimits(UNLIMITED_SIZE, maximumWindowSize, UNLIMITED_SIZE);
+    /// @param maximumWindowSize the non-negative history-window byte limit, or [#UNLIMITED_SIZE]
+    /// @return options containing only the requested window bound
+    /// @throws IllegalArgumentException if `maximumWindowSize` is less than [#UNLIMITED_SIZE]
+    public static DecodingOptions ofMaximumWindowSize(long maximumWindowSize) {
+        return new DecodingOptions(UNLIMITED_SIZE, maximumWindowSize, UNLIMITED_SIZE);
     }
 
-    /// Creates limits containing only a decoder working-memory bound.
+    /// Creates options containing only a decoder working-memory bound.
     ///
-    /// @param maximumMemorySize the non-negative working-memory byte limit, or {@link #UNLIMITED_SIZE}
-    /// @return limits containing only the requested memory bound
-    public static DecompressionLimits ofMaximumMemorySize(long maximumMemorySize) {
-        return new DecompressionLimits(UNLIMITED_SIZE, UNLIMITED_SIZE, maximumMemorySize);
+    /// @param maximumMemorySize the non-negative working-memory byte limit, or [#UNLIMITED_SIZE]
+    /// @return options containing only the requested memory bound
+    /// @throws IllegalArgumentException if `maximumMemorySize` is less than [#UNLIMITED_SIZE]
+    public static DecodingOptions ofMaximumMemorySize(long maximumMemorySize) {
+        return new DecodingOptions(UNLIMITED_SIZE, UNLIMITED_SIZE, maximumMemorySize);
     }
 
     /// Returns a copy with the requested decoded-output bound.
     ///
-    /// @param maximumOutputSize the non-negative decoded byte limit, or {@link #UNLIMITED_SIZE}
+    /// @param maximumOutputSize the non-negative decoded byte limit, or [#UNLIMITED_SIZE]
     /// @return this instance when unchanged, otherwise a copy with the requested bound
-    public DecompressionLimits withMaximumOutputSize(long maximumOutputSize) {
+    /// @throws IllegalArgumentException if `maximumOutputSize` is less than [#UNLIMITED_SIZE]
+    public DecodingOptions withMaximumOutputSize(long maximumOutputSize) {
         return maximumOutputSize == this.maximumOutputSize
                 ? this
-                : new DecompressionLimits(maximumOutputSize, maximumWindowSize, maximumMemorySize);
+                : new DecodingOptions(maximumOutputSize, maximumWindowSize, maximumMemorySize);
     }
 
     /// Returns a copy with the requested history-window bound.
     ///
-    /// @param maximumWindowSize the non-negative history-window byte limit, or {@link #UNLIMITED_SIZE}
+    /// @param maximumWindowSize the non-negative history-window byte limit, or [#UNLIMITED_SIZE]
     /// @return this instance when unchanged, otherwise a copy with the requested bound
-    public DecompressionLimits withMaximumWindowSize(long maximumWindowSize) {
+    /// @throws IllegalArgumentException if `maximumWindowSize` is less than [#UNLIMITED_SIZE]
+    public DecodingOptions withMaximumWindowSize(long maximumWindowSize) {
         return maximumWindowSize == this.maximumWindowSize
                 ? this
-                : new DecompressionLimits(maximumOutputSize, maximumWindowSize, maximumMemorySize);
+                : new DecodingOptions(maximumOutputSize, maximumWindowSize, maximumMemorySize);
     }
 
     /// Returns a copy with the requested decoder working-memory bound.
     ///
-    /// @param maximumMemorySize the non-negative working-memory byte limit, or {@link #UNLIMITED_SIZE}
+    /// @param maximumMemorySize the non-negative working-memory byte limit, or [#UNLIMITED_SIZE]
     /// @return this instance when unchanged, otherwise a copy with the requested bound
-    public DecompressionLimits withMaximumMemorySize(long maximumMemorySize) {
+    /// @throws IllegalArgumentException if `maximumMemorySize` is less than [#UNLIMITED_SIZE]
+    public DecodingOptions withMaximumMemorySize(long maximumMemorySize) {
         return maximumMemorySize == this.maximumMemorySize
                 ? this
-                : new DecompressionLimits(maximumOutputSize, maximumWindowSize, maximumMemorySize);
+                : new DecodingOptions(maximumOutputSize, maximumWindowSize, maximumMemorySize);
     }
 
     /// Returns the effective history-window limit after applying the decoder-memory ceiling.
@@ -95,7 +103,7 @@ public record DecompressionLimits(
     /// History-based decoders whose dominant allocation is their window may use this value directly. Decoders with
     /// additional model memory must enforce [#maximumMemorySize()] separately.
     ///
-    /// @return the smaller enforced window or memory limit, or {@link #UNLIMITED_SIZE} if both are unrestricted
+    /// @return the smaller enforced window or memory limit, or [#UNLIMITED_SIZE] if both are unrestricted
     public long effectiveMaximumWindowSize() {
         if (maximumWindowSize == UNLIMITED_SIZE) {
             return maximumMemorySize;
@@ -110,7 +118,7 @@ public record DecompressionLimits(
     ///
     /// @param requiredWindowSize the non-negative history-window size required by the stream
     /// @throws DecompressionWindowLimitException if the requirement exceeds the effective window limit
-    /// @throws IllegalArgumentException if {@code requiredWindowSize} is negative
+    /// @throws IllegalArgumentException          if `requiredWindowSize` is negative
     public void requireWindowSize(long requiredWindowSize) throws DecompressionWindowLimitException {
         if (requiredWindowSize < 0L) {
             throw new IllegalArgumentException("requiredWindowSize must not be negative");
@@ -126,7 +134,7 @@ public record DecompressionLimits(
     ///
     /// @param requiredMemorySize the non-negative working-memory size required by the decoder
     /// @throws DecompressionMemoryLimitException if the requirement exceeds the memory limit
-    /// @throws IllegalArgumentException if {@code requiredMemorySize} is negative
+    /// @throws IllegalArgumentException          if `requiredMemorySize` is negative
     public void requireMemorySize(long requiredMemorySize) throws DecompressionMemoryLimitException {
         if (requiredMemorySize < 0L) {
             throw new IllegalArgumentException("requiredMemorySize must not be negative");

@@ -154,16 +154,17 @@ final class DirectByteBufferCodecSupportTest {
 
         /// Creates a length-prefixed identity encoder.
         @Override
-        public CompressionEncoder.FlushableFramed newEncoder() {
+        public CompressionEncoder.FlushableFramed newEncoder(EncodingOptions options) {
+            Objects.requireNonNull(options, "options");
             return new LengthPrefixedEncoder();
         }
 
         /// Creates a length-prefixed identity decoder.
         @Override
-        public CompressionDecoder.Framed newDecoder(DecompressionLimits limits) {
+        public CompressionDecoder.Framed newDecoder(DecodingOptions options) {
             return CompressionDecoderSupport.limitEngineOutput(
                     new LengthPrefixedDecoder(),
-                    limits.maximumOutputSize()
+                    options.maximumOutputSize()
             );
         }
 
@@ -171,6 +172,7 @@ final class DirectByteBufferCodecSupportTest {
         @Override
         public CompressingWritableByteChannel.FlushableFramed newWritableByteChannel(
                 WritableByteChannel target,
+                EncodingOptions options,
                 ResourceOwnership ownership
         ) {
             throw new AssertionError("Channel encoder path must not be used");
@@ -180,7 +182,7 @@ final class DirectByteBufferCodecSupportTest {
         @Override
         public DecompressingReadableByteChannel.Framed newReadableByteChannel(
                 ReadableByteChannel source,
-                DecompressionLimits limits,
+                DecodingOptions options,
                 ResourceOwnership ownership
         ) {
             throw new AssertionError("Channel decoder path must not be used");

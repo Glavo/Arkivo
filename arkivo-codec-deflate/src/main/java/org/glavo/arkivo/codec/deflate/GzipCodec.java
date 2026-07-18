@@ -6,7 +6,8 @@ package org.glavo.arkivo.codec.deflate;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionStrategy;
-import org.glavo.arkivo.codec.DecompressionLimits;
+import org.glavo.arkivo.codec.DecodingOptions;
+import org.glavo.arkivo.codec.EncodingOptions;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.deflate.internal.GzipDecoder;
 import org.glavo.arkivo.codec.deflate.internal.GzipEncoder;
@@ -125,18 +126,19 @@ public final class GzipCodec
 
     /// Creates a flushable transport-independent gzip member encoder.
     @Override
-    public CompressionEncoder.FlushableFramed newEncoder() {
+    public CompressionEncoder.FlushableFramed newEncoder(EncodingOptions options) {
+        Objects.requireNonNull(options, "options");
         return new GzipEncoder(compressionLevel, compressionStrategy);
     }
 
     /// Creates a transport-independent gzip member decoder with operation-scoped limits.
     @Override
-    public CompressionDecoder.Framed newDecoder(DecompressionLimits limits) throws IOException {
-        Objects.requireNonNull(limits, "limits");
-        limits.requireWindowSize(DECODING_WINDOW_SIZE);
+    public CompressionDecoder.Framed newDecoder(DecodingOptions options) throws IOException {
+        Objects.requireNonNull(options, "options");
+        options.requireWindowSize(DECODING_WINDOW_SIZE);
         return CompressionDecoderSupport.limitEngineOutput(
                 new GzipDecoder(),
-                limits.maximumOutputSize()
+                options.maximumOutputSize()
         );
     }
 }
