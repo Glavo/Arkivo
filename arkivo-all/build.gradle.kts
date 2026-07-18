@@ -221,10 +221,8 @@ val moduleProjectPaths = listOf(
     ":arkivo-archive-zip",
     ":arkivo-codec",
     ":arkivo-codec-all",
-    ":arkivo-codec-bcj",
     ":arkivo-codec-bzip2",
     ":arkivo-codec-deflate",
-    ":arkivo-codec-delta",
     ":arkivo-codec-lzma",
     ":arkivo-codec-ppmd",
     ":arkivo-codec-xz",
@@ -282,10 +280,8 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.archive.zip",
             "org.glavo.arkivo.codec",
             "org.glavo.arkivo.codec.all",
-            "org.glavo.arkivo.codec.bcj",
             "org.glavo.arkivo.codec.bzip2",
             "org.glavo.arkivo.codec.deflate",
-            "org.glavo.arkivo.codec.delta",
             "org.glavo.arkivo.codec.lzma",
             "org.glavo.arkivo.codec.ppmd",
             "org.glavo.arkivo.codec.xz",
@@ -331,19 +327,15 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.archive.zip" to setOf(archiveModule),
             "org.glavo.arkivo.codec.all" to setOf(
                 codecModule,
-                "org.glavo.arkivo.codec.bcj",
                 "org.glavo.arkivo.codec.bzip2",
                 "org.glavo.arkivo.codec.deflate",
-                "org.glavo.arkivo.codec.delta",
                 "org.glavo.arkivo.codec.lzma",
                 "org.glavo.arkivo.codec.ppmd",
                 "org.glavo.arkivo.codec.xz",
                 "org.glavo.arkivo.codec.zstd"
             ),
-            "org.glavo.arkivo.codec.bcj" to setOf(codecModule),
             "org.glavo.arkivo.codec.bzip2" to setOf(codecModule),
             "org.glavo.arkivo.codec.deflate" to setOf(codecModule),
-            "org.glavo.arkivo.codec.delta" to setOf(codecModule),
             "org.glavo.arkivo.codec.lzma" to setOf(codecModule),
             "org.glavo.arkivo.codec.ppmd" to setOf(codecModule),
             "org.glavo.arkivo.codec.xz" to setOf(
@@ -377,10 +369,8 @@ val verifyModuleDescriptors by tasks.registering {
                 "org.glavo.arkivo.codec",
                 "org.glavo.arkivo.codec.transform"
             ),
-            "org.glavo.arkivo.codec.bcj" to setOf("org.glavo.arkivo.codec.bcj"),
             "org.glavo.arkivo.codec.bzip2" to setOf("org.glavo.arkivo.codec.bzip2"),
             "org.glavo.arkivo.codec.deflate" to setOf("org.glavo.arkivo.codec.deflate"),
-            "org.glavo.arkivo.codec.delta" to setOf("org.glavo.arkivo.codec.delta"),
             "org.glavo.arkivo.codec.lzma" to setOf("org.glavo.arkivo.codec.lzma"),
             "org.glavo.arkivo.codec.ppmd" to setOf("org.glavo.arkivo.codec.ppmd"),
             "org.glavo.arkivo.codec.xz" to setOf("org.glavo.arkivo.codec.xz"),
@@ -413,7 +403,7 @@ val verifyModuleDescriptors by tasks.registering {
                     "org.glavo.arkivo.archive.rar",
                     "org.glavo.arkivo.archive.sevenzip",
                     "org.glavo.arkivo.archive.zip",
-                    "org.glavo.arkivo.codec.bcj",
+                    "org.glavo.arkivo.codec.xz",
                     "org.glavo.arkivo.codec.zstd"
                 )
             ),
@@ -430,6 +420,11 @@ val verifyModuleDescriptors by tasks.registering {
             "org.glavo.arkivo.codec.lzma" to mapOf(
                 "org.glavo.arkivo.codec.lzma.internal" to setOf(
                     "org.glavo.arkivo.codec.xz"
+                )
+            ),
+            "org.glavo.arkivo.codec.xz" to mapOf(
+                "org.glavo.arkivo.codec.xz.internal.filter" to setOf(
+                    "org.glavo.arkivo.archive.sevenzip"
                 )
             ),
             "org.glavo.arkivo.codec.ppmd" to mapOf(

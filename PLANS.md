@@ -21,10 +21,8 @@ arkivo-base
 arkivo-archive
 arkivo-codec
 arkivo-codec-all
-arkivo-codec-bcj
 arkivo-codec-bzip2
 arkivo-codec-deflate
-arkivo-codec-delta
 arkivo-codec-lzma
 arkivo-codec-ppmd
 arkivo-codec-xz

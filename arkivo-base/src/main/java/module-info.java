@@ -9,6 +9,6 @@ module org.glavo.arkivo.base {
             org.glavo.arkivo.archive.rar,
             org.glavo.arkivo.archive.sevenzip,
             org.glavo.arkivo.archive.zip,
-            org.glavo.arkivo.codec.bcj,
+            org.glavo.arkivo.codec.xz,
             org.glavo.arkivo.codec.zstd;
 }

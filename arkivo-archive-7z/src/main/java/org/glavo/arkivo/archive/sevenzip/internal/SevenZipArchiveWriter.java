@@ -3,11 +3,11 @@
 
 package org.glavo.arkivo.archive.sevenzip.internal;
 
-import org.glavo.arkivo.codec.bcj.BCJTransforms;
 import org.glavo.arkivo.codec.transform.TransformingOutputStream;
 import org.glavo.arkivo.codec.transform.ByteTransform;
 import org.glavo.arkivo.codec.transform.ByteTransform.Direction;
-import org.glavo.arkivo.codec.delta.DeltaTransform;
+import org.glavo.arkivo.codec.xz.internal.filter.BCJTransforms;
+import org.glavo.arkivo.codec.xz.internal.filter.DeltaTransform;
 import org.glavo.arkivo.archive.sevenzip.SevenZipArkivoEntryAttributes;
 import org.glavo.arkivo.archive.sevenzip.SevenZipCompression;
 import org.glavo.arkivo.archive.sevenzip.SevenZipFilter;

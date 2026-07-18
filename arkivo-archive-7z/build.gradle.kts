@@ -4,15 +4,12 @@ dependencies {
     api(project(":arkivo-archive"))
     implementation(project(":arkivo-base"))
     implementation(project(":arkivo-codec"))
-    implementation(project(":arkivo-codec-bcj"))
-    implementation(project(":arkivo-codec-delta"))
-    compileOnly(project(":arkivo-codec-lzma"))
-    runtimeOnly(project(":arkivo-codec-lzma"))
+    implementation(project(":arkivo-codec-lzma"))
+    implementation(project(":arkivo-codec-xz"))
     compileOnly(project(":arkivo-codec-ppmd"))
     runtimeOnly(project(":arkivo-codec-ppmd"))
     testImplementation(project(":arkivo-codec-bzip2"))
     testImplementation(project(":arkivo-codec-deflate"))
-    testImplementation(project(":arkivo-codec-lzma"))
     testImplementation(project(":arkivo-codec-ppmd"))
     testImplementation(project(":arkivo-codec-zstd"))
     testImplementation("org.tukaani:xz:1.12")
@@ -50,7 +47,7 @@ val verifyOptionalCompressionFormats by tasks.registering(JavaExec::class) {
 
     classpath = sourceSets.test.get().runtimeClasspath.filter { file ->
         val path = file.invariantSeparatorsPath
-        sequenceOf("bzip2", "deflate", "lzma", "ppmd", "zstd").none { codecModuleName ->
+        sequenceOf("bzip2", "deflate", "ppmd", "zstd").none { codecModuleName ->
             path.contains("/arkivo-codec-$codecModuleName/")
                     || file.name.startsWith("arkivo-codec-$codecModuleName")
         }

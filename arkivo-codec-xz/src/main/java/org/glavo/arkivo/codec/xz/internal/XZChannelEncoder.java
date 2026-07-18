@@ -6,8 +6,6 @@ package org.glavo.arkivo.codec.xz.internal;
 import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.spi.OwnedChannelCloser;
-import org.glavo.arkivo.codec.bcj.BCJTransforms;
-import org.glavo.arkivo.codec.delta.DeltaTransform;
 import org.glavo.arkivo.codec.lzma.internal.LZMA2ChannelEncoder;
 import org.glavo.arkivo.codec.lzma.LZMAProperties;
 import org.glavo.arkivo.codec.transform.ByteTransform;
@@ -17,6 +15,8 @@ import org.glavo.arkivo.codec.xz.XZBCJFilter;
 import org.glavo.arkivo.codec.xz.XZDeltaFilter;
 import org.glavo.arkivo.codec.xz.XZFilter;
 import org.glavo.arkivo.codec.xz.XZFilterChain;
+import org.glavo.arkivo.codec.xz.internal.filter.BCJTransforms;
+import org.glavo.arkivo.codec.xz.internal.filter.DeltaTransform;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 

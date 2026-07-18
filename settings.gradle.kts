@@ -6,8 +6,6 @@ include(
     "arkivo-codec",
     "arkivo-codec-all",
     "arkivo-codec-deflate",
-    "arkivo-codec-bcj",
-    "arkivo-codec-delta",
     "arkivo-codec-bzip2",
     "arkivo-codec-xz",
     "arkivo-codec-lzma",

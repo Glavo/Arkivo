@@ -62,10 +62,6 @@ val publicationMetadata = mapOf(
         "Arkivo Compression Codecs",
         "Aggregates all Arkivo compression codec and byte-transform implementations."
     ),
-    "arkivo-codec-bcj" to ArkivoPublicationMetadata(
-        "Arkivo BCJ Codec",
-        "Provides BCJ executable byte-transform implementations."
-    ),
     "arkivo-codec-bzip2" to ArkivoPublicationMetadata(
         "Arkivo BZip2 Codec",
         "Provides pure Java BZip2 buffer engines and channel adapters."
@@ -74,12 +70,6 @@ val publicationMetadata = mapOf(
         "Arkivo Deflate Codecs",
         "Provides pure Java raw Deflate, Deflate64, gzip, and zlib buffer engines and channel adapters."
     ),
-
-    "arkivo-codec-delta" to ArkivoPublicationMetadata(
-        "Arkivo Delta Codec",
-        "Provides the Delta byte transform used by compression containers."
-    ),
-
     "arkivo-codec-lzma" to ArkivoPublicationMetadata(
         "Arkivo LZMA Codec",
         "Provides pure Java raw LZMA, LZMA-alone, and LZMA2 buffer engines and channel adapters."
@@ -90,7 +80,7 @@ val publicationMetadata = mapOf(
     ),
     "arkivo-codec-xz" to ArkivoPublicationMetadata(
         "Arkivo XZ Codec",
-        "Provides pure Java XZ buffer engines and channel adapters."
+        "Provides pure Java XZ buffer engines, channel adapters, and shared BCJ and Delta filters."
     ),
 
     "arkivo-codec-zstd" to ArkivoPublicationMetadata(
@@ -347,36 +337,27 @@ val expectedDependencies = mapOf(
         "org.glavo:arkivo-archive:compile:$publicationVersion",
         "org.glavo:arkivo-base:runtime:$publicationVersion",
         "org.glavo:arkivo-codec:runtime:$publicationVersion",
-        "org.glavo:arkivo-codec-bcj:runtime:$publicationVersion",
-        "org.glavo:arkivo-codec-delta:runtime:$publicationVersion",
         "org.glavo:arkivo-codec-lzma:runtime:$publicationVersion",
-        "org.glavo:arkivo-codec-ppmd:runtime:$publicationVersion"
+        "org.glavo:arkivo-codec-ppmd:runtime:$publicationVersion",
+        "org.glavo:arkivo-codec-xz:runtime:$publicationVersion"
     ),
     "arkivo-codec" to emptySet(),
     "arkivo-codec-all" to setOf(
         "org.glavo:arkivo-codec:compile:$publicationVersion",
-        "org.glavo:arkivo-codec-bcj:compile:$publicationVersion",
         "org.glavo:arkivo-codec-bzip2:compile:$publicationVersion",
         "org.glavo:arkivo-codec-deflate:compile:$publicationVersion",
-        "org.glavo:arkivo-codec-delta:compile:$publicationVersion",
         "org.glavo:arkivo-codec-lzma:compile:$publicationVersion",
         "org.glavo:arkivo-codec-ppmd:compile:$publicationVersion",
         "org.glavo:arkivo-codec-xz:compile:$publicationVersion",
         "org.glavo:arkivo-codec-zstd:compile:$publicationVersion"
     ),
-    "arkivo-codec-bcj" to setOf(
-        "org.glavo:arkivo-base:runtime:$publicationVersion",
-        "org.glavo:arkivo-codec:compile:$publicationVersion"
-    ),
     "arkivo-codec-bzip2" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
     "arkivo-codec-deflate" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
-    "arkivo-codec-delta" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
     "arkivo-codec-lzma" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
     "arkivo-codec-ppmd" to setOf("org.glavo:arkivo-codec:compile:$publicationVersion"),
     "arkivo-codec-xz" to setOf(
+        "org.glavo:arkivo-base:runtime:$publicationVersion",
         "org.glavo:arkivo-codec:compile:$publicationVersion",
-        "org.glavo:arkivo-codec-bcj:runtime:$publicationVersion",
-        "org.glavo:arkivo-codec-delta:runtime:$publicationVersion",
         "org.glavo:arkivo-codec-lzma:compile:$publicationVersion"
     ),
     "arkivo-codec-zstd" to setOf(

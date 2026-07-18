@@ -159,7 +159,6 @@ org.glavo.arkivo.codec.DictionaryRequest
 org.glavo.arkivo.codec.DictionaryRequiredException
 org.glavo.arkivo.codec.RawCompressionDictionary
 org.glavo.arkivo.codec.ResourceOwnership
-org.glavo.arkivo.codec.bcj.BCJTransforms
 org.glavo.arkivo.codec.bzip2.BZip2Codec
 org.glavo.arkivo.codec.bzip2.BZip2Format
 org.glavo.arkivo.codec.deflate.Deflate64Codec
@@ -172,7 +171,6 @@ org.glavo.arkivo.codec.deflate.ZlibCodec
 org.glavo.arkivo.codec.deflate.ZlibDictionary
 org.glavo.arkivo.codec.deflate.ZlibDictionaryRequest
 org.glavo.arkivo.codec.deflate.ZlibFormat
-org.glavo.arkivo.codec.delta.DeltaTransform
 org.glavo.arkivo.codec.lzma.LZMA2Codec
 org.glavo.arkivo.codec.lzma.LZMA2Format
 org.glavo.arkivo.codec.lzma.LZMACodec

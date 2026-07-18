@@ -53,28 +53,6 @@ public final class SevenZipOptionalFormatProbe {
                 1L << 20,
                 new ByteArrayOutputStream()
         ));
-        requireMissingFormat("lzma-raw", () -> SevenZipCompressionFormats.openRawLZMADecoder(
-                new ByteArrayInputStream(new byte[0]),
-                0x5d,
-                1L << 20,
-                0L,
-                ArchiveReadLimits.UNLIMITED
-        ));
-        requireMissingFormat("lzma-raw", () -> SevenZipCompressionFormats.openRawLZMAEncoder(
-                1L << 20,
-                false,
-                new ByteArrayOutputStream()
-        ));
-        requireMissingFormat("lzma2", () -> SevenZipCompressionFormats.openLZMA2Decoder(
-                new ByteArrayInputStream(new byte[0]),
-                1L << 20,
-                0L,
-                ArchiveReadLimits.UNLIMITED
-        ));
-        requireMissingFormat("lzma2", () -> SevenZipCompressionFormats.openLZMA2Encoder(
-                1L << 20,
-                new ByteArrayOutputStream()
-        ));
     }
 
     /// Requires one default-codec operation to fail with the stable missing-format diagnostic.

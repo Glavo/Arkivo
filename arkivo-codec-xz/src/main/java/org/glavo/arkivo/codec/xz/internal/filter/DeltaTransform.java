@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-package org.glavo.arkivo.codec.delta;
+package org.glavo.arkivo.codec.xz.internal.filter;
 
 import org.glavo.arkivo.codec.transform.ByteTransform;
 import org.jetbrains.annotations.NotNullByDefault;
