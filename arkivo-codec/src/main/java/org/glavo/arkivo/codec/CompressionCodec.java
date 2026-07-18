@@ -63,11 +63,30 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// Creates a fresh transport-independent encoder using this immutable configuration.
     ///
     /// Each successful call returns independent mutable state owned by the caller. Closing the engine does not affect
-    /// this codec or engines created by other calls.
+    /// this codec or engines created by other calls. The source-size semantics are equivalent to
+    /// `newEncoder(UNKNOWN_SIZE)`.
     ///
     /// @return a fresh encoder with independent mutable state
     /// @throws IOException if the encoder's resources cannot be initialized
     CompressionEncoder newEncoder() throws IOException;
+
+    /// Creates a fresh encoder and supplies the exact uncompressed source size as operation metadata.
+    ///
+    /// `sourceSize` describes each complete encoding unit produced by the returned encoder. It may be [#UNKNOWN_SIZE]
+    /// when the byte count is not known before encoding begins. Every codec accepts this metadata, but an implementation
+    /// may ignore it when the format cannot record it and the algorithm cannot use it. Implementations that use the size
+    /// may reject input whose actual byte count differs from it.
+    ///
+    /// The default implementation validates and ignores `sourceSize` before creating an ordinary encoder.
+    ///
+    /// @param sourceSize the exact nonnegative input size, or [#UNKNOWN_SIZE] when unknown
+    /// @return a fresh encoder supplied with the source size when the implementation uses it
+    /// @throws IOException              if the encoder's resources cannot be initialized
+    /// @throws IllegalArgumentException if `sourceSize` is less than [#UNKNOWN_SIZE]
+    default CompressionEncoder newEncoder(long sourceSize) throws IOException {
+        requireSourceSize(sourceSize);
+        return newEncoder();
+    }
 
     /// Creates a fresh transport-independent decoder using operation-scoped safety limits.
     ///
@@ -105,6 +124,24 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         return CodecChannelAdapters.newWritableByteChannel(target, ownership, this::newEncoder);
     }
 
+    /// Creates a compressing channel with exact uncompressed source-size metadata and explicit target ownership.
+    ///
+    /// @param target     the channel that receives compressed bytes
+    /// @param sourceSize the exact nonnegative input size, or [#UNKNOWN_SIZE] when unknown
+    /// @param ownership  whether closing the returned channel also closes `target`
+    /// @return a new compressing channel supplied with the source size
+    /// @throws IOException              if the encoder cannot be initialized or ownership cleanup fails
+    /// @throws IllegalArgumentException if `sourceSize` is less than [#UNKNOWN_SIZE]
+    default CompressingWritableByteChannel newWritableByteChannel(
+            WritableByteChannel target,
+            long sourceSize,
+            ResourceOwnership ownership
+    ) throws IOException {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(ownership, "ownership");
+        return CodecChannelAdapters.newWritableByteChannel(target, ownership, () -> newEncoder(sourceSize));
+    }
+
     /// Creates a compressing writable channel that borrows the target channel.
     ///
     /// @param target the channel that receives compressed bytes and remains open after the returned channel closes
@@ -112,6 +149,20 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// @throws IOException if the encoder cannot be initialized
     default CompressingWritableByteChannel newWritableByteChannel(WritableByteChannel target) throws IOException {
         return newWritableByteChannel(target, ResourceOwnership.BORROWED);
+    }
+
+    /// Creates a compressing channel with exact source-size metadata that borrows the target channel.
+    ///
+    /// @param target     the channel that receives compressed bytes and remains open after the returned channel closes
+    /// @param sourceSize the exact nonnegative input size, or [#UNKNOWN_SIZE] when unknown
+    /// @return a new compressing channel supplied with the source size
+    /// @throws IOException              if the encoder cannot be initialized
+    /// @throws IllegalArgumentException if `sourceSize` is less than [#UNKNOWN_SIZE]
+    default CompressingWritableByteChannel newWritableByteChannel(
+            WritableByteChannel target,
+            long sourceSize
+    ) throws IOException {
+        return newWritableByteChannel(target, sourceSize, ResourceOwnership.BORROWED);
     }
 
     /// Creates a decompressing readable channel with operation-scoped safety limits and explicit source ownership.
@@ -193,6 +244,26 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         );
     }
 
+    /// Creates a compressing output stream with exact source-size metadata and explicit target ownership.
+    ///
+    /// @param target     the stream that receives compressed bytes
+    /// @param sourceSize the exact nonnegative input size, or [#UNKNOWN_SIZE] when unknown
+    /// @param ownership  whether closing the returned stream also closes `target`
+    /// @return a new compressing output stream supplied with the source size
+    /// @throws IOException              if the encoder cannot be initialized or ownership cleanup fails
+    /// @throws IllegalArgumentException if `sourceSize` is less than [#UNKNOWN_SIZE]
+    default OutputStream newOutputStream(
+            OutputStream target,
+            long sourceSize,
+            ResourceOwnership ownership
+    ) throws IOException {
+        Objects.requireNonNull(target, "target");
+        Objects.requireNonNull(ownership, "ownership");
+        return StreamChannelAdapters.outputStream(
+                newWritableByteChannel(StreamChannelAdapters.writableChannel(target), sourceSize, ownership)
+        );
+    }
+
     /// Creates a compressing output stream that borrows the target stream.
     ///
     /// @param target the stream that receives compressed bytes and remains open after the returned stream closes
@@ -200,6 +271,17 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
     /// @throws IOException if the encoder cannot be initialized
     default OutputStream newOutputStream(OutputStream target) throws IOException {
         return newOutputStream(target, ResourceOwnership.BORROWED);
+    }
+
+    /// Creates a compressing output stream with exact source-size metadata that borrows the target stream.
+    ///
+    /// @param target     the stream that receives compressed bytes and remains open after the returned stream closes
+    /// @param sourceSize the exact nonnegative input size, or [#UNKNOWN_SIZE] when unknown
+    /// @return a new compressing output stream supplied with the source size
+    /// @throws IOException              if the encoder cannot be initialized
+    /// @throws IllegalArgumentException if `sourceSize` is less than [#UNKNOWN_SIZE]
+    default OutputStream newOutputStream(OutputStream target, long sourceSize) throws IOException {
+        return newOutputStream(target, sourceSize, ResourceOwnership.BORROWED);
     }
 
     /// Creates a decompressing input stream with operation-scoped limits and explicit source ownership.
@@ -403,6 +485,13 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         @Override
         CompressionEncoder.Flushable newEncoder() throws IOException;
 
+        /// Creates a fresh flush-capable encoder with exact source-size operation metadata.
+        @Override
+        default CompressionEncoder.Flushable newEncoder(long sourceSize) throws IOException {
+            CompressionCodec.requireSourceSize(sourceSize);
+            return newEncoder();
+        }
+
         /// Creates a flush-capable compressing channel with explicit target ownership.
         @Override
         default CompressingWritableByteChannel.Flushable newWritableByteChannel(
@@ -414,12 +503,37 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
             return CodecChannelAdapters.newFlushableWritableByteChannel(target, ownership, this::newEncoder);
         }
 
+        /// Creates a flush-capable compressing channel with exact source-size metadata and explicit target ownership.
+        @Override
+        default CompressingWritableByteChannel.Flushable newWritableByteChannel(
+                WritableByteChannel target,
+                long sourceSize,
+                ResourceOwnership ownership
+        ) throws IOException {
+            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(ownership, "ownership");
+            return CodecChannelAdapters.newFlushableWritableByteChannel(
+                    target,
+                    ownership,
+                    () -> newEncoder(sourceSize)
+            );
+        }
+
         /// Creates a flush-capable compressing channel that borrows the target channel.
         @Override
         default CompressingWritableByteChannel.Flushable newWritableByteChannel(
                 WritableByteChannel target
         ) throws IOException {
             return newWritableByteChannel(target, ResourceOwnership.BORROWED);
+        }
+
+        /// Creates a flush-capable compressing channel with exact source-size metadata that borrows the target channel.
+        @Override
+        default CompressingWritableByteChannel.Flushable newWritableByteChannel(
+                WritableByteChannel target,
+                long sourceSize
+        ) throws IOException {
+            return newWritableByteChannel(target, sourceSize, ResourceOwnership.BORROWED);
         }
     }
 
@@ -434,6 +548,13 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         /// Creates a fresh frame-capable encoder.
         @Override
         CompressionEncoder.Framed newEncoder() throws IOException;
+
+        /// Creates a fresh frame-capable encoder with an exact source size for every frame it produces.
+        @Override
+        default CompressionEncoder.Framed newEncoder(long sourceSize) throws IOException {
+            CompressionCodec.requireSourceSize(sourceSize);
+            return newEncoder();
+        }
 
         /// Creates a fresh frame-capable decoder using operation-scoped safety limits.
         @Override
@@ -456,12 +577,37 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
             return CodecChannelAdapters.newFramedWritableByteChannel(target, ownership, this::newEncoder);
         }
 
+        /// Creates a frame-capable compressing channel with an exact source size for every frame and explicit ownership.
+        @Override
+        default CompressingWritableByteChannel.Framed newWritableByteChannel(
+                WritableByteChannel target,
+                long sourceSize,
+                ResourceOwnership ownership
+        ) throws IOException {
+            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(ownership, "ownership");
+            return CodecChannelAdapters.newFramedWritableByteChannel(
+                    target,
+                    ownership,
+                    () -> newEncoder(sourceSize)
+            );
+        }
+
         /// Creates a frame-capable compressing channel that borrows the target channel.
         @Override
         default CompressingWritableByteChannel.Framed newWritableByteChannel(
                 WritableByteChannel target
         ) throws IOException {
             return newWritableByteChannel(target, ResourceOwnership.BORROWED);
+        }
+
+        /// Creates a frame-capable compressing channel with an exact source size for every frame and a borrowed target.
+        @Override
+        default CompressingWritableByteChannel.Framed newWritableByteChannel(
+                WritableByteChannel target,
+                long sourceSize
+        ) throws IOException {
+            return newWritableByteChannel(target, sourceSize, ResourceOwnership.BORROWED);
         }
 
         /// Creates a frame-capable decompressing channel with limits and explicit source ownership.
@@ -586,6 +732,13 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         @Override
         CompressionEncoder.FlushableFramed newEncoder() throws IOException;
 
+        /// Creates a fresh frame- and flush-capable encoder with an exact source size for every frame it produces.
+        @Override
+        default CompressionEncoder.FlushableFramed newEncoder(long sourceSize) throws IOException {
+            CompressionCodec.requireSourceSize(sourceSize);
+            return newEncoder();
+        }
+
         /// Creates a frame- and flush-capable compressing channel with explicit target ownership.
         @Override
         default CompressingWritableByteChannel.FlushableFramed newWritableByteChannel(
@@ -597,12 +750,37 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
             return CodecChannelAdapters.newFlushableFramedWritableByteChannel(target, ownership, this::newEncoder);
         }
 
+        /// Creates a frame- and flush-capable channel with an exact source size for every frame and explicit ownership.
+        @Override
+        default CompressingWritableByteChannel.FlushableFramed newWritableByteChannel(
+                WritableByteChannel target,
+                long sourceSize,
+                ResourceOwnership ownership
+        ) throws IOException {
+            Objects.requireNonNull(target, "target");
+            Objects.requireNonNull(ownership, "ownership");
+            return CodecChannelAdapters.newFlushableFramedWritableByteChannel(
+                    target,
+                    ownership,
+                    () -> newEncoder(sourceSize)
+            );
+        }
+
         /// Creates a frame- and flush-capable compressing channel that borrows the target channel.
         @Override
         default CompressingWritableByteChannel.FlushableFramed newWritableByteChannel(
                 WritableByteChannel target
         ) throws IOException {
             return newWritableByteChannel(target, ResourceOwnership.BORROWED);
+        }
+
+        /// Creates a frame- and flush-capable channel with an exact source size for every frame and a borrowed target.
+        @Override
+        default CompressingWritableByteChannel.FlushableFramed newWritableByteChannel(
+                WritableByteChannel target,
+                long sourceSize
+        ) throws IOException {
+            return newWritableByteChannel(target, sourceSize, ResourceOwnership.BORROWED);
         }
     }
 
@@ -682,66 +860,10 @@ public interface CompressionCodec<C extends CompressionCodec<C>> {
         C withoutDictionary();
     }
 
-    /// Creates encoders that can receive an exact uncompressed source size as operation-scoped metadata.
-    ///
-    /// @param <C> the concrete immutable codec type represented by this configuration
-    /// @param <E> the encoder capability type created by this codec
-    @NotNullByDefault
-    interface PledgedSourceSizeEncoderFactory<
-            C extends CompressionCodec<C>,
-            E extends CompressionEncoder
-            > extends CompressionCodec<C> {
-        /// Creates an encoder for a source with the requested exact byte count.
-        ///
-        /// `pledgedSourceSize` may be `CompressionCodec.UNKNOWN_SIZE` when the size is not known before encoding
-        /// starts.
-        ///
-        /// @param pledgedSourceSize the exact nonnegative input size, or [#UNKNOWN_SIZE] when unknown
-        /// @return a fresh encoder configured with the pledged input size
-        /// @throws IOException              if the encoder's resources cannot be initialized
-        /// @throws IllegalArgumentException if `pledgedSourceSize` is less than [#UNKNOWN_SIZE]
-        E newEncoder(long pledgedSourceSize) throws IOException;
-
-        /// Creates a compressing channel with exact uncompressed source-size metadata and explicit target ownership.
-        ///
-        /// @param target            the channel that receives compressed bytes
-        /// @param pledgedSourceSize the exact nonnegative input size, or [#UNKNOWN_SIZE] when unknown
-        /// @param ownership         whether closing the returned channel also closes `target`
-        /// @return a new compressing channel configured with the pledged input size
-        /// @throws IOException              if the encoder cannot be initialized or ownership cleanup fails
-        /// @throws IllegalArgumentException if `pledgedSourceSize` is less than [#UNKNOWN_SIZE]
-        default CompressingWritableByteChannel newWritableByteChannel(
-                WritableByteChannel target,
-                long pledgedSourceSize,
-                ResourceOwnership ownership
-        ) throws IOException {
-            Objects.requireNonNull(target, "target");
-            Objects.requireNonNull(ownership, "ownership");
-            return CodecChannelAdapters.newWritableByteChannel(
-                    target,
-                    ownership,
-                    () -> newEncoder(pledgedSourceSize)
-            );
-        }
-
-        /// Creates a compressing channel with exact source-size metadata that borrows the target channel.
-        ///
-        /// @param target            the channel that receives compressed bytes and remains open after the returned channel closes
-        /// @param pledgedSourceSize the exact nonnegative input size, or [#UNKNOWN_SIZE] when unknown
-        /// @return a new compressing channel configured with the pledged input size
-        /// @throws IOException              if the encoder cannot be initialized
-        /// @throws IllegalArgumentException if `pledgedSourceSize` is less than [#UNKNOWN_SIZE]
-        default CompressingWritableByteChannel newWritableByteChannel(
-                WritableByteChannel target,
-                long pledgedSourceSize
-        ) throws IOException {
-            return newWritableByteChannel(target, pledgedSourceSize, ResourceOwnership.BORROWED);
-        }
-
-        /// Creates an encoder without a known source size.
-        @Override
-        default E newEncoder() throws IOException {
-            return newEncoder(UNKNOWN_SIZE);
+    /// Validates known or unknown exact source-size metadata.
+    private static void requireSourceSize(long sourceSize) {
+        if (sourceSize < UNKNOWN_SIZE) {
+            throw new IllegalArgumentException("sourceSize must be non-negative or UNKNOWN_SIZE");
         }
     }
 }

@@ -144,7 +144,6 @@ org.glavo.arkivo.codec.CompressionCodec$Flushable
 org.glavo.arkivo.codec.CompressionCodec$FlushableFramed
 org.glavo.arkivo.codec.CompressionCodec$Framed
 org.glavo.arkivo.codec.CompressionCodec$LevelConfigurable
-org.glavo.arkivo.codec.CompressionCodec$PledgedSourceSizeEncoderFactory
 org.glavo.arkivo.codec.CompressionCodec$StrategyConfigurable
 org.glavo.arkivo.codec.CompressionDecoder
 org.glavo.arkivo.codec.CompressionDecoder$DictionaryAware

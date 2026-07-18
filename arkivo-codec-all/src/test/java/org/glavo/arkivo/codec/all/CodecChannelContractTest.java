@@ -7,6 +7,7 @@ import org.glavo.arkivo.codec.ResourceOwnership;
 import org.glavo.arkivo.codec.CodecTransferResult;
 import org.glavo.arkivo.codec.CodecResult;
 import org.glavo.arkivo.codec.CompressionCodec;
+import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.glavo.arkivo.codec.CompressionFormats;
 import org.glavo.arkivo.codec.RawCompressionDictionary;
@@ -822,28 +823,29 @@ final class CodecChannelContractTest {
         }
     }
 
-    /// Verifies pledged source-size subinterfaces encode and enforce exact byte counts consistently.
+    /// Verifies every codec accepts exact source-size metadata and size-aware codecs enforce it.
     @Test
-    void enforcesPledgedSourceSizes() throws IOException {
-        Set<String> pledgedSizeCodecs = Set.of("lzma", "lzma-raw", "zstd");
+    void acceptsExactSourceSizesAcrossAllCodecs() throws IOException {
+        Set<String> sizeAwareCodecs = Set.of("lzma", "lzma-raw", "zstd");
         byte[] input = (
-                "pledged source size contract 0123456789abcdef;"
+                "exact source size contract 0123456789abcdef;"
         ).repeat(512).getBytes(StandardCharsets.UTF_8);
 
         for (CompressionFormat format : CompressionFormats.installed()) {
             CompressionCodec<?> codec = format.defaultCodec();
-            boolean expected = pledgedSizeCodecs.contains(codec.format().name());
-            assertEquals(
-                    expected,
-                    codec instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?, ?>,
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> {
+                        try (CompressionEncoder ignored =
+                                     codec.newEncoder(CompressionCodec.UNKNOWN_SIZE - 1L)) {
+                            ignored.reset();
+                        }
+                    },
                     codec.format().name()
             );
-            if (!(codec instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?, ?> pledgedCodec)) {
-                continue;
-            }
 
             ByteArrayOutputStream compressed = new ByteArrayOutputStream();
-            try (CompressingWritableByteChannel encoder = pledgedCodec.newWritableByteChannel(
+            try (CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
                     Channels.newChannel(compressed),
                     input.length,
                     ResourceOwnership.BORROWED
@@ -860,20 +862,22 @@ final class CodecChannelContractTest {
             );
             assertArrayEquals(input, decoded.toByteArray(), codec.format().name());
 
-            assertThrows(
-                    Exception.class,
-                    () -> {
-                        try (CompressingWritableByteChannel encoder = pledgedCodec.newWritableByteChannel(
-                                Channels.newChannel(new ByteArrayOutputStream()),
-                                input.length - 1L,
-                                ResourceOwnership.BORROWED
-                        )) {
-                            writeAll(encoder, input);
-                            encoder.finish();
-                        }
-                    },
-                    codec.format().name()
-            );
+            if (sizeAwareCodecs.contains(codec.format().name())) {
+                assertThrows(
+                        IOException.class,
+                        () -> {
+                            try (CompressingWritableByteChannel encoder = codec.newWritableByteChannel(
+                                    Channels.newChannel(new ByteArrayOutputStream()),
+                                    input.length - 1L,
+                                    ResourceOwnership.BORROWED
+                            )) {
+                                writeAll(encoder, input);
+                                encoder.finish();
+                            }
+                        },
+                        codec.format().name()
+                );
+            }
         }
     }
 

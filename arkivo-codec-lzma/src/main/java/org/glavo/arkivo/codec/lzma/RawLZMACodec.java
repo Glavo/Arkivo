@@ -21,11 +21,10 @@ import java.util.Objects;
 /// and either stops at an enabled end marker or at the configured decoded size. When neither boundary is available,
 /// exhaustion of the surrounding input is not by itself a successful raw LZMA termination.
 ///
-/// Codec values are safe for concurrent use and created engines are independent mutable sessions. A pledged encoder
-/// source size, when present, is exact and is checked while accepting input and during finalization.
+/// Codec values are safe for concurrent use and created engines are independent mutable sessions. An encoder source
+/// size, when known, is exact and is checked while accepting input and during finalization.
 @NotNullByDefault
-public final class RawLZMACodec
-        implements CompressionCodec.PledgedSourceSizeEncoderFactory<RawLZMACodec, CompressionEncoder> {
+public final class RawLZMACodec implements CompressionCodec<RawLZMACodec> {
     /// The default dictionary size used for raw LZMA.
     public static final int DEFAULT_DICTIONARY_SIZE = 1 << 20;
 
@@ -136,11 +135,17 @@ public final class RawLZMACodec
                 : new RawLZMACodec(properties, endMarker, decodedSize);
     }
 
+    /// Creates a raw LZMA encoder without a known source size.
+    @Override
+    public CompressionEncoder newEncoder() {
+        return newEncoder(UNKNOWN_SIZE);
+    }
+
     /// Creates a raw LZMA encoder with optional exact source-size metadata.
     @Override
-    public CompressionEncoder newEncoder(long pledgedSourceSize) {
-        requirePledgedSourceSize(pledgedSourceSize);
-        return new LZMARawEncoder(properties, pledgedSourceSize, endMarker);
+    public CompressionEncoder newEncoder(long sourceSize) {
+        requireSourceSize(sourceSize);
+        return new LZMARawEncoder(properties, sourceSize, endMarker);
     }
 
     /// Creates a raw LZMA decoder with operation-scoped safety limits.
@@ -154,12 +159,10 @@ public final class RawLZMACodec
         );
     }
 
-    /// Validates a known or unknown pledged source size.
-    private static void requirePledgedSourceSize(long pledgedSourceSize) {
-        if (pledgedSourceSize < UNKNOWN_SIZE) {
-            throw new IllegalArgumentException(
-                    "pledgedSourceSize must be non-negative or UNKNOWN_SIZE"
-            );
+    /// Validates a known or unknown exact source size.
+    private static void requireSourceSize(long sourceSize) {
+        if (sourceSize < UNKNOWN_SIZE) {
+            throw new IllegalArgumentException("sourceSize must be non-negative or UNKNOWN_SIZE");
         }
     }
 }

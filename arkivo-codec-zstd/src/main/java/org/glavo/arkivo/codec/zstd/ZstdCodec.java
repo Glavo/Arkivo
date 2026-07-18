@@ -3,13 +3,10 @@
 
 package org.glavo.arkivo.codec.zstd;
 
-import org.glavo.arkivo.codec.ResourceOwnership;
-import org.glavo.arkivo.codec.CompressingWritableByteChannel;
 import org.glavo.arkivo.codec.CompressionCodec;
 import org.glavo.arkivo.codec.CompressionDecoder;
 import org.glavo.arkivo.codec.CompressionEncoder;
 import org.glavo.arkivo.codec.DecompressionLimits;
-import org.glavo.arkivo.codec.spi.CodecChannelAdapters;
 import org.glavo.arkivo.codec.spi.CompressionDecoderSupport;
 import org.glavo.arkivo.codec.zstd.internal.ZstdDecoder;
 import org.glavo.arkivo.codec.zstd.internal.ZstdEncoder;
@@ -19,7 +16,6 @@ import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
 /// Provides an immutable Zstandard configuration and transport-independent frame engines.
@@ -30,13 +26,12 @@ import java.util.Objects;
 /// frame.
 ///
 /// Standard framing carries a magic value and may carry content size and a full-dictionary identifier. Magicless
-/// framing omits only the magic value and must be selected out of band. A pledged source size is exact even when header
+/// framing omits only the magic value and must be selected out of band. A known source size is exact even when header
 /// content-size emission is disabled.
 @NotNullByDefault
 public final class ZstdCodec
         implements CompressionCodec.LevelConfigurable<ZstdCodec>,
         CompressionCodec.DictionaryConfigurable<ZstdCodec, ZstdDictionary>,
-        CompressionCodec.PledgedSourceSizeEncoderFactory<ZstdCodec, CompressionEncoder.FlushableFramed>,
         CompressionCodec.FlushableFramed<ZstdCodec> {
     /// The minimum compression level accepted by Zstandard 1.x.
     public static final int MINIMUM_COMPRESSION_LEVEL = -131_072;
@@ -150,7 +145,7 @@ public final class ZstdCodec
     /// The requested worker overlap logarithm, or zero.
     private final int overlapLog;
 
-    /// Whether known pledged source sizes are emitted.
+    /// Whether known source sizes are emitted.
     private final boolean contentSize;
 
     /// Whether trained dictionary identifiers are emitted.
@@ -373,9 +368,9 @@ public final class ZstdCodec
         return overlapLog;
     }
 
-    /// Returns whether known pledged source sizes are emitted.
+    /// Returns whether known source sizes are emitted.
     ///
-    /// @return {@code true} if a known pledged size is written to each frame header
+    /// @return {@code true} if a known source size is written to each frame header
     public boolean emitsContentSize() {
         return contentSize;
     }
@@ -503,39 +498,14 @@ public final class ZstdCodec
         return newEncoder(UNKNOWN_SIZE);
     }
 
-    /// Creates a framed encoder with optional exact source-size metadata.
+    /// Creates a framed encoder with optional exact source-size metadata for every frame.
     @Override
-    public CompressionEncoder.FlushableFramed newEncoder(long pledgedSourceSize) throws IOException {
-        requirePledgedSourceSize(pledgedSourceSize);
+    public CompressionEncoder.FlushableFramed newEncoder(long sourceSize) throws IOException {
+        requireSourceSize(sourceSize);
         return new ZstdEncoder(
-                createEncoderParameters(pledgedSourceSize),
+                createEncoderParameters(sourceSize),
                 frameFormat == ZstdFrameFormat.MAGICLESS
         );
-    }
-
-    /// Creates a frame- and flush-capable compressing channel with exact source-size metadata and explicit ownership.
-    @Override
-    public CompressingWritableByteChannel.FlushableFramed newWritableByteChannel(
-            WritableByteChannel target,
-            long pledgedSourceSize,
-            ResourceOwnership ownership
-    ) throws IOException {
-        Objects.requireNonNull(target, "target");
-        Objects.requireNonNull(ownership, "ownership");
-        return CodecChannelAdapters.newFlushableFramedWritableByteChannel(
-                target,
-                ownership,
-                () -> newEncoder(pledgedSourceSize)
-        );
-    }
-
-    /// Creates a frame- and flush-capable compressing channel with exact source-size metadata and a borrowed target.
-    @Override
-    public CompressingWritableByteChannel.FlushableFramed newWritableByteChannel(
-            WritableByteChannel target,
-            long pledgedSourceSize
-    ) throws IOException {
-        return newWritableByteChannel(target, pledgedSourceSize, ResourceOwnership.BORROWED);
     }
 
     /// Creates an unrestricted dictionary-aware framed decoder.
@@ -599,12 +569,10 @@ public final class ZstdCodec
         }
     }
 
-    /// Validates a known or unknown pledged source size.
-    private static void requirePledgedSourceSize(long pledgedSourceSize) {
-        if (pledgedSourceSize < UNKNOWN_SIZE) {
-            throw new IllegalArgumentException(
-                    "pledgedSourceSize must be non-negative or UNKNOWN_SIZE"
-            );
+    /// Validates a known or unknown exact source size.
+    private static void requireSourceSize(long sourceSize) {
+        if (sourceSize < UNKNOWN_SIZE) {
+            throw new IllegalArgumentException("sourceSize must be non-negative or UNKNOWN_SIZE");
         }
     }
 
@@ -937,9 +905,9 @@ public final class ZstdCodec
             return this;
         }
 
-        /// Selects whether known pledged sizes are written into frame headers.
+        /// Selects whether known source sizes are written into frame headers.
         ///
-        /// @param contentSize whether to emit an available pledged source size
+        /// @param contentSize whether to emit an available source size
         /// @return this builder
         public Builder contentSize(boolean contentSize) {
             this.contentSize = contentSize;

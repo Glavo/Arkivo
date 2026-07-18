@@ -97,12 +97,9 @@ final class DirectByteBufferCodecSupport {
         decode(codec, source, target, limits, true);
     }
 
-    /// Creates an encoder and supplies the exact one-shot source size when the codec supports it.
+    /// Creates an encoder and supplies the exact one-shot source size.
     private static CompressionEncoder newEncoder(CompressionCodec<?> codec, long sourceSize) throws IOException {
-        if (codec instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?, ?> pledgedSourceSizeCodec) {
-            return pledgedSourceSizeCodec.newEncoder(sourceSize);
-        }
-        return codec.newEncoder();
+        return codec.newEncoder(sourceSize);
     }
 
     /// Drives one encoder into dynamically growing output.

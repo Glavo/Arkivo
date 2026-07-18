@@ -14,7 +14,7 @@
 /// positions by actual progress and do not retain caller buffers after returning. These codecs expose terminal
 /// `finish` only; no public frame or nonterminal flush capability is advertised.
 ///
-/// A pledged source size is exact when present: accepting more bytes or finishing after fewer bytes is an I/O error.
+/// A known source size is exact: accepting more bytes or finishing after fewer bytes is an I/O error.
 /// Decoders reject dictionary sizes above the operation-scoped history or memory bound and enforce decoded-output
 /// limits. Malformed properties, impossible match distances, truncation, size mismatches, and limit violations are
 /// reported as I/O exceptions. `reset` abandons a session and restores the engine's original immutable configuration.

@@ -20,6 +20,7 @@ import java.nio.channels.WritableByteChannel;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -151,7 +152,40 @@ final class CompressionChannelContextTest {
         assertFalse(CODEC instanceof CompressionCodec.LevelConfigurable<?>);
         assertFalse(CODEC instanceof CompressionCodec.StrategyConfigurable<?>);
         assertFalse(CODEC instanceof CompressionCodec.DictionaryConfigurable<?, ?>);
-        assertFalse(CODEC instanceof CompressionCodec.PledgedSourceSizeEncoderFactory<?, ?>);
+    }
+
+    /// Verifies every codec accepts source-size metadata while capability subinterfaces preserve covariant types.
+    @Test
+    void acceptsSourceSizeMetadataThroughGenericFactories() throws IOException {
+        try (CompressionEncoder.FlushableFramed ignored = CODEC.newEncoder(3L)) {
+            assertInstanceOf(IdentityEncoder.class, ignored);
+        }
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> {
+                    try (CompressionEncoder ignored =
+                                 CODEC.newEncoder(CompressionCodec.UNKNOWN_SIZE - 1L)) {
+                        ignored.reset();
+                    }
+                }
+        );
+
+        byte[] input = {1, 2, 3};
+        ByteArrayOutputStream channelBytes = new ByteArrayOutputStream();
+        try (CompressingWritableByteChannel.FlushableFramed encoder = CODEC.newWritableByteChannel(
+                Channels.newChannel(channelBytes),
+                input.length
+        )) {
+            assertEquals(input.length, encoder.write(ByteBuffer.wrap(input)));
+            encoder.finish();
+        }
+        assertArrayEquals(input, channelBytes.toByteArray());
+
+        ByteArrayOutputStream streamBytes = new ByteArrayOutputStream();
+        try (var encoder = CODEC.newOutputStream(streamBytes, input.length)) {
+            encoder.write(input);
+        }
+        assertArrayEquals(input, streamBytes.toByteArray());
     }
 
     /// Implements a writable byte-array channel that fails its first close attempt.

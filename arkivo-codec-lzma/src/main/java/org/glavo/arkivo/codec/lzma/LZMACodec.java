@@ -17,14 +17,13 @@ import java.util.Objects;
 
 /// Provides an immutable LZMA-alone configuration and transport-independent engines.
 ///
-/// The LZMA-alone header stores the packed literal/position properties, dictionary size, and either an exact pledged
-/// source size or the all-ones unknown-size value. When the size is unknown, the encoder writes an LZMA end marker.
+/// The LZMA-alone header stores the packed literal/position properties, dictionary size, and either an exact source size
+/// or the all-ones unknown-size value. When the size is unknown, the encoder writes an LZMA end marker.
 ///
-/// Codec values are safe for concurrent use and created engines are independent mutable sessions. A known pledged size
-/// is exact: encoding beyond it or finalizing before consuming it fails.
+/// Codec values are safe for concurrent use and created engines are independent mutable sessions. A known source size is
+/// exact: encoding beyond it or finalizing before consuming it fails.
 @NotNullByDefault
-public final class LZMACodec
-        implements CompressionCodec.PledgedSourceSizeEncoderFactory<LZMACodec, CompressionEncoder> {
+public final class LZMACodec implements CompressionCodec<LZMACodec> {
     /// The default LZMA dictionary size used for encoding.
     public static final int DEFAULT_DICTIONARY_SIZE = 1 << 20;
 
@@ -81,11 +80,17 @@ public final class LZMACodec
         return withProperties(properties.withDictionarySize(dictionarySize));
     }
 
+    /// Creates an LZMA-alone encoder without a known source size.
+    @Override
+    public CompressionEncoder newEncoder() {
+        return newEncoder(UNKNOWN_SIZE);
+    }
+
     /// Creates an LZMA-alone encoder with optional exact source-size metadata.
     @Override
-    public CompressionEncoder newEncoder(long pledgedSourceSize) {
-        requirePledgedSourceSize(pledgedSourceSize);
-        return new LZMAEncoder(properties, pledgedSourceSize);
+    public CompressionEncoder newEncoder(long sourceSize) {
+        requireSourceSize(sourceSize);
+        return new LZMAEncoder(properties, sourceSize);
     }
 
     /// Creates an LZMA-alone decoder with operation-scoped safety limits.
@@ -98,12 +103,10 @@ public final class LZMACodec
         );
     }
 
-    /// Validates a known or unknown pledged source size.
-    private static void requirePledgedSourceSize(long pledgedSourceSize) {
-        if (pledgedSourceSize < UNKNOWN_SIZE) {
-            throw new IllegalArgumentException(
-                    "pledgedSourceSize must be non-negative or UNKNOWN_SIZE"
-            );
+    /// Validates a known or unknown exact source size.
+    private static void requireSourceSize(long sourceSize) {
+        if (sourceSize < UNKNOWN_SIZE) {
+            throw new IllegalArgumentException("sourceSize must be non-negative or UNKNOWN_SIZE");
         }
     }
 }

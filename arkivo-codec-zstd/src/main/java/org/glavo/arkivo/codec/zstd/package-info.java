@@ -15,12 +15,12 @@
 ///
 /// Encoder `flush` completes the current compressed block without ending the frame. `finishFrame` writes the final
 /// block and optional checksum, then preserves the configuration for another frame; terminal `finish` ends the complete
-/// session. A pledged source size is exact and, when enabled, may be written to the frame header.
+/// session. A known source size is exact and, when enabled, may be written to the frame header.
 ///
 /// Full dictionaries carry an identifier that a decoder can request from a standard frame; raw-content dictionaries
 /// must be configured out of band. Decoder limits bound output and the declared history window, and checksum verification
 /// is configurable independently of checksum emission. Malformed or truncated frames, checksum failures, missing or
-/// mismatched dictionaries, pledged-size mismatches, and limit violations are reported as I/O exceptions. `reset`
+/// mismatched dictionaries, source-size mismatches, and limit violations are reported as I/O exceptions. `reset`
 /// abandons the current frame before engine reuse.
 @NotNullByDefault
 package org.glavo.arkivo.codec.zstd;
