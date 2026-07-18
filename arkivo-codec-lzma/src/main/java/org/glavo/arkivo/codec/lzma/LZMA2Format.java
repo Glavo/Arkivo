@@ -6,7 +6,10 @@ package org.glavo.arkivo.codec.lzma;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.jetbrains.annotations.NotNullByDefault;
 
-/// Describes the discoverable raw LZMA2 compression format.
+/// Describes the registered raw LZMA2 compression format.
+///
+/// Raw LZMA2 has no reliable fixed signature and does not carry its dictionary size. This immutable descriptor is
+/// intended for explicit selection by a container that supplies the required properties.
 @NotNullByDefault
 public final class LZMA2Format implements CompressionFormat {
     /// The stable raw LZMA2 format name.
@@ -20,6 +23,8 @@ public final class LZMA2Format implements CompressionFormat {
     }
 
     /// Returns the canonical raw LZMA2 format instance.
+    ///
+    /// @return the canonical format instance
     public static LZMA2Format instance() {
         return INSTANCE;
     }

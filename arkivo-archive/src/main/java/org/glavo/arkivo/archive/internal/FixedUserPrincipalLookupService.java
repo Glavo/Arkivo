@@ -21,6 +21,9 @@ public final class FixedUserPrincipalLookupService extends UserPrincipalLookupSe
     private final GroupPrincipal group;
 
     /// Creates a lookup service for the given fixed principals.
+    ///
+    /// @param user the only supported user principal
+    /// @param group the only supported group principal
     public FixedUserPrincipalLookupService(UserPrincipal user, GroupPrincipal group) {
         this.user = Objects.requireNonNull(user, "user");
         this.group = Objects.requireNonNull(group, "group");
@@ -47,11 +50,17 @@ public final class FixedUserPrincipalLookupService extends UserPrincipalLookupSe
     }
 
     /// Requires the given principal to have the fixed user name.
+    ///
+    /// @param principal the user principal whose name is checked
+    /// @throws UserPrincipalNotFoundException if the principal name differs from the fixed user name
     public void requireUser(UserPrincipal principal) throws UserPrincipalNotFoundException {
         lookupPrincipalByName(Objects.requireNonNull(principal, "principal").getName());
     }
 
     /// Requires the given principal to have the fixed group name.
+    ///
+    /// @param principal the group principal whose name is checked
+    /// @throws UserPrincipalNotFoundException if the principal name differs from the fixed group name
     public void requireGroup(GroupPrincipal principal) throws UserPrincipalNotFoundException {
         lookupPrincipalByGroupName(Objects.requireNonNull(principal, "principal").getName());
     }

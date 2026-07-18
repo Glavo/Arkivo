@@ -119,6 +119,18 @@ public final class ZipArkivoFileSystemConfig {
     private final ArchiveReadLimits readLimits;
 
     /// Creates parsed ZIP file system configuration.
+    ///
+    /// @param openOptions the backing archive open options; this set is copied
+    /// @param passwordProvider the entry password provider, or `null` when unavailable
+    /// @param defaultEncryption the encryption for new entries without an explicit override
+    /// @param splitSize the maximum output volume size, or [#NO_SPLIT_SIZE]
+    /// @param legacyCharsetDetector the detector for names and comments without Unicode metadata
+    /// @param threadSafety the synchronization strategy
+    /// @param editStorage the edit storage override, or `null` to select a default
+    /// @param commitTarget the publication target override, or `null` to select a default
+    /// @throws NullPointerException if `openOptions`, an option element, `defaultEncryption`,
+    /// `legacyCharsetDetector`, or `threadSafety` is `null`
+    /// @throws IllegalArgumentException if the open options conflict or `splitSize` is outside the ZIP limits
     public ZipArkivoFileSystemConfig(
             Set<? extends OpenOption> openOptions,
             @Nullable ArkivoPasswordProvider passwordProvider,
@@ -179,16 +191,31 @@ public final class ZipArkivoFileSystemConfig {
     }
 
     /// Parses ZIP file system configuration from archive options.
+    ///
+    /// @param options the generic archive options
+    /// @return normalized read-oriented ZIP configuration
+    /// @throws NullPointerException if `options` is `null`
+    /// @throws IllegalArgumentException if an option value is invalid or the open options conflict
     public static ZipArkivoFileSystemConfig fromOptions(ArchiveOptions options) {
         return fromOptions(options, DEFAULT_READ_OPEN_OPTIONS);
     }
 
     /// Parses ZIP streaming writer configuration from archive options.
+    ///
+    /// @param options the generic archive options
+    /// @return normalized write-oriented ZIP configuration
+    /// @throws NullPointerException if `options` is `null`
+    /// @throws IllegalArgumentException if an option value is invalid or the open options conflict
     public static ZipArkivoFileSystemConfig fromWriterOptions(ArchiveOptions options) {
         return fromOptions(options, DEFAULT_WRITE_OPEN_OPTIONS);
     }
 
     /// Parses ZIP complete-rewrite update configuration from archive options.
+    ///
+    /// @param options the generic archive options
+    /// @return normalized update-oriented ZIP configuration
+    /// @throws NullPointerException if `options` is `null`
+    /// @throws IllegalArgumentException if an option value is invalid or the open options conflict
     public static ZipArkivoFileSystemConfig fromUpdateOptions(ArchiveOptions options) {
         return fromOptions(options, DEFAULT_UPDATE_OPEN_OPTIONS);
     }
@@ -239,6 +266,10 @@ public final class ZipArkivoFileSystemConfig {
     }
 
     /// Creates ZIP configuration from a strongly typed read operation.
+    ///
+    /// @param options the strongly typed ZIP read options
+    /// @return normalized read-only file-system configuration
+    /// @throws NullPointerException if `options` is `null`
     public static ZipArkivoFileSystemConfig fromReadOptions(ZipArchiveOptions.Read options) {
         Objects.requireNonNull(options, "options");
         return new ZipArkivoFileSystemConfig(
@@ -255,6 +286,10 @@ public final class ZipArkivoFileSystemConfig {
     }
 
     /// Creates ZIP configuration from a strongly typed creation operation.
+    ///
+    /// @param options the strongly typed ZIP creation options
+    /// @return normalized forward-write file-system configuration
+    /// @throws NullPointerException if `options` is `null`
     public static ZipArkivoFileSystemConfig fromCreateOptions(ZipArchiveOptions.Create options) {
         Objects.requireNonNull(options, "options");
         return new ZipArkivoFileSystemConfig(
@@ -271,6 +306,10 @@ public final class ZipArkivoFileSystemConfig {
     }
 
     /// Creates ZIP configuration from a strongly typed update operation.
+    ///
+    /// @param options the strongly typed ZIP update options
+    /// @return normalized complete-rewrite update configuration
+    /// @throws NullPointerException if `options` is `null`
     public static ZipArkivoFileSystemConfig fromUpdateOptions(ZipArchiveOptions.Update options) {
         Objects.requireNonNull(options, "options");
         return new ZipArkivoFileSystemConfig(
@@ -287,71 +326,99 @@ public final class ZipArkivoFileSystemConfig {
     }
 
     /// Returns the open options used to open the backing archive path.
+    ///
+    /// @return the immutable normalized open-option set
     public @Unmodifiable Set<OpenOption> openOptions() {
         return openOptions;
     }
 
     /// Returns whether the archive file should be opened for forward-only ZIP writes.
+    ///
+    /// @return `true` when the normalized options contain [StandardOpenOption#WRITE]
     public boolean archiveWritable() {
         return openOptions.contains(StandardOpenOption.WRITE);
     }
 
     /// Returns the provider used to decrypt encrypted ZIP entries.
+    ///
+    /// @return the password provider, or `null` when unavailable
     public @Nullable ArkivoPasswordProvider passwordProvider() {
         return passwordProvider;
     }
 
     /// Returns the encryption method used for new entries that do not override encryption.
+    ///
+    /// @return the default entry encryption method
     public ZipEncryption defaultEncryption() {
         return defaultEncryption;
     }
 
     /// Returns the maximum size of each output volume, or `NO_SPLIT_SIZE` when split output is disabled.
+    ///
+    /// @return the maximum volume size, or [#NO_SPLIT_SIZE]
     public long splitSize() {
         return splitSize;
     }
 
     /// Returns the detector used to select charsets for legacy ZIP entry names and comments.
+    ///
+    /// @return the legacy metadata charset detector
     public ArchiveMetadataCharsetDetector legacyCharsetDetector() {
         return legacyCharsetDetector;
     }
 
     /// Returns the requested ZIP file system thread-safety strategy.
+    ///
+    /// @return the synchronization strategy
     public ArkivoFileSystemThreadSafety threadSafety() {
         return threadSafety;
     }
 
     /// Returns the configured edit storage override, or `null` when the file system should choose a default.
+    ///
+    /// @return the edit storage override, or `null` to select a default
     public @Nullable ArkivoEditStorage editStorage() {
         return editStorage;
     }
 
     /// Returns the configured commit target override, or `null` when the file system should choose a default.
+    ///
+    /// @return the publication target override, or `null` to select a default
     public @Nullable ArkivoCommitTarget commitTarget() {
         return commitTarget;
     }
 
-    /// Returns the maximum accepted logical entry count, or NO_READ_LIMIT.
+    /// Returns the maximum accepted logical entry count, or `NO_READ_LIMIT`.
+    ///
+    /// @return the entry-count limit, or [#NO_READ_LIMIT]
     public long maximumEntryCount() {
         return readLimits.maximumEntryCount();
     }
 
-    /// Returns the maximum accepted logical size of one entry, or NO_READ_LIMIT.
+    /// Returns the maximum accepted logical size of one entry, or `NO_READ_LIMIT`.
+    ///
+    /// @return the per-entry logical size limit, or [#NO_READ_LIMIT]
     public long maximumEntrySize() {
         return readLimits.maximumEntrySize();
     }
 
-    /// Returns the maximum accepted sum of logical entry sizes, or NO_READ_LIMIT.
+    /// Returns the maximum accepted sum of logical entry sizes, or `NO_READ_LIMIT`.
+    ///
+    /// @return the aggregate logical entry-size limit, or [#NO_READ_LIMIT]
     public long maximumTotalEntrySize() {
         return readLimits.maximumTotalEntrySize();
     }
 
-    /// Returns the maximum cumulative archive metadata size, or NO_READ_LIMIT.
+    /// Returns the maximum cumulative archive metadata size, or `NO_READ_LIMIT`.
+    ///
+    /// @return the cumulative metadata-size limit, or [#NO_READ_LIMIT]
     public long maximumMetadataSize() {
         return readLimits.maximumMetadataSize();
     }
 
     /// Returns all resource limits for the archive read portion of this operation.
+    ///
+    /// @return the immutable archive read limits
     public ArchiveReadLimits readLimits() {
         return readLimits;
     }

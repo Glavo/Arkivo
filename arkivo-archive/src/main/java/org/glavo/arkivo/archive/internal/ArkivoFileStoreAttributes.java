@@ -17,6 +17,12 @@ public final class ArkivoFileStoreAttributes {
     }
 
     /// Reads a common file store attribute from the given file store.
+    ///
+    /// @param fileStore the file store queried for the resolved attribute
+    /// @param attribute the {@code name} or {@code basic:name} attribute identifier
+    /// @return the attribute value
+    /// @throws IOException if the underlying space attribute cannot be read
+    /// @throws UnsupportedOperationException if the view or attribute name is unsupported
     public static Object get(FileStore fileStore, String attribute) throws IOException {
         Objects.requireNonNull(fileStore, "fileStore");
         Objects.requireNonNull(attribute, "attribute");

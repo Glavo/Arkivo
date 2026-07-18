@@ -28,6 +28,12 @@ public final class CodecTransferSupport {
     }
 
     /// Compresses bytes between channels without taking ownership of either channel.
+    ///
+    /// @param codec the immutable codec configuration
+    /// @param source the borrowed uncompressed source read through end of input
+    /// @param target the borrowed channel receiving the complete encoded stream
+    /// @return the total uncompressed input and compressed output byte counts
+    /// @throws IOException if reading, encoding, finalization, or output fails or makes no progress
     public static CodecTransferResult compress(
             CompressionCodec<?> codec,
             ReadableByteChannel source,
@@ -46,6 +52,13 @@ public final class CodecTransferSupport {
     }
 
     /// Decompresses bytes between channels without taking ownership of either channel.
+    ///
+    /// @param codec the immutable codec configuration
+    /// @param source the borrowed compressed source read through the encoding boundary
+    /// @param target the borrowed channel receiving every decoded byte
+    /// @param limits the operation-scoped output, window, and memory limits
+    /// @return the logically consumed compressed input and decoded output byte counts
+    /// @throws IOException if reading, decoding, or output fails or makes no progress
     public static CodecTransferResult decompress(
             CompressionCodec<?> codec,
             ReadableByteChannel source,
@@ -64,6 +77,11 @@ public final class CodecTransferSupport {
     }
 
     /// Transfers every decoded byte without closing the decoder or target channel.
+    ///
+    /// @param decoder the open borrowed decoder channel
+    /// @param target the borrowed channel receiving every decoded byte
+    /// @return the decoder's cumulative logical input count and this transfer's decoded output count
+    /// @throws IOException if decoding or target output fails or makes no progress
     public static CodecTransferResult decompress(
             DecompressingReadableByteChannel decoder,
             WritableByteChannel target

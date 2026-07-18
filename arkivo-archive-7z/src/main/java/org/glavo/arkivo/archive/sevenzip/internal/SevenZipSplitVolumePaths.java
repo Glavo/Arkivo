@@ -48,6 +48,10 @@ public final class SevenZipSplitVolumePaths {
     }
 
     /// Returns conventional split volume paths for a first-volume path, or `null` for a single-volume path.
+    ///
+    /// @param firstVolumePath the candidate first-volume path
+    /// @return immutable existing volume paths in numeric order, or `null` when split layout is not established
+    /// @throws IOException if candidate volume metadata cannot be inspected or the volume number range is exhausted
     public static @Nullable @Unmodifiable List<Path> discover(Path firstVolumePath) throws IOException {
         Path fileNamePath = firstVolumePath.getFileName();
         if (fileNamePath == null || splitVolumeNumber(fileNamePath.toString()) != FIRST_VOLUME_NUMBER) {

@@ -10,6 +10,9 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.util.List;
 
 /// Describes the headerless LZ4 block format whose sizes are supplied out of band.
+///
+/// Raw blocks have no fixed signature and cannot be distinguished by prefix probing. This immutable descriptor is for
+/// explicit selection by an embedding container or protocol.
 @NotNullByDefault
 public final class LZ4BlockFormat implements CompressionFormat {
     /// The stable raw LZ4 block format name.
@@ -23,6 +26,8 @@ public final class LZ4BlockFormat implements CompressionFormat {
     }
 
     /// Returns the canonical raw LZ4 block format instance.
+    ///
+    /// @return the shared immutable format descriptor
     public static LZ4BlockFormat instance() {
         return INSTANCE;
     }

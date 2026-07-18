@@ -12,6 +12,14 @@ import java.nio.channels.ClosedChannelException;
 import java.util.Objects;
 
 /// Applies a stateful preprocessing filter while reading decoded bytes.
+///
+/// This stream is stateful and not safe for concurrent use. Reads may block while obtaining enough lookahead for the
+/// transform. At upstream end-of-input, an incomplete suffix retained by the transform is returned unchanged before this
+/// stream reports `-1`.
+///
+/// An `IOException` from the input or an invalid/no-progress transform is retained and rethrown by later reads. Closing
+/// does not drain input; it marks this stream closed and closes the upstream stream. If upstream close fails, a later
+/// [#close()] retries it.
 @NotNullByDefault
 public final class TransformingInputStream extends InputStream {
     /// The bounded working-buffer size.
@@ -50,7 +58,10 @@ public final class TransformingInputStream extends InputStream {
     /// Whether the upstream stream has closed successfully.
     private boolean inputClosed;
 
-    /// Creates a filtering input stream over an upstream coder.
+    /// Creates a filtering input stream that owns the upstream coder stream.
+    ///
+    /// @param input the upstream coder stream to read and close
+    /// @param transform the stateful transform to apply to bytes read from `input`
     public TransformingInputStream(InputStream input, ByteTransform transform) {
         this.input = Objects.requireNonNull(input, "input");
         this.transform = Objects.requireNonNull(transform, "transform");
@@ -64,6 +75,9 @@ public final class TransformingInputStream extends InputStream {
     }
 
     /// Reads filtered bytes into the destination array.
+    ///
+    /// A zero `length` returns zero after validating the range and open state. If an upstream bulk read returns zero,
+    /// this method attempts one single-byte read to make progress.
     @Override
     public int read(byte[] bytes, int offset, int length) throws IOException {
         Objects.checkFromIndexSize(offset, length, bytes.length);
@@ -120,6 +134,8 @@ public final class TransformingInputStream extends InputStream {
     }
 
     /// Returns the filtered bytes available without another upstream read.
+    ///
+    /// This value counts only transformed bytes already buffered by this stream and does not query upstream availability.
     @Override
     public int available() throws IOException {
         ensureOpen();
@@ -129,7 +145,9 @@ public final class TransformingInputStream extends InputStream {
         return ready;
     }
 
-    /// Closes the upstream coder stream.
+    /// Marks this stream closed and closes the upstream coder stream.
+    ///
+    /// Reads remain closed even if upstream close throws; calling this method again retries only upstream closure.
     @Override
     public void close() throws IOException {
         closed = true;

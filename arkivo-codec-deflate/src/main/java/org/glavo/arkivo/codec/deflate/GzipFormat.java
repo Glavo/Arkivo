@@ -11,6 +11,9 @@ import java.nio.ByteBuffer;
 import java.util.List;
 
 /// Describes the discoverable gzip compression format.
+///
+/// This immutable descriptor recognizes the two-byte gzip magic without changing the supplied buffer. It does not
+/// validate the compression-method byte, optional header fields, payload, or trailer.
 @NotNullByDefault
 public final class GzipFormat implements CompressionFormat {
     /// The stable gzip format name.
@@ -24,6 +27,8 @@ public final class GzipFormat implements CompressionFormat {
     }
 
     /// Returns the canonical gzip format instance.
+    ///
+    /// @return the shared immutable format descriptor
     public static GzipFormat instance() {
         return INSTANCE;
     }

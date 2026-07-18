@@ -22,11 +22,18 @@ public interface ArkivoSeekableChannelSource extends ArkivoVolumeSource {
     /// The channel's current position becomes logical archive offset zero, and its current remaining extent becomes the
     /// fixed archive size. The returned source serializes physical positioning and reads so its logical channels can be
     /// consumed concurrently.
+    ///
+    /// @param channel the channel whose ownership is transferred to the returned source
+    /// @return an owning repeatable source over the channel's initial remaining extent
+    /// @throws IOException if the channel position or size cannot be queried
     static ArkivoSeekableChannelSource of(SeekableByteChannel channel) throws IOException {
         return SharedSeekableChannelSource.open(channel);
     }
 
     /// Opens a new readable channel for the archive.
+    ///
+    /// @return a new caller-owned channel positioned at logical archive offset zero
+    /// @throws IOException if an independent logical channel cannot be opened
     SeekableByteChannel openChannel() throws IOException;
 
     /// Opens the single archive as volume zero, or returns `null` for every other volume index.

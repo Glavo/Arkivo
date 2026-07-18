@@ -5,7 +5,10 @@ package org.glavo.arkivo.codec.xz;
 
 import org.jetbrains.annotations.NotNullByDefault;
 
-/// Describes one size-preserving preprocessing filter placed before XZ's terminal LZMA2 filter.
+/// Describes one immutable, size-preserving preprocessing filter placed before XZ's terminal LZMA2 filter.
+///
+/// Filters are listed in encoding order. Decoding applies their inverse transforms in reverse order after LZMA2
+/// decompression.
 @NotNullByDefault
 public sealed interface XZFilter permits XZBCJFilter, XZDeltaFilter {
 }

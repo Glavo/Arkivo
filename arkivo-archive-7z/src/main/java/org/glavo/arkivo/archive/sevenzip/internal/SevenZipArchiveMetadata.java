@@ -19,6 +19,9 @@ public final class SevenZipArchiveMetadata {
     private final @Unmodifiable List<SevenZipEntryMetadata> entries;
 
     /// Creates parsed 7z archive metadata.
+    ///
+    /// @param signatureHeader the validated fixed signature header
+    /// @param entries         the parsed entries to snapshot in archive order
     public SevenZipArchiveMetadata(
             SevenZipSignatureHeader signatureHeader,
             List<SevenZipEntryMetadata> entries
@@ -28,11 +31,15 @@ public final class SevenZipArchiveMetadata {
     }
 
     /// Returns the fixed 7z signature header.
+    ///
+    /// @return the validated signature header
     public SevenZipSignatureHeader signatureHeader() {
         return signatureHeader;
     }
 
     /// Returns the parsed archive entries.
+    ///
+    /// @return the immutable entries in archive order
     public @Unmodifiable List<SevenZipEntryMetadata> entries() {
         return entries;
     }

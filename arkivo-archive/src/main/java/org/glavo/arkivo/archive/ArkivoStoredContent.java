@@ -14,12 +14,21 @@ import java.util.Set;
 @NotNullByDefault
 public interface ArkivoStoredContent extends AutoCloseable {
     /// Opens a channel over the staged content with the given open options.
+    ///
+    /// @param options the options for this channel open operation
+    /// @return a new caller-owned channel over the staged content
+    /// @throws IOException if the staged content cannot be opened
     SeekableByteChannel openChannel(Set<? extends OpenOption> options) throws IOException;
 
     /// Returns the current size of the staged content.
+    ///
+    /// @return the current byte count
+    /// @throws IOException if the content size cannot be obtained
     long size() throws IOException;
 
     /// Releases this staged content and removes any temporary files owned by it.
+    ///
+    /// @throws IOException if owned backing resources cannot be released
     @Override
     void close() throws IOException;
 }

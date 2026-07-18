@@ -10,6 +10,9 @@ import java.util.Objects;
 
 /// Requests the LZ4 dictionary identified by a standard frame descriptor.
 ///
+/// Matching compares only the unsigned identifier stored in the frame descriptor. It does not compare dictionary
+/// bytes, so callers are responsible for maintaining an unambiguous identifier-to-content mapping.
+///
 /// @param dictionaryId unsigned 32-bit identifier stored in the frame
 @NotNullByDefault
 public record LZ4DictionaryRequest(long dictionaryId) implements DictionaryRequest<LZ4Dictionary> {

@@ -29,6 +29,12 @@ public interface CPIOMetadataCharsetDetector extends ArchiveMetadataCharsetDetec
     long UNKNOWN_ENTRY_SIZE = -1L;
 
     /// Detects the charset of one CPIO metadata value, or returns `null` when it is unknown.
+    ///
+    /// The context and its byte-buffer view are valid only for this invocation and must not be retained.
+    ///
+    /// @param context the raw metadata bytes and available surrounding header fields
+    /// @return the selected charset, or `null` to use the CPIO UTF-8 fallback
+    /// @throws IOException if the detector rejects the metadata or cannot complete detection
     @Nullable Charset detect(Context context) throws IOException;
 
     /// Detects bytes without explicit CPIO context by supplying an unknown context.

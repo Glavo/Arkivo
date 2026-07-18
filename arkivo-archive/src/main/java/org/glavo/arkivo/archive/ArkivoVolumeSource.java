@@ -24,6 +24,9 @@ import java.util.List;
 @NotNullByDefault
 public interface ArkivoVolumeSource extends Closeable {
     /// Returns a source backed by a finite list of volume paths.
+    ///
+    /// @param paths the volume paths in logical order; the list is copied
+    /// @return a source that opens each listed path as an independent read-only channel
     static ArkivoVolumeSource of(List<Path> paths) {
         List<Path> copiedPaths = List.copyOf(paths);
         return index -> {
@@ -35,11 +38,17 @@ public interface ArkivoVolumeSource extends Closeable {
     }
 
     /// Opens a new readable channel for a zero-based volume index, or returns `null` when the volume is absent.
+    ///
+    /// @param index the zero-based logical volume index
+    /// @return a new caller-owned channel, or {@code null} if the volume is absent
+    /// @throws IOException if the requested volume cannot be opened
     @Nullable SeekableByteChannel openVolume(long index) throws IOException;
 
     /// Closes resources owned by this source when the archive consumer no longer needs to open volume channels.
     ///
     /// This method does not close independently returned volume channels.
+    ///
+    /// @throws IOException if source-owned discovery resources cannot be released
     @Override
     default void close() throws IOException {
     }

@@ -77,6 +77,8 @@ public final class UnixCompressDecoder implements CompressionDecoder {
     private State state = State.HEADER;
 
     /// Creates a decoder that enforces the supplied operation-scoped limits after reading the header.
+    ///
+    /// @param limits the output, LZW-table, and working-memory limits for this session
     public UnixCompressDecoder(DecompressionLimits limits) {
         this.limits = Objects.requireNonNull(limits, "limits");
         initializeBitState();

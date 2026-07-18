@@ -21,6 +21,10 @@ import java.util.Objects;
 @NotNullByDefault
 public interface ArkivoStreamingReaderFormat extends ArkivoFormat {
     /// Opens a streaming reader from a path and takes ownership of the opened channel when successful.
+    ///
+    /// @param path the archive path
+    /// @return a new owning forward-only reader
+    /// @throws IOException if the path cannot be opened or the reader cannot be initialized
     default ArkivoStreamingReader openStreamingReader(Path path) throws IOException {
         return openStreamingReader(path, ArchiveReadOptions.DEFAULT);
     }
@@ -29,6 +33,11 @@ public interface ArkivoStreamingReaderFormat extends ArkivoFormat {
     ///
     /// Formats with conventional multi-volume storage may override this method to discover and open every physical
     /// volume associated with the path.
+    ///
+    /// @param path the archive path or a format-specific volume-identifying path
+    /// @param options the read and lifecycle options
+    /// @return a new owning forward-only reader
+    /// @throws IOException if archive storage cannot be opened or the reader cannot be initialized
     default ArkivoStreamingReader openStreamingReader(
             Path path,
             ArchiveReadOptions options
@@ -51,11 +60,20 @@ public interface ArkivoStreamingReaderFormat extends ArkivoFormat {
     }
 
     /// Opens a streaming reader and takes ownership of the input stream when successful.
+    ///
+    /// @param source the input stream whose ownership is transferred to the returned reader
+    /// @return a new owning forward-only reader
+    /// @throws IOException if the reader cannot be initialized
     default ArkivoStreamingReader openStreamingReader(InputStream source) throws IOException {
         return openStreamingReader(source, ArchiveReadOptions.DEFAULT);
     }
 
     /// Opens a streaming reader with options and takes ownership of the input stream when successful.
+    ///
+    /// @param source the input stream whose ownership is transferred to the returned reader
+    /// @param options the read and lifecycle options
+    /// @return a new owning forward-only reader
+    /// @throws IOException if the reader cannot be initialized
     default ArkivoStreamingReader openStreamingReader(
             InputStream source,
             ArchiveReadOptions options
@@ -66,11 +84,20 @@ public interface ArkivoStreamingReaderFormat extends ArkivoFormat {
     }
 
     /// Opens a streaming reader and takes ownership of the readable channel when successful.
+    ///
+    /// @param source the channel whose ownership is transferred to the returned reader
+    /// @return a new owning forward-only reader
+    /// @throws IOException if the reader cannot be initialized
     default ArkivoStreamingReader openStreamingReader(ReadableByteChannel source) throws IOException {
         return openStreamingReader(source, ArchiveReadOptions.DEFAULT);
     }
 
     /// Opens a streaming reader with options and takes ownership of the channel when successful.
+    ///
+    /// @param source the channel whose ownership is transferred to the returned reader
+    /// @param options the read and lifecycle options
+    /// @return a new owning forward-only reader
+    /// @throws IOException if the reader cannot be initialized
     ArkivoStreamingReader openStreamingReader(
             ReadableByteChannel source,
             ArchiveReadOptions options

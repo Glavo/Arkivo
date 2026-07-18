@@ -45,6 +45,9 @@ public final class LzipEncoder implements CompressionEncoder.Framed {
     private State state = State.ACTIVE;
 
     /// Creates an encoder that writes the requested lzip dictionary size.
+    ///
+    /// @param dictionarySize the exactly representable dictionary size to write, in bytes
+    /// @throws IllegalArgumentException if {@code dictionarySize} has no exact lzip header representation
     public LzipEncoder(int dictionarySize) {
         LzipSupport.encodeDictionarySize(dictionarySize);
         this.dictionarySize = dictionarySize;

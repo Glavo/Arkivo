@@ -17,6 +17,13 @@ import java.io.IOException;
 import java.util.Objects;
 
 /// Provides an immutable lzip configuration and transport-independent member engines.
+///
+/// The selected dictionary size must have an exact one-byte lzip header representation and is used by encoders.
+/// Decoders obtain the dictionary size from each member header and reject it when the operation-scoped history or
+/// memory limit is smaller.
+///
+/// Codec values contain no member state and are safe for concurrent use. Each created engine is a mutable session in
+/// which one frame is one complete lzip member, including its CRC-32 and size trailer.
 @NotNullByDefault
 public final class LzipCodec implements CompressionCodec.Framed<LzipCodec> {
     /// The lzip default dictionary size corresponding to the reference encoder's level six.
@@ -40,6 +47,9 @@ public final class LzipCodec implements CompressionCodec.Framed<LzipCodec> {
     }
 
     /// Creates an lzip codec with an exactly representable dictionary size.
+    ///
+    /// @param dictionarySize the dictionary size to write to each member, in bytes
+    /// @throws IllegalArgumentException if {@code dictionarySize} has no exact lzip header representation
     public LzipCodec(int dictionarySize) {
         LzipSupport.encodeDictionarySize(dictionarySize);
         this.dictionarySize = dictionarySize;
@@ -52,11 +62,17 @@ public final class LzipCodec implements CompressionCodec.Framed<LzipCodec> {
     }
 
     /// Returns the dictionary size written to newly encoded members.
+    ///
+    /// @return the dictionary size, in bytes
     public int dictionarySize() {
         return dictionarySize;
     }
 
     /// Returns an immutable lzip codec with the requested exactly representable dictionary size.
+    ///
+    /// @param dictionarySize the dictionary size to write to each member, in bytes
+    /// @return this codec if the size is unchanged; otherwise, a new codec with the requested size
+    /// @throws IllegalArgumentException if {@code dictionarySize} has no exact lzip header representation
     public LzipCodec withDictionarySize(int dictionarySize) {
         return dictionarySize == this.dictionarySize ? this : new LzipCodec(dictionarySize);
     }

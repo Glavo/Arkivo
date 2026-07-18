@@ -20,7 +20,13 @@ import java.util.Objects;
 ///
 /// Opening the channel obtains every consecutive volume starting at index zero and snapshots its size. The returned
 /// channel owns the opened volume channels, while the caller retains ownership of the ArkivoVolumeSource itself.
-/// Backing volume content and sizes must remain stable until this channel closes.
+/// Backing volume content and sizes must remain stable until this channel closes. This logical channel is stateful and
+/// not safe for concurrent use.
+///
+/// Reads reposition the appropriate physical channel on demand and may cross any number of volume boundaries. They
+/// advance the destination position and logical position by the bytes read without changing the destination limit.
+/// Physical positions observed before opening are ignored. A physical channel that returns zero causes the logical read
+/// to return accumulated progress, or zero when no byte has yet been read.
 @NotNullByDefault
 public final class ArkivoVolumeChannel implements SeekableByteChannel {
     /// Opened volume channels in logical order.
@@ -61,7 +67,12 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
     /// Opens all consecutive volumes supplied from index zero.
     ///
     /// At least one volume must be present. Any channels opened before setup fails are closed, and cleanup failures are
-    /// suppressed on the setup failure.
+    /// suppressed on the setup failure. The source itself is borrowed and is never closed by this method or the returned
+    /// channel. A `null` volume ends discovery; indexes after that gap are not queried.
+    ///
+    /// @param source the borrowed finite volume source
+    /// @return a new logical channel owning every physical channel opened from {@code source}
+    /// @throws IOException if volume zero is absent, volume metadata cannot be read, or setup cleanup fails
     public static ArkivoVolumeChannel open(ArkivoVolumeSource source) throws IOException {
         Objects.requireNonNull(source, "source");
 
@@ -107,24 +118,39 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
     }
 
     /// Returns the number of opened physical volumes.
+    ///
+    /// @return the positive physical volume count
+    /// @throws IOException if this logical channel is closed
     public long volumeCount() throws IOException {
         ensureOpen();
         return channels.size();
     }
 
     /// Returns the logical start offset of one physical volume.
+    ///
+    /// @param volumeIndex the zero-based physical volume index
+    /// @return the volume's zero-based start offset in the logical archive
+    /// @throws IOException when the index is negative, outside the opened range, or the channel is closed
     public long volumeStartOffset(long volumeIndex) throws IOException {
         ensureOpen();
         return offsets[checkedVolumeIndex(volumeIndex)];
     }
 
     /// Returns the snapshotted size of one physical volume.
+    ///
+    /// @param volumeIndex the zero-based physical volume index
+    /// @return the volume size captured when this channel opened
+    /// @throws IOException when the index is negative, outside the opened range, or the channel is closed
     public long volumeSize(long volumeIndex) throws IOException {
         ensureOpen();
         return sizes[checkedVolumeIndex(volumeIndex)];
     }
 
     /// Reads across physical volume boundaries from the current logical position.
+    ///
+    /// An empty destination returns zero. A position at or beyond the snapshotted logical size returns `-1`. If a volume
+    /// reaches EOF before its snapshotted size, this method throws [EOFException] after preserving completed progress in
+    /// the destination and logical position.
     @Override
     public int read(ByteBuffer destination) throws IOException {
         Objects.requireNonNull(destination, "destination");
@@ -167,6 +193,11 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
     }
 
     /// Rejects writes because a logical archive volume channel is read-only.
+    ///
+    /// @param source the buffer that would supply bytes; it is not modified
+    /// @return no value because this method always throws
+    /// @throws IOException if this logical channel is closed
+    /// @throws NonWritableChannelException always when the channel is open
     @Override
     public int write(ByteBuffer source) throws IOException {
         Objects.requireNonNull(source, "source");
@@ -182,6 +213,8 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
     }
 
     /// Sets the current logical position, including positions beyond the logical end.
+    ///
+    /// This operation does not reposition a physical channel until a later read.
     @Override
     public ArkivoVolumeChannel position(long newPosition) throws IOException {
         ensureOpen();
@@ -216,6 +249,9 @@ public final class ArkivoVolumeChannel implements SeekableByteChannel {
     }
 
     /// Closes every opened volume channel, retrying channels left open by an earlier failed close.
+    ///
+    /// The logical channel rejects operations as soon as closing starts. All physical channels are attempted even when
+    /// one close fails; the first failure is thrown and later failures are suppressed on it.
     @Override
     public void close() throws IOException {
         if (!open && allChannelsClosed()) {

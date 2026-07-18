@@ -44,61 +44,121 @@ public final class ByteArrayAccess {
     }
 
     /// Reads a big-endian 16-bit value at the given byte offset.
+    ///
+    /// @param array the source array
+    /// @param offset the byte offset of the first encoded byte
+    /// @return the decoded value
+    /// @throws IndexOutOfBoundsException if the two-byte value does not fit in {@code array} at {@code offset}
     public static short readShortBigEndian(byte[] array, int offset) {
         return (short) BIG_ENDIAN_SHORTS.get(array, offset);
     }
 
     /// Reads a little-endian 16-bit value at the given byte offset.
+    ///
+    /// @param array the source array
+    /// @param offset the byte offset of the first encoded byte
+    /// @return the decoded value
+    /// @throws IndexOutOfBoundsException if the two-byte value does not fit in {@code array} at {@code offset}
     public static short readShortLittleEndian(byte[] array, int offset) {
         return (short) LITTLE_ENDIAN_SHORTS.get(array, offset);
     }
 
     /// Writes a big-endian 16-bit value at the given byte offset.
+    ///
+    /// @param array the destination array
+    /// @param offset the byte offset at which to write the first encoded byte
+    /// @param value the value to encode
+    /// @throws IndexOutOfBoundsException if the two-byte value does not fit in {@code array} at {@code offset}
     public static void writeShortBigEndian(byte[] array, int offset, short value) {
         BIG_ENDIAN_SHORTS.set(array, offset, value);
     }
 
     /// Writes a little-endian 16-bit value at the given byte offset.
+    ///
+    /// @param array the destination array
+    /// @param offset the byte offset at which to write the first encoded byte
+    /// @param value the value to encode
+    /// @throws IndexOutOfBoundsException if the two-byte value does not fit in {@code array} at {@code offset}
     public static void writeShortLittleEndian(byte[] array, int offset, short value) {
         LITTLE_ENDIAN_SHORTS.set(array, offset, value);
     }
 
     /// Reads a big-endian 32-bit value at the given byte offset.
+    ///
+    /// @param array the source array
+    /// @param offset the byte offset of the first encoded byte
+    /// @return the decoded value
+    /// @throws IndexOutOfBoundsException if the four-byte value does not fit in {@code array} at {@code offset}
     public static int readIntBigEndian(byte[] array, int offset) {
         return (int) BIG_ENDIAN_INTS.get(array, offset);
     }
 
     /// Reads a little-endian 32-bit value at the given byte offset.
+    ///
+    /// @param array the source array
+    /// @param offset the byte offset of the first encoded byte
+    /// @return the decoded value
+    /// @throws IndexOutOfBoundsException if the four-byte value does not fit in {@code array} at {@code offset}
     public static int readIntLittleEndian(byte[] array, int offset) {
         return (int) LITTLE_ENDIAN_INTS.get(array, offset);
     }
 
     /// Writes a big-endian 32-bit value at the given byte offset.
+    ///
+    /// @param array the destination array
+    /// @param offset the byte offset at which to write the first encoded byte
+    /// @param value the value to encode
+    /// @throws IndexOutOfBoundsException if the four-byte value does not fit in {@code array} at {@code offset}
     public static void writeIntBigEndian(byte[] array, int offset, int value) {
         BIG_ENDIAN_INTS.set(array, offset, value);
     }
 
     /// Writes a little-endian 32-bit value at the given byte offset.
+    ///
+    /// @param array the destination array
+    /// @param offset the byte offset at which to write the first encoded byte
+    /// @param value the value to encode
+    /// @throws IndexOutOfBoundsException if the four-byte value does not fit in {@code array} at {@code offset}
     public static void writeIntLittleEndian(byte[] array, int offset, int value) {
         LITTLE_ENDIAN_INTS.set(array, offset, value);
     }
 
     /// Reads a big-endian 64-bit value at the given byte offset.
+    ///
+    /// @param array the source array
+    /// @param offset the byte offset of the first encoded byte
+    /// @return the decoded value
+    /// @throws IndexOutOfBoundsException if the eight-byte value does not fit in {@code array} at {@code offset}
     public static long readLongBigEndian(byte[] array, int offset) {
         return (long) BIG_ENDIAN_LONGS.get(array, offset);
     }
 
     /// Reads a little-endian 64-bit value at the given byte offset.
+    ///
+    /// @param array the source array
+    /// @param offset the byte offset of the first encoded byte
+    /// @return the decoded value
+    /// @throws IndexOutOfBoundsException if the eight-byte value does not fit in {@code array} at {@code offset}
     public static long readLongLittleEndian(byte[] array, int offset) {
         return (long) LITTLE_ENDIAN_LONGS.get(array, offset);
     }
 
     /// Writes a big-endian 64-bit value at the given byte offset.
+    ///
+    /// @param array the destination array
+    /// @param offset the byte offset at which to write the first encoded byte
+    /// @param value the value to encode
+    /// @throws IndexOutOfBoundsException if the eight-byte value does not fit in {@code array} at {@code offset}
     public static void writeLongBigEndian(byte[] array, int offset, long value) {
         BIG_ENDIAN_LONGS.set(array, offset, value);
     }
 
     /// Writes a little-endian 64-bit value at the given byte offset.
+    ///
+    /// @param array the destination array
+    /// @param offset the byte offset at which to write the first encoded byte
+    /// @param value the value to encode
+    /// @throws IndexOutOfBoundsException if the eight-byte value does not fit in {@code array} at {@code offset}
     public static void writeLongLittleEndian(byte[] array, int offset, long value) {
         LITTLE_ENDIAN_LONGS.set(array, offset, value);
     }

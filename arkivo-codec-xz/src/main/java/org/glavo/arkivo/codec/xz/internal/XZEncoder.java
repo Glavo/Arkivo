@@ -53,6 +53,9 @@ public final class XZEncoder implements CompressionEncoder.FlushableFramed {
     /// @param checkType XZ integrity-check identifier
     /// @param filterChain ordered preprocessing filters
     /// @param maximumBlockSize maximum uncompressed Block size, or zero for an unbounded Block
+    /// @throws IOException if the check type is unsupported or the initial Stream Header cannot be produced
+    /// @throws NullPointerException if {@code properties} or {@code filterChain} is {@code null}
+    /// @throws IllegalArgumentException if the dictionary is unsupported or {@code maximumBlockSize} is negative
     public XZEncoder(
             LZMAProperties properties,
             int checkType,

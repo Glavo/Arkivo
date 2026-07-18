@@ -16,6 +16,12 @@ import java.io.IOException;
 import java.util.Objects;
 
 /// Provides an immutable LZMA-alone configuration and transport-independent engines.
+///
+/// The LZMA-alone header stores the packed literal/position properties, dictionary size, and either an exact pledged
+/// source size or the all-ones unknown-size value. When the size is unknown, the encoder writes an LZMA end marker.
+///
+/// Codec values are safe for concurrent use and created engines are independent mutable sessions. A known pledged size
+/// is exact: encoding beyond it or finalizing before consuming it fails.
 @NotNullByDefault
 public final class LZMACodec
         implements CompressionCodec.PledgedSourceSizeEncoderFactory<LZMACodec, CompressionEncoder> {
@@ -35,6 +41,9 @@ public final class LZMACodec
     }
 
     /// Creates an LZMA-alone codec with the requested model properties.
+    ///
+    /// @param properties the model properties to write to newly encoded stream headers
+    /// @throws NullPointerException if {@code properties} is {@code null}
     public LZMACodec(LZMAProperties properties) {
         this.properties = Objects.requireNonNull(properties, "properties");
     }
@@ -47,17 +56,27 @@ public final class LZMACodec
 
 
     /// Returns the configured LZMA model properties used for encoding.
+    ///
+    /// @return the immutable model properties written by newly created encoders
     public LZMAProperties properties() {
         return properties;
     }
 
     /// Returns an immutable LZMA codec with the requested model properties.
+    ///
+    /// @param properties the replacement model properties
+    /// @return this codec if the properties are unchanged; otherwise, a new codec with the requested properties
+    /// @throws NullPointerException if {@code properties} is {@code null}
     public LZMACodec withProperties(LZMAProperties properties) {
         Objects.requireNonNull(properties, "properties");
         return properties.equals(this.properties) ? this : new LZMACodec(properties);
     }
 
     /// Returns an immutable LZMA codec with the requested dictionary size.
+    ///
+    /// @param dictionarySize the dictionary size to write to new stream headers, in bytes
+    /// @return this codec if the size is unchanged; otherwise, a new codec with the requested size
+    /// @throws IllegalArgumentException if {@code dictionarySize} is outside the supported range
     public LZMACodec withDictionarySize(int dictionarySize) {
         return withProperties(properties.withDictionarySize(dictionarySize));
     }

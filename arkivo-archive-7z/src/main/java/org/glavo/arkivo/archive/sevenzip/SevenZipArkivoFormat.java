@@ -27,7 +27,15 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 
-/// Describes the 7z archive format support provided by Arkivo.
+/// Describes Arkivo's indexed and streaming 7z support.
+///
+/// This descriptor opens read-only, creation, and complete-rewrite NIO file systems and forward-only streaming
+/// writers. It also discovers conventional numbered volumes and creates transactional split output. The generic
+/// `Archive*Options` overloads apply the 7z defaults; use the concrete 7z factories when password, compression,
+/// filters, solid grouping, or header encryption must be selected.
+///
+/// Factory methods have the same source ownership and close-time publication contracts as
+/// [SevenZipArkivoFileSystem] and [SevenZipArkivoStreamingWriter].
 @NotNullByDefault
 public final class SevenZipArkivoFormat implements
         ArkivoPathVolumeFormat,
@@ -45,6 +53,8 @@ public final class SevenZipArkivoFormat implements
     }
 
     /// Returns the shared 7z format descriptor.
+    ///
+    /// @return the process-wide immutable descriptor
     public static SevenZipArkivoFormat instance() {
         return INSTANCE;
     }

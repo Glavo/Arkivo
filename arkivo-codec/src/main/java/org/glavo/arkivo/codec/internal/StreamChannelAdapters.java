@@ -26,21 +26,33 @@ public final class StreamChannelAdapters {
     }
 
     /// Returns a channel that owns and reads directly from the input stream.
+    ///
+    /// @param source the input stream whose ownership is transferred to the channel
+    /// @return a readable channel preserving close-retry behavior
     public static ReadableByteChannel readableChannel(InputStream source) {
         return new InputStreamChannel(Objects.requireNonNull(source, "source"));
     }
 
     /// Returns a channel that owns and writes directly to the output stream.
+    ///
+    /// @param target the output stream whose ownership is transferred to the channel
+    /// @return a writable channel preserving close-retry behavior
     public static WritableByteChannel writableChannel(OutputStream target) {
         return new OutputStreamChannel(Objects.requireNonNull(target, "target"));
     }
 
     /// Returns an input stream that owns the readable channel.
+    ///
+    /// @param source the channel whose ownership is transferred to the stream
+    /// @return an input stream that rejects zero-progress nonempty reads
     public static InputStream inputStream(ReadableByteChannel source) {
         return new ChannelInputStream(Objects.requireNonNull(source, "source"));
     }
 
     /// Returns an output stream that owns the writable channel.
+    ///
+    /// @param target the channel whose ownership is transferred to the stream
+    /// @return an output stream that rejects zero-progress writes and forwards codec flushes
     public static OutputStream outputStream(WritableByteChannel target) {
         return new ChannelOutputStream(Objects.requireNonNull(target, "target"));
     }

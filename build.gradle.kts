@@ -49,7 +49,7 @@ subprojects {
     tasks.withType<Javadoc>().configureEach {
         options.encoding = "UTF-8"
         (options as org.gradle.external.javadoc.StandardJavadocDocletOptions).apply {
-            addBooleanOption("Xdoclint:all,-missing", true)
+            addBooleanOption("Xdoclint:all", true)
             addBooleanOption("Werror", true)
         }
     }

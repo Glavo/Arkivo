@@ -72,7 +72,24 @@ public final class SevenZipEntryMetadata {
     /// The Windows file attributes, or `-1` when not present.
     private final int windowsAttributes;
 
-    /// Creates parsed 7z entry metadata.
+    /// Creates metadata for an entry backed by at most one packed stream.
+    ///
+    /// @param path the decoded archive path
+    /// @param directory whether the entry represents a directory
+    /// @param size the non-negative decoded size
+    /// @param dataOffset the non-negative absolute packed-data offset, or `NO_DATA_OFFSET` when the entry has no body
+    /// @param decodedOffset the non-negative offset of the entry data in the decoded folder output
+    /// @param packedSize the non-negative packed size; must be zero when `dataOffset` is `NO_DATA_OFFSET`
+    /// @param methodId the raw 7z ID of the entry's single coder; the array is copied
+    /// @param coderProperties the raw properties of the entry's single coder; the array is copied
+    /// @param creationTime the creation time, or `null` when the archive does not provide one
+    /// @param lastAccessTime the last-access time, or `null` when the archive does not provide one
+    /// @param lastModifiedTime the last-modified time, or `null` when the archive does not provide one
+    /// @param windowsAttributes the raw Windows file attributes, or
+    ///                          `SevenZipArkivoEntryAttributes.UNKNOWN_WINDOWS_ATTRIBUTES` when absent
+    /// @throws IllegalArgumentException if a size or offset is invalid or the no-data sentinel is inconsistent with
+    ///                                  `packedSize`
+    /// @throws NullPointerException if `path`, `methodId`, or `coderProperties` is `null`
     public SevenZipEntryMetadata(
             String path,
             boolean directory,
@@ -274,56 +291,79 @@ public final class SevenZipEntryMetadata {
     }
 
     /// Returns the decoded entry path.
+    ///
+    /// @return the decoded archive path
     public String path() {
         return path;
     }
 
     /// Returns whether this entry is a directory.
+    ///
+    /// @return `true` if the entry represents a directory
     public boolean directory() {
         return directory;
     }
 
     /// Returns the uncompressed entry size.
+    ///
+    /// @return the non-negative decoded size
     public long size() {
         return size;
     }
 
     /// Returns the absolute archive data offset, or `NO_DATA_OFFSET` when this entry has no stored body.
+    ///
+    /// @return the packed-data offset, or `NO_DATA_OFFSET`
     public long dataOffset() {
         return dataOffset;
     }
 
     /// Returns the decoded stream offset inside the folder output.
+    ///
+    /// @return the non-negative decoded offset
     public long decodedOffset() {
         return decodedOffset;
     }
 
     /// Returns the packed entry size.
+    ///
+    /// @return the total size of the physical packed ranges, or zero when the entry has no stored body
     public long packedSize() {
         return packedSize;
     }
 
     /// Returns the expected packed stream CRC-32, or `UNKNOWN_CRC32` when not present or not entry-addressable.
+    ///
+    /// @return the unsigned packed-stream CRC-32, or `UNKNOWN_CRC32`
     public long packedCrc32() {
         return packedCrc32;
     }
 
     /// Returns the expected uncompressed entry CRC-32, or `UNKNOWN_CRC32` when not present.
+    ///
+    /// @return the unsigned decoded-data CRC-32, or `UNKNOWN_CRC32`
     public long crc32() {
         return crc32;
     }
 
     /// Returns a copy of the 7z method ID used to store this entry.
+    ///
+    /// @return a newly allocated copy of the first coder's method ID
     public byte[] methodId() {
         return method.firstMethodId();
     }
 
     /// Returns whether this entry is stored with the given 7z method ID.
+    ///
+    /// @param expectedMethodId the raw method ID to find in the folder coder graph
+    /// @return `true` if any coder in the folder uses the given method ID
     public boolean hasMethod(byte[] expectedMethodId) {
         return method.containsMethod(expectedMethodId);
     }
 
     /// Returns a copy of the 7z coder properties used to store this entry.
+    ///
+    /// @return a newly allocated copy of the first coder's property bytes
     public byte[] coderProperties() {
         return method.firstProperties();
     }
@@ -334,16 +374,23 @@ public final class SevenZipEntryMetadata {
     }
 
     /// Returns whether this entry shares its folder with another file-addressable substream.
+    ///
+    /// @return `true` if the containing folder exposes more than one file-addressable substream
     public boolean solid() {
         return substreamCount > 1;
     }
 
     /// Returns this entry's index among file-addressable folder substreams.
+    ///
+    /// @return the zero-based substream index, or `SevenZipArkivoEntryAttributes.NO_SUBSTREAM_INDEX` when the entry
+    ///         has no packed data
     public int substreamIndex() {
         return substreamIndex;
     }
 
     /// Returns the number of file-addressable substreams in this entry's folder.
+    ///
+    /// @return the non-negative number of file-addressable folder substreams
     public int substreamCount() {
         return substreamCount;
     }
@@ -354,27 +401,37 @@ public final class SevenZipEntryMetadata {
     }
 
     /// Returns the physical packed byte ranges used to read this entry.
+    ///
+    /// @return the immutable packed ranges in physical input-stream order, or an empty list for an entry without data
     @Unmodifiable
     public List<SevenZipPackedStream> packedStreams() {
         return packedStreams;
     }
 
     /// Returns the creation time, or `null` when not present.
+    ///
+    /// @return the creation time, or `null`
     public @Nullable FileTime creationTime() {
         return creationTime;
     }
 
     /// Returns the last access time, or `null` when not present.
+    ///
+    /// @return the last-access time, or `null`
     public @Nullable FileTime lastAccessTime() {
         return lastAccessTime;
     }
 
     /// Returns the last modified time, or `null` when not present.
+    ///
+    /// @return the last-modified time, or `null`
     public @Nullable FileTime lastModifiedTime() {
         return lastModifiedTime;
     }
 
     /// Returns the Windows file attributes, or `-1` when not present.
+    ///
+    /// @return the raw Windows file attributes, or `SevenZipArkivoEntryAttributes.UNKNOWN_WINDOWS_ATTRIBUTES`
     public int windowsAttributes() {
         return windowsAttributes;
     }

@@ -51,6 +51,8 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     }
 
     /// Returns the shared ZIP file system provider instance.
+    ///
+    /// @return the shared provider
     public static ZipArkivoFileSystemProvider instance() {
         return INSTANCE;
     }
@@ -94,6 +96,12 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     }
 
     /// Opens a ZIP archive path whose format has already been selected explicitly.
+    ///
+    /// @param path the backing archive path
+    /// @param options the generic archive options
+    /// @return a new open ZIP file system
+    /// @throws NullPointerException if `path` or `options` is `null`
+    /// @throws IOException if the archive cannot be opened or output cannot be prepared
     public ZipArkivoFileSystem openPath(Path path, ArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
         ZipArkivoFileSystemConfig config = ZipArkivoFileSystemConfig.fromOptions(options);
@@ -103,6 +111,12 @@ public final class ZipArkivoFileSystemProvider extends FileSystemProvider {
     }
 
     /// Opens a read-only ZIP archive path from an already validated strongly typed configuration.
+    ///
+    /// @param path the backing archive path
+    /// @param config the validated read-only ZIP configuration
+    /// @return a new open read-only ZIP file system
+    /// @throws NullPointerException if `path` or `config` is `null`
+    /// @throws IOException if read support storage cannot be prepared
     public ZipArkivoFileSystem openReadPath(Path path, ZipArkivoFileSystemConfig config) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(config, "config");

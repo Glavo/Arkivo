@@ -2,9 +2,10 @@
 
 Arkivo is a modular, pure Java archive and compression toolkit for Java 17 and later. It combines archive-backed NIO
 file systems, forward-only archive readers and writers, caller-owned `ByteBuffer` codec engines, channel and stream
-adapters, and `ServiceLoader`-based format discovery.
+adapters, and `ServiceLoader`-based format discovery. The [architecture guide](ARCHITECTURE.md) describes the common
+programming model, lifecycle rules, and module boundaries.
 
-The project is currently developed as version `1.0-SNAPSHOT`. Published artifacts use the group `org.glavo`.
+The current build version is `1.0-SNAPSHOT`. Published artifacts use the group `org.glavo`.
 
 ## Highlights
 
@@ -16,6 +17,22 @@ The project is currently developed as version `1.0-SNAPSHOT`. Published artifact
   codec engines.
 - Bound decompression and archive metadata, entry, and aggregate sizes through explicit limits.
 - Run without JNI or native libraries.
+
+## API conventions
+
+Arkivo follows the conventions of Java NIO:
+
+- Buffer positions record consumed and produced bytes; codec engines do not retain caller buffers after an operation.
+- Channels and streams are stateful resources and must be closed. Immutable formats, codecs, options, limits, and
+  attribute snapshots can be shared.
+- Codec adapters borrow a caller-supplied endpoint unless an overload accepts `ResourceOwnership.OWNED`.
+- Archive factory ownership is documented per overload because the owned resource may be a channel, repeatable source,
+  volume source, target transaction, reader, writer, or file system.
+- Archive entries use `Path`, `Files`, and NIO attribute views where a format supports a file-system model.
+
+Capability subinterfaces describe operations that are not universal. A format is not assumed to support random access,
+streaming writes, flushing, independent frames, dictionaries, encryption, or multiple volumes unless its type exposes
+that contract.
 
 ## Dependencies
 
@@ -75,9 +92,9 @@ decoded.get(output);
 
 For streaming or bounded-memory work, create a `CompressionEncoder` or `CompressionDecoder` and respond to the returned
 `CodecOutcome`. Buffer positions are the authoritative consumed and produced byte counts. `NEEDS_INPUT` and
-`NEEDS_OUTPUT` request another source or target range, while `finish()` completes an encoding without closing or
-releasing its reusable state. Formats with meaningful non-terminal units may additionally expose their specialized
-framing interfaces.
+`NEEDS_OUTPUT` request another source or target range. After all input has been supplied, repeat `finish()` until it
+returns `FINISHED`; closing an unfinished engine releases resources without completing the stream. Formats with
+meaningful non-terminal units additionally expose their specialized framing interfaces.
 
 ## Create and read a ZIP file system
 
@@ -98,18 +115,36 @@ try (ArkivoFileSystem fileSystem = ArkivoFormats.openFileSystem(archive)) {
 `ArkivoFormats` also accepts channels, repeatable channel sources, and logical multi-volume sources. Forward-only
 workloads can use `openStreamingReader` and `openStreamingWriter` instead of building a random-access file system.
 
+```java
+try (ArkivoStreamingReader reader = ArkivoFormats.openStreamingReader(archive)) {
+    while (reader.next()) {
+        ArchiveEntryAttributes attributes = reader.readAttributes();
+        if (attributes.isRegularFile()) {
+            try (InputStream input = reader.openInputStream()) {
+                // Consume the current entry before advancing the cursor.
+            }
+        }
+    }
+}
+```
+
+Metadata is read from the current cursor position and may be parsed lazily. Attribute snapshots remain valid after the
+reader advances. An entry body can be opened once; `next()` closes any body that the caller left open.
+
 ## Supported formats
 
-Archive modules currently cover:
+Official archive modules provide these access models:
 
-- AR file systems and streaming readers/writers.
-- CPIO streaming readers/writers for `newc`, CRC, old portable ASCII, and old binary archives.
-- TAR file systems and streaming readers/writers, including detected or selected outer compression.
-- ZIP file systems and streaming readers/writers, with mutation, encryption, and split-volume support.
-- 7z file systems and streaming writers, with mutation, solid archives, encryption, and split-volume support.
-- Read-only RAR4 and RAR5 file systems and streaming readers.
+| Format | File system | Streaming read | Streaming write | Notable support |
+| --- | --- | --- | --- | --- |
+| AR | Read/write | Yes | Yes | GNU and BSD metadata variants |
+| CPIO | None | Yes | Yes | `newc`, CRC, portable ASCII, and old binary dialects |
+| TAR | Read/write | Yes | Yes | Detected or selected outer compression |
+| ZIP | Read/write | Yes | Yes | Encryption, mutation, and split volumes |
+| 7z | Read/write | No | Yes | Solid archives, encryption, mutation, and split volumes |
+| RAR4/RAR5 | Read-only | Yes | No | Encryption and multi-volume reading |
 
-Compression support currently covers BZip2, Unix compress (`.Z`), raw Deflate, Deflate64, gzip, LZ4 frame and raw block,
+Compression modules provide BZip2, Unix compress (`.Z`), raw Deflate, Deflate64, gzip, LZ4 frame and raw block,
 lzip, raw LZMA, LZMA-alone, LZMA2, PPMd7, XZ, zlib, and Zstandard. The codec layer also provides Delta and BCJ
 executable transforms.
 All compression implementations are pure Java.

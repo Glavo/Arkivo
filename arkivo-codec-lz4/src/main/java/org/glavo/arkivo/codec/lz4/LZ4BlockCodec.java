@@ -19,6 +19,10 @@ import java.util.Objects;
 ///
 /// Raw LZ4 blocks do not carry compressed or decoded sizes. The configured maximum therefore defines both the
 /// allocation boundary and the end-of-input contract used by stream adapters.
+///
+/// Codec values are safe for concurrent use; each created engine owns one mutable block operation. Decoder construction
+/// rejects a history limit below the maximum LZ4 match offset and a memory limit below the buffers required by the
+/// configured block bound.
 @NotNullByDefault
 public final class LZ4BlockCodec implements CompressionCodec<LZ4BlockCodec> {
     /// Maximum source size supported by the standard LZ4 block bound calculation.
@@ -55,11 +59,17 @@ public final class LZ4BlockCodec implements CompressionCodec<LZ4BlockCodec> {
     }
 
     /// Returns the maximum accepted decoded raw block size.
+    ///
+    /// @return the positive decoded-size bound in bytes
     public int maximumBlockSize() {
         return maximumBlockSize;
     }
 
     /// Returns an immutable raw block codec with the requested decoded-size bound.
+    ///
+    /// @param maximumBlockSize the positive bound, no greater than [#MAXIMUM_SUPPORTED_BLOCK_SIZE]
+    /// @return this codec when the bound is unchanged, otherwise a new immutable configuration
+    /// @throws IllegalArgumentException if the bound is outside the supported range
     public LZ4BlockCodec withMaximumBlockSize(long maximumBlockSize) {
         return maximumBlockSize == this.maximumBlockSize
                 ? this

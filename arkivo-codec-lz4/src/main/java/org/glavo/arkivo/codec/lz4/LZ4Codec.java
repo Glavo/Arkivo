@@ -16,6 +16,14 @@ import org.jetbrains.annotations.Nullable;
 import java.util.Objects;
 
 /// Provides an immutable standard LZ4 frame configuration and transport-independent engines.
+///
+/// Encoders always write standard frames. Decoders additionally accept legacy and skippable frames when this codec is
+/// selected. The configured block size is a maximum decoded physical-block size, not a frame-size limit; block
+/// independence controls whether later blocks may refer to earlier decoded content.
+///
+/// Codec values are safe for concurrent use. Builders and created engines are mutable and not safe for concurrent use.
+/// A frame encoder flush ends the active physical block, while frame finalization writes the frame end mark and optional
+/// content checksum.
 @NotNullByDefault
 public final class LZ4Codec
         implements CompressionCodec.DictionaryConfigurable<LZ4Codec, LZ4Dictionary>,
@@ -57,11 +65,15 @@ public final class LZ4Codec
     }
 
     /// Returns a builder initialized to interoperable LZ4 frame defaults.
+    ///
+    /// @return a new mutable builder
     public static Builder builder() {
         return new Builder();
     }
 
     /// Returns a mutable builder initialized from this immutable configuration.
+    ///
+    /// @return a new builder whose selected values equal this codec's configuration
     public Builder toBuilder() {
         return new Builder(this);
     }
@@ -73,26 +85,36 @@ public final class LZ4Codec
     }
 
     /// Returns the configured maximum decoded block size.
+    ///
+    /// @return the maximum size represented in new frame descriptors
     public LZ4BlockSize blockSize() {
         return blockSize;
     }
 
     /// Returns whether blocks are independently decodable.
+    ///
+    /// @return `true` when each block starts with empty frame history
     public boolean usesIndependentBlocks() {
         return independentBlocks;
     }
 
     /// Returns whether encoders emit physical block checksums.
+    ///
+    /// @return `true` when each encoded block is followed by xxHash-32
     public boolean emitsBlockChecksums() {
         return blockChecksum;
     }
 
     /// Returns whether encoders emit a complete content checksum.
+    ///
+    /// @return `true` when each frame ends with decoded-content xxHash-32
     public boolean emitsContentChecksum() {
         return contentChecksum;
     }
 
     /// Returns whether decoders verify checksums present in input frames.
+    ///
+    /// @return `true` when present block and content checksums are validated
     public boolean verifiesChecksums() {
         return verifyChecksums;
     }
@@ -117,12 +139,18 @@ public final class LZ4Codec
     }
 
     /// Returns an immutable codec with the requested maximum decoded block size.
+    ///
+    /// @param blockSize the block-size code for new frames
+    /// @return this codec when unchanged, otherwise a new immutable configuration
     public LZ4Codec withBlockSize(LZ4BlockSize blockSize) {
         Objects.requireNonNull(blockSize, "blockSize");
         return blockSize == this.blockSize ? this : toBuilder().blockSize(blockSize).build();
     }
 
     /// Returns an immutable codec with the requested block-independence policy.
+    ///
+    /// @param independentBlocks whether each physical block starts with empty frame history
+    /// @return this codec when unchanged, otherwise a new immutable configuration
     public LZ4Codec withIndependentBlocks(boolean independentBlocks) {
         return independentBlocks == this.independentBlocks
                 ? this
@@ -130,6 +158,9 @@ public final class LZ4Codec
     }
 
     /// Returns an immutable codec with the requested block-checksum emission policy.
+    ///
+    /// @param blockChecksum whether encoders append xxHash-32 to each physical block
+    /// @return this codec when unchanged, otherwise a new immutable configuration
     public LZ4Codec withBlockChecksum(boolean blockChecksum) {
         return blockChecksum == this.blockChecksum
                 ? this
@@ -137,6 +168,9 @@ public final class LZ4Codec
     }
 
     /// Returns an immutable codec with the requested content-checksum emission policy.
+    ///
+    /// @param contentChecksum whether encoders append decoded-content xxHash-32
+    /// @return this codec when unchanged, otherwise a new immutable configuration
     public LZ4Codec withContentChecksum(boolean contentChecksum) {
         return contentChecksum == this.contentChecksum
                 ? this
@@ -144,6 +178,9 @@ public final class LZ4Codec
     }
 
     /// Returns an immutable codec with the requested checksum-verification policy.
+    ///
+    /// @param verifyChecksums whether decoders validate checksums present in input
+    /// @return this codec when unchanged, otherwise a new immutable configuration
     public LZ4Codec withVerifyChecksums(boolean verifyChecksums) {
         return verifyChecksums == this.verifyChecksums
                 ? this
@@ -208,6 +245,9 @@ public final class LZ4Codec
     }
 
     /// Builds immutable standard LZ4 frame configurations.
+    ///
+    /// A builder may be reused after [#build()]; each build captures the values selected at that time. Builders are
+    /// mutable and not safe for concurrent use.
     @NotNullByDefault
     public static final class Builder {
         /// Selected maximum decoded block size.
@@ -243,48 +283,70 @@ public final class LZ4Codec
         }
 
         /// Selects the maximum decoded block size.
+        ///
+        /// @param blockSize the standard block-size code written to new frames
+        /// @return this builder
         public Builder blockSize(LZ4BlockSize blockSize) {
             this.blockSize = Objects.requireNonNull(blockSize, "blockSize");
             return this;
         }
 
         /// Selects whether every block starts with an empty history window.
+        ///
+        /// @param independentBlocks whether blocks are independently decodable
+        /// @return this builder
         public Builder independentBlocks(boolean independentBlocks) {
             this.independentBlocks = independentBlocks;
             return this;
         }
 
         /// Selects whether encoders append a checksum to every physical block.
+        ///
+        /// @param blockChecksum whether to append block xxHash-32 values
+        /// @return this builder
         public Builder blockChecksum(boolean blockChecksum) {
             this.blockChecksum = blockChecksum;
             return this;
         }
 
         /// Selects whether encoders append a checksum for the complete decoded content.
+        ///
+        /// @param contentChecksum whether to append a decoded-content xxHash-32
+        /// @return this builder
         public Builder contentChecksum(boolean contentChecksum) {
             this.contentChecksum = contentChecksum;
             return this;
         }
 
         /// Selects whether decoders verify checksums present in input frames.
+        ///
+        /// @param verifyChecksums whether to validate present block and content checksums
+        /// @return this builder
         public Builder verifyChecksums(boolean verifyChecksums) {
             this.verifyChecksums = verifyChecksums;
             return this;
         }
 
         /// Selects the external prefix dictionary used by encoders and decoders.
+        ///
+        /// @param dictionary the immutable effective prefix history
+        /// @return this builder
         public Builder dictionary(LZ4Dictionary dictionary) {
             this.dictionary = Objects.requireNonNull(dictionary, "dictionary");
             return this;
         }
 
         /// Removes the external prefix dictionary from this builder.
+        ///
+        /// @return this builder
         public Builder withoutDictionary() {
             dictionary = null;
             return this;
         }
 
         /// Builds one immutable standard LZ4 frame configuration.
+        ///
+        /// @return a new codec snapshot of the selected values
         public LZ4Codec build() {
             return new LZ4Codec(this);
         }

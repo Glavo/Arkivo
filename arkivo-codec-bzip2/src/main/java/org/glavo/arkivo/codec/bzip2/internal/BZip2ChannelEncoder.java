@@ -89,6 +89,12 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
     private long inputBytes;
 
     /// Creates an encoder over a compressed channel with explicit ownership and block size.
+    ///
+    /// @param target the channel that receives BZip2 bytes
+    /// @param ownership whether closing this encoder also closes `target`
+    /// @param blockSize the BZip2 block-size level from one through nine
+    /// @throws IllegalArgumentException if `blockSize` is outside the supported range
+    /// @throws IOException if the initial stream header cannot be written
     public BZip2ChannelEncoder(
             WritableByteChannel target,
             ResourceOwnership ownership,
@@ -128,6 +134,8 @@ public final class BZip2ChannelEncoder implements CompressingWritableByteChannel
     }
 
     /// Flushes complete compressed bytes already emitted to the wrapped target.
+    ///
+    /// @throws IOException if the wrapped target cannot accept pending bytes
     public void flush() throws IOException {
         ensureOpen();
         bits.flush();

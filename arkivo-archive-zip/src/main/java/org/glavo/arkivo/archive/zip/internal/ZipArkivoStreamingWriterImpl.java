@@ -71,11 +71,25 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
     }
 
     /// Creates a streaming ZIP writer that writes to an archive path.
+    ///
+    /// @param path the destination archive path
+    /// @param config the validated creation configuration
+    /// @return a new open streaming writer
+    /// @throws NullPointerException if `path` or `config` is `null`
+    /// @throws IOException if the destination cannot be prepared for writing
     public static ZipArkivoStreamingWriterImpl create(Path path, ZipArkivoFileSystemConfig config) throws IOException {
         return new ZipArkivoStreamingWriterImpl(ZipArchiveEntrySink.create(path, config), config);
     }
 
     /// Opens a streaming ZIP writer over a writable channel.
+    ///
+    /// A successful return transfers channel ownership to the writer. If setup fails after validation, this method closes
+    /// the channel and suppresses any cleanup failure on the setup failure.
+    ///
+    /// @param output the destination channel at its logical ZIP output position
+    /// @param config the validated creation configuration
+    /// @return a new open streaming writer
+    /// @throws NullPointerException if `output` or `config` is `null`
     public static ZipArkivoStreamingWriterImpl open(WritableByteChannel output, ZipArkivoFileSystemConfig config) {
         Objects.requireNonNull(output, "output");
         try {
@@ -87,6 +101,14 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
     }
 
     /// Opens a streaming ZIP writer over an output stream.
+    ///
+    /// A successful return transfers stream ownership to the writer. Output begins at the stream's current write
+    /// location.
+    ///
+    /// @param output the destination stream
+    /// @param config the validated creation configuration
+    /// @return a new open streaming writer
+    /// @throws NullPointerException if `output` or `config` is `null`
     public static ZipArkivoStreamingWriterImpl open(OutputStream output, ZipArkivoFileSystemConfig config) {
         Objects.requireNonNull(output, "output");
         return open(StreamChannelAdapters.writableChannel(output), config);
@@ -104,6 +126,16 @@ public final class ZipArkivoStreamingWriterImpl extends ZipArkivoStreamingWriter
     }
 
     /// Opens a streaming ZIP writer over a transactional volume target.
+    ///
+    /// The returned writer owns the opened transaction but not the target itself.
+    ///
+    /// @param target the caller-owned transactional output target
+    /// @param splitSize the maximum number of bytes written to each volume
+    /// @param config the validated creation configuration
+    /// @return a new open streaming writer
+    /// @throws NullPointerException if `target` or `config` is `null`
+    /// @throws IllegalArgumentException if `splitSize` is outside the ZIP split-volume range
+    /// @throws IOException if the output transaction cannot be opened
     public static ZipArkivoStreamingWriterImpl open(
             ArkivoVolumeTarget target,
             long splitSize,

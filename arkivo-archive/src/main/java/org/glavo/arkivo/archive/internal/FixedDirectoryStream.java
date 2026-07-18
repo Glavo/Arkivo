@@ -32,11 +32,16 @@ public final class FixedDirectoryStream<T> implements DirectoryStream<T> {
     private boolean iteratorReturned;
 
     /// Creates an unfiltered directory stream over the given entry snapshot.
+    ///
+    /// @param entries the entries to copy in iteration order
     public FixedDirectoryStream(List<T> entries) {
         this(entries, entry -> true);
     }
 
     /// Creates a filtered directory stream over the given entry snapshot.
+    ///
+    /// @param entries the entries to copy in iteration order
+    /// @param filter the filter evaluated once when the iterator is requested
     public FixedDirectoryStream(List<T> entries, Filter<? super T> filter) {
         this.entries = List.copyOf(Objects.requireNonNull(entries, "entries"));
         this.filter = Objects.requireNonNull(filter, "filter");

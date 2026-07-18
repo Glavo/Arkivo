@@ -33,16 +33,24 @@ public enum LZ4BlockSize {
     }
 
     /// Returns the maximum decoded bytes in one block.
+    ///
+    /// @return the standard block-size bound in bytes
     public int byteSize() {
         return byteSize;
     }
 
     /// Returns the three-bit value stored in an LZ4 frame descriptor.
+    ///
+    /// @return a descriptor code from four through seven
     public int descriptorCode() {
         return descriptorCode;
     }
 
     /// Resolves one validated descriptor code.
+    ///
+    /// @param descriptorCode the three-bit block-maximum-size code
+    /// @return the corresponding standard block-size value
+    /// @throws IllegalArgumentException if the code is not from four through seven
     public static LZ4BlockSize fromDescriptorCode(int descriptorCode) {
         return switch (descriptorCode) {
             case 4 -> KIB_64;

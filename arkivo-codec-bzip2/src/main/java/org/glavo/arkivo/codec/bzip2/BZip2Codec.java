@@ -15,6 +15,13 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 
 /// Provides an immutable BZip2 compression configuration and creates transport-independent engines.
+///
+/// The compression level is the BZip2 block-size digit: level one uses 100,000-byte blocks and level nine uses
+/// 900,000-byte blocks. It affects newly created encoders; decoders read the block size from each stream header.
+///
+/// Instances contain no stream state and are safe for concurrent use. Every [#newEncoder()] or [#newDecoder(
+/// DecompressionLimits)] call returns an independent, mutable engine. A completed encoder frame is one complete BZip2
+/// stream, including its combined CRC trailer.
 @NotNullByDefault
 public final class BZip2Codec
         implements CompressionCodec.LevelConfigurable<BZip2Codec>,
@@ -95,7 +102,11 @@ public final class BZip2Codec
         return new BZip2Encoder(compressionLevel);
     }
 
-    /// Creates a transport-independent BZip2 decoder with operation-scoped limits.
+    /// Creates a transport-independent BZip2 decoder with an operation-scoped decoded-output limit.
+    ///
+    /// The output limit is enforced across the decoder session. This implementation does not reject a member based on
+    /// `maximumWindowSize` or `maximumMemorySize`; it selects its working buffers from the member's 100,000- through
+    /// 900,000-byte block-size digit.
     @Override
     public CompressionDecoder.Framed newDecoder(DecompressionLimits limits) {
         return CompressionDecoderSupport.limitEngineOutput(

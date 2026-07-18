@@ -134,6 +134,13 @@ public final class ZipArkivoStreamingReaderImpl extends ZipArkivoStreamingReader
     private boolean archiveStart = true;
 
     /// Creates a ZIP streaming reader.
+    ///
+    /// The reader assumes ownership of `source` and consumes its current input state when the cursor advances. It does not
+    /// reposition the channel.
+    ///
+    /// @param source the owned forward-only ZIP channel
+    /// @param config the validated read configuration
+    /// @throws NullPointerException if `source` or `config` is `null`
     public ZipArkivoStreamingReaderImpl(
             ReadableByteChannel source,
             ZipArkivoFileSystemConfig config

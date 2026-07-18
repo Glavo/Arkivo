@@ -18,6 +18,14 @@ import java.io.IOException;
 import java.util.Objects;
 
 /// Provides an immutable XZ configuration and pure Java transport-independent engines.
+///
+/// One encoded frame is one complete XZ Stream. The configured block size controls uncompressed bytes per Block inside
+/// that Stream; zero selects one Block that grows until frame finalization. A nonterminal flush finishes the active
+/// Block, while frame finalization writes the Index and Stream Footer.
+///
+/// Codec values are safe for concurrent use. Builders and created engines are mutable and not safe for concurrent use.
+/// Decoders obtain LZMA2 and preprocessing-filter requirements from Block Headers, apply operation-scoped limits, and
+/// verify Block checks only when checksum verification is enabled.
 @NotNullByDefault
 public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> {
     /// The default XZ LZMA2 dictionary size.
@@ -57,11 +65,15 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
     }
 
     /// Returns a new builder initialized to XZ defaults.
+    ///
+    /// @return a new mutable builder
     public static Builder builder() {
         return new Builder();
     }
 
     /// Returns a mutable builder initialized from this immutable configuration.
+    ///
+    /// @return a new builder whose values initially equal this codec's values
     public Builder toBuilder() {
         return new Builder(this);
     }
@@ -73,31 +85,45 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
     }
 
     /// Returns the configured LZMA2 model properties.
+    ///
+    /// @return the immutable properties used by newly created encoders
     public LZMAProperties properties() {
         return properties;
     }
 
     /// Returns the configured block integrity check.
+    ///
+    /// @return the check written after each encoded Block
     public XZCheckType checkType() {
         return checkType;
     }
 
     /// Returns the configured ordered preprocessing filter chain.
+    ///
+    /// @return the immutable preprocessing chain in encoding order
     public XZFilterChain filterChain() {
         return filterChain;
     }
 
     /// Returns the maximum uncompressed bytes per XZ block, or zero for one unbounded block.
+    ///
+    /// @return the nonnegative Block size limit, in bytes
     public long blockSize() {
         return blockSize;
     }
 
     /// Returns whether decoders verify block integrity checks.
+    ///
+    /// @return {@code true} if newly created decoders calculate and compare supported Block checks
     public boolean verifiesChecksums() {
         return verifyChecksums;
     }
 
     /// Returns an immutable XZ codec with the requested LZMA2 properties.
+    ///
+    /// @param properties the replacement LZMA2 model properties
+    /// @return this codec if the properties are unchanged; otherwise, a new codec with the requested properties
+    /// @throws NullPointerException if {@code properties} is {@code null}
     public XZCodec withProperties(LZMAProperties properties) {
         Objects.requireNonNull(properties, "properties");
         return properties.equals(this.properties)
@@ -106,11 +132,19 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
     }
 
     /// Returns an immutable XZ codec with the requested dictionary size.
+    ///
+    /// @param dictionarySize the replacement LZMA2 dictionary size, in bytes
+    /// @return this codec if the size is unchanged; otherwise, a new codec with the requested size
+    /// @throws IllegalArgumentException if {@code dictionarySize} is outside the supported range
     public XZCodec withDictionarySize(int dictionarySize) {
         return withProperties(properties.withDictionarySize(dictionarySize));
     }
 
     /// Returns an immutable XZ codec with the requested block integrity check.
+    ///
+    /// @param checkType the check to write after each encoded Block
+    /// @return this codec if the check is unchanged; otherwise, a new codec with the requested check
+    /// @throws NullPointerException if {@code checkType} is {@code null}
     public XZCodec withCheckType(XZCheckType checkType) {
         Objects.requireNonNull(checkType, "checkType");
         return checkType == this.checkType
@@ -119,6 +153,10 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
     }
 
     /// Returns an immutable XZ codec with the requested preprocessing filters.
+    ///
+    /// @param filterChain the replacement preprocessing chain in encoding order
+    /// @return this codec if the chain is unchanged; otherwise, a new codec with the requested chain
+    /// @throws NullPointerException if {@code filterChain} is {@code null}
     public XZCodec withFilterChain(XZFilterChain filterChain) {
         Objects.requireNonNull(filterChain, "filterChain");
         return filterChain.equals(this.filterChain)
@@ -127,6 +165,10 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
     }
 
     /// Returns an immutable XZ codec with the requested block size.
+    ///
+    /// @param blockSize the maximum uncompressed bytes per Block, or zero for one unbounded Block
+    /// @return this codec if the size is unchanged; otherwise, a new codec with the requested size
+    /// @throws IllegalArgumentException if {@code blockSize} is negative
     public XZCodec withBlockSize(long blockSize) {
         return blockSize == this.blockSize
                 ? this
@@ -134,6 +176,9 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
     }
 
     /// Returns an immutable XZ codec with the requested checksum-verification behavior.
+    ///
+    /// @param verifyChecksums whether decoders calculate and compare supported Block checks
+    /// @return this codec if the setting is unchanged; otherwise, a new codec with the requested setting
     public XZCodec withVerifyChecksums(boolean verifyChecksums) {
         return verifyChecksums == this.verifyChecksums
                 ? this
@@ -159,7 +204,8 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
 
     /// Builds immutable XZ codec configurations.
     ///
-    /// Builders are mutable and not safe for concurrent use.
+    /// A builder may be reused after [#build()]; each build captures the values selected at that time. Builders are
+    /// mutable and not safe for concurrent use.
     @NotNullByDefault
     public static final class Builder {
         /// The selected LZMA2 model properties.
@@ -191,48 +237,80 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
         }
 
         /// Selects all LZMA2 model properties.
+        ///
+        /// @param properties the model properties used by newly created encoders
+        /// @return this builder
+        /// @throws NullPointerException if {@code properties} is {@code null}
         public Builder properties(LZMAProperties properties) {
             this.properties = Objects.requireNonNull(properties, "properties");
             return this;
         }
 
         /// Selects the LZMA2 dictionary size.
+        ///
+        /// @param dictionarySize the dictionary size, in bytes
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code dictionarySize} is outside the supported range
         public Builder dictionarySize(int dictionarySize) {
             properties = properties.withDictionarySize(dictionarySize);
             return this;
         }
 
         /// Selects the LZMA literal-context bit count.
+        ///
+        /// @param literalContextBits the bit count, from {@code 0} through {@code 8}
+        /// @return this builder
+        /// @throws IllegalArgumentException if the count is invalid with the selected literal-position count
         public Builder literalContextBits(int literalContextBits) {
             properties = properties.withLiteralContextBits(literalContextBits);
             return this;
         }
 
         /// Selects the LZMA literal-position bit count.
+        ///
+        /// @param literalPositionBits the bit count, from {@code 0} through {@code 4}
+        /// @return this builder
+        /// @throws IllegalArgumentException if the count is invalid with the selected literal-context count
         public Builder literalPositionBits(int literalPositionBits) {
             properties = properties.withLiteralPositionBits(literalPositionBits);
             return this;
         }
 
         /// Selects the LZMA match-position bit count.
+        ///
+        /// @param positionBits the bit count, from {@code 0} through {@code 4}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code positionBits} is outside the supported range
         public Builder positionBits(int positionBits) {
             properties = properties.withPositionBits(positionBits);
             return this;
         }
 
         /// Selects the exact XZ block integrity check.
+        ///
+        /// @param checkType the check to write after each encoded Block
+        /// @return this builder
+        /// @throws NullPointerException if {@code checkType} is {@code null}
         public Builder checkType(XZCheckType checkType) {
             this.checkType = Objects.requireNonNull(checkType, "checkType");
             return this;
         }
 
         /// Selects the ordered size-preserving preprocessing filter chain.
+        ///
+        /// @param filterChain the preprocessing filters in encoding order
+        /// @return this builder
+        /// @throws NullPointerException if {@code filterChain} is {@code null}
         public Builder filterChain(XZFilterChain filterChain) {
             this.filterChain = Objects.requireNonNull(filterChain, "filterChain");
             return this;
         }
 
         /// Selects the maximum uncompressed bytes per block; zero keeps one unbounded block.
+        ///
+        /// @param blockSize the nonnegative Block size limit, in bytes
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code blockSize} is negative
         public Builder blockSize(long blockSize) {
             if (blockSize < 0L) {
                 throw new IllegalArgumentException("XZ blockSize must not be negative");
@@ -242,12 +320,17 @@ public final class XZCodec implements CompressionCodec.FlushableFramed<XZCodec> 
         }
 
         /// Selects whether decoders verify XZ block integrity checks.
+        ///
+        /// @param verifyChecksums whether decoders calculate and compare supported Block checks
+        /// @return this builder
         public Builder verifyChecksums(boolean verifyChecksums) {
             this.verifyChecksums = verifyChecksums;
             return this;
         }
 
         /// Builds an immutable XZ codec configuration.
+        ///
+        /// @return an immutable snapshot of this builder's current values
         public XZCodec build() {
             return new XZCodec(this);
         }

@@ -46,6 +46,10 @@ public enum ZipMethod {
     }
 
     /// Returns the recognized ZIP method for the given unsigned 16-bit identifier, or `null` when it is unknown.
+    ///
+    /// @param id the unsigned 16-bit ZIP compression method identifier
+    /// @return the recognized method, or `null` when the identifier is not supported
+    /// @throws IllegalArgumentException if `id` is outside the unsigned 16-bit range
     public static @Nullable ZipMethod fromId(int id) {
         if (id < 0 || id > 0xffff) {
             throw new IllegalArgumentException("ZIP compression method identifier must be between 0 and 65535: " + id);
@@ -64,6 +68,8 @@ public enum ZipMethod {
     }
 
     /// Returns the numeric ZIP compression method identifier.
+    ///
+    /// @return the unsigned 16-bit method identifier
     public int id() {
         return id;
     }

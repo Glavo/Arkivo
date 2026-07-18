@@ -12,11 +12,16 @@ public final class DecompressionOutputLimitException extends DecompressionLimitE
     private static final long serialVersionUID = 0L;
 
     /// Creates an exception when only the first disallowed output byte is known.
+    ///
+    /// @param maximumOutputSize the configured non-negative maximum below {@link Long#MAX_VALUE}
     public DecompressionOutputLimitException(long maximumOutputSize) {
         this(maximumOutputSize, firstDisallowedSize(maximumOutputSize));
     }
 
     /// Creates an exception for an observed decoded output size.
+    ///
+    /// @param maximumOutputSize the configured non-negative maximum
+    /// @param actualOutputSize the observed size greater than {@code maximumOutputSize}
     public DecompressionOutputLimitException(long maximumOutputSize, long actualOutputSize) {
         super(
                 "Decompressed output of " + actualOutputSize
@@ -28,11 +33,15 @@ public final class DecompressionOutputLimitException extends DecompressionLimitE
     }
 
     /// Returns the configured maximum decoded output size.
+    ///
+    /// @return the configured maximum in bytes
     public long maximumOutputSize() {
         return maximum();
     }
 
     /// Returns the observed decoded output size.
+    ///
+    /// @return the observed size in bytes
     public long actualOutputSize() {
         return actual();
     }

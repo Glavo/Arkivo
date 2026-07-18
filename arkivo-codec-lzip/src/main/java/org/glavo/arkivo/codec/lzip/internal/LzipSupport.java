@@ -29,6 +29,10 @@ public final class LzipSupport {
     }
 
     /// Encodes an exactly representable lzip dictionary size into its one-byte header field.
+    ///
+    /// @param dictionarySize the dictionary size to encode, in bytes
+    /// @return the unsigned value of the encoded header byte
+    /// @throws IllegalArgumentException if {@code dictionarySize} is not exactly representable
     public static int encodeDictionarySize(int dictionarySize) {
         for (int logarithm = 12; logarithm <= 29; logarithm++) {
             int base = 1 << logarithm;
@@ -45,6 +49,10 @@ public final class LzipSupport {
     }
 
     /// Decodes and validates the one-byte dictionary-size field from a lzip member header.
+    ///
+    /// @param encoded the unsigned value of the header byte, from {@code 0} through {@code 255}
+    /// @return the decoded dictionary size, in bytes
+    /// @throws IllegalArgumentException if {@code encoded} is outside the unsigned-byte range or has an invalid exponent
     public static int decodeDictionarySize(int encoded) {
         if (encoded < 0 || encoded > 0xff) {
             throw new IllegalArgumentException("Lzip dictionary code must be an unsigned byte: " + encoded);

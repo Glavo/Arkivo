@@ -17,6 +17,13 @@ import java.io.IOException;
 import java.util.Objects;
 
 /// Provides an immutable Unix compress configuration and transport-independent LZW engines.
+///
+/// The maximum code width and block-mode flag are written to new `.Z` headers and govern encoding. Decoders instead
+/// read these parameters from each input header, then check the resulting LZW table and working-memory requirements
+/// against the supplied [DecompressionLimits].
+///
+/// Codec instances are safe for concurrent use and contain no stream state. Each created engine represents one mutable
+/// `.Z` stream session and is not safe for concurrent use.
 @NotNullByDefault
 public final class UnixCompressCodec implements CompressionCodec<UnixCompressCodec> {
     /// The smallest code width accepted by the Unix compress format.
@@ -47,6 +54,11 @@ public final class UnixCompressCodec implements CompressionCodec<UnixCompressCod
     }
 
     /// Creates a Unix compress codec with explicit header parameters.
+    ///
+    /// @param maximumCodeWidth the largest LZW code width, from [#MINIMUM_CODE_WIDTH] through
+    /// [#MAXIMUM_CODE_WIDTH]
+    /// @param blockMode whether encoded streams permit dictionary clear codes
+    /// @throws IllegalArgumentException if `maximumCodeWidth` is outside the supported range
     public UnixCompressCodec(int maximumCodeWidth, boolean blockMode) {
         UnixCompressSupport.requireMaximumCodeWidth(maximumCodeWidth);
         this.maximumCodeWidth = maximumCodeWidth;
@@ -60,16 +72,24 @@ public final class UnixCompressCodec implements CompressionCodec<UnixCompressCod
     }
 
     /// Returns the largest LZW code width written to encoded stream headers.
+    ///
+    /// @return the configured width from [#MINIMUM_CODE_WIDTH] through [#MAXIMUM_CODE_WIDTH]
     public int maximumCodeWidth() {
         return maximumCodeWidth;
     }
 
     /// Returns whether encoded streams permit dictionary clear codes.
+    ///
+    /// @return `true` when block mode is written to new stream headers
     public boolean blockMode() {
         return blockMode;
     }
 
     /// Returns an immutable codec with the requested maximum LZW code width.
+    ///
+    /// @param maximumCodeWidth the largest encoded LZW code width
+    /// @return this codec when the width is unchanged, otherwise a new immutable configuration
+    /// @throws IllegalArgumentException if `maximumCodeWidth` is outside the supported range
     public UnixCompressCodec withMaximumCodeWidth(int maximumCodeWidth) {
         return maximumCodeWidth == this.maximumCodeWidth
                 ? this
@@ -77,6 +97,9 @@ public final class UnixCompressCodec implements CompressionCodec<UnixCompressCod
     }
 
     /// Returns an immutable codec with the requested block-mode header policy.
+    ///
+    /// @param blockMode whether encoded streams permit dictionary clear codes
+    /// @return this codec when the policy is unchanged, otherwise a new immutable configuration
     public UnixCompressCodec withBlockMode(boolean blockMode) {
         return blockMode == this.blockMode
                 ? this

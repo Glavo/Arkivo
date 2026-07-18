@@ -30,7 +30,13 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 
-/// Describes the ZIP archive format support provided by Arkivo.
+/// Describes Arkivo's indexed and streaming ZIP support.
+///
+/// This descriptor opens read-only, creation, and complete-rewrite NIO file systems, forward-only readers and writers,
+/// and transactional split-volume output. Generic options retain CP437 legacy-name fallback, no password provider,
+/// and no output encryption; use the concrete ZIP factories to select those features. Factory methods have the same
+/// ownership, finalization, and publication contracts as [ZipArkivoFileSystem], [ZipArkivoStreamingReader], and
+/// [ZipArkivoStreamingWriter].
 @NotNullByDefault
 public final class ZipArkivoFormat implements
         ArkivoPathVolumeFormat,
@@ -49,6 +55,8 @@ public final class ZipArkivoFormat implements
     }
 
     /// Returns the shared ZIP format descriptor.
+    ///
+    /// @return the shared descriptor
     public static ZipArkivoFormat instance() {
         return INSTANCE;
     }

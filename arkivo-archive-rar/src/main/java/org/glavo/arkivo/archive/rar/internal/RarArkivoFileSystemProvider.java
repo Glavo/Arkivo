@@ -53,6 +53,8 @@ public final class RarArkivoFileSystemProvider extends FileSystemProvider {
     }
 
     /// Returns the shared RAR file system provider instance.
+    ///
+    /// @return the provider used by the RAR convenience factories
     public static RarArkivoFileSystemProvider instance() {
         return INSTANCE;
     }
@@ -87,6 +89,11 @@ public final class RarArkivoFileSystemProvider extends FileSystemProvider {
     }
 
     /// Opens a RAR archive path whose format has already been selected explicitly.
+    ///
+    /// @param path the path of the first or only RAR volume
+    /// @param options the validated archive environment options
+    /// @return a read-only file system for the archive
+    /// @throws IOException if the archive volumes cannot be opened or parsed
     public RarArkivoFileSystem openPath(Path path, ArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");

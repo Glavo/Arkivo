@@ -28,6 +28,12 @@ public final class ArkivoReadLimitException extends IOException {
     private final @Nullable String entryPath;
 
     /// Creates an archive reading limit failure.
+    ///
+    /// @param kind      the resource category whose limit was exceeded
+    /// @param maximum   the configured non-negative maximum
+    /// @param actual    the observed value, which must be greater than {@code maximum}
+    /// @param entryPath the affected archive-local entry path, or {@code null} for an archive-wide limit
+    /// @throws IllegalArgumentException if {@code maximum} is negative or {@code actual} does not exceed it
     public ArkivoReadLimitException(
             ArkivoReadLimitKind kind,
             long maximum,
@@ -48,21 +54,29 @@ public final class ArkivoReadLimitException extends IOException {
     }
 
     /// Returns the configured limit that was exceeded.
+    ///
+    /// @return the exceeded resource category
     public ArkivoReadLimitKind kind() {
         return kind;
     }
 
     /// Returns the maximum permitted value.
+    ///
+    /// @return the configured non-negative maximum
     public long maximum() {
         return maximum;
     }
 
     /// Returns the value that exceeded the configured maximum.
+    ///
+    /// @return the observed value greater than {@link #maximum()}
     public long actual() {
         return actual;
     }
 
     /// Returns the archive-local entry path associated with the failure, or `null` when no entry is applicable.
+    ///
+    /// @return the affected entry path, or {@code null} for an archive-wide limit
     public @Nullable String entryPath() {
         return entryPath;
     }

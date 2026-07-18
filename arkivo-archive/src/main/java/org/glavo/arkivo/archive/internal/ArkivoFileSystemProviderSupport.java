@@ -49,6 +49,10 @@ public final class ArkivoFileSystemProviderSupport {
     }
 
     /// Resolves a path for a read operation that follows symbolic links.
+    ///
+    /// @param path the lexical path to resolve
+    /// @return the checked normalized absolute real path
+    /// @throws IOException if the path does not exist or cannot be resolved
     public static Path resolveReadPath(Path path) throws IOException {
         return Objects.requireNonNull(path, "path").toRealPath();
     }
@@ -56,6 +60,11 @@ public final class ArkivoFileSystemProviderSupport {
     /// Resolves a path for an input-stream operation unless `NOFOLLOW_LINKS` is requested.
     ///
     /// Unsupported options are left for the concrete provider to reject without performing an early path lookup.
+    ///
+    /// @param path the lexical input path
+    /// @param options the input-stream open options
+    /// @return the real path when links should be followed, otherwise the unchanged lexical path
+    /// @throws IOException if required symbolic-link resolution fails
     public static Path resolveReadPath(Path path, OpenOption... options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
@@ -75,6 +84,11 @@ public final class ArkivoFileSystemProviderSupport {
     ///
     /// Channels with write, creation, or provider-specific options retain their lexical path so mutation semantics are
     /// decided by the concrete archive file system.
+    ///
+    /// @param path the lexical byte-channel path
+    /// @param options the byte-channel open options
+    /// @return the real path for a pure following read, otherwise the unchanged lexical path
+    /// @throws IOException if required symbolic-link resolution fails
     public static Path resolveReadChannelPath(Path path, Set<? extends OpenOption> options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
@@ -91,6 +105,11 @@ public final class ArkivoFileSystemProviderSupport {
     }
 
     /// Resolves a path for an attribute read unless `NOFOLLOW_LINKS` is requested.
+    ///
+    /// @param path the lexical attribute path
+    /// @param options the symbolic-link traversal options
+    /// @return the real path when links should be followed, otherwise the unchanged lexical path
+    /// @throws IOException if required symbolic-link resolution fails
     public static Path resolveReadPath(Path path, LinkOption... options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
@@ -107,6 +126,10 @@ public final class ArkivoFileSystemProviderSupport {
     ///
     /// Attribute-view lookup cannot report `IOException`, so symbolic links are resolved only when an operation is
     /// invoked on the returned view path.
+    ///
+    /// @param path the lexical path supplied to the attribute-view factory
+    /// @param options the symbolic-link traversal options
+    /// @return a validated lazy path and traversal policy
     public static AttributeViewPath attributeViewPath(Path path, LinkOption... options) {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
@@ -132,6 +155,9 @@ public final class ArkivoFileSystemProviderSupport {
         }
 
         /// Resolves the path for one attribute-view operation.
+        ///
+        /// @return the real path when {@link #followLinks()} is true, otherwise the lexical {@link #path()}
+        /// @throws IOException if required symbolic-link resolution fails
         public Path resolve() throws IOException {
             return followLinks ? path.toRealPath() : path;
         }
@@ -142,6 +168,12 @@ public final class ArkivoFileSystemProviderSupport {
     /// Regular file bodies are streamed, directories are copied without descendants, and symbolic links are followed
     /// unless `NOFOLLOW_LINKS` is requested. `REPLACE_EXISTING` and `COPY_ATTRIBUTES` are supported; other options are
     /// rejected before the target is modified.
+    ///
+    /// @param source the source entry path
+    /// @param target the destination entry path
+    /// @param options the supported standard copy options
+    /// @throws IOException if the source cannot be read or the target cannot be created or updated
+    /// @throws UnsupportedOperationException if an option is unsupported
     public static void copy(Path source, Path target, CopyOption... options) throws IOException {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
@@ -219,6 +251,10 @@ public final class ArkivoFileSystemProviderSupport {
     ///
     /// Provider-native archive moves are namespace operations and never degrade into a cross-file-system copy followed
     /// by deletion. The check is performed before format implementations inspect or mutate either path.
+    ///
+    /// @param source the move source path
+    /// @param target the move target path
+    /// @throws ProviderMismatchException if the paths belong to different file-system instances
     public static void requireSameFileSystemMove(Path source, Path target) {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(target, "target");
@@ -292,6 +328,11 @@ public final class ArkivoFileSystemProviderSupport {
     ///
     /// Paths from different file systems cannot identify the same archive entry. Symbolic links are followed through
     /// `Path.toRealPath()`, and non-null file keys provide a final identity comparison for distinct real paths.
+    ///
+    /// @param path the first path to compare
+    /// @param other the second path to compare
+    /// @return {@code true} if both paths resolve to the same entry in the same file system
+    /// @throws IOException if either same-file-system path cannot be resolved or inspected
     public static boolean isSameFile(Path path, Path other) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(other, "other");
@@ -325,8 +366,11 @@ public final class ArkivoFileSystemProviderSupport {
     /// missing archives opened with `CREATE`, damaged archives that should report a format-specific error, and
     /// compressed archives whose outer stream hides the archive signature.
     ///
+    /// @param path the archive path to classify
+    /// @param expectedFormat the format represented by the candidate provider
     /// @throws UnsupportedOperationException if the path belongs to another installed format or cannot be associated
-    ///                                       with the expected format
+    /// with the expected format
+    /// @throws IOException if existing path content cannot be probed
     public static void requirePathFormat(Path path, ArkivoFormat expectedFormat) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(expectedFormat, "expectedFormat");
@@ -381,6 +425,8 @@ public final class ArkivoFileSystemProviderSupport {
     /// @param scheme provider scheme
     /// @param formatName format name used in validation messages
     /// @param requireEntryPath whether the URI must identify an entry
+    /// @return the normalized nested archive URI, archive path, and optional decoded entry path
+    /// @throws IllegalArgumentException if the provider URI is malformed or violates the requested shape
     public static ParsedUri parseUri(
             URI uri,
             String scheme,
@@ -459,6 +505,8 @@ public final class ArkivoFileSystemProviderSupport {
         /// Opens one candidate file system.
         ///
         /// @param closeAction action the file system must invoke when it closes
+        /// @return a newly opened candidate file system
+        /// @throws IOException if the archive file system cannot be opened
         F open(Runnable closeAction) throws IOException;
     }
 
@@ -478,6 +526,12 @@ public final class ArkivoFileSystemProviderSupport {
         ///
         /// The factory may be called only after stale registrations have been removed. A candidate that loses a
         /// concurrent publication race is closed before this method retries or reports the winning open instance.
+        ///
+        /// @param archiveUri the normalized nested archive URI used as the registry key
+        /// @param factory the callback that opens a candidate honoring the supplied unregister action
+        /// @return the newly opened and registered file system
+        /// @throws IOException if a candidate cannot be opened or a losing candidate cannot be closed
+        /// @throws FileSystemAlreadyExistsException if an open file system is already registered
         public F open(URI archiveUri, RegisteredFileSystemFactory<F> factory) throws IOException {
             Objects.requireNonNull(archiveUri, "archiveUri");
             Objects.requireNonNull(factory, "factory");
@@ -515,6 +569,10 @@ public final class ArkivoFileSystemProviderSupport {
         }
 
         /// Returns the open file system registered for an archive URI.
+        ///
+        /// @param archiveUri the normalized nested archive URI used as the registry key
+        /// @return the registered open file system
+        /// @throws FileSystemNotFoundException if no open file system is registered
         public F require(URI archiveUri) {
             Objects.requireNonNull(archiveUri, "archiveUri");
             F fileSystem = fileSystems.get(archiveUri);

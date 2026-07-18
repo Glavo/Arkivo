@@ -19,6 +19,11 @@ import java.nio.channels.ReadableByteChannel;
 @NotNullByDefault
 public interface ArkivoStreamingSourceProvider {
     /// Probes one outer source wrapper and returns its replacement channel.
+    ///
+    /// @param source the channel whose ownership is transferred after argument validation
+    /// @param options the archive-wide read limits and lifecycle options
+    /// @return an owning result containing either a replaying untransformed source or the transformed logical source
+    /// @throws IOException if probing or transformation setup fails
     ArkivoStreamingSource probe(
             ReadableByteChannel source,
             ArchiveReadOptions options

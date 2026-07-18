@@ -11,6 +11,9 @@ import java.nio.ByteBuffer;
 import java.util.List;
 
 /// Describes the discoverable BZip2 compression format.
+///
+/// This descriptor is immutable and safe for concurrent use. Prefix matching recognizes `BZh` followed by a valid
+/// block-size digit without changing the supplied buffer; it does not validate the remainder of the stream.
 @NotNullByDefault
 public final class BZip2Format implements CompressionFormat {
     /// The stable BZip2 format name.
@@ -24,6 +27,8 @@ public final class BZip2Format implements CompressionFormat {
     }
 
     /// Returns the canonical BZip2 format instance.
+    ///
+    /// @return the shared immutable format descriptor
     public static BZip2Format instance() {
         return INSTANCE;
     }

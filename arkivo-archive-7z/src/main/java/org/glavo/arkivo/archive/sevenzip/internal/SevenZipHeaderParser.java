@@ -112,6 +112,10 @@ public final class SevenZipHeaderParser {
     }
 
     /// Parses entries from a validated 7z next header.
+    ///
+    /// @param header the complete validated next-header bytes
+    /// @return the immutable parsed entry metadata in archive order
+    /// @throws IOException if the header structure, coder graph, property values, or referenced data are invalid
     public static List<SevenZipEntryMetadata> parseEntries(byte[] header) throws IOException {
         return parseEntries(header, null, null);
     }

@@ -18,6 +18,12 @@ public final class SeekableChannelSources {
     }
 
     /// Adapts and transfers ownership of one channel to an archive open operation.
+    ///
+    /// @param <T> the opened archive resource type
+    /// @param channel the seekable channel whose ownership is transferred after argument validation
+    /// @param opener the operation that assumes ownership of the repeatable source on success
+    /// @return the opened archive resource
+    /// @throws IOException if source adaptation or the archive open operation fails
     public static <T> T open(SeekableByteChannel channel, Opener<T> opener) throws IOException {
         Objects.requireNonNull(channel, "channel");
         Objects.requireNonNull(opener, "opener");
@@ -37,10 +43,16 @@ public final class SeekableChannelSources {
     }
 
     /// Opens an archive from a repeatable logical source.
+    ///
+    /// @param <T> the opened archive resource type
     @FunctionalInterface
     @NotNullByDefault
     public interface Opener<T> {
         /// Performs one archive open operation that assumes ownership of the source on success.
+        ///
+        /// @param source the repeatable source whose ownership transfers on success
+        /// @return the opened archive resource
+        /// @throws IOException if the archive cannot be opened
         T open(ArkivoSeekableChannelSource source) throws IOException;
     }
 }

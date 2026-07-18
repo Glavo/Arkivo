@@ -70,6 +70,10 @@ public final class UnixCompressEncoder implements CompressionEncoder {
     private State state;
 
     /// Creates a Unix compress encoder for the supplied header parameters.
+    ///
+    /// @param maximumCodeWidth the largest LZW code width from 9 through 16
+    /// @param blockMode whether the stream header permits dictionary clear codes
+    /// @throws IllegalArgumentException if `maximumCodeWidth` is outside the supported range
     public UnixCompressEncoder(int maximumCodeWidth, boolean blockMode) {
         this.maximumCodeWidth = UnixCompressSupport.requireMaximumCodeWidth(maximumCodeWidth);
         this.blockMode = blockMode;

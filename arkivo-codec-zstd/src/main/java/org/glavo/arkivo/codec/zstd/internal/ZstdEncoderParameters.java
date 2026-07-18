@@ -107,6 +107,7 @@ public final class ZstdEncoderParameters {
     /// @param overlapLog requested worker overlap logarithm from zero through nine
     /// @param pledgedSourceSize exact source size for every frame, or the unknown sentinel
     /// @param dictionary configured dictionary, or null
+    /// @throws IOException if the configured dictionary representation cannot initialize an encoding context
     public ZstdEncoderParameters(
             int compressionLevel,
             int windowLog,

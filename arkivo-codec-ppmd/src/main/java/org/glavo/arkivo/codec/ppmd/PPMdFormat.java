@@ -9,7 +9,10 @@ import org.jetbrains.annotations.Unmodifiable;
 
 import java.util.List;
 
-/// Describes the discoverable raw PPMd7 compression format.
+/// Describes the registered raw PPMd7 compression format.
+///
+/// Headerless PPMd7 has no fixed signature or standalone file extension and requires model parameters and decoded size
+/// from its embedding container. This immutable descriptor is therefore intended for explicit selection.
 @NotNullByDefault
 public final class PPMdFormat implements CompressionFormat {
     /// The stable raw PPMd7 format name.
@@ -23,6 +26,8 @@ public final class PPMdFormat implements CompressionFormat {
     }
 
     /// Returns the canonical raw PPMd7 format instance.
+    ///
+    /// @return the canonical format instance
     public static PPMdFormat instance() {
         return INSTANCE;
     }

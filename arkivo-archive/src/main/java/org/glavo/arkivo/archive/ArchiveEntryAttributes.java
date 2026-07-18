@@ -11,5 +11,7 @@ import java.nio.file.attribute.BasicFileAttributes;
 @NotNullByDefault
 public interface ArchiveEntryAttributes extends BasicFileAttributes {
     /// Returns the normalized archive-local path text.
+    ///
+    /// @return the normalized path relative to the archive root
     String path();
 }

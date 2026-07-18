@@ -14,5 +14,8 @@ import org.jetbrains.annotations.NotNullByDefault;
 @NotNullByDefault
 public interface DictionaryRequest<D extends CompressionDictionary> {
     /// Returns whether the supplied dictionary satisfies this request.
+    ///
+    /// @param dictionary the format-specific dictionary to test
+    /// @return {@code true} if the dictionary can resume this decoder request
     boolean matches(D dictionary);
 }

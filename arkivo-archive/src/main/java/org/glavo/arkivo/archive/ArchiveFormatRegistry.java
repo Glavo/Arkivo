@@ -65,23 +65,35 @@ public final class ArchiveFormatRegistry {
     }
 
     /// Loads formats visible to the current thread context class loader.
+    ///
+    /// @return an immutable registry containing the discovered formats
     public static ArchiveFormatRegistry load() {
         return fromFormats(ServiceLoader.load(ArkivoFormat.class));
     }
 
     /// Loads formats visible to the given class loader.
+    ///
+    /// @param loader the class loader from which providers are discovered
+    /// @return an immutable registry containing the discovered formats
     public static ArchiveFormatRegistry load(ClassLoader loader) {
         Objects.requireNonNull(loader, "loader");
         return fromFormats(ServiceLoader.load(ArkivoFormat.class, loader));
     }
 
     /// Loads formats visible to the given module layer.
+    ///
+    /// @param layer the module layer from which providers are discovered
+    /// @return an immutable registry containing the discovered formats
     public static ArchiveFormatRegistry load(ModuleLayer layer) {
         Objects.requireNonNull(layer, "layer");
         return fromFormats(ServiceLoader.load(layer, ArkivoFormat.class));
     }
 
     /// Creates a registry from explicit format descriptors.
+    ///
+    /// @param formats the descriptors to validate and index, in preferred discovery order
+    /// @return an immutable registry containing each logical provider at most once
+    /// @throws IllegalStateException if a descriptor has an invalid probe size or formats claim the same name
     public static ArchiveFormatRegistry fromFormats(Iterable<? extends ArkivoFormat> formats) {
         Objects.requireNonNull(formats, "formats");
         ArrayList<ArkivoFormat> copiedFormats = new ArrayList<>();
@@ -92,11 +104,16 @@ public final class ArchiveFormatRegistry {
     }
 
     /// Returns formats in discovery or caller-supplied order, with repeated logical providers included once.
+    ///
+    /// @return the immutable ordered format list
     public @Unmodifiable List<ArkivoFormat> formats() {
         return formats;
     }
 
     /// Returns the named format or null when no stable name or alias matches.
+    ///
+    /// @param name the case-insensitive stable name or alias to look up
+    /// @return the matching format, or {@code null} if no format matches
     public @Nullable ArkivoFormat find(String name) {
         Objects.requireNonNull(name, "name");
         return formatsByName.get(normalizeName(name));
@@ -104,6 +121,8 @@ public final class ArchiveFormatRegistry {
 
     /// Returns the named format.
     ///
+    /// @param name the case-insensitive stable name or alias to look up
+    /// @return the matching format
     /// @throws IllegalArgumentException when no stable name or alias matches
     public ArkivoFormat require(String name) {
         @Nullable ArkivoFormat format = find(name);
@@ -116,6 +135,9 @@ public final class ArchiveFormatRegistry {
     /// Returns the matching format with the largest preferred probe size.
     ///
     /// The supplied buffer is not modified.
+    ///
+    /// @param prefix the archive prefix to test, from its current position to its limit
+    /// @return the best matching format, or {@code null} if no format recognizes the prefix
     public @Nullable ArkivoFormat detect(ByteBuffer prefix) {
         Objects.requireNonNull(prefix, "prefix");
         @Nullable ArkivoFormat detected = null;
@@ -130,6 +152,8 @@ public final class ArchiveFormatRegistry {
     }
 
     /// Returns the largest preferred signature prefix requested by any format.
+    ///
+    /// @return the maximum value returned by a registered format's {@link ArkivoFormat#probeSize()} method
     public int probeSize() {
         return probeSize;
     }

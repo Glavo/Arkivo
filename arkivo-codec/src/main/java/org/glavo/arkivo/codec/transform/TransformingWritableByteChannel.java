@@ -15,6 +15,15 @@ import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
 /// Applies a stateful byte transform before writing to a channel.
+///
+/// This channel is stateful and not safe for concurrent use. Successful writes consume every remaining source byte,
+/// though an incomplete transform suffix may remain buffered. Transformed prefixes are written fully to the target; a
+/// zero-progress target or a transform that fills the bounded working buffer without committing a prefix causes
+/// `IOException`.
+///
+/// [#finish()] forwards the incomplete suffix unchanged, leaves the target open, and permanently ends writes through
+/// this wrapper. [#close()] finishes once and then leaves a borrowed target open or closes an owned target. A finish
+/// failure still closes this wrapper for writes and is not retried; a failed owned-target close can be retried.
 @NotNullByDefault
 public final class TransformingWritableByteChannel implements WritableByteChannel {
     /// The bounded filter working-buffer size.
@@ -47,12 +56,19 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
     /// Whether this channel remains open.
     private boolean open = true;
 
-    /// Creates a transforming channel retaining its target.
+    /// Creates a transforming channel that borrows and therefore does not close its target.
+    ///
+    /// @param target the downstream channel to write without closing
+    /// @param transform the stateful transform to apply before writing to `target`
     public TransformingWritableByteChannel(WritableByteChannel target, ByteTransform transform) {
         this(target, transform, ResourceOwnership.BORROWED);
     }
 
     /// Creates a transforming channel with explicit target ownership.
+    ///
+    /// @param target the downstream channel to write
+    /// @param transform the stateful transform to apply before writing to `target`
+    /// @param ownership whether closing this wrapper also closes `target`
     public TransformingWritableByteChannel(
             WritableByteChannel target,
             ByteTransform transform,
@@ -64,6 +80,9 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
     }
 
     /// Consumes untransformed bytes from the source buffer.
+    ///
+    /// On success the source position reaches its original limit and the limit is unchanged. On failure the position
+    /// identifies bytes already accepted into this transform pipeline.
     @Override
     public int write(ByteBuffer source) throws IOException {
         Objects.requireNonNull(source, "source");
@@ -84,7 +103,11 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
         return source.position() - start;
     }
 
-    /// Forwards the incomplete transform tail unchanged.
+    /// Forwards the incomplete transform tail unchanged and ends this transform sequence.
+    ///
+    /// This method is idempotent after success and does not close the target. Later writes fail with `IOException`.
+    ///
+    /// @throws IOException if this channel is closed, a prior failure is pending, or the tail cannot be written
     public void finish() throws IOException {
         ensureOpen();
         if (finished) {
@@ -110,7 +133,10 @@ public final class TransformingWritableByteChannel implements WritableByteChanne
         return open;
     }
 
-    /// Finishes this transform and optionally closes its target.
+    /// Finishes this transform and applies its target-ownership policy.
+    ///
+    /// `isOpen()` becomes false even if finishing or target closure throws. A close failure is suppressed on an earlier
+    /// finish failure, and later calls retry only an incomplete owned-target close.
     @Override
     public void close() throws IOException {
         @Nullable Throwable closeFailure = null;

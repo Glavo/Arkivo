@@ -26,6 +26,13 @@ public final class TarCompressionStreams {
     }
 
     /// Opens a decoded TAR input stream and closes the source if decoder setup fails.
+    ///
+    /// @param source the stream positioned at the first compressed or decoded TAR byte; ownership transfers after
+    ///               argument validation
+    /// @param compressionCodec the codec used to decode `source`, or `null` to return `source` unchanged
+    /// @param readLimits the archive policy supplying compression-window and decoder-memory limits
+    /// @return the owned decoded TAR stream; closing it closes `source`
+    /// @throws IOException if decoder setup fails; the validated source is closed before the failure is propagated
     public static InputStream openArchiveInput(
             InputStream source,
             @Nullable CompressionCodec<?> compressionCodec,
@@ -49,6 +56,13 @@ public final class TarCompressionStreams {
     }
 
     /// Opens a decoded TAR channel and closes the source if decoder setup fails.
+    ///
+    /// @param source the channel positioned at the first compressed or decoded TAR byte; ownership transfers after
+    ///               argument validation
+    /// @param compressionCodec the codec used to decode `source`, or `null` to return `source` unchanged
+    /// @param readLimits the archive policy supplying compression-window and decoder-memory limits
+    /// @return the owned decoded TAR channel; closing it closes `source`
+    /// @throws IOException if decoder setup fails; the validated source is closed before the failure is propagated
     public static ReadableByteChannel openArchiveInput(
             ReadableByteChannel source,
             @Nullable CompressionCodec<?> compressionCodec,
@@ -72,6 +86,12 @@ public final class TarCompressionStreams {
     }
 
     /// Opens an encoded TAR output stream and closes the target if encoder setup fails.
+    ///
+    /// @param target the stream at whose current position encoded or plain TAR bytes are written; ownership transfers
+    ///               after argument validation
+    /// @param compressionCodec the codec used to encode TAR bytes, or `null` to return `target` unchanged
+    /// @return the owned archive output stream; closing it finishes the codec and closes `target`
+    /// @throws IOException if encoder setup fails; the validated target is closed before the failure is propagated
     public static OutputStream openArchiveOutput(
             OutputStream target,
             @Nullable CompressionCodec<?> compressionCodec
@@ -89,6 +109,12 @@ public final class TarCompressionStreams {
     }
 
     /// Opens an encoded TAR channel and closes the target if encoder setup fails.
+    ///
+    /// @param target the channel at whose current position encoded or plain TAR bytes are written; ownership transfers
+    ///               after argument validation
+    /// @param compressionCodec the codec used to encode TAR bytes, or `null` to return `target` unchanged
+    /// @return the owned archive output channel; closing it finishes the codec and closes `target`
+    /// @throws IOException if encoder setup fails; the validated target is closed before the failure is propagated
     public static WritableByteChannel openArchiveOutput(
             WritableByteChannel target,
             @Nullable CompressionCodec<?> compressionCodec

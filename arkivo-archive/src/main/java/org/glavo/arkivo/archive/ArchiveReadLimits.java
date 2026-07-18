@@ -50,6 +50,8 @@ public record ArchiveReadLimits(
     }
 
     /// Returns a builder initialized with unrestricted limits.
+    ///
+    /// @return a new unrestricted builder
     public static Builder builder() {
         return new Builder();
     }
@@ -58,6 +60,8 @@ public record ArchiveReadLimits(
     ///
     /// History-based decoders whose dominant allocation is their window may use this value directly. Decoders with
     /// additional model memory must enforce [#maximumDecoderMemorySize()] separately.
+    ///
+    /// @return the smaller enforced window or memory limit, or {@link #UNLIMITED_SIZE} if both are unrestricted
     public long effectiveCompressionWindowSize() {
         if (maximumCompressionWindowSize == UNLIMITED_SIZE) {
             return maximumDecoderMemorySize;
@@ -101,6 +105,10 @@ public record ArchiveReadLimits(
         }
 
         /// Sets the maximum logical entry count.
+        ///
+        /// @param value the non-negative limit, or {@link #UNLIMITED_SIZE}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code value} is less than {@link #UNLIMITED_SIZE}
         public Builder maximumEntryCount(long value) {
             requireLimit(value, "maximumEntryCount");
             maximumEntryCount = value;
@@ -108,6 +116,10 @@ public record ArchiveReadLimits(
         }
 
         /// Sets the maximum logical size of one entry.
+        ///
+        /// @param value the non-negative byte limit, or {@link #UNLIMITED_SIZE}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code value} is less than {@link #UNLIMITED_SIZE}
         public Builder maximumEntrySize(long value) {
             requireLimit(value, "maximumEntrySize");
             maximumEntrySize = value;
@@ -115,6 +127,10 @@ public record ArchiveReadLimits(
         }
 
         /// Sets the maximum sum of logical entry sizes.
+        ///
+        /// @param value the non-negative byte limit, or {@link #UNLIMITED_SIZE}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code value} is less than {@link #UNLIMITED_SIZE}
         public Builder maximumTotalEntrySize(long value) {
             requireLimit(value, "maximumTotalEntrySize");
             maximumTotalEntrySize = value;
@@ -122,6 +138,10 @@ public record ArchiveReadLimits(
         }
 
         /// Sets the maximum cumulative metadata size.
+        ///
+        /// @param value the non-negative byte limit, or {@link #UNLIMITED_SIZE}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code value} is less than {@link #UNLIMITED_SIZE}
         public Builder maximumMetadataSize(long value) {
             requireLimit(value, "maximumMetadataSize");
             maximumMetadataSize = value;
@@ -129,6 +149,10 @@ public record ArchiveReadLimits(
         }
 
         /// Sets the maximum compression history-window size.
+        ///
+        /// @param value the non-negative byte limit, or {@link #UNLIMITED_SIZE}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code value} is less than {@link #UNLIMITED_SIZE}
         public Builder maximumCompressionWindowSize(long value) {
             requireLimit(value, "maximumCompressionWindowSize");
             maximumCompressionWindowSize = value;
@@ -136,6 +160,10 @@ public record ArchiveReadLimits(
         }
 
         /// Sets the maximum decoder working-memory size.
+        ///
+        /// @param value the non-negative byte limit, or {@link #UNLIMITED_SIZE}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code value} is less than {@link #UNLIMITED_SIZE}
         public Builder maximumDecoderMemorySize(long value) {
             requireLimit(value, "maximumDecoderMemorySize");
             maximumDecoderMemorySize = value;
@@ -143,6 +171,8 @@ public record ArchiveReadLimits(
         }
 
         /// Returns the immutable configured limits.
+        ///
+        /// @return a new immutable limit set containing the current builder values
         public ArchiveReadLimits build() {
             return new ArchiveReadLimits(
                     maximumEntryCount,

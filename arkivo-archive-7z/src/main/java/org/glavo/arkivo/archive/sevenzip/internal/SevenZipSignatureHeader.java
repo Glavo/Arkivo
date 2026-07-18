@@ -27,6 +27,13 @@ public final class SevenZipSignatureHeader {
     private final long nextHeaderCrc32;
 
     /// Creates a 7z signature header.
+    ///
+    /// @param majorVersion     the unsigned-byte major version
+    /// @param minorVersion     the unsigned-byte minor version
+    /// @param nextHeaderOffset the non-negative offset relative to the end of this fixed header
+    /// @param nextHeaderSize   the non-negative next-header byte size
+    /// @param nextHeaderCrc32  the unsigned 32-bit next-header CRC-32 value
+    /// @throws IllegalArgumentException if a version or CRC is out of range, or an offset or size is negative
     public SevenZipSignatureHeader(
             int majorVersion,
             int minorVersion,
@@ -57,26 +64,36 @@ public final class SevenZipSignatureHeader {
     }
 
     /// Returns the major 7z format version.
+    ///
+    /// @return the unsigned-byte major version
     public int majorVersion() {
         return majorVersion;
     }
 
     /// Returns the minor 7z format version.
+    ///
+    /// @return the unsigned-byte minor version
     public int minorVersion() {
         return minorVersion;
     }
 
     /// Returns the offset of the next header relative to the first byte after the signature header.
+    ///
+    /// @return the non-negative relative next-header offset
     public long nextHeaderOffset() {
         return nextHeaderOffset;
     }
 
     /// Returns the size in bytes of the next header.
+    ///
+    /// @return the non-negative next-header size
     public long nextHeaderSize() {
         return nextHeaderSize;
     }
 
     /// Returns the expected CRC-32 value of the next header bytes.
+    ///
+    /// @return the unsigned 32-bit next-header CRC-32 value
     public long nextHeaderCrc32() {
         return nextHeaderCrc32;
     }

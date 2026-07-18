@@ -17,5 +17,8 @@ import java.io.IOException;
 @NotNullByDefault
 public interface ArkivoVolumeTarget {
     /// Opens a new independent multi-volume output transaction owned by the caller.
+    ///
+    /// @return a new caller-owned output transaction
+    /// @throws IOException if staging or destination state cannot be prepared
     ArkivoVolumeOutput openOutput() throws IOException;
 }

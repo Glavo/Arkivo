@@ -49,6 +49,10 @@ public enum SevenZipFilterMethod {
     }
 
     /// Parses a stable case-insensitive filter method name.
+    ///
+    /// @param value the option name, ignoring case and accepting underscores as hyphens
+    /// @return the matching preprocessing filter method
+    /// @throws IllegalArgumentException if `value` is not a recognized filter name
     public static SevenZipFilterMethod parse(String value) {
         String normalized = value.trim().toLowerCase(Locale.ROOT).replace('_', '-');
         for (SevenZipFilterMethod method : values()) {
@@ -60,6 +64,8 @@ public enum SevenZipFilterMethod {
     }
 
     /// Returns the stable environment and display name.
+    ///
+    /// @return the lowercase stable option name
     public String optionName() {
         return optionName;
     }

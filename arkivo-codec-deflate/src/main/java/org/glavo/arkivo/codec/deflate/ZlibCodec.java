@@ -17,6 +17,15 @@ import org.jetbrains.annotations.Nullable;
 import java.util.Objects;
 
 /// Provides an immutable zlib configuration and pure Java stream engines.
+///
+/// Zlib wraps Deflate with a two-byte header, an optional preset-dictionary identifier, and an Adler-32 content trailer.
+/// A configured dictionary is used immediately by encoders and may satisfy a decoder request before it is exposed to
+/// the caller. Otherwise a dictionary-aware decoder reports the header identifier and waits for a matching
+/// [ZlibDictionary].
+///
+/// Codec instances are immutable and safe for concurrent use; created engines are independent mutable sessions.
+/// Encoder `flush` reaches a nonterminal sync boundary, while `finish` terminates Deflate and writes the Adler-32
+/// trailer.
 @NotNullByDefault
 public final class ZlibCodec
         implements CompressionCodec.LevelConfigurable<ZlibCodec>,

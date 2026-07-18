@@ -23,7 +23,13 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 
-/// Describes RAR4 and RAR5 archive support provided by Arkivo.
+/// Describes Arkivo's read-only RAR4 and RAR5 support.
+///
+/// This descriptor discovers conventional split-volume paths and opens indexed NIO file systems or forward-only
+/// readers. Generic read options do not configure a password provider and retain the UTF-8 fallback for legacy RAR4
+/// names; use [RarArchiveOptions.Read] with the concrete factories for encrypted archives or contextual legacy-name
+/// decoding. Factory methods have the same source ownership contract as [RarArkivoFileSystem] and
+/// [RarArkivoStreamingReader].
 @NotNullByDefault
 public final class RarArkivoFormat implements
         ArkivoPathVolumeFormat,
@@ -40,6 +46,8 @@ public final class RarArkivoFormat implements
     }
 
     /// Returns the shared RAR format descriptor.
+    ///
+    /// @return the canonical RAR format descriptor
     public static RarArkivoFormat instance() {
         return INSTANCE;
     }

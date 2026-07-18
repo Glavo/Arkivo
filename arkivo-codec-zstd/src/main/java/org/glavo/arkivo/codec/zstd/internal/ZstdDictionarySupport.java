@@ -12,6 +12,10 @@ import java.nio.ByteBuffer;
 @NotNullByDefault
 public final class ZstdDictionarySupport {
     /// Returns the dictionary identifier without changing the source buffer.
+    ///
+    /// @param dictionary the buffer whose remaining bytes are inspected
+    /// @return the unsigned formatted identifier, or {@link ZstdDictionary#NO_DICTIONARY_ID} if no valid prefix exists
+    /// @throws NullPointerException if {@code dictionary} is {@code null}
     public static long dictionaryId(ByteBuffer dictionary) {
         ByteBuffer source = dictionary.slice();
         if (source.remaining() < 8

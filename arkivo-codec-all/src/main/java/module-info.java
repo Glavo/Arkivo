@@ -1,7 +1,10 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-/// Aggregates Arkivo compression codec modules.
+/// Aggregates all official Arkivo compression codec modules.
+///
+/// Requiring this module makes each codec implementation visible to `CompressionFormat` service discovery while
+/// exposing the shared codec API transitively.
 module org.glavo.arkivo.codec.all {
     requires transitive org.glavo.arkivo.codec;
     requires transitive org.glavo.arkivo.codec.bzip2;

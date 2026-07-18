@@ -85,11 +85,16 @@ public final class ArArkivoStreamingWriterImpl extends ArArkivoStreamingWriter {
     private @Nullable OutputStream currentBody;
 
     /// Creates a streaming AR writer.
+    ///
+    /// @param output the owned archive output stream
     public ArArkivoStreamingWriterImpl(OutputStream output) {
         this(output, ArkivoEditStorage.temporaryFiles(defaultBodyStorageDirectory()));
     }
 
     /// Creates a streaming AR writer that owns the given body storage.
+    ///
+    /// @param output the owned archive output stream
+    /// @param bodyStorage the owned storage used to stage bodies of initially unknown size
     public ArArkivoStreamingWriterImpl(OutputStream output, ArkivoEditStorage bodyStorage) {
         this.output = Objects.requireNonNull(output, "output");
         this.bodyStorage = Objects.requireNonNull(bodyStorage, "bodyStorage");

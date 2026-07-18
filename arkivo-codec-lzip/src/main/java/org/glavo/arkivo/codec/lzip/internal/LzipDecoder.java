@@ -52,6 +52,9 @@ public final class LzipDecoder implements CompressionDecoder.Framed {
     private Phase phase = Phase.HEADER;
 
     /// Creates a lzip member decoder with limits for dynamically declared dictionaries.
+    ///
+    /// @param payloadLimits the limits to enforce on each member's LZMA payload
+    /// @throws NullPointerException if {@code payloadLimits} is {@code null}
     public LzipDecoder(DecompressionLimits payloadLimits) {
         this.payloadLimits = Objects.requireNonNull(payloadLimits, "payloadLimits");
     }

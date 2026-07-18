@@ -176,6 +176,10 @@ public class BZip2ChannelDecoder implements DecompressingReadableByteChannel.Fra
     private long outputBytes;
 
     /// Creates a concatenated-stream decoder over a compressed channel with explicit ownership.
+    ///
+    /// @param source the channel supplying BZip2 bytes
+    /// @param ownership whether closing this decoder also closes `source`
+    /// @throws IOException if the first stream header cannot be read or is invalid
     public BZip2ChannelDecoder(ReadableByteChannel source, ResourceOwnership ownership) throws IOException {
         Objects.requireNonNull(source, "source");
         this.sourceCloser = new OwnedChannelCloser(source, ownership);
@@ -196,6 +200,15 @@ public class BZip2ChannelDecoder implements DecompressingReadableByteChannel.Fra
     }
 
     /// Decodes between caller-owned buffers through the shared block state.
+    ///
+    /// Source and target positions are advanced by the bytes consumed and produced. Neither buffer is retained after
+    /// this method returns.
+    ///
+    /// @param source compressed bytes available for this call
+    /// @param target destination for decoded bytes
+    /// @param endOfInput whether `source` contains the final compressed bytes available to this session
+    /// @return the condition that requires caller action, or `FINISHED` at a validated stream boundary
+    /// @throws IOException if the compressed data is malformed or ends before the current stream completes
     protected final CodecOutcome decodeBuffers(
             ByteBuffer source,
             ByteBuffer target,

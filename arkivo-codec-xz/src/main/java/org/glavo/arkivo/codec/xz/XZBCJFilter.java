@@ -9,11 +9,17 @@ import java.util.Objects;
 
 /// Configures one architecture-specific XZ branch-conversion preprocessing filter.
 ///
+/// The transform rewrites relative branch targets to improve subsequent compression without changing the byte count.
+/// The start offset participates in address calculation and must meet the selected architecture's alignment.
+///
 /// @param architecture the instruction-set transform
 /// @param startOffset the unsigned 32-bit stream start offset
 @NotNullByDefault
 public record XZBCJFilter(Architecture architecture, long startOffset) implements XZFilter {
     /// Validates the start offset and architecture alignment.
+    ///
+    /// @throws NullPointerException if {@code architecture} is {@code null}
+    /// @throws IllegalArgumentException if {@code startOffset} is outside the unsigned 32-bit range or is misaligned
     public XZBCJFilter {
         Objects.requireNonNull(architecture, "architecture");
         if (startOffset < 0L || startOffset > 0xffff_ffffL) {
@@ -31,6 +37,7 @@ public record XZBCJFilter(Architecture architecture, long startOffset) implement
     /// Creates a BCJ filter starting at stream offset zero.
     ///
     /// @param architecture the instruction-set transform
+    /// @throws NullPointerException if {@code architecture} is {@code null}
     public XZBCJFilter(Architecture architecture) {
         this(architecture, 0L);
     }

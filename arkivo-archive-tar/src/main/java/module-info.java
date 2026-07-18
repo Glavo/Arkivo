@@ -1,7 +1,10 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-/// Provides TAR archive streaming APIs for Arkivo.
+/// Provides TAR archive file systems and forward-only readers and writers.
+///
+/// The exported API indexes TAR entries for NIO access, supports complete-rewrite updates, and reads or writes entries
+/// sequentially. Installed Arkivo codecs can wrap the TAR byte stream in an outer compression format.
 module org.glavo.arkivo.archive.tar {
     requires transitive org.glavo.arkivo.archive;
     requires transitive org.glavo.arkivo.codec;

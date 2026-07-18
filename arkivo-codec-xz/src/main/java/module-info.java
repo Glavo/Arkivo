@@ -1,7 +1,11 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-/// Provides XZ compression support for Arkivo.
+/// Provides XZ stream compression, preprocessing filters, and format discovery.
+///
+/// The exported [org.glavo.arkivo.codec.xz] package describes complete XZ streams, block checks, and the size-preserving
+/// BCJ and Delta filters that may precede the terminal LZMA2 filter.
+@SuppressWarnings("module")
 module org.glavo.arkivo.codec.xz {
     requires transitive org.glavo.arkivo.codec;
     requires org.glavo.arkivo.base;

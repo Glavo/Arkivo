@@ -36,21 +36,33 @@ public record ArchiveUpdateOptions(
     }
 
     /// Returns a copy with the requested thread-safety strategy.
+    ///
+    /// @param value the strategy for the returned options
+    /// @return a copy with {@code threadSafety} set to {@code value}
     public ArchiveUpdateOptions withThreadSafety(ArkivoFileSystemThreadSafety value) {
         return new ArchiveUpdateOptions(value, editStorage, commitTarget, limits);
     }
 
     /// Returns a copy with the requested edit storage.
+    ///
+    /// @param value the storage for the returned options, or {@code null} to select the format default
+    /// @return a copy with {@code editStorage} set to {@code value}
     public ArchiveUpdateOptions withEditStorage(@Nullable ArkivoEditStorage value) {
         return new ArchiveUpdateOptions(threadSafety, value, commitTarget, limits);
     }
 
     /// Returns a copy with the requested commit target.
+    ///
+    /// @param value the target for the returned options, or {@code null} to replace the source path
+    /// @return a copy with {@code commitTarget} set to {@code value}
     public ArchiveUpdateOptions withCommitTarget(@Nullable ArkivoCommitTarget value) {
         return new ArchiveUpdateOptions(threadSafety, editStorage, value, limits);
     }
 
     /// Returns a copy with the requested read limits.
+    ///
+    /// @param value the operation-wide limits for the returned options
+    /// @return a copy with {@code limits} set to {@code value}
     public ArchiveUpdateOptions withLimits(ArchiveReadLimits value) {
         return new ArchiveUpdateOptions(threadSafety, editStorage, commitTarget, value);
     }

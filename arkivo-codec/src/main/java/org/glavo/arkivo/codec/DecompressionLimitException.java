@@ -41,16 +41,22 @@ public abstract sealed class DecompressionLimitException extends IOException
     }
 
     /// Returns the kind of safety limit that was exceeded.
+    ///
+    /// @return the exceeded limit category
     public final Kind kind() {
         return kind;
     }
 
     /// Returns the configured maximum value.
+    ///
+    /// @return the configured non-negative maximum
     public final long maximum() {
         return maximum;
     }
 
     /// Returns the observed or required value that exceeded the maximum.
+    ///
+    /// @return the value greater than {@link #maximum()}
     public final long actual() {
         return actual;
     }

@@ -12,6 +12,9 @@ import java.util.List;
 import java.util.Objects;
 
 /// Describes the discoverable Unix compress (`.Z`) stream format.
+///
+/// This immutable descriptor recognizes the two-byte `.Z` magic without changing the supplied buffer. Recognition
+/// establishes only the format family; the decoder validates the following code-width and block-mode header byte.
 @NotNullByDefault
 public final class UnixCompressFormat implements CompressionFormat {
     /// The stable Unix compress format name.
@@ -31,6 +34,8 @@ public final class UnixCompressFormat implements CompressionFormat {
     }
 
     /// Returns the canonical Unix compress format instance.
+    ///
+    /// @return the shared immutable format descriptor
     public static UnixCompressFormat instance() {
         return INSTANCE;
     }

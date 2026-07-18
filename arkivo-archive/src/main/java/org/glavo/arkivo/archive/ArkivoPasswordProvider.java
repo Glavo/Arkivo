@@ -18,17 +18,26 @@ import java.util.Objects;
 @NotNullByDefault
 public interface ArkivoPasswordProvider {
     /// Returns a provider that never supplies a password.
+    ///
+    /// @return a stateless provider that always returns {@code null}
     static ArkivoPasswordProvider none() {
         return request -> null;
     }
 
     /// Returns a provider that retains a private copy of the given password bytes and supplies a fresh copy per request.
+    ///
+    /// @param password the password bytes to copy; the provider does not retain this array
+    /// @return a provider that returns a new copy of the password for every request
     static ArkivoPasswordProvider fixed(byte[] password) {
         byte[] storedPassword = Objects.requireNonNull(password, "password").clone();
         return request -> storedPassword.clone();
     }
 
     /// Returns a provider that encodes the given password characters with the given charset.
+    ///
+    /// @param password the password characters to encode; the provider does not retain this array
+    /// @param charset  the charset used to encode the password
+    /// @return a provider that returns a new copy of the encoded password for every request
     static ArkivoPasswordProvider fixed(char[] password, Charset charset) {
         Objects.requireNonNull(password, "password");
         Objects.requireNonNull(charset, "charset");
@@ -50,5 +59,9 @@ public interface ArkivoPasswordProvider {
     /// A non-null returned array is exclusively owned by the caller, which should clear it immediately after deriving
     /// the required encryption state. Implementations must return a fresh array and must neither retain nor reuse that
     /// array. The provider must not retain the request or any caller-owned data reachable from it.
+    ///
+    /// @param request the immutable description of the encrypted archive data
+    /// @return fresh caller-owned password bytes, or {@code null} if no password is available
+    /// @throws IOException if the provider cannot obtain the requested password
     byte @Nullable [] password(PasswordRequest request) throws IOException;
 }

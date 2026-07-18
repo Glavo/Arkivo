@@ -131,6 +131,11 @@ public final class LZ4FrameDecoder
     private State state = State.MAGIC;
 
     /// Creates an LZ4 frame decoder with operation-scoped safety settings.
+    ///
+    /// @param dictionary the initial external prefix dictionary, or `null`
+    /// @param maximumWindowSize the largest permitted match distance, or the unlimited sentinel
+    /// @param maximumMemorySize the working-memory bound, or the unlimited sentinel
+    /// @param verifyChecksums whether to validate block and content checksums present in frames
     public LZ4FrameDecoder(
             @Nullable LZ4Dictionary dictionary,
             long maximumWindowSize,

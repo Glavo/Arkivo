@@ -87,6 +87,9 @@ public final class ArArkivoStreamingReaderImpl extends ArArkivoStreamingReader {
     private byte @Nullable @Unmodifiable [] gnuNameTable;
 
     /// Creates a streaming AR reader.
+    ///
+    /// @param source the owned stream supplying AR archive bytes
+    /// @param options the internal read options and limits
     public ArArkivoStreamingReaderImpl(InputStream source, ArchiveOptions options) {
         this.source = Objects.requireNonNull(source, "source");
         ArchiveOptions checkedOptions = Objects.requireNonNull(options, "options");

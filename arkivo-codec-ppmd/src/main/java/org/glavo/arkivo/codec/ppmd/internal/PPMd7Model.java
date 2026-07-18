@@ -116,7 +116,10 @@ public final class PPMd7Model {
     /// Current phase of a resumable symbol decode.
     private DecodePhase decodingPhase = DecodePhase.FIRST_ORDER;
 
-    /// Creates an uninitialized PPMd model.
+    /// Creates an uninitialized PPMd decoding model.
+    ///
+    /// @param rangeDecoder the arithmetic interval source used for symbol decoding
+    /// @throws NullPointerException if {@code rangeDecoder} is {@code null}
     public PPMd7Model(PPMdRangeDecoder rangeDecoder) {
         this.rangeDecoder = Objects.requireNonNull(rangeDecoder, "rangeDecoder");
         this.rangeEncoder = null;
@@ -137,6 +140,12 @@ public final class PPMd7Model {
     }
 
     /// Starts a range-coded block and optionally resets model memory and order.
+    ///
+    /// @param reset whether to allocate and initialize a new model arena
+    /// @param requestedMaximumOrder the new context order, from {@code 2} through {@code 64}; ignored when not resetting
+    /// @param memorySize the new arena size, from 2 KiB through 256 MiB; ignored when not resetting
+    /// @throws IOException if continuation is requested before initialization, the configuration is invalid, or the
+    ///                     arena cannot be allocated
     public void initialize(
             boolean reset,
             int requestedMaximumOrder,
@@ -158,6 +167,10 @@ public final class PPMd7Model {
     }
 
     /// Decodes and updates one unsigned byte symbol.
+    ///
+    /// @return the decoded symbol, from {@code 0} through {@code 255}
+    /// @throws IOException if the model is uninitialized, is not configured for decoding, needs unavailable arithmetic
+    ///                     input, or encounters corrupt model state
     public int readByte() throws IOException {
         if (rangeDecoder == null) throw new IOException("PPMd model is not configured for decoding");
         if (!initialized) throw new IOException("PPMd model is not initialized");
@@ -226,6 +239,10 @@ public final class PPMd7Model {
     }
 
     /// Encodes and updates one unsigned byte symbol.
+    ///
+    /// @param symbol the unsigned byte value to encode, from {@code 0} through {@code 255}
+    /// @throws IOException if the symbol is invalid, the model is uninitialized or not configured for encoding, or
+    ///                     arithmetic output or model allocation fails
     public void writeByte(int symbol) throws IOException {
         if (rangeEncoder == null) throw new IOException("PPMd model is not configured for encoding");
         if (!initialized) throw new IOException("PPMd model is not initialized");

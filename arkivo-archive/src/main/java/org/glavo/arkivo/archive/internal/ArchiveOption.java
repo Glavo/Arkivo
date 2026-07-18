@@ -38,6 +38,13 @@ public final class ArchiveOption<T> {
     }
 
     /// Returns an option that accepts only values of the given type.
+    ///
+    /// @param <T> the option value type
+    /// @param namespace the non-blank dot-separated owner namespace
+    /// @param name the non-blank local name without dots or whitespace
+    /// @param type the runtime value class
+    /// @return a typed option that rejects values not assignable to {@code type}
+    /// @throws IllegalArgumentException if {@code namespace} or {@code name} is invalid
     public static <T> ArchiveOption<T> of(String namespace, String name, Class<T> type) {
         String key = key(namespace, name);
         return new ArchiveOption<>(namespace, name, type, value -> {
@@ -49,6 +56,14 @@ public final class ArchiveOption<T> {
     }
 
     /// Returns an option that normalizes values through the given converter.
+    ///
+    /// @param <T> the option value type
+    /// @param namespace the non-blank dot-separated owner namespace
+    /// @param name the non-blank local name without dots or whitespace
+    /// @param type the runtime value class
+    /// @param converter the raw-value validator and normalizer
+    /// @return a typed option using {@code converter}
+    /// @throws IllegalArgumentException if {@code namespace} or {@code name} is invalid
     public static <T> ArchiveOption<T> of(
             String namespace,
             String name,
@@ -59,21 +74,29 @@ public final class ArchiveOption<T> {
     }
 
     /// Returns the namespace that owns this option.
+    ///
+    /// @return the stable dot-separated namespace
     public String namespace() {
         return namespace;
     }
 
     /// Returns the local option name inside the namespace.
+    ///
+    /// @return the stable local option name
     public String name() {
         return name;
     }
 
     /// Returns the stable NIO environment key used by this option.
+    ///
+    /// @return {@code namespace() + "." + name()}
     public String key() {
         return key;
     }
 
     /// Returns the typed value class accepted by this option.
+    ///
+    /// @return the runtime value class
     public Class<T> type() {
         return type;
     }

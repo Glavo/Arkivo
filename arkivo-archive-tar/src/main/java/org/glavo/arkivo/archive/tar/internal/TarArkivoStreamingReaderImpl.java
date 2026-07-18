@@ -153,6 +153,9 @@ public final class TarArkivoStreamingReaderImpl extends TarArkivoStreamingReader
     private boolean sourceClosed;
 
     /// Creates a streaming TAR reader.
+    ///
+    /// @param source the owned decoded TAR stream positioned before the first header block
+    /// @param options the metadata detector and archive read-limit configuration
     public TarArkivoStreamingReaderImpl(InputStream source, ArchiveOptions options) {
         this.source = new CountingInputStream(Objects.requireNonNull(source, "source"));
         ArchiveOptions checkedOptions = Objects.requireNonNull(options, "options");

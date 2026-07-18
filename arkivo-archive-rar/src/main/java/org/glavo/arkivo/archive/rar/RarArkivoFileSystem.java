@@ -40,6 +40,12 @@ import java.util.Objects;
 /// Materialized bodies validate available CRC32 values and RAR5 BLAKE2sp hashes over unpacked plaintext, including
 /// password-dependent checksums on encrypted entries. RAR5 hard-link and file-copy records targeting an indexed regular
 /// file retain their own metadata while sharing the target's lazily materialized content.
+///
+/// Paths and attributes are snapshots of the indexed headers and never observe later external archive changes. Because
+/// uncached bodies reopen the indexed byte ranges, the path, channel source, or volume source must continue to expose
+/// the same archive bytes until the file system closes. A successfully returned channel- or volume-backed file system
+/// owns and closes that source; path factories own their internally opened channels. The common read option selects
+/// whether reads may run concurrently and whether close force-closes active entry resources.
 @NotNullByDefault
 public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permits RarArkivoFileSystemImpl {
     /// The option for an `ArkivoPasswordProvider` whose archive-level password decrypts RAR data.
@@ -59,16 +65,27 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
             );
 
     /// Creates a RAR archive file system base instance.
+    ///
+    /// @param threadSafety the operation-coordination strategy for this file system
     protected RarArkivoFileSystem(ArkivoFileSystemThreadSafety threadSafety) {
         super(threadSafety);
     }
 
     /// Opens a RAR archive file system.
+    ///
+    /// @param path the path of the first or only RAR volume
+    /// @return a read-only file system for the archive
+    /// @throws IOException if the archive or any discovered volume cannot be opened or parsed
     public static RarArkivoFileSystem open(Path path) throws IOException {
         return open(path, RarArchiveOptions.READ_DEFAULTS);
     }
 
     /// Opens a RAR archive file system with read options.
+    ///
+    /// @param path the path of the first or only RAR volume
+    /// @param options the read configuration
+    /// @return a read-only file system for the archive
+    /// @throws IOException if the archive or any discovered volume cannot be opened or parsed
     public static RarArkivoFileSystem open(Path path, RarArchiveOptions.Read options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
@@ -79,11 +96,20 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     ///
     /// The channel's current position is the logical archive start. The returned file system owns and closes the
     /// channel.
+    ///
+    /// @param source the channel whose current position is the archive start
+    /// @return a read-only file system that owns `source`
+    /// @throws IOException if the archive cannot be read; setup failure closes `source`
     public static RarArkivoFileSystem open(SeekableByteChannel source) throws IOException {
         return open(source, RarArchiveOptions.READ_DEFAULTS);
     }
 
     /// Opens a read-only RAR archive file system directly from one owned seekable channel with options.
+    ///
+    /// @param source the channel whose current position is the archive start
+    /// @param options the read configuration
+    /// @return a read-only file system that owns `source`
+    /// @throws IOException if the archive cannot be read; setup failure closes `source`
     public static RarArkivoFileSystem open(
             SeekableByteChannel source,
             RarArchiveOptions.Read options
@@ -96,6 +122,10 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// Opens a read-only RAR archive file system from a repeatable seekable channel source.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    ///
+    /// @param source the repeatable logical archive source
+    /// @return a read-only file system that owns `source`
+    /// @throws IOException if the archive cannot be opened; setup failure closes `source`
     public static RarArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
         return open(source, RarArchiveOptions.READ_DEFAULTS);
     }
@@ -103,6 +133,11 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// Opens a read-only RAR archive file system from a repeatable seekable channel source with options.
     ///
     /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    ///
+    /// @param source the repeatable logical archive source
+    /// @param options the read configuration
+    /// @return a read-only file system that owns `source`
+    /// @throws IOException if the archive cannot be opened; setup failure closes `source`
     public static RarArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
             RarArchiveOptions.Read options
@@ -112,6 +147,10 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     }
 
     /// Opens a multi-volume RAR archive file system.
+    ///
+    /// @param volumes the ordered, repeatable archive volume source
+    /// @return a read-only file system that owns `volumes`
+    /// @throws IOException if a volume cannot be opened or the archive cannot be parsed; setup failure closes `volumes`
     public static RarArkivoFileSystem open(ArkivoVolumeSource volumes) throws IOException {
         return open(volumes, RarArchiveOptions.READ_DEFAULTS);
     }
@@ -119,6 +158,11 @@ public abstract sealed class RarArkivoFileSystem extends ArkivoFileSystem permit
     /// Opens a multi-volume RAR archive file system with options.
     ///
     /// The returned file system owns the volume source and selected edit storage after this method returns successfully.
+    ///
+    /// @param volumes the ordered, repeatable archive volume source
+    /// @param options the read configuration
+    /// @return a read-only file system that owns `volumes`
+    /// @throws IOException if a volume cannot be opened or the archive cannot be parsed; setup failure closes `volumes`
     public static RarArkivoFileSystem open(ArkivoVolumeSource volumes, RarArchiveOptions.Read options) throws IOException {
         Objects.requireNonNull(volumes, "volumes");
         Objects.requireNonNull(options, "options");

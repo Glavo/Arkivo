@@ -36,6 +36,14 @@ public final class PPMd7ChannelDecoder implements DecompressingReadableByteChann
     private boolean open = true;
 
     /// Creates an initialized raw PPMd7 decoder.
+    ///
+    /// @param source the channel supplying the raw arithmetic stream
+    /// @param ownership whether closing this decoder also closes {@code source}
+    /// @param maximumOrder the Variant H context order, from {@code 2} through {@code 64}
+    /// @param memorySize the model arena size, from 2 KiB through 256 MiB
+    /// @param decodedSize the exact nonnegative number of bytes to decode
+    /// @throws IOException if the range prefix or model configuration is invalid, or the model cannot be allocated
+    /// @throws NullPointerException if {@code source} or {@code ownership} is {@code null}
     public PPMd7ChannelDecoder(
             ReadableByteChannel source,
             ResourceOwnership ownership,

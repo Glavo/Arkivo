@@ -125,6 +125,9 @@ public final class CPIOArkivoStreamingWriterImpl extends CPIOArkivoStreamingWrit
     private @Nullable StoredEntryBodyOutputStream currentBody;
 
     /// Creates a configured streaming CPIO writer.
+    ///
+    /// @param target the owned stream receiving CPIO archive bytes
+    /// @param options the creation and body-storage configuration
     public CPIOArkivoStreamingWriterImpl(OutputStream target, CPIOArchiveOptions.Create options) {
         this.target = Objects.requireNonNull(target, "target");
         CPIOArchiveOptions.Create checkedOptions = Objects.requireNonNull(options, "options");

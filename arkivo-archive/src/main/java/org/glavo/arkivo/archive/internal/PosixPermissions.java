@@ -23,6 +23,8 @@ public final class PosixPermissions {
     ///
     /// @param value the value expected to be a set of POSIX permissions
     /// @param description the value description used in validation messages
+    /// @return an immutable copy of the validated permission set
+    /// @throws IllegalArgumentException if {@code value} is not a set or contains a non-POSIX permission
     public static @Unmodifiable Set<PosixFilePermission> copyOf(
             @Nullable Object value,
             String description

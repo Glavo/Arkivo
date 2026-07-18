@@ -33,6 +33,10 @@ public final class SharedSeekableChannelSource implements ArkivoSeekableChannelS
     private boolean closed;
 
     /// Creates an owning shared source and closes the channel if initial metadata access fails.
+    ///
+    /// @param channel the physical channel whose ownership is transferred after argument validation
+    /// @return a source exposing independent logical views over the channel's initial remaining extent
+    /// @throws IOException if the initial channel position or size cannot be read or is inconsistent
     public static SharedSeekableChannelSource open(SeekableByteChannel channel) throws IOException {
         Objects.requireNonNull(channel, "channel");
         try {

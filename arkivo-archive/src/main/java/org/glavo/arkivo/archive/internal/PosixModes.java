@@ -31,6 +31,9 @@ public final class PosixModes {
     }
 
     /// Decodes the permission bits in a POSIX mode value.
+    ///
+    /// @param mode the integral POSIX mode whose low nine bits are decoded
+    /// @return the immutable decoded permission set
     public static @Unmodifiable Set<PosixFilePermission> permissions(long mode) {
         EnumSet<PosixFilePermission> permissions = EnumSet.noneOf(PosixFilePermission.class);
         if ((mode & 0400L) != 0) {
@@ -64,6 +67,9 @@ public final class PosixModes {
     }
 
     /// Encodes POSIX permissions as the low nine mode bits.
+    ///
+    /// @param permissions the permission set to encode
+    /// @return the encoded low nine POSIX mode bits
     public static int permissionBits(Set<PosixFilePermission> permissions) {
         Objects.requireNonNull(permissions, "permissions");
         int mode = 0;
@@ -84,22 +90,34 @@ public final class PosixModes {
     }
 
     /// Returns whether a mode value has regular-file type bits or no type bits.
+    ///
+    /// @param mode the POSIX mode to classify
+    /// @return {@code true} for a regular-file type or an unspecified type
     public static boolean isRegularFile(long mode) {
         long type = mode & FILE_TYPE_MASK;
         return type == 0 || type == REGULAR_FILE_TYPE;
     }
 
     /// Returns whether a mode value has directory type bits.
+    ///
+    /// @param mode the POSIX mode to classify
+    /// @return {@code true} if {@code mode} identifies a directory
     public static boolean isDirectory(long mode) {
         return (mode & FILE_TYPE_MASK) == DIRECTORY_FILE_TYPE;
     }
 
     /// Returns whether a mode value has symbolic-link type bits.
+    ///
+    /// @param mode the POSIX mode to classify
+    /// @return {@code true} if {@code mode} identifies a symbolic link
     public static boolean isSymbolicLink(long mode) {
         return (mode & FILE_TYPE_MASK) == SYMBOLIC_LINK_FILE_TYPE;
     }
 
     /// Returns whether a mode value has a recognized special file type other than a directory or symbolic link.
+    ///
+    /// @param mode the POSIX mode to classify
+    /// @return {@code true} if nonzero type bits identify another file type
     public static boolean isOther(long mode) {
         long type = mode & FILE_TYPE_MASK;
         return type != 0

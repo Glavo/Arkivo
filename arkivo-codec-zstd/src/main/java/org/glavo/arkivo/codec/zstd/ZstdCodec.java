@@ -23,6 +23,15 @@ import java.nio.channels.WritableByteChannel;
 import java.util.Objects;
 
 /// Provides an immutable Zstandard configuration and transport-independent frame engines.
+///
+/// Codec values contain only validated configuration and are safe for concurrent use. Builders and created engines are
+/// mutable and not safe for concurrent use. A nonterminal flush completes a compressed block without ending the frame;
+/// frame finalization writes the last-block marker and optional checksum and preserves the configuration for another
+/// frame.
+///
+/// Standard framing carries a magic value and may carry content size and a full-dictionary identifier. Magicless
+/// framing omits only the magic value and must be selected out of band. A pledged source size is exact even when header
+/// content-size emission is disabled.
 @NotNullByDefault
 public final class ZstdCodec
         implements CompressionCodec.LevelConfigurable<ZstdCodec>,
@@ -197,11 +206,15 @@ public final class ZstdCodec
     }
 
     /// Returns a builder initialized to Zstandard defaults.
+    ///
+    /// @return a new mutable builder
     public static Builder builder() {
         return new Builder();
     }
 
     /// Returns a mutable builder initialized from this immutable configuration.
+    ///
+    /// @return a new builder whose values initially equal this codec's values
     public Builder toBuilder() {
         return new Builder(this);
     }
@@ -261,6 +274,11 @@ public final class ZstdCodec
     }
 
     /// Returns an immutable codec with an automatically interpreted copy of the dictionary bytes.
+    ///
+    /// @param dictionary the raw or formatted dictionary representation to copy
+    /// @return a new codec using the copied dictionary
+    /// @throws NullPointerException if {@code dictionary} is {@code null}
+    /// @throws IllegalArgumentException if the representation is too short or has invalid formatted metadata
     public ZstdCodec withDictionary(byte[] dictionary) {
         return withDictionary(ZstdDictionary.of(dictionary));
     }
@@ -272,106 +290,150 @@ public final class ZstdCodec
     }
 
     /// Returns whether encoders emit frame checksums.
+    ///
+    /// @return {@code true} if newly created encoders append a content checksum to each frame
     public boolean emitsFrameChecksum() {
         return frameChecksum;
     }
 
     /// Returns whether decoders verify frame checksums.
+    ///
+    /// @return {@code true} if newly created decoders calculate and compare present content checksums
     public boolean verifiesChecksums() {
         return verifyChecksums;
     }
 
     /// Returns the configured parallel compression worker count.
+    ///
+    /// @return the worker count, or zero for synchronous compression
     public int workerCount() {
         return workerCount;
     }
 
     /// Returns the configured window logarithm, or zero for automatic selection.
+    ///
+    /// @return the requested base-two window logarithm, or zero
     public int windowLog() {
         return windowLog;
     }
 
     /// Returns the configured hash-table logarithm, or zero for automatic selection.
+    ///
+    /// @return the requested base-two hash-table size logarithm, or zero
     public int hashLog() {
         return hashLog;
     }
 
     /// Returns the configured chain-table logarithm, or zero for automatic selection.
+    ///
+    /// @return the requested base-two chain-table size logarithm, or zero
     public int chainLog() {
         return chainLog;
     }
 
     /// Returns the configured search-depth logarithm, or zero for automatic selection.
+    ///
+    /// @return the requested base-two search-depth logarithm, or zero
     public int searchLog() {
         return searchLog;
     }
 
     /// Returns the configured minimum match length, or zero for automatic selection.
+    ///
+    /// @return the requested minimum match length, or zero
     public int minimumMatch() {
         return minimumMatch;
     }
 
     /// Returns the configured target match length, or zero for no explicit target.
+    ///
+    /// @return the requested target length, or zero
     public int targetLength() {
         return targetLength;
     }
 
     /// Returns the configured match-finding strategy, or null for level-derived selection.
+    ///
+    /// @return the explicit strategy, or {@code null} when the compression level selects it
     public @Nullable ZstdStrategy strategy() {
         return strategy;
     }
 
     /// Returns the configured parallel job size, or zero for automatic selection.
+    ///
+    /// @return the requested uncompressed bytes per job, or zero
     public int jobSize() {
         return jobSize;
     }
 
     /// Returns the configured worker overlap logarithm, or zero for automatic selection.
+    ///
+    /// @return the requested overlap logarithm, or zero
     public int overlapLog() {
         return overlapLog;
     }
 
     /// Returns whether known pledged source sizes are emitted.
+    ///
+    /// @return {@code true} if a known pledged size is written to each frame header
     public boolean emitsContentSize() {
         return contentSize;
     }
 
     /// Returns whether trained dictionary identifiers are emitted.
+    ///
+    /// @return {@code true} if a configured formatted-dictionary identifier is written to frame headers
     public boolean emitsDictionaryId() {
         return dictionaryId;
     }
 
     /// Returns whether long-distance matching is enabled.
+    ///
+    /// @return {@code true} if newly created encoders use frame-wide long-distance matching
     public boolean usesLongDistanceMatching() {
         return longDistanceMatching;
     }
 
     /// Returns the configured long-distance hash logarithm, or zero for automatic selection.
+    ///
+    /// @return the requested base-two long-distance hash-table size logarithm, or zero
     public int longDistanceHashLog() {
         return longDistanceHashLog;
     }
 
     /// Returns the configured long-distance minimum match length, or zero for automatic selection.
+    ///
+    /// @return the requested long-distance minimum match length, or zero
     public int longDistanceMinimumMatch() {
         return longDistanceMinimumMatch;
     }
 
     /// Returns the configured long-distance bucket-size logarithm, or zero for automatic selection.
+    ///
+    /// @return the requested base-two collision-bucket size logarithm, or zero
     public int longDistanceBucketSizeLog() {
         return longDistanceBucketSizeLog;
     }
 
     /// Returns the configured long-distance sampling-rate logarithm, or zero for automatic selection.
+    ///
+    /// @return the requested base-two sampling-rate logarithm, or zero
     public int longDistanceHashRateLog() {
         return longDistanceHashRateLog;
     }
 
     /// Returns the configured physical frame format.
+    ///
+    /// @return the standard or magicless physical format
     public ZstdFrameFormat frameFormat() {
         return frameFormat;
     }
 
     /// Returns an immutable codec with the requested physical frame format.
+    ///
+    /// @param frameFormat the replacement physical frame format
+    /// @return this codec if the format is unchanged; otherwise, a new codec with the requested format
+    /// @throws NullPointerException if {@code frameFormat} is {@code null}
     public ZstdCodec withFrameFormat(ZstdFrameFormat frameFormat) {
         Objects.requireNonNull(frameFormat, "frameFormat");
         return frameFormat == this.frameFormat
@@ -380,6 +442,9 @@ public final class ZstdCodec
     }
 
     /// Returns an immutable codec with the requested checksum emission behavior.
+    ///
+    /// @param frameChecksum whether encoders append a content checksum to each frame
+    /// @return this codec if the setting is unchanged; otherwise, a new codec with the requested setting
     public ZstdCodec withFrameChecksum(boolean frameChecksum) {
         return frameChecksum == this.frameChecksum
                 ? this
@@ -387,6 +452,9 @@ public final class ZstdCodec
     }
 
     /// Returns an immutable codec with the requested checksum verification behavior.
+    ///
+    /// @param verifyChecksums whether decoders calculate and compare present content checksums
+    /// @return this codec if the setting is unchanged; otherwise, a new codec with the requested setting
     public ZstdCodec withVerifyChecksums(boolean verifyChecksums) {
         return verifyChecksums == this.verifyChecksums
                 ? this
@@ -410,11 +478,21 @@ public final class ZstdCodec
     }
 
     /// Parses one frame header using this codec's physical format.
+    ///
+    /// @param source the buffer whose remaining bytes begin with the frame header; its state is not changed
+    /// @return immutable metadata parsed from the header
+    /// @throws IOException if the header is truncated, malformed, or incompatible with the configured format
+    /// @throws NullPointerException if {@code source} is {@code null}
     public ZstdFrameInfo frameInfo(ByteBuffer source) throws IOException {
         return frameFormat.frameInfo(source);
     }
 
     /// Returns one complete frame's compressed size using this codec's physical format.
+    ///
+    /// @param source the buffer whose remaining bytes contain the complete frame; its state is not changed
+    /// @return the complete frame size in bytes, including header, blocks, and any checksum
+    /// @throws IOException if the frame is truncated, malformed, or incompatible with the configured format
+    /// @throws NullPointerException if {@code source} is {@code null}
     public long frameCompressedSize(ByteBuffer source) throws IOException {
         return frameFormat.frameCompressedSize(source);
     }
@@ -557,7 +635,8 @@ public final class ZstdCodec
 
     /// Builds immutable Zstandard codec configurations.
     ///
-    /// Builders are mutable and not safe for concurrent use.
+    /// Zero-valued tuning parameters request level-derived or automatic selection. A builder may be reused after
+    /// [#build()]; each build captures the selected values. Builders are mutable and not safe for concurrent use.
     @NotNullByDefault
     public static final class Builder {
         /// The selected compression level.
@@ -657,6 +736,11 @@ public final class ZstdCodec
         }
 
         /// Selects the compression level.
+        ///
+        /// @param compressionLevel the level from {@link #MINIMUM_COMPRESSION_LEVEL} through
+        ///                         {@link #MAXIMUM_COMPRESSION_LEVEL}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code compressionLevel} is outside the supported range
         public Builder compressionLevel(long compressionLevel) {
             requireCompressionLevel(compressionLevel);
             this.compressionLevel = Math.toIntExact(compressionLevel);
@@ -664,35 +748,56 @@ public final class ZstdCodec
         }
 
         /// Selects an immutable dictionary.
+        ///
+        /// @param dictionary the dictionary used by newly created encoders and offered first to decoders
+        /// @return this builder
+        /// @throws NullPointerException if {@code dictionary} is {@code null}
         public Builder dictionary(ZstdDictionary dictionary) {
             this.dictionary = Objects.requireNonNull(dictionary, "dictionary");
             return this;
         }
 
         /// Selects an automatically interpreted copy of dictionary bytes.
+        ///
+        /// @param dictionary the raw or formatted dictionary representation to copy
+        /// @return this builder
+        /// @throws NullPointerException if {@code dictionary} is {@code null}
+        /// @throws IllegalArgumentException if the representation is too short or has invalid formatted metadata
         public Builder dictionary(byte[] dictionary) {
             return dictionary(ZstdDictionary.of(dictionary));
         }
 
         /// Clears the selected dictionary.
+        ///
+        /// @return this builder
         public Builder withoutDictionary() {
             dictionary = null;
             return this;
         }
 
         /// Selects whether encoders emit frame checksums.
+        ///
+        /// @param frameChecksum whether to append a content checksum to each encoded frame
+        /// @return this builder
         public Builder frameChecksum(boolean frameChecksum) {
             this.frameChecksum = frameChecksum;
             return this;
         }
 
         /// Selects whether decoders verify frame checksums.
+        ///
+        /// @param verifyChecksums whether to calculate and compare checksums present in decoded frames
+        /// @return this builder
         public Builder verifyChecksums(boolean verifyChecksums) {
             this.verifyChecksums = verifyChecksums;
             return this;
         }
 
         /// Selects the number of parallel compression workers.
+        ///
+        /// @param workerCount the worker count from zero through {@link #MAXIMUM_WORKER_COUNT}; zero is synchronous
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code workerCount} is outside the supported range
         public Builder workerCount(int workerCount) {
             if (workerCount < 0 || workerCount > MAXIMUM_WORKER_COUNT) {
                 throw new IllegalArgumentException(
@@ -705,6 +810,10 @@ public final class ZstdCodec
         }
 
         /// Selects the window logarithm, or zero for automatic selection.
+        ///
+        /// @param windowLog zero or a value from {@link #MINIMUM_WINDOW_LOG} through {@link #MAXIMUM_WINDOW_LOG}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code windowLog} is neither zero nor in the supported range
         public Builder windowLog(long windowLog) {
             this.windowLog = automaticOrBounded(
                     windowLog,
@@ -716,6 +825,10 @@ public final class ZstdCodec
         }
 
         /// Selects the hash-table logarithm, or zero for automatic selection.
+        ///
+        /// @param hashLog zero or a value from {@link #MINIMUM_HASH_LOG} through {@link #MAXIMUM_HASH_LOG}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code hashLog} is neither zero nor in the supported range
         public Builder hashLog(long hashLog) {
             this.hashLog = automaticOrBounded(
                     hashLog,
@@ -727,6 +840,10 @@ public final class ZstdCodec
         }
 
         /// Selects the chain-table logarithm, or zero for automatic selection.
+        ///
+        /// @param chainLog zero or a value from {@link #MINIMUM_CHAIN_LOG} through {@link #MAXIMUM_CHAIN_LOG}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code chainLog} is neither zero nor in the supported range
         public Builder chainLog(long chainLog) {
             this.chainLog = automaticOrBounded(
                     chainLog,
@@ -738,6 +855,10 @@ public final class ZstdCodec
         }
 
         /// Selects the search-depth logarithm, or zero for automatic selection.
+        ///
+        /// @param searchLog zero or a value from {@link #MINIMUM_SEARCH_LOG} through {@link #MAXIMUM_SEARCH_LOG}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code searchLog} is neither zero nor in the supported range
         public Builder searchLog(long searchLog) {
             this.searchLog = automaticOrBounded(
                     searchLog,
@@ -749,6 +870,10 @@ public final class ZstdCodec
         }
 
         /// Selects the minimum match length, or zero for automatic selection.
+        ///
+        /// @param minimumMatch zero or a value from {@link #MINIMUM_MATCH_LENGTH} through {@link #MAXIMUM_MATCH_LENGTH}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code minimumMatch} is neither zero nor in the supported range
         public Builder minimumMatch(long minimumMatch) {
             this.minimumMatch = automaticOrBounded(
                     minimumMatch,
@@ -760,30 +885,48 @@ public final class ZstdCodec
         }
 
         /// Selects the target match length, or zero for no explicit target.
+        ///
+        /// @param targetLength the nonnegative target length, no greater than {@link Integer#MAX_VALUE}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code targetLength} is outside the supported range
         public Builder targetLength(long targetLength) {
             this.targetLength = nonNegativeInt(targetLength, "Zstandard targetLength");
             return this;
         }
 
         /// Selects an explicit match-finding strategy.
+        ///
+        /// @param strategy the exact strategy used by newly created encoders
+        /// @return this builder
+        /// @throws NullPointerException if {@code strategy} is {@code null}
         public Builder strategy(ZstdStrategy strategy) {
             this.strategy = Objects.requireNonNull(strategy, "strategy");
             return this;
         }
 
         /// Restores level-derived strategy selection.
+        ///
+        /// @return this builder
         public Builder automaticStrategy() {
             strategy = null;
             return this;
         }
 
         /// Selects the target worker job size, or zero for automatic selection.
+        ///
+        /// @param jobSize the nonnegative requested bytes per job, no greater than {@link Integer#MAX_VALUE}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code jobSize} is outside the supported range
         public Builder jobSize(long jobSize) {
             this.jobSize = nonNegativeInt(jobSize, "Zstandard jobSize");
             return this;
         }
 
         /// Selects the worker overlap logarithm from zero through nine.
+        ///
+        /// @param overlapLog the overlap logarithm; zero requests strategy-derived selection
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code overlapLog} is outside the range from zero through nine
         public Builder overlapLog(int overlapLog) {
             if (overlapLog < 0 || overlapLog > 9) {
                 throw new IllegalArgumentException(
@@ -795,24 +938,38 @@ public final class ZstdCodec
         }
 
         /// Selects whether known pledged sizes are written into frame headers.
+        ///
+        /// @param contentSize whether to emit an available pledged source size
+        /// @return this builder
         public Builder contentSize(boolean contentSize) {
             this.contentSize = contentSize;
             return this;
         }
 
         /// Selects whether trained dictionary identifiers are written into frame headers.
+        ///
+        /// @param dictionaryId whether to emit the identifier of a configured formatted dictionary
+        /// @return this builder
         public Builder dictionaryId(boolean dictionaryId) {
             this.dictionaryId = dictionaryId;
             return this;
         }
 
         /// Selects whether long-distance matching is enabled.
+        ///
+        /// @param longDistanceMatching whether to search for matches across the frame-wide long-distance window
+        /// @return this builder
         public Builder longDistanceMatching(boolean longDistanceMatching) {
             this.longDistanceMatching = longDistanceMatching;
             return this;
         }
 
         /// Selects the long-distance hash logarithm, or zero for automatic selection.
+        ///
+        /// @param value zero or a value from {@link #MINIMUM_LONG_DISTANCE_HASH_LOG} through
+        ///              {@link #MAXIMUM_LONG_DISTANCE_HASH_LOG}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code value} is neither zero nor in the supported range
         public Builder longDistanceHashLog(long value) {
             longDistanceHashLog = automaticOrBounded(
                     value,
@@ -824,6 +981,11 @@ public final class ZstdCodec
         }
 
         /// Selects the long-distance minimum match length, or zero for automatic selection.
+        ///
+        /// @param value zero or a value from {@link #MINIMUM_LONG_DISTANCE_MATCH_LENGTH} through
+        ///              {@link #MAXIMUM_LONG_DISTANCE_MATCH_LENGTH}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code value} is neither zero nor in the supported range
         public Builder longDistanceMinimumMatch(long value) {
             longDistanceMinimumMatch = automaticOrBounded(
                     value,
@@ -835,6 +997,11 @@ public final class ZstdCodec
         }
 
         /// Selects the long-distance bucket-size logarithm, or zero for automatic selection.
+        ///
+        /// @param value zero or a value from {@link #MINIMUM_LONG_DISTANCE_BUCKET_SIZE_LOG} through
+        ///              {@link #MAXIMUM_LONG_DISTANCE_BUCKET_SIZE_LOG}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code value} is neither zero nor in the supported range
         public Builder longDistanceBucketSizeLog(long value) {
             longDistanceBucketSizeLog = automaticOrBounded(
                     value,
@@ -846,6 +1013,11 @@ public final class ZstdCodec
         }
 
         /// Selects the long-distance sampling-rate logarithm, or zero for automatic selection.
+        ///
+        /// @param value zero or a value from {@link #MINIMUM_LONG_DISTANCE_HASH_RATE_LOG} through
+        ///              {@link #MAXIMUM_LONG_DISTANCE_HASH_RATE_LOG}
+        /// @return this builder
+        /// @throws IllegalArgumentException if {@code value} is neither zero nor in the supported range
         public Builder longDistanceHashRateLog(long value) {
             longDistanceHashRateLog = automaticOrBounded(
                     value,
@@ -857,12 +1029,18 @@ public final class ZstdCodec
         }
 
         /// Selects standard or explicitly magicless physical framing.
+        ///
+        /// @param frameFormat the physical frame representation
+        /// @return this builder
+        /// @throws NullPointerException if {@code frameFormat} is {@code null}
         public Builder frameFormat(ZstdFrameFormat frameFormat) {
             this.frameFormat = Objects.requireNonNull(frameFormat, "frameFormat");
             return this;
         }
 
         /// Builds an immutable Zstandard codec configuration.
+        ///
+        /// @return an immutable snapshot of this builder's current values
         public ZstdCodec build() {
             return new ZstdCodec(this);
         }

@@ -62,6 +62,12 @@ public final class LZMA2ChannelDecoder implements DecompressingReadableByteChann
     private boolean open = true;
 
     /// Creates a raw LZMA2 decoder with the externally declared dictionary size.
+    ///
+    /// @param source the channel supplying the raw LZMA2 stream
+    /// @param ownership whether closing this decoder also closes {@code source}
+    /// @param dictionarySize the externally declared dictionary size, in bytes
+    /// @throws NullPointerException if {@code source} or {@code ownership} is {@code null}
+    /// @throws IllegalArgumentException if {@code dictionarySize} is outside the supported range
     public LZMA2ChannelDecoder(
             ReadableByteChannel source,
             ResourceOwnership ownership,
@@ -71,6 +77,13 @@ public final class LZMA2ChannelDecoder implements DecompressingReadableByteChann
     }
 
     /// Creates a raw LZMA2 decoder with an explicit compressed-input buffer size.
+    ///
+    /// @param source the channel supplying the raw LZMA2 stream
+    /// @param ownership whether closing this decoder also closes {@code source}
+    /// @param dictionarySize the externally declared dictionary size, in bytes
+    /// @param inputBufferSize the positive number of compressed bytes to stage from {@code source}
+    /// @throws NullPointerException if {@code source} or {@code ownership} is {@code null}
+    /// @throws IllegalArgumentException if the dictionary size is unsupported or the buffer size is not positive
     public LZMA2ChannelDecoder(
             ReadableByteChannel source,
             ResourceOwnership ownership,

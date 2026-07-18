@@ -13,11 +13,22 @@ import java.util.regex.Pattern;
 @NotNullByDefault
 public final class ArkivoPathMatchers {
     /// Creates a path matcher that treats `/` as the path separator.
+    ///
+    /// @param syntaxAndPattern a {@code glob:pattern} or {@code regex:pattern} specification
+    /// @return a matcher applied to each path's string representation
+    /// @throws IllegalArgumentException if the specification or pattern is invalid
+    /// @throws UnsupportedOperationException if the named syntax is not supported
     public static PathMatcher create(String syntaxAndPattern) {
         return create(syntaxAndPattern, '/');
     }
 
     /// Creates a path matcher with the given path separator.
+    ///
+    /// @param syntaxAndPattern a {@code glob:pattern} or {@code regex:pattern} specification
+    /// @param separator the path separator excluded by single-segment glob wildcards
+    /// @return a matcher applied to each path's string representation
+    /// @throws IllegalArgumentException if the specification or pattern is invalid
+    /// @throws UnsupportedOperationException if the named syntax is not supported
     public static PathMatcher create(String syntaxAndPattern, char separator) {
         Objects.requireNonNull(syntaxAndPattern, "syntaxAndPattern");
         int syntaxSeparator = syntaxAndPattern.indexOf(':');

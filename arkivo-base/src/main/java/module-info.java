@@ -1,7 +1,11 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-/// Provides internal low-level primitives shared by Arkivo modules.
+/// Provides low-level implementation primitives shared by selected Arkivo modules.
+///
+/// This module has no unqualified exports. Its internal package is available only to the implementation modules named
+/// by the qualified export and is not part of Arkivo's application-facing API.
+@SuppressWarnings("module")
 module org.glavo.arkivo.base {
     requires static org.jetbrains.annotations;
 

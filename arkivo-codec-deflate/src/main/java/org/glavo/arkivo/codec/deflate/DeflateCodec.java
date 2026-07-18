@@ -22,6 +22,10 @@ import java.util.Objects;
 ///
 /// Raw Deflate carries no dictionary identifier or content checksum, so callers must supply the exact dictionary used
 /// by the encoder; a different dictionary is not always detectable.
+///
+/// Compression level, strategy, and dictionary changes return new codec values; instances contain no stream state and
+/// are safe for concurrent use. Created engines are independent mutable sessions. Encoder `flush` emits a sync-flush
+/// boundary without writing the final Deflate block, while `finish` terminates the raw stream.
 @NotNullByDefault
 public final class DeflateCodec
         implements CompressionCodec.LevelConfigurable<DeflateCodec>,

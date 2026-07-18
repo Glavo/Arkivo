@@ -99,6 +99,14 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
     private boolean open = true;
 
     /// Creates an XZ encoder with explicit dictionary and integrity-check settings.
+    ///
+    /// @param target the channel receiving the XZ Stream
+    /// @param ownership whether finishing or closing this encoder also closes {@code target}
+    /// @param dictionarySize the LZMA2 dictionary size, in bytes
+    /// @param checkType the supported XZ Check ID written to the Stream flags
+    /// @throws IOException if {@code checkType} is unsupported or the Stream Header cannot be written
+    /// @throws NullPointerException if {@code target} or {@code ownership} is {@code null}
+    /// @throws IllegalArgumentException if {@code dictionarySize} cannot be represented by XZ's LZMA2 filter
     public XZChannelEncoder(
             WritableByteChannel target,
             ResourceOwnership ownership,
@@ -115,6 +123,14 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
     }
 
     /// Creates an XZ encoder with complete LZMA2 model and integrity-check settings.
+    ///
+    /// @param target the channel receiving the XZ Stream
+    /// @param ownership whether finishing or closing this encoder also closes {@code target}
+    /// @param properties the LZMA2 model and dictionary properties
+    /// @param checkType the supported XZ Check ID written to the Stream flags
+    /// @throws IOException if {@code checkType} is unsupported or the Stream Header cannot be written
+    /// @throws NullPointerException if {@code target}, {@code ownership}, or {@code properties} is {@code null}
+    /// @throws IllegalArgumentException if the dictionary size cannot be represented by XZ's LZMA2 filter
     public XZChannelEncoder(
             WritableByteChannel target,
             ResourceOwnership ownership,
@@ -125,6 +141,15 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
     }
 
     /// Creates an XZ encoder with complete LZMA2, integrity-check, and preprocessing settings.
+    ///
+    /// @param target the channel receiving the XZ Stream
+    /// @param ownership whether finishing or closing this encoder also closes {@code target}
+    /// @param properties the LZMA2 model and dictionary properties
+    /// @param checkType the supported XZ Check ID written to the Stream flags
+    /// @param filterChain the preprocessing filters in encoding order
+    /// @throws IOException if {@code checkType} is unsupported or the Stream Header cannot be written
+    /// @throws NullPointerException if any reference argument is {@code null}
+    /// @throws IllegalArgumentException if the dictionary size cannot be represented by XZ's LZMA2 filter
     public XZChannelEncoder(
             WritableByteChannel target,
             ResourceOwnership ownership,
@@ -136,6 +161,16 @@ public final class XZChannelEncoder implements CompressingWritableByteChannel.Fl
     }
 
     /// Creates an XZ encoder with complete filter and Block-layout settings.
+    ///
+    /// @param target the channel receiving the XZ Stream
+    /// @param ownership whether finishing or closing this encoder also closes {@code target}
+    /// @param properties the LZMA2 model and dictionary properties
+    /// @param checkType the supported XZ Check ID written to the Stream flags
+    /// @param filterChain the preprocessing filters in encoding order
+    /// @param maximumBlockSize the maximum uncompressed bytes per Block, or zero for one unbounded Block
+    /// @throws IOException if {@code checkType} is unsupported or the Stream Header cannot be written
+    /// @throws NullPointerException if any reference argument is {@code null}
+    /// @throws IllegalArgumentException if the dictionary is unsupported or {@code maximumBlockSize} is negative
     public XZChannelEncoder(
             WritableByteChannel target,
             ResourceOwnership ownership,

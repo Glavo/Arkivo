@@ -161,6 +161,14 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     }
 
     /// Opens a RAR file system from an archive path.
+    ///
+    /// @param provider the NIO provider that exposes the returned file system
+    /// @param archivePath the path of the first or only archive volume
+    /// @param archiveUri the URI used as the file-system identity and as the base for entry URIs
+    /// @param options the validated archive environment options
+    /// @param closeAction the provider callback invoked when the file system closes
+    /// @return an initialized read-only RAR file system
+    /// @throws IOException if the archive volumes cannot be opened or parsed
     public static RarArkivoFileSystemImpl open(
             RarArkivoFileSystemProvider provider,
             Path archivePath,
@@ -210,6 +218,15 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     }
 
     /// Opens a RAR file system from explicit archive volumes.
+    ///
+    /// The returned file system assumes ownership of `volumes`. If setup fails, this method closes `volumes` and adds
+    /// any close failure as a suppressed exception.
+    ///
+    /// @param provider the NIO provider that exposes the returned file system
+    /// @param volumes the ordered, repeatable archive volume source
+    /// @param options the validated archive environment options
+    /// @return an initialized read-only RAR file system
+    /// @throws IOException if a volume cannot be opened or the archive cannot be parsed
     public static RarArkivoFileSystemImpl open(
             RarArkivoFileSystemProvider provider,
             ArkivoVolumeSource volumes,
@@ -446,6 +463,11 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     }
 
     /// Opens an input stream for an entry.
+    ///
+    /// @param path the regular-file entry to open
+    /// @param options the read options; RAR entry input accepts read-only options
+    /// @return an input stream coordinated with this file system's lifecycle
+    /// @throws IOException if the entry does not exist, is a directory, or its content cannot be decoded
     public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             validateReadOptions(Set.of(options));
@@ -458,6 +480,12 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     }
 
     /// Opens a read-only byte channel for an entry.
+    ///
+    /// @param path the regular-file entry to open
+    /// @param options the requested read-only channel options
+    /// @param attributes ignored creation attributes; the array itself must not be `null`
+    /// @return an independently positioned, lifecycle-managed read-only channel
+    /// @throws IOException if the entry does not exist, is a directory, or its content cannot be decoded
     public SeekableByteChannel newByteChannel(
             Path path,
             Set<? extends OpenOption> options,
@@ -475,6 +503,11 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     }
 
     /// Opens a directory stream for an entry.
+    ///
+    /// @param directory the directory entry to enumerate
+    /// @param filter the filter applied once to each direct child
+    /// @return a lifecycle-managed stream over accepted child paths
+    /// @throws IOException if the path is absent, is not a directory, or its children cannot be enumerated
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter)
             throws IOException {
         try (Operation ignored = beginReadOperation()) {
@@ -500,6 +533,10 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     }
 
     /// Checks access to an entry.
+    ///
+    /// @param path the entry whose accessibility is tested
+    /// @param modes the requested access modes
+    /// @throws IOException if the entry is absent or any requested mode is unavailable
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             requireNode(path);
@@ -512,6 +549,10 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     }
 
     /// Returns this archive's file store.
+    ///
+    /// @param path an entry used to verify association with this file system
+    /// @return the single file-store view for this archive
+    /// @throws IOException if `path` is not an accessible entry of this file system
     public FileStore fileStore(Path path) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             requireNode(path);
@@ -520,6 +561,10 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     }
 
     /// Reads a symbolic link target.
+    ///
+    /// @param link the symbolic-link entry to read
+    /// @return the stored target as a path in this file system
+    /// @throws IOException if the entry is absent or is not a symbolic link
     public Path readSymbolicLink(Path link) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             Node node = requireNode(link);
@@ -532,6 +577,12 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     }
 
     /// Returns an attribute view for a path.
+    ///
+    /// @param <V> the requested attribute-view type
+    /// @param path the entry path represented by the view
+    /// @param type the requested view class
+    /// @param options link-handling options used by the view
+    /// @return a view bound to `path`, or `null` when `type` is unsupported
     public <V extends java.nio.file.attribute.FileAttributeView> @Nullable V getFileAttributeView(
             Path path,
             Class<V> type,
@@ -558,6 +609,13 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     }
 
     /// Reads attributes for a path.
+    ///
+    /// @param <A> the requested attribute snapshot type
+    /// @param path the entry whose attributes are read
+    /// @param type the requested basic, POSIX, or RAR attribute class
+    /// @param options link-handling options used to select the entry
+    /// @return a stable attribute snapshot of type `A`
+    /// @throws IOException if the entry is absent or its attributes cannot be read
     public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, LinkOption... options)
             throws IOException {
         try (Operation ignored = beginReadOperation()) {
@@ -574,6 +632,12 @@ public final class RarArkivoFileSystemImpl extends RarArkivoFileSystem {
     }
 
     /// Reads named attributes for a path.
+    ///
+    /// @param path the entry whose attributes are read
+    /// @param attributes a view-qualified comma-separated attribute selection
+    /// @param options link-handling options used to select the entry
+    /// @return a map containing the requested attribute names and values
+    /// @throws IOException if the entry is absent or its attributes cannot be read
     public Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             return readAttributesLocked(path, attributes, options);

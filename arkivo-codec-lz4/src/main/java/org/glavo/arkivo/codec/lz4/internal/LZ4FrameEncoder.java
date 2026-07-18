@@ -74,6 +74,12 @@ public final class LZ4FrameEncoder implements CompressionEncoder.FlushableFramed
     private State state = State.ACTIVE;
 
     /// Creates a standard LZ4 frame encoder from immutable codec settings.
+    ///
+    /// @param blockSize the maximum decoded size of each physical block
+    /// @param independentBlocks whether each block starts with empty frame history
+    /// @param blockChecksum whether to append xxHash-32 to each physical block
+    /// @param contentChecksum whether to append decoded-content xxHash-32 to each frame
+    /// @param dictionary the external prefix dictionary, or `null`
     public LZ4FrameEncoder(
             LZ4BlockSize blockSize,
             boolean independentBlocks,

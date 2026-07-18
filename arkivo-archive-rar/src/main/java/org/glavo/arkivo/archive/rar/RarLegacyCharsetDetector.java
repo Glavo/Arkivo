@@ -27,6 +27,13 @@ public interface RarLegacyCharsetDetector extends ArchiveMetadataCharsetDetector
     long UNKNOWN_FILE_ATTRIBUTES = -1L;
 
     /// Detects the charset of one RAR4 legacy metadata value, or returns `null` when it is unknown.
+    ///
+    /// The supplied context and its byte-buffer view are valid only for this invocation and must not be retained.
+    /// Changing the buffer position does not affect archive parsing.
+    ///
+    /// @param context the raw value and available file-header context
+    /// @return the charset to use, or `null` to request the UTF-8 fallback
+    /// @throws IOException if contextual charset detection cannot be completed
     @Nullable Charset detect(Context context) throws IOException;
 
     /// Detects bytes without explicit RAR4 context by supplying an unknown context.

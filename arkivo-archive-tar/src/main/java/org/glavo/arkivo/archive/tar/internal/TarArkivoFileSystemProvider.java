@@ -52,6 +52,8 @@ public final class TarArkivoFileSystemProvider extends FileSystemProvider {
     }
 
     /// Returns the shared TAR file system provider instance.
+    ///
+    /// @return the process-wide provider used by TAR convenience factories
     public static TarArkivoFileSystemProvider instance() {
         return INSTANCE;
     }
@@ -86,6 +88,11 @@ public final class TarArkivoFileSystemProvider extends FileSystemProvider {
     }
 
     /// Opens a TAR archive path whose format has already been selected explicitly.
+    ///
+    /// @param path the archive path to read, create, or update according to `options`
+    /// @param options the generic access, compression, staging, publication, limits, and thread-safety configuration
+    /// @return a new indexed TAR file system whose close operation releases resources and completes writable sessions
+    /// @throws IOException if the source, output, codec, or staging resources cannot be initialized
     public TarArkivoFileSystem openPath(Path path, ArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");

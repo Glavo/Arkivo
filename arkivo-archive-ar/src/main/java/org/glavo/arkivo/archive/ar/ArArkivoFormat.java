@@ -27,7 +27,11 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 
-/// Describes AR archive streaming support provided by Arkivo.
+/// Describes Arkivo's indexed and streaming AR support.
+///
+/// This descriptor opens read-only, creation, and complete-rewrite NIO file systems as well as forward-only readers
+/// and writers. Generic options retain the AR UTF-8 metadata default. Factory methods have the same ownership,
+/// close-time finalization, and update publication contracts as the corresponding concrete AR types.
 @NotNullByDefault
 public final class ArArkivoFormat implements
         ArkivoFileSystemFormat.Writable,
@@ -44,6 +48,8 @@ public final class ArArkivoFormat implements
     }
 
     /// Returns the shared AR format descriptor.
+    ///
+    /// @return the process-wide immutable descriptor
     public static ArArkivoFormat instance() {
         return INSTANCE;
     }

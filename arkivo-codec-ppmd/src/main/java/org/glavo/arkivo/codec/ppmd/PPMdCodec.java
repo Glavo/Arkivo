@@ -16,6 +16,14 @@ import java.io.IOException;
 import java.util.Objects;
 
 /// Provides an immutable raw PPMd7 configuration with externally declared model parameters and decoded size.
+///
+/// A raw PPMd7 payload carries neither its maximum context order nor its model-arena size. It also has no intrinsic end
+/// marker used by this API, so decoder construction requires an exact nonnegative decoded size. These values must come
+/// from the embedding container.
+///
+/// Codec instances are safe for concurrent use. Each created engine owns an independent mutable probability model.
+/// Decoder construction checks model memory and declared output against the operation-scoped limits before allocating
+/// the model.
 @NotNullByDefault
 public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
     /// The default maximum context order used for compression.
@@ -63,21 +71,31 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
     }
 
     /// Returns the configured maximum context order.
+    ///
+    /// @return the maximum order, from {@code 2} through {@code 64}
     public int maximumOrder() {
         return maximumOrder;
     }
 
     /// Returns the configured model arena size.
+    ///
+    /// @return the model arena size, in bytes
     public long memorySize() {
         return memorySize;
     }
 
     /// Returns the externally declared decoded size, or UNKNOWN_SIZE.
+    ///
+    /// @return the exact decoded size, or {@link CompressionCodec#UNKNOWN_SIZE} if it has not been supplied
     public long decodedSize() {
         return decodedSize;
     }
 
     /// Returns an immutable PPMd codec with the requested maximum context order.
+    ///
+    /// @param maximumOrder the replacement context order, from {@code 2} through {@code 64}
+    /// @return this codec if the order is unchanged; otherwise, a new codec with the requested order
+    /// @throws IllegalArgumentException if {@code maximumOrder} is outside the supported range
     public PPMdCodec withMaximumOrder(int maximumOrder) {
         return maximumOrder == this.maximumOrder
                 ? this
@@ -85,6 +103,10 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
     }
 
     /// Returns an immutable PPMd codec with the requested model arena size.
+    ///
+    /// @param memorySize the replacement model arena size, from 2 KiB through 256 MiB
+    /// @return this codec if the size is unchanged; otherwise, a new codec with the requested arena size
+    /// @throws IllegalArgumentException if {@code memorySize} is outside the supported range
     public PPMdCodec withMemorySize(long memorySize) {
         return memorySize == this.memorySize
                 ? this
@@ -92,6 +114,10 @@ public final class PPMdCodec implements CompressionCodec<PPMdCodec> {
     }
 
     /// Returns an immutable PPMd codec with the externally declared decoded size.
+    ///
+    /// @param decodedSize the exact decoded size, or {@link CompressionCodec#UNKNOWN_SIZE}
+    /// @return this codec if the size is unchanged; otherwise, a new codec with the requested decoded size
+    /// @throws IllegalArgumentException if {@code decodedSize} is less than {@link CompressionCodec#UNKNOWN_SIZE}
     public PPMdCodec withDecodedSize(long decodedSize) {
         return decodedSize == this.decodedSize
                 ? this

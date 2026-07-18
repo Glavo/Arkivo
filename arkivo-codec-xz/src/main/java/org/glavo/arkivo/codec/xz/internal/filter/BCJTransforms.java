@@ -19,41 +19,89 @@ public final class BCJTransforms {
     }
 
     /// Creates an x86 BCJ transform.
+    ///
+    /// @param direction whether to encode or decode relative addresses
+    /// @param startOffset the unsigned 32-bit position of the first stream byte
+    /// @return a new stateful transform
+    /// @throws NullPointerException if {@code direction} is {@code null}
+    /// @throws IllegalArgumentException if {@code startOffset} is outside the unsigned 32-bit range
     public static ByteTransform x86(Direction direction, long startOffset) {
         return new X86Transform(isEncoder(direction), requireStartOffset(startOffset));
     }
 
     /// Creates a big-endian PowerPC BCJ transform.
+    ///
+    /// @param direction whether to encode or decode relative addresses
+    /// @param startOffset the unsigned 32-bit position of the first stream byte
+    /// @return a new stateful transform
+    /// @throws NullPointerException if {@code direction} is {@code null}
+    /// @throws IllegalArgumentException if {@code startOffset} is outside the unsigned 32-bit range
     public static ByteTransform powerPC(Direction direction, long startOffset) {
         return new PowerPCTransform(isEncoder(direction), requireStartOffset(startOffset));
     }
 
     /// Creates an IA-64 BCJ transform.
+    ///
+    /// @param direction whether to encode or decode relative addresses
+    /// @param startOffset the unsigned 32-bit position of the first stream byte
+    /// @return a new stateful transform
+    /// @throws NullPointerException if {@code direction} is {@code null}
+    /// @throws IllegalArgumentException if {@code startOffset} is outside the unsigned 32-bit range
     public static ByteTransform ia64(Direction direction, long startOffset) {
         return new Ia64Transform(isEncoder(direction), requireStartOffset(startOffset));
     }
 
     /// Creates a little-endian ARM BCJ transform.
+    ///
+    /// @param direction whether to encode or decode relative addresses
+    /// @param startOffset the unsigned 32-bit position of the first stream byte
+    /// @return a new stateful transform
+    /// @throws NullPointerException if {@code direction} is {@code null}
+    /// @throws IllegalArgumentException if {@code startOffset} is outside the unsigned 32-bit range
     public static ByteTransform arm(Direction direction, long startOffset) {
         return new ArmTransform(isEncoder(direction), requireStartOffset(startOffset));
     }
 
     /// Creates a little-endian ARM-Thumb BCJ transform.
+    ///
+    /// @param direction whether to encode or decode relative addresses
+    /// @param startOffset the unsigned 32-bit position of the first stream byte
+    /// @return a new stateful transform
+    /// @throws NullPointerException if {@code direction} is {@code null}
+    /// @throws IllegalArgumentException if {@code startOffset} is outside the unsigned 32-bit range
     public static ByteTransform armThumb(Direction direction, long startOffset) {
         return new ArmThumbTransform(isEncoder(direction), requireStartOffset(startOffset));
     }
 
     /// Creates a big-endian SPARC BCJ transform.
+    ///
+    /// @param direction whether to encode or decode relative addresses
+    /// @param startOffset the unsigned 32-bit position of the first stream byte
+    /// @return a new stateful transform
+    /// @throws NullPointerException if {@code direction} is {@code null}
+    /// @throws IllegalArgumentException if {@code startOffset} is outside the unsigned 32-bit range
     public static ByteTransform sparc(Direction direction, long startOffset) {
         return new SparcTransform(isEncoder(direction), requireStartOffset(startOffset));
     }
 
     /// Creates a little-endian ARM64 BCJ transform.
+    ///
+    /// @param direction whether to encode or decode relative addresses
+    /// @param startOffset the unsigned 32-bit position of the first stream byte
+    /// @return a new stateful transform
+    /// @throws NullPointerException if {@code direction} is {@code null}
+    /// @throws IllegalArgumentException if {@code startOffset} is outside the unsigned 32-bit range
     public static ByteTransform arm64(Direction direction, long startOffset) {
         return new Arm64Transform(isEncoder(direction), requireStartOffset(startOffset));
     }
 
     /// Creates a little-endian RISC-V BCJ transform.
+    ///
+    /// @param direction whether to encode or decode relative addresses
+    /// @param startOffset the unsigned 32-bit position of the first stream byte
+    /// @return a new stateful transform
+    /// @throws NullPointerException if {@code direction} is {@code null}
+    /// @throws IllegalArgumentException if {@code startOffset} is outside the unsigned 32-bit range
     public static ByteTransform riscV(Direction direction, long startOffset) {
         return new RiscVTransform(isEncoder(direction), requireStartOffset(startOffset));
     }

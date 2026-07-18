@@ -18,6 +18,10 @@ import java.util.Objects;
 ///
 /// Instances are safe for concurrent callers. Sample mutation and training are serialized; accepted samples remain
 /// available so multiple training modes can be evaluated.
+///
+/// Sample bytes are copied into one fixed-capacity direct buffer. Byte-buffer insertion is transactional when capacity
+/// is insufficient, and channel insertion commits trainer state only after the declared sample size has been read.
+/// Training does not consume or clear accepted samples and returns a new immutable full dictionary.
 @NotNullByDefault
 public final class ZstdDictionaryTrainer {
     /// Minimum accepted compression level.
@@ -30,6 +34,9 @@ public final class ZstdDictionaryTrainer {
     private static final int DEFAULT_COMPRESSION_LEVEL = 3;
 
     /// Selects how training content is chosen from accepted samples.
+    ///
+    /// Both modes emit a standard full dictionary; the mode changes how reusable content is selected from the same
+    /// retained samples.
     @NotNullByDefault
     public enum TrainingMode {
         /// Ranks reusable sample segments by frequency.
@@ -58,11 +65,20 @@ public final class ZstdDictionaryTrainer {
     private int sampleCount;
 
     /// Creates a trainer using the default Zstandard compression level.
+    ///
+    /// @param sampleCapacity the positive maximum combined sample size, no greater than {@link Integer#MAX_VALUE}
+    /// @param dictionaryCapacity the positive maximum dictionary size, no greater than {@link Integer#MAX_VALUE}
+    /// @throws IllegalArgumentException if either capacity is outside the supported range
     public ZstdDictionaryTrainer(long sampleCapacity, long dictionaryCapacity) {
         this(sampleCapacity, dictionaryCapacity, DEFAULT_COMPRESSION_LEVEL);
     }
 
     /// Creates a trainer with an explicit Zstandard compression level.
+    ///
+    /// @param sampleCapacity the positive maximum combined sample size, no greater than {@link Integer#MAX_VALUE}
+    /// @param dictionaryCapacity the positive maximum dictionary size, no greater than {@link Integer#MAX_VALUE}
+    /// @param compressionLevel the dictionary optimization level from {@code -131072} through {@code 22}
+    /// @throws IllegalArgumentException if a capacity or {@code compressionLevel} is outside its supported range
     public ZstdDictionaryTrainer(long sampleCapacity, long dictionaryCapacity, long compressionLevel) {
         int validatedSampleCapacity = positiveBufferSize(sampleCapacity, "sampleCapacity");
         int validatedDictionaryCapacity = positiveBufferSize(dictionaryCapacity, "dictionaryCapacity");
@@ -75,31 +91,43 @@ public final class ZstdDictionaryTrainer {
     }
 
     /// Returns the maximum combined size of accepted samples.
+    ///
+    /// @return the fixed sample capacity in bytes
     public long sampleCapacity() {
         return samples.capacity();
     }
 
     /// Returns the maximum trained dictionary size.
+    ///
+    /// @return the requested maximum dictionary size in bytes
     public long dictionaryCapacity() {
         return dictionaryCapacity;
     }
 
     /// Returns the configured dictionary-optimization compression level.
+    ///
+    /// @return the dictionary optimization level
     public long compressionLevel() {
         return compressionLevel;
     }
 
     /// Returns the number of accepted samples.
+    ///
+    /// @return the number of samples retained by this trainer
     public synchronized int sampleCount() {
         return sampleCount;
     }
 
     /// Returns the combined size of accepted samples.
+    ///
+    /// @return the number of retained sample bytes
     public synchronized long sampleBytes() {
         return samples.position();
     }
 
     /// Returns the remaining sample capacity.
+    ///
+    /// @return the number of additional sample bytes that can be accepted
     public synchronized long remainingSampleCapacity() {
         return samples.remaining();
     }
@@ -108,6 +136,11 @@ public final class ZstdDictionaryTrainer {
     ///
     /// The source is advanced to its limit. A sample larger than the remaining trainer capacity causes a
     /// `BufferOverflowException` without changing the source position or trainer state.
+    ///
+    /// @param sample the buffer whose remaining bytes form one nonempty sample
+    /// @throws NullPointerException if {@code sample} is {@code null}
+    /// @throws IllegalArgumentException if {@code sample} has no remaining bytes
+    /// @throws BufferOverflowException if the sample exceeds the remaining trainer capacity
     public synchronized void addSample(ByteBuffer sample) {
         if (!tryAddSample(sample)) {
             throw new BufferOverflowException();
@@ -117,6 +150,11 @@ public final class ZstdDictionaryTrainer {
     /// Attempts to add all remaining bytes as one sample.
     ///
     /// The source is advanced only when the sample is accepted. Empty samples are rejected.
+    ///
+    /// @param sample the buffer whose remaining bytes form one nonempty sample
+    /// @return {@code true} if the sample was copied, or {@code false} if capacity was insufficient
+    /// @throws NullPointerException if {@code sample} is {@code null}
+    /// @throws IllegalArgumentException if {@code sample} has no remaining bytes
     public synchronized boolean tryAddSample(ByteBuffer sample) {
         Objects.requireNonNull(sample, "sample");
         int size = sample.remaining();
@@ -137,6 +175,13 @@ public final class ZstdDictionaryTrainer {
     ///
     /// The channel remains open and bytes after the sample boundary are not consumed. Insufficient trainer capacity is
     /// rejected before reading. End of input or a read failure leaves the trainer state unchanged.
+    ///
+    /// @param source the channel supplying exactly one sample; it remains open
+    /// @param sampleSize the positive exact number of bytes to read, no greater than {@link Integer#MAX_VALUE}
+    /// @throws IOException if the channel ends early, reports no progress, or otherwise fails while reading
+    /// @throws NullPointerException if {@code source} is {@code null}
+    /// @throws IllegalArgumentException if {@code sampleSize} is outside the supported range
+    /// @throws BufferOverflowException if the sample exceeds the remaining trainer capacity
     public synchronized void addSample(ReadableByteChannel source, long sampleSize) throws IOException {
         Objects.requireNonNull(source, "source");
         int size = positiveBufferSize(sampleSize, "sampleSize");
@@ -162,6 +207,10 @@ public final class ZstdDictionaryTrainer {
     }
 
     /// Trains a dictionary using frequency-ranked reusable sample segments.
+    ///
+    /// @return a new immutable full dictionary; accepted samples remain available
+    /// @throws IllegalStateException if no sample has been accepted
+    /// @throws ZstdDictionaryTrainingException if capacity, sample volume, or dictionary construction is insufficient
     public synchronized ZstdDictionary train() {
         return train(TrainingMode.FREQUENCY_RANKED);
     }
@@ -171,6 +220,12 @@ public final class ZstdDictionaryTrainer {
     /// Legacy suffix mode selects the packed sample suffix. Both modes produce standard formatted Zstandard dictionaries;
     /// both derive initial Huffman and sequence FSE tables from the accepted samples. They are not intended to
     /// reproduce byte-identical output from the native training implementations.
+    ///
+    /// @param mode the content-selection algorithm
+    /// @return a new immutable full dictionary; accepted samples remain available
+    /// @throws NullPointerException if {@code mode} is {@code null}
+    /// @throws IllegalStateException if no sample has been accepted
+    /// @throws ZstdDictionaryTrainingException if capacity, sample volume, or dictionary construction is insufficient
     public synchronized ZstdDictionary train(TrainingMode mode) {
         boolean legacy = Objects.requireNonNull(mode, "mode") == TrainingMode.LEGACY_SUFFIX;
         if (sampleCount == 0) {

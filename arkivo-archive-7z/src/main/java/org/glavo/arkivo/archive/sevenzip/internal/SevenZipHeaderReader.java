@@ -29,6 +29,10 @@ public final class SevenZipHeaderReader {
     }
 
     /// Reads and validates the fixed 7z signature header.
+    ///
+    /// @param channel the seekable archive channel; its position is changed during validation
+    /// @return the validated fixed signature fields
+    /// @throws IOException if the signature, start-header CRC, next-header range, or next-header CRC is invalid
     public static SevenZipSignatureHeader readSignatureHeader(SeekableByteChannel channel) throws IOException {
         Objects.requireNonNull(channel, "channel");
         SevenZipSignatureHeader signatureHeader = readFixedSignatureHeader(channel);
@@ -37,11 +41,20 @@ public final class SevenZipHeaderReader {
     }
 
     /// Reads and validates 7z archive metadata.
+    ///
+    /// @param channel the seekable archive channel; its position is changed while reading metadata
+    /// @return the validated signature and immutable parsed entries
+    /// @throws IOException if required bytes cannot be read or archive metadata is invalid
     public static SevenZipArchiveMetadata readArchiveMetadata(SeekableByteChannel channel) throws IOException {
         return readArchiveMetadata(channel, null);
     }
 
     /// Reads and validates 7z archive metadata.
+    ///
+    /// @param channel          the seekable archive channel; its position is changed while reading metadata
+    /// @param passwordProvider the provider for encrypted encoded headers, or `null` when none is available
+    /// @return the validated signature and immutable parsed entries
+    /// @throws IOException if required bytes, a password, or archive metadata are invalid or unavailable
     public static SevenZipArchiveMetadata readArchiveMetadata(
             SeekableByteChannel channel,
             @Nullable ArkivoPasswordProvider passwordProvider
@@ -54,6 +67,12 @@ public final class SevenZipHeaderReader {
     }
 
     /// Reads and validates 7z archive metadata under a common archive read budget.
+    ///
+    /// @param channel          the seekable archive channel; its position is changed while reading metadata
+    /// @param passwordProvider the provider for encrypted encoded headers, or `null` when none is available
+    /// @param readLimits       the shared metadata and logical-resource budget to charge
+    /// @return the validated signature and immutable parsed entries
+    /// @throws IOException if input is invalid, a password is unavailable, or a shared limit is exceeded
     public static SevenZipArchiveMetadata readArchiveMetadata(
             SeekableByteChannel channel,
             @Nullable ArkivoPasswordProvider passwordProvider,
@@ -68,6 +87,13 @@ public final class SevenZipHeaderReader {
     }
 
     /// Reads and validates 7z metadata under logical and decoder resource limits.
+    ///
+    /// @param channel          the seekable archive channel; its position is changed while reading metadata
+    /// @param passwordProvider the provider for encrypted encoded headers, or `null` when none is available
+    /// @param readLimits       the shared metadata and logical-resource budget to charge
+    /// @param archiveLimits    the decoder-memory and decoded-size limits
+    /// @return the validated signature and immutable parsed entries
+    /// @throws IOException if input is invalid, a password is unavailable, or a configured limit is exceeded
     public static SevenZipArchiveMetadata readArchiveMetadata(
             SeekableByteChannel channel,
             @Nullable ArkivoPasswordProvider passwordProvider,

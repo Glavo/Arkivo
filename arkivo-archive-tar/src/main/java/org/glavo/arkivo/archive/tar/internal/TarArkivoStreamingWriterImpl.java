@@ -116,11 +116,16 @@ public final class TarArkivoStreamingWriterImpl extends TarArkivoStreamingWriter
     private boolean bodyStorageClosed;
 
     /// Creates a streaming TAR writer.
+    ///
+    /// @param output the owned archive stream at whose current position TAR blocks are written
     public TarArkivoStreamingWriterImpl(OutputStream output) {
         this(output, ArkivoEditStorage.temporaryFiles(defaultBodyStorageDirectory()));
     }
 
     /// Creates a streaming TAR writer that owns the given body storage.
+    ///
+    /// @param output the owned archive stream at whose current position TAR blocks are written
+    /// @param bodyStorage the owned storage used to stage regular-file bodies until their sizes are known
     public TarArkivoStreamingWriterImpl(OutputStream output, ArkivoEditStorage bodyStorage) {
         this.output = Objects.requireNonNull(output, "output");
         this.bodyStorage = Objects.requireNonNull(bodyStorage, "bodyStorage");

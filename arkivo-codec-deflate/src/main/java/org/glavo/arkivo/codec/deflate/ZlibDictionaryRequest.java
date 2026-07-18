@@ -10,6 +10,10 @@ import java.util.Objects;
 
 /// Requests the zlib preset dictionary with a particular Adler-32 identifier.
 ///
+/// Matching compares only the unsigned Adler-32 identifier carried by the zlib header. Because Adler-32 is not a
+/// collision-resistant content identity, callers remain responsible for associating identifiers with the intended
+/// dictionary bytes.
+///
 /// @param adler32 unsigned 32-bit Adler-32 identifier from the zlib stream header
 @NotNullByDefault
 public record ZlibDictionaryRequest(long adler32) implements DictionaryRequest<ZlibDictionary> {

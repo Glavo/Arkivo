@@ -42,6 +42,14 @@ public final class RarSplitVolumePaths {
     }
 
     /// Returns conventional split volume paths for a first-volume path, or `null` for a single-volume path.
+    ///
+    /// The returned list begins with `firstVolumePath` and contains each consecutively existing continuation volume.
+    /// Discovery recognizes `name.part1.rar`, `name.rar` followed by `name.part2.rar`, and legacy `name.r00` naming.
+    /// It does not open the discovered files or validate their RAR headers.
+    ///
+    /// @param firstVolumePath the candidate first-volume path
+    /// @return the immutable ordered volume paths, or `null` if no conventional continuation volume exists
+    /// @throws IOException if the conventional sequence exceeds the supported volume-number range
     public static @Nullable @Unmodifiable List<Path> discover(Path firstVolumePath) throws IOException {
         if (!Files.exists(firstVolumePath)) {
             return null;

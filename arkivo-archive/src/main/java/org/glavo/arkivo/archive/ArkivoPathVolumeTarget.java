@@ -40,11 +40,18 @@ public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
     private final @Unmodifiable Set<OpenOption> openOptions;
 
     /// Creates a replacing target that creates missing output paths.
+    ///
+    /// @param layout the path layout used to publish and discover archive volumes
     public ArkivoPathVolumeTarget(ArkivoVolumePathLayout layout) {
         this(layout, Set.of(StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING));
     }
 
     /// Creates a path-backed target with explicit publication and staged-file open options.
+    ///
+    /// @param layout      the path layout used to publish and discover archive volumes
+    /// @param openOptions the options applied to staged volume files and publication conflict handling
+    /// @throws UnsupportedOperationException if {@code openOptions} contains {@link StandardOpenOption#APPEND} or
+    /// {@link StandardOpenOption#DELETE_ON_CLOSE}
     public ArkivoPathVolumeTarget(
             ArkivoVolumePathLayout layout,
             Set<? extends OpenOption> openOptions
@@ -76,6 +83,8 @@ public final class ArkivoPathVolumeTarget implements ArkivoVolumeTarget {
     /// Validates layout discovery and initial open-option constraints without creating staging state.
     ///
     /// Publication repeats conflict checks during commit because external paths may change after this method returns.
+    ///
+    /// @throws IOException if the output directory or existing archive layout cannot be inspected
     public void validate() throws IOException {
         normalizedOutputDirectory();
         @Unmodifiable List<Path> existingPaths = existingOutputPaths(List.of());

@@ -43,6 +43,7 @@ public final class PPMd7Encoder implements CompressionEncoder {
     ///
     /// @param maximumOrder maximum Variant H context order from two through sixty-four
     /// @param memorySize model arena size in bytes
+    /// @throws IOException if the model configuration is invalid or its arena cannot be allocated
     public PPMd7Encoder(int maximumOrder, long memorySize) throws IOException {
         this.maximumOrder = maximumOrder;
         this.memorySize = memorySize;
@@ -77,6 +78,12 @@ public final class PPMd7Encoder implements CompressionEncoder {
     }
 
     /// Drains every complete arithmetic byte currently available without ending the raw stream.
+    ///
+    /// @param target the buffer receiving staged arithmetic bytes; its position advances by the bytes written
+    /// @return {@link CodecOutcome#NEEDS_OUTPUT} while staged bytes remain, or {@link CodecOutcome#FLUSHED} when drained
+    /// @throws IOException if arithmetic output cannot be produced
+    /// @throws NullPointerException if {@code target} is {@code null}
+    /// @throws IllegalStateException if a previous flush is not drained, the stream is finishing, or the encoder is closed
     public CodecOutcome flush(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();

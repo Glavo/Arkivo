@@ -49,6 +49,14 @@ public final class ZipSplitVolumePaths {
     }
 
     /// Returns conventional split volume paths for the given final archive path, or `null` for a single-volume path.
+    ///
+    /// This method reads and closes the final archive path while inspecting its end records and may block. The returned
+    /// list is ordered from `.z01` through the final archive path and does not transfer ownership of any open resource.
+    ///
+    /// @param archivePath the final archive path, conventionally ending in `.zip`
+    /// @return the immutable ordered volume paths, or `null` when `.z01` is absent or end metadata is single-volume
+    /// @throws NullPointerException if `archivePath` is `null`
+    /// @throws IOException if end metadata cannot be read or describes too many conventional volumes
     public static @Nullable @Unmodifiable List<Path> discover(Path archivePath) throws IOException {
         Path firstVolumePath = numberedVolumePath(archivePath, 0);
         if (!Files.exists(firstVolumePath)) {

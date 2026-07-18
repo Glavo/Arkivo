@@ -96,6 +96,7 @@ public final class ZstdDecoder
     /// @param maximumWindowSize maximum permitted frame window, or the unknown-size sentinel
     /// @param magicless whether standard frame magic is omitted
     /// @param verifyChecksums whether present frame checksums are verified
+    /// @throws IOException if the configured dictionary representation cannot initialize a decoding context
     public ZstdDecoder(
             @Nullable ZstdDictionary dictionary,
             long maximumWindowSize,

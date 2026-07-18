@@ -28,6 +28,10 @@ public final class PrefixReplayReadableByteChannel implements ReadableByteChanne
     private boolean open = true;
 
     /// Creates a prefix-replaying channel.
+    ///
+    /// @param prefix the remaining probe bytes replayed through an independent read-only view
+    /// @param source the channel positioned immediately after the probe bytes
+    /// @param ownership whether closing this replay channel also closes {@code source}
     public PrefixReplayReadableByteChannel(
             ByteBuffer prefix,
             ReadableByteChannel source,

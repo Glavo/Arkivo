@@ -62,6 +62,12 @@ public final class LZMAEncoder implements CompressionEncoder {
     }
 
     /// Flushes complete range-coded bytes after draining the fixed header.
+    ///
+    /// @param target the buffer receiving header or range-coded bytes; its position advances by the bytes written
+    /// @return {@link CodecOutcome#NEEDS_OUTPUT} while staged bytes remain, or {@link CodecOutcome#FLUSHED} when drained
+    /// @throws IOException if raw LZMA output cannot be produced
+    /// @throws NullPointerException if {@code target} is {@code null}
+    /// @throws IllegalStateException if the encoder is closed or the underlying encoder cannot be flushed in its state
     public CodecOutcome flush(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();

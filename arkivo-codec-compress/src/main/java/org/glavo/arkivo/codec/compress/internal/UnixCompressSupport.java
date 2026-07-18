@@ -35,6 +35,10 @@ public final class UnixCompressSupport {
     }
 
     /// Validates and returns a portable Unix compress maximum code width.
+    ///
+    /// @param maximumCodeWidth the candidate width
+    /// @return `maximumCodeWidth` when it is from 9 through 16
+    /// @throws IllegalArgumentException if the width is outside the portable range
     public static int requireMaximumCodeWidth(int maximumCodeWidth) {
         if (maximumCodeWidth < UnixCompressCodec.MINIMUM_CODE_WIDTH
                 || maximumCodeWidth > UnixCompressCodec.MAXIMUM_CODE_WIDTH) {
@@ -48,22 +52,38 @@ public final class UnixCompressSupport {
     }
 
     /// Returns the code-table capacity represented by a maximum code width.
+    ///
+    /// @param maximumCodeWidth the validated maximum width
+    /// @return the exclusive upper bound for dictionary codes
+    /// @throws IllegalArgumentException if the width is outside the portable range
     public static int tableCapacity(int maximumCodeWidth) {
         return 1 << requireMaximumCodeWidth(maximumCodeWidth);
     }
 
     /// Returns the first unused dictionary code for the selected stream mode.
+    ///
+    /// @param blockMode whether the clear code is reserved
+    /// @return 257 in block mode, otherwise 256
     public static int initialNextCode(boolean blockMode) {
         return blockMode ? CLEAR_CODE + 1 : CLEAR_CODE;
     }
 
     /// Returns the encoded third header byte for the selected stream parameters.
+    ///
+    /// @param maximumCodeWidth the maximum width stored in the low header bits
+    /// @param blockMode whether to set the block-mode flag
+    /// @return the unsigned third header-byte value
+    /// @throws IllegalArgumentException if the width is outside the portable range
     public static int headerFlags(int maximumCodeWidth, boolean blockMode) {
         int flags = requireMaximumCodeWidth(maximumCodeWidth);
         return blockMode ? flags | BLOCK_MODE_MASK : flags;
     }
 
     /// Returns the dominant decoder table allocation required by a stream header.
+    ///
+    /// @param maximumCodeWidth the maximum width declared by the stream
+    /// @return the combined byte size of the prefix, suffix, and expansion tables
+    /// @throws IllegalArgumentException if the width is outside the portable range
     public static long decoderMemorySize(int maximumCodeWidth) {
         return (long) tableCapacity(maximumCodeWidth) * DECODER_BYTES_PER_CODE;
     }

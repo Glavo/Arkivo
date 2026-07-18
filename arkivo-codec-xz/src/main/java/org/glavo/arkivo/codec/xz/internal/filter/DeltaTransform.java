@@ -21,6 +21,11 @@ public final class DeltaTransform implements ByteTransform {
     private int historyPosition;
 
     /// Creates a Delta transform with the requested direction and history distance.
+    ///
+    /// @param direction whether to replace bytes with differences or restore the original bytes
+    /// @param distance the original-byte history distance, from one through 256
+    /// @throws NullPointerException if {@code direction} is {@code null}
+    /// @throws IllegalArgumentException if {@code distance} is outside the supported range
     public DeltaTransform(ByteTransform.Direction direction, int distance) {
         Objects.requireNonNull(direction, "direction");
         if (distance < 1 || distance > 256) {

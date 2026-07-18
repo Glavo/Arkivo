@@ -33,11 +33,16 @@ public final class StoredContentSupport {
     }
 
     /// Returns an identity-based mutable set for tracking owned content handles.
+    ///
+    /// @return a new empty mutable identity set
     public static Set<ArkivoStoredContent> newIdentitySet() {
         return Collections.newSetFromMap(new IdentityHashMap<>());
     }
 
     /// Returns configured edit storage or temporary-file storage in the default system temporary directory.
+    ///
+    /// @param options the options containing an optional edit-storage strategy
+    /// @return the configured storage, or a new default temporary-file storage
     @SuppressWarnings("resource")
     public static ArkivoEditStorage selectStorage(ArchiveOptions options) {
         Objects.requireNonNull(options, "options");
@@ -48,6 +53,10 @@ public final class StoredContentSupport {
     }
 
     /// Closes content and storage allocated during a failed open and suppresses every cleanup failure.
+    ///
+    /// @param editStorage the storage strategy to close after its owned contents
+    /// @param ownedContents the identity set of content handles to close
+    /// @param failure the primary failure that receives cleanup failures as suppressed exceptions
     public static void closeAfterOpenFailure(
             ArkivoEditStorage editStorage,
             Set<ArkivoStoredContent> ownedContents,
@@ -71,6 +80,14 @@ public final class StoredContentSupport {
     }
 
     /// Stores one input body and transfers ownership of the resulting content to the given identity set.
+    ///
+    /// @param editStorage the storage strategy used to allocate the staged body
+    /// @param ownedContents the identity set that assumes ownership after a successful transfer
+    /// @param path the archive-local entry path
+    /// @param expectedSize the expected non-negative byte count, or {@link ArkivoEditStorage#UNKNOWN_SIZE}
+    /// @param input the borrowed input stream copied from its current position through end of input
+    /// @return the populated content handle now owned by {@code ownedContents}
+    /// @throws IOException if content allocation, transfer, or channel cleanup fails
     public static ArkivoStoredContent storeInput(
             ArkivoEditStorage editStorage,
             Set<ArkivoStoredContent> ownedContents,
@@ -104,6 +121,10 @@ public final class StoredContentSupport {
     }
 
     /// Copies all input bytes to a writable channel using bounded memory.
+    ///
+    /// @param input the borrowed input stream read through end of input
+    /// @param output the borrowed writable channel that receives every byte
+    /// @throws IOException if either endpoint fails or a nonempty channel write makes no progress
     public static void copyInput(InputStream input, WritableByteChannel output) throws IOException {
         Objects.requireNonNull(input, "input");
         Objects.requireNonNull(output, "output");
@@ -133,6 +154,10 @@ public final class StoredContentSupport {
     }
 
     /// Copies optional source content into destination content, truncating the destination first.
+    ///
+    /// @param source the content copied from its beginning, or {@code null} to leave an empty destination
+    /// @param destination the content truncated and populated by this operation
+    /// @throws IOException if either content handle cannot be opened, transferred, or closed
     public static void copyContent(
             @Nullable ArkivoStoredContent source,
             ArkivoStoredContent destination
@@ -152,6 +177,10 @@ public final class StoredContentSupport {
     }
 
     /// Opens an input stream over content, or an empty stream when no body is present.
+    ///
+    /// @param content the stored content to open, or {@code null} for an empty body
+    /// @return a new caller-owned input stream
+    /// @throws IOException if the content cannot be opened for reading
     public static InputStream openInputStream(@Nullable ArkivoStoredContent content) throws IOException {
         return content != null
                 ? Channels.newInputStream(content.openChannel(Set.of(StandardOpenOption.READ)))
@@ -159,6 +188,10 @@ public final class StoredContentSupport {
     }
 
     /// Opens a read-only seekable channel over content, or an empty channel when no body is present.
+    ///
+    /// @param content the stored content to open, or {@code null} for an empty body
+    /// @return a new caller-owned read-only seekable channel
+    /// @throws IOException if the content cannot be opened for reading
     public static SeekableByteChannel openReadChannel(@Nullable ArkivoStoredContent content) throws IOException {
         return content != null
                 ? content.openChannel(Set.of(StandardOpenOption.READ))

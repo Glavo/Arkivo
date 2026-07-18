@@ -22,6 +22,8 @@ public final class RetryingInputStreamChannel implements ReadableByteChannel {
     private boolean open = true;
 
     /// Creates a retry-safe channel adapter.
+    ///
+    /// @param source the input stream owned and closed by this channel
     public RetryingInputStreamChannel(InputStream source) {
         this.source = Objects.requireNonNull(source, "source");
     }

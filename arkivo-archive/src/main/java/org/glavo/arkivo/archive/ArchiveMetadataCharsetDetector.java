@@ -25,18 +25,29 @@ import java.util.Objects;
 @NotNullByDefault
 public interface ArchiveMetadataCharsetDetector {
     /// Detects the charset of one complete metadata value, or returns `null` when it is unknown.
+    ///
+    /// @param bytes a read-only view of the complete encoded metadata value
+    /// @return the detected charset, or {@code null} when the encoding cannot be determined
+    /// @throws IOException if detection cannot inspect the supplied metadata
     @Nullable Charset detect(@UnmodifiableView ByteBuffer bytes) throws IOException;
 
     /// Detects the charset of one complete metadata value represented by an array.
     ///
     /// The default implementation exposes the array through an independent read-only buffer and delegates to
     /// `detect(ByteBuffer)`.
+    ///
+    /// @param bytes the complete encoded metadata value
+    /// @return the detected charset, or {@code null} when the encoding cannot be determined
+    /// @throws IOException if detection cannot inspect the supplied metadata
     default @Nullable Charset detect(byte @Unmodifiable [] bytes) throws IOException {
         Objects.requireNonNull(bytes, "bytes");
         return detect(ByteBuffer.wrap(bytes).asReadOnlyBuffer());
     }
 
     /// Returns a detector that always selects the given charset without inspecting metadata bytes.
+    ///
+    /// @param charset the charset selected by the returned detector
+    /// @return a detector that always returns {@code charset}
     static ArchiveMetadataCharsetDetector fixed(Charset charset) {
         return new FixedArchiveMetadataCharsetDetector(charset);
     }

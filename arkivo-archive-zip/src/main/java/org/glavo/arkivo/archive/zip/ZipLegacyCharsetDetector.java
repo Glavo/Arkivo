@@ -30,6 +30,14 @@ public interface ZipLegacyCharsetDetector extends ArchiveMetadataCharsetDetector
     int UNKNOWN_HEADER_VALUE = -1;
 
     /// Detects the charset of one raw legacy ZIP entry name or comment, or returns `null` when it is unknown.
+    ///
+    /// The context buffers are independent read-only views valid only for this call. An implementation may advance their
+    /// positions while inspecting them but must not retain either buffer.
+    ///
+    /// @param context the raw metadata and available ZIP header context
+    /// @return the detected charset, or `null` to request the CP437 fallback
+    /// @throws NullPointerException if `context` is `null`
+    /// @throws IOException if charset detection cannot be completed
     @Nullable Charset detect(Context context) throws IOException;
 
     /// Detects bytes without explicit ZIP context by supplying an unknown context.
@@ -104,6 +112,8 @@ public interface ZipLegacyCharsetDetector extends ArchiveMetadataCharsetDetector
         }
 
         /// Returns the ZIP creator-system identifier, or `UNKNOWN_HEADER_VALUE` when version-made-by is unavailable.
+        ///
+        /// @return the unsigned 8-bit creator-system identifier, or [ZipLegacyCharsetDetector#UNKNOWN_HEADER_VALUE]
         public int creatorSystem() {
             return versionMadeBy == UNKNOWN_HEADER_VALUE
                     ? UNKNOWN_HEADER_VALUE
@@ -111,6 +121,8 @@ public interface ZipLegacyCharsetDetector extends ArchiveMetadataCharsetDetector
         }
 
         /// Returns the ZIP creator version, or `UNKNOWN_HEADER_VALUE` when version-made-by is unavailable.
+        ///
+        /// @return the unsigned 8-bit creator version, or [ZipLegacyCharsetDetector#UNKNOWN_HEADER_VALUE]
         public int creatorVersion() {
             return versionMadeBy == UNKNOWN_HEADER_VALUE
                     ? UNKNOWN_HEADER_VALUE

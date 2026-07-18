@@ -197,6 +197,16 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     private boolean closeActionCompleted;
 
     /// Creates a ZIP archive file system instance.
+    ///
+    /// Exactly one of `archivePath` and `volumes` must be non-null. A non-null volume source becomes owned by this file
+    /// system; archive records remain lazily read until an operation needs them.
+    ///
+    /// @param provider the provider that created this file system
+    /// @param archivePath the backing archive path, or `null` for volume input
+    /// @param volumes the owned volume source, or `null` for path input
+    /// @param config the validated read-only configuration
+    /// @throws NullPointerException if `provider` or `config` is `null`
+    /// @throws IllegalArgumentException if both or neither source arguments are non-null
     public ZipArkivoReadOnlyFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             @Nullable Path archivePath,
@@ -207,6 +217,17 @@ public final class ZipArkivoReadOnlyFileSystemImpl extends ZipArkivoFileSystem i
     }
 
     /// Creates a ZIP archive file system instance with a close callback.
+    ///
+    /// Exactly one of `archivePath` and `volumes` must be non-null. A non-null volume source becomes owned by this file
+    /// system. The callback runs after source cleanup when the file system closes.
+    ///
+    /// @param provider the provider that created this file system
+    /// @param archivePath the backing archive path, or `null` for volume input
+    /// @param volumes the owned volume source, or `null` for path input
+    /// @param config the validated read-only configuration
+    /// @param closeAction the callback invoked during close, or `null` when none is needed
+    /// @throws NullPointerException if `provider` or `config` is `null`
+    /// @throws IllegalArgumentException if both or neither source arguments are non-null
     public ZipArkivoReadOnlyFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             @Nullable Path archivePath,

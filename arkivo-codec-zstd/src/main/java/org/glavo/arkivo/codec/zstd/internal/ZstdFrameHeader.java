@@ -37,6 +37,10 @@ public final class ZstdFrameHeader {
     /// Returns whether the remaining bytes begin with a standard or skippable frame magic.
     ///
     /// The source buffer state is not changed.
+    ///
+    /// @param source the buffer whose remaining prefix is inspected
+    /// @return {@code true} if at least four bytes remain and contain a recognized standard or skippable magic
+    /// @throws NullPointerException if {@code source} is {@code null}
     public static boolean hasFrameMagic(ByteBuffer source) {
         int start = source.position();
         if (source.remaining() < Integer.BYTES) {
@@ -47,11 +51,22 @@ public final class ZstdFrameHeader {
     }
 
     /// Parses one complete standard or skippable frame header.
+    ///
+    /// @param source the buffer whose remaining bytes begin with the standard-framed header; its state is not changed
+    /// @return immutable standard- or skippable-frame metadata
+    /// @throws IOException if the header is truncated or malformed
+    /// @throws NullPointerException if {@code source} is {@code null}
     public static ZstdFrameInfo parse(ByteBuffer source) throws IOException {
         return parse(source, false);
     }
 
     /// Parses one complete frame header with explicit magicless framing.
+    ///
+    /// @param source the buffer whose remaining bytes begin with the header; its state is not changed
+    /// @param magicless whether to parse a standard-frame header with no leading magic
+    /// @return immutable frame metadata
+    /// @throws IOException if the header is truncated, malformed, or incompatible with the selected framing
+    /// @throws NullPointerException if {@code source} is {@code null}
     public static ZstdFrameInfo parse(ByteBuffer source, boolean magicless) throws IOException {
         @Nullable ZstdFrameInfo info = tryParse(source, magicless);
         if (info == null) {
@@ -61,11 +76,22 @@ public final class ZstdFrameHeader {
     }
 
     /// Returns the complete compressed size of one standard or skippable framed item.
+    ///
+    /// @param source the buffer whose remaining bytes contain the complete standard-framed item; its state is unchanged
+    /// @return the complete item size in bytes
+    /// @throws IOException if the item is truncated or malformed
+    /// @throws NullPointerException if {@code source} is {@code null}
     public static long frameCompressedSize(ByteBuffer source) throws IOException {
         return frameCompressedSize(source, false);
     }
 
     /// Returns the complete compressed size of one framed item with explicit magicless framing.
+    ///
+    /// @param source the buffer whose remaining bytes contain the complete framed item; its state is not changed
+    /// @param magicless whether to interpret a standard frame without a leading magic
+    /// @return the complete item size in bytes
+    /// @throws IOException if the item is truncated, malformed, or incompatible with the selected framing
+    /// @throws NullPointerException if {@code source} is {@code null}
     public static long frameCompressedSize(ByteBuffer source, boolean magicless) throws IOException {
         ZstdFrameInfo info = parse(source, magicless);
         int start = source.position();
@@ -104,11 +130,22 @@ public final class ZstdFrameHeader {
     }
 
     /// Returns the required standard-frame window size, zero for invalid or skippable input, or NEED_MORE_INPUT.
+    ///
+    /// @param source the buffer whose remaining header prefix is inspected; its state is not changed
+    /// @return the nonnegative required window, {@link #NEED_MORE_INPUT} for an incomplete header, or zero for invalid
+    ///         or skippable input
+    /// @throws NullPointerException if {@code source} is {@code null}
     public static long requiredWindowSize(ByteBuffer source) {
         return requiredWindowSize(source, false);
     }
 
     /// Returns the required window size with explicit magicless framing, zero for invalid input, or NEED_MORE_INPUT.
+    ///
+    /// @param source the buffer whose remaining header prefix is inspected; its state is not changed
+    /// @param magicless whether to interpret a standard-frame header without a leading magic
+    /// @return the nonnegative required window, {@link #NEED_MORE_INPUT} for an incomplete header, or zero for invalid
+    ///         or skippable input
+    /// @throws NullPointerException if {@code source} is {@code null}
     public static long requiredWindowSize(ByteBuffer source, boolean magicless) {
         int start = source.position();
         if (!magicless && source.remaining() >= Integer.BYTES) {

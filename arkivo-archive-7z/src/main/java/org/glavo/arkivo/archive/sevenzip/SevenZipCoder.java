@@ -32,6 +32,14 @@ public final class SevenZipCoder {
     private final int firstOutputStreamIndex;
 
     /// Validates and snapshots coder metadata.
+    ///
+    /// @param method                 the recognized coder method
+    /// @param properties             the raw coder-property bytes to copy
+    /// @param inputStreamCount       the positive number of graph inputs consumed
+    /// @param outputStreamCount      the positive number of graph outputs produced
+    /// @param firstInputStreamIndex  the non-negative first graph input index
+    /// @param firstOutputStreamIndex the non-negative first graph output index
+    /// @throws IllegalArgumentException if a stream count is not positive or a first index is negative
     public SevenZipCoder(
             SevenZipCoderMethod method,
             byte[] properties,
@@ -55,31 +63,43 @@ public final class SevenZipCoder {
     }
 
     /// Returns the supported coder method.
+    ///
+    /// @return the recognized coder method
     public SevenZipCoderMethod method() {
         return method;
     }
 
     /// Returns a copy of the raw coder properties.
+    ///
+    /// @return a new array containing the encoded coder properties
     public byte[] properties() {
         return properties.clone();
     }
 
     /// Returns the number of graph input streams consumed by the coder.
+    ///
+    /// @return the positive input stream count
     public int inputStreamCount() {
         return inputStreamCount;
     }
 
     /// Returns the number of graph output streams produced by the coder.
+    ///
+    /// @return the positive output stream count
     public int outputStreamCount() {
         return outputStreamCount;
     }
 
     /// Returns the first graph input stream owned by the coder.
+    ///
+    /// @return the non-negative first input stream index
     public int firstInputStreamIndex() {
         return firstInputStreamIndex;
     }
 
     /// Returns the first graph output stream owned by the coder.
+    ///
+    /// @return the non-negative first output stream index
     public int firstOutputStreamIndex() {
         return firstOutputStreamIndex;
     }

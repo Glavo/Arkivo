@@ -134,11 +134,18 @@ public record SevenZipCompression(SevenZipCompressionMethod method, int paramete
     }
 
     /// Creates a single-parameter compression configuration.
+    ///
+    /// @param method    the output compression method
+    /// @param parameter the method-specific dictionary size, block size, level, or maximum order
+    /// @throws IllegalArgumentException if `parameter` is outside the range accepted by `method`
     public SevenZipCompression(SevenZipCompressionMethod method, int parameter) {
         this(method, parameter, 0);
     }
 
     /// Returns a default configuration for the given method.
+    ///
+    /// @param method the output compression method
+    /// @return the method's default validated configuration
     public static SevenZipCompression of(SevenZipCompressionMethod method) {
         Objects.requireNonNull(method, "method");
         return switch (method) {
@@ -154,76 +161,121 @@ public record SevenZipCompression(SevenZipCompressionMethod method, int paramete
     }
 
     /// Returns uncompressed COPY output.
+    ///
+    /// @return the canonical COPY configuration
     public static SevenZipCompression copy() {
         return new SevenZipCompression(SevenZipCompressionMethod.COPY, 0);
     }
 
     /// Returns LZMA output with the default dictionary size.
+    ///
+    /// @return an LZMA configuration using [#DEFAULT_DICTIONARY_SIZE]
     public static SevenZipCompression lzma() {
         return lzma(DEFAULT_DICTIONARY_SIZE);
     }
 
     /// Returns LZMA output with the requested dictionary size.
+    ///
+    /// @param dictionarySize the dictionary size in bytes
+    /// @return a validated LZMA configuration
+    /// @throws IllegalArgumentException if the dictionary size is outside the supported range
     public static SevenZipCompression lzma(int dictionarySize) {
         return new SevenZipCompression(SevenZipCompressionMethod.LZMA, dictionarySize);
     }
 
     /// Returns LZMA2 output with the default dictionary size.
+    ///
+    /// @return an LZMA2 configuration using [#DEFAULT_DICTIONARY_SIZE]
     public static SevenZipCompression lzma2() {
         return lzma2(DEFAULT_DICTIONARY_SIZE);
     }
 
     /// Returns LZMA2 output with the requested dictionary size.
+    ///
+    /// @param dictionarySize the dictionary size in bytes
+    /// @return a validated LZMA2 configuration
+    /// @throws IllegalArgumentException if the dictionary size is outside the supported range
     public static SevenZipCompression lzma2(int dictionarySize) {
         return new SevenZipCompression(SevenZipCompressionMethod.LZMA2, dictionarySize);
     }
 
     /// Returns BZIP2 output with the default maximum block size.
+    ///
+    /// @return a BZIP2 configuration using [#MAX_BZIP2_BLOCK_SIZE]
     public static SevenZipCompression bzip2() {
         return bzip2(MAX_BZIP2_BLOCK_SIZE);
     }
 
     /// Returns BZIP2 output with the requested block size from 1 through 9.
+    ///
+    /// @param blockSize the BZIP2 block-size multiplier from 1 through 9
+    /// @return a validated BZIP2 configuration
+    /// @throws IllegalArgumentException if `blockSize` is outside 1 through 9
     public static SevenZipCompression bzip2(int blockSize) {
         return new SevenZipCompression(SevenZipCompressionMethod.BZIP2, blockSize);
     }
 
     /// Returns DEFLATE output with the default maximum compression level.
+    ///
+    /// @return a DEFLATE configuration using [#MAX_DEFLATE_LEVEL]
     public static SevenZipCompression deflate() {
         return deflate(MAX_DEFLATE_LEVEL);
     }
 
     /// Returns DEFLATE output with the requested compression level from 0 through 9.
+    ///
+    /// @param level the DEFLATE level from 0 through 9
+    /// @return a validated DEFLATE configuration
+    /// @throws IllegalArgumentException if `level` is outside 0 through 9
     public static SevenZipCompression deflate(int level) {
         return new SevenZipCompression(SevenZipCompressionMethod.DEFLATE, level);
     }
 
     /// Returns Deflate64 output with the default maximum compression level.
+    ///
+    /// @return a Deflate64 configuration using [#MAX_DEFLATE64_LEVEL]
     public static SevenZipCompression deflate64() {
         return deflate64(MAX_DEFLATE64_LEVEL);
     }
 
     /// Returns Deflate64 output with the requested compression level from 0 through 9.
+    ///
+    /// @param level the Deflate64 level from 0 through 9
+    /// @return a validated Deflate64 configuration
+    /// @throws IllegalArgumentException if `level` is outside 0 through 9
     public static SevenZipCompression deflate64(int level) {
         return new SevenZipCompression(SevenZipCompressionMethod.DEFLATE64, level);
     }
 
     /// Returns PPMd7 output with its default model parameters.
+    ///
+    /// @return a PPMd7 configuration using the default order and memory size
     public static SevenZipCompression ppmd() {
         return ppmd(DEFAULT_PPMD_MAXIMUM_ORDER, DEFAULT_PPMD_MEMORY_SIZE);
     }
 
     /// Returns PPMd7 output with the requested maximum order and model-memory size.
+    ///
+    /// @param maximumOrder the maximum context order from 2 through 64
+    /// @param memorySize   the model-memory size in bytes
+    /// @return a validated PPMd7 configuration
+    /// @throws IllegalArgumentException if either parameter is outside its supported range
     public static SevenZipCompression ppmd(int maximumOrder, int memorySize) {
         return new SevenZipCompression(SevenZipCompressionMethod.PPMD, maximumOrder, memorySize);
     }
 
     /// Returns Zstandard output with its default compression level.
+    ///
+    /// @return a Zstandard configuration using [#DEFAULT_ZSTANDARD_LEVEL]
     public static SevenZipCompression zstandard() {
         return zstandard(DEFAULT_ZSTANDARD_LEVEL);
     }
 
     /// Returns Zstandard output with the requested compression level.
+    ///
+    /// @param level the Zstandard compression level
+    /// @return a validated Zstandard configuration
+    /// @throws IllegalArgumentException if `level` is outside the supported range
     public static SevenZipCompression zstandard(int level) {
         return new SevenZipCompression(SevenZipCompressionMethod.ZSTANDARD, level);
     }

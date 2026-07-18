@@ -5,7 +5,10 @@ package org.glavo.arkivo.codec.zstd;
 
 import org.jetbrains.annotations.NotNullByDefault;
 
-/// Reports a Zstandard dictionary training failure.
+/// Reports a Zstandard dictionary training failure after sample collection has completed.
+///
+/// [#errorCode()] is stable within this API and distinguishes capacity, sample sufficiency, and dictionary-construction
+/// failures. The trainer retains its accepted samples after this exception.
 @NotNullByDefault
 public final class ZstdDictionaryTrainingException extends IllegalStateException {
     /// The serialization version for this exception type.
@@ -36,6 +39,8 @@ public final class ZstdDictionaryTrainingException extends IllegalStateException
     }
 
     /// Returns the stable dictionary training error code.
+    ///
+    /// @return the API-defined code identifying the training failure category
     public long errorCode() {
         return errorCode;
     }

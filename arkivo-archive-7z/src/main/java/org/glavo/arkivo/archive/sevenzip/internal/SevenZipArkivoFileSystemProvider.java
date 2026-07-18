@@ -53,6 +53,8 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
     }
 
     /// Returns the shared 7z file system provider instance.
+    ///
+    /// @return the process-wide provider used by the 7z convenience factories
     public static SevenZipArkivoFileSystemProvider instance() {
         return INSTANCE;
     }
@@ -89,6 +91,12 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
     }
 
     /// Opens a 7z archive path whose format has already been selected explicitly.
+    ///
+    /// @param path the archive path to open or create according to `options`
+    /// @param options the generic archive options to validate and translate into a 7z configuration
+    /// @return a new file system whose close operation releases the archive resources and, in write modes, publishes
+    ///         the completed archive
+    /// @throws IOException if the archive or required staging storage cannot be opened
     public SevenZipArkivoFileSystem openPath(Path path, ArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
         SevenZipArkivoFileSystemConfig config = SevenZipArkivoFileSystemConfig.fromOptions(options);
@@ -96,6 +104,12 @@ public final class SevenZipArkivoFileSystemProvider extends FileSystemProvider {
     }
 
     /// Opens a 7z path from an already validated strongly typed configuration.
+    ///
+    /// @param path the archive path to open or create according to `config`
+    /// @param config the validated 7z access, encoding, storage, and thread-safety configuration
+    /// @return a new file system whose close operation releases the archive resources and, in write modes, publishes
+    ///         the completed archive
+    /// @throws IOException if the archive or required staging storage cannot be opened
     public SevenZipArkivoFileSystem openPath(Path path, SevenZipArkivoFileSystemConfig config) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(config, "config");

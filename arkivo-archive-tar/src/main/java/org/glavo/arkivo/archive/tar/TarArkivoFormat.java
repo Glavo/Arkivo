@@ -23,7 +23,13 @@ import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 import java.util.List;
 
-/// Describes TAR archive streaming support provided by Arkivo.
+/// Describes Arkivo's indexed and streaming TAR support.
+///
+/// This descriptor opens read-only, creation, and complete-rewrite NIO file systems as well as forward-only readers
+/// and writers. Seekable readers detect an installed outer compression format; streaming readers probe only reliable
+/// signatures and preserve all bytes when the source is an uncompressed TAR stream. Generic creation options produce
+/// uncompressed output. Factory methods use the ownership and close-time publication contracts of the corresponding
+/// concrete TAR types.
 @NotNullByDefault
 public final class TarArkivoFormat implements
         ArkivoFileSystemFormat.Writable,
@@ -52,6 +58,8 @@ public final class TarArkivoFormat implements
     }
 
     /// Returns the shared TAR format descriptor.
+    ///
+    /// @return the process-wide immutable TAR format descriptor
     public static TarArkivoFormat instance() {
         return INSTANCE;
     }

@@ -75,6 +75,9 @@ public final class ZstdDictionaryBuilder {
     /// @param dictionaryCapacity maximum dictionary size
     /// @param compressionLevel dictionary optimization level
     /// @param legacy whether to use the legacy-oriented content selector
+    /// @return a standard formatted dictionary no larger than {@code dictionaryCapacity}
+    /// @throws NullPointerException if {@code samples} or {@code sampleSizes} is {@code null}
+    /// @throws IllegalArgumentException if capacities or sample boundaries are inconsistent or insufficient
     public static byte[] build(
             byte[] samples,
             int[] sampleSizes,

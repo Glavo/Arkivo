@@ -5,7 +5,10 @@ package org.glavo.arkivo.codec.xz;
 
 import org.jetbrains.annotations.NotNullByDefault;
 
-/// Selects the integrity check stored after each XZ block.
+/// Selects the integrity check stored after each XZ Block.
+///
+/// The choice is part of the XZ Stream flags and applies independently to every Block in the Stream. Decoder checksum
+/// verification is configured separately by [XZCodec].
 @NotNullByDefault
 public enum XZCheckType {
     /// Stores no block integrity check.

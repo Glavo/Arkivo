@@ -27,6 +27,9 @@ public final class LZ4BlockEncoder implements CompressionEncoder {
     private State state = State.COLLECTING;
 
     /// Creates an encoder for one raw block bounded by decoded byte count.
+    ///
+    /// @param maximumBlockSize the nonnegative number of source bytes that may be collected
+    /// @throws IllegalArgumentException if `maximumBlockSize` is negative
     public LZ4BlockEncoder(int maximumBlockSize) {
         source = new OwnedByteAccumulator(maximumBlockSize);
     }

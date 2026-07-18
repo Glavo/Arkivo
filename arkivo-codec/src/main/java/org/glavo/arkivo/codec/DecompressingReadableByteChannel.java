@@ -12,9 +12,23 @@ import java.nio.channels.ReadableByteChannel;
 import java.util.Objects;
 
 /// Reads compressed bytes from a backing channel and exposes decoded bytes.
+///
+/// Contexts are stateful and not safe for concurrent use. A read may block while obtaining compressed input and advances
+/// the target position by the positive count it returns; an empty target returns zero without reading the source.
+/// Arkivo-provided contexts fail with `IOException` when a nonempty operation cannot make codec or transport progress.
+///
+/// Closing always releases decoder state. A borrowed backing source remains open; an owned source is closed. Closing does
+/// not drain compressed input or verify that the current encoding is complete.
 @NotNullByDefault
 public interface DecompressingReadableByteChannel extends ReadableByteChannel {
     /// Decodes bytes into the target and reports progress and end-of-input state.
+    ///
+    /// The target position is advanced by `result.outputBytes()`. Input and output counts in the result cover only this
+    /// call; the channel counter methods remain cumulative. `END_OF_INPUT` may accompany final output bytes.
+    ///
+    /// @param target the destination for decoded bytes
+    /// @return this call's progress and active or end-of-input status
+    /// @throws IOException if compressed input cannot be read or decoded
     default CodecResult decode(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         long inputBefore = inputBytes();
@@ -24,12 +38,16 @@ public interface DecompressingReadableByteChannel extends ReadableByteChannel {
         return new CodecResult(inputBytes() - inputBefore, outputBytes() - outputBefore, status);
     }
 
-    /// Returns the number of compressed bytes logically consumed by the decoder.
+    /// Returns the cumulative number of compressed bytes logically consumed by the decoder.
+    ///
+    /// @return the cumulative logically consumed compressed byte count
     long inputBytes();
 
-    /// Returns the number of compressed bytes obtained from the backing source, including buffered read-ahead.
+    /// Returns the cumulative number of compressed bytes obtained from the backing source, including buffered read-ahead.
     ///
     /// The returned value is never less than inputBytes(). Decoders without observable read-ahead return inputBytes().
+    ///
+    /// @return the cumulative compressed byte count obtained from the backing source
     default long sourceBytes() {
         return inputBytes();
     }
@@ -38,17 +56,23 @@ public interface DecompressingReadableByteChannel extends ReadableByteChannel {
     ///
     /// The remaining byte count equals sourceBytes() minus inputBytes(). The view's position and limit are independent,
     /// but its content is valid only until the decoder performs another read or decode operation.
+    ///
+    /// @return a read-only transient view of buffered compressed read-ahead
     default @UnmodifiableView ByteBuffer unconsumedInput() {
         return ByteBuffer.allocate(0).asReadOnlyBuffer();
     }
 
-    /// Returns the number of uncompressed bytes returned to callers.
+    /// Returns the cumulative number of uncompressed bytes returned to callers.
+    ///
+    /// @return the cumulative decoded output byte count
     long outputBytes();
 
     /// Releases decoder resources and closes an owned source.
     ///
     /// The decoder is no longer open after release is attempted. If owned-source closure fails, a later `close()` retries
     /// only source closure and does not release decoder state again.
+    ///
+    /// @throws IOException if decoder release or owned-source closure fails
     @Override
     void close() throws IOException;
 
@@ -56,6 +80,14 @@ public interface DecompressingReadableByteChannel extends ReadableByteChannel {
     @NotNullByDefault
     interface Framed extends DecompressingReadableByteChannel {
         /// Decodes without beginning a following frame after the current frame completes.
+        ///
+        /// `FRAME_FINISHED` identifies the boundary even when the call also produced bytes. A later call begins the next
+        /// frame if compressed input remains; `END_OF_INPUT` reports that no following frame is available. The target
+        /// position and per-call counters follow [DecompressingReadableByteChannel#decode(ByteBuffer)].
+        ///
+        /// @param target the destination for decoded bytes
+        /// @return this call's progress and active, frame-finished, or end-of-input status
+        /// @throws IOException if compressed input cannot be read or decoded
         CodecResult decodeFrame(ByteBuffer target) throws IOException;
     }
 }

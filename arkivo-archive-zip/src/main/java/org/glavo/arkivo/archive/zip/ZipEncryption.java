@@ -35,6 +35,13 @@ public enum ZipEncryption {
     }
 
     /// Parses a stable case-insensitive encryption method identifier.
+    ///
+    /// Leading and trailing whitespace is ignored.
+    ///
+    /// @param value the external encryption identifier
+    /// @return the matching encryption method
+    /// @throws NullPointerException if `value` is `null`
+    /// @throws IllegalArgumentException if `value` does not identify a supported method
     public static ZipEncryption parse(String value) {
         String normalized = Objects.requireNonNull(value, "value").trim().toLowerCase(Locale.ROOT);
         for (ZipEncryption encryption : values()) {
@@ -46,6 +53,8 @@ public enum ZipEncryption {
     }
 
     /// Returns the stable external identifier for the encryption method.
+    ///
+    /// @return the lowercase external identifier
     public String id() {
         return id;
     }

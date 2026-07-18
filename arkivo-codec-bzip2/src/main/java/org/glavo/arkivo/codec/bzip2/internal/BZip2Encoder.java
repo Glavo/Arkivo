@@ -76,6 +76,14 @@ public final class BZip2Encoder implements CompressionEncoder.Framed {
     }
 
     /// Completes the current BZip2 frame as a decodable flush boundary.
+    ///
+    /// The target position advances by the encoded bytes copied during this call. Repeated calls with additional target
+    /// space are required after `NEEDS_OUTPUT`.
+    ///
+    /// @param target destination for pending encoded bytes
+    /// @return `FLUSHED` once the frame boundary is complete, or `NEEDS_OUTPUT` while bytes remain
+    /// @throws IOException if frame finalization fails
+    /// @throws IllegalStateException if the encoder is closed or another finalization operation is active
     public CodecOutcome flush(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();

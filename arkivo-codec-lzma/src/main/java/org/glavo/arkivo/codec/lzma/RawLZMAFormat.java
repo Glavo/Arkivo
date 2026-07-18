@@ -9,7 +9,10 @@ import org.jetbrains.annotations.Unmodifiable;
 
 import java.util.List;
 
-/// Describes the discoverable raw LZMA compression format.
+/// Describes the registered raw LZMA compression format.
+///
+/// Headerless LZMA has no fixed signature and requires externally supplied model properties and termination metadata.
+/// This immutable descriptor is intended for explicit container-driven selection.
 @NotNullByDefault
 public final class RawLZMAFormat implements CompressionFormat {
     /// The stable raw LZMA format name.
@@ -23,6 +26,8 @@ public final class RawLZMAFormat implements CompressionFormat {
     }
 
     /// Returns the canonical raw LZMA format instance.
+    ///
+    /// @return the canonical format instance
     public static RawLZMAFormat instance() {
         return INSTANCE;
     }

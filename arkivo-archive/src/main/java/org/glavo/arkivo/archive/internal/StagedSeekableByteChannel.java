@@ -22,6 +22,10 @@ public final class StagedSeekableByteChannel implements SeekableByteChannel {
     @NotNullByDefault
     public interface WriteValidator {
         /// Validates a write at the given position with the given offered byte count.
+        ///
+        /// @param position the staged write position
+        /// @param byteCount the non-negative number of offered bytes
+        /// @throws IOException if the proposed write violates a format or resource constraint
         void validate(long position, int byteCount) throws IOException;
     }
 
@@ -30,6 +34,10 @@ public final class StagedSeekableByteChannel implements SeekableByteChannel {
     @NotNullByDefault
     public interface CompletionHandler {
         /// Handles channel completion; `commit` is true only for a successfully closed changed writable body.
+        ///
+        /// @param channel the closed staged wrapper being completed
+        /// @param commit whether changed writable content should be committed rather than discarded
+        /// @throws IOException if staged state cannot be committed or discarded
         void complete(StagedSeekableByteChannel channel, boolean commit) throws IOException;
     }
 
@@ -58,6 +66,14 @@ public final class StagedSeekableByteChannel implements SeekableByteChannel {
     private boolean open = true;
 
     /// Creates a staged random-access channel with no additional write validation.
+    ///
+    /// @param channel the staged storage channel owned and closed by this wrapper
+    /// @param readable whether reads are permitted
+    /// @param writable whether writes and truncation are permitted
+    /// @param append whether each write is forced to the current end
+    /// @param forceCommit whether unchanged content must still be committed on successful close
+    /// @param completionHandler the callback that commits or discards staged state after channel close
+    /// @throws IOException if append mode cannot query or set the initial end position
     public StagedSeekableByteChannel(
             SeekableByteChannel channel,
             boolean readable,
@@ -70,6 +86,15 @@ public final class StagedSeekableByteChannel implements SeekableByteChannel {
     }
 
     /// Creates a staged random-access channel with optional format-specific write validation.
+    ///
+    /// @param channel the staged storage channel owned and closed by this wrapper
+    /// @param readable whether reads are permitted
+    /// @param writable whether writes and truncation are permitted
+    /// @param append whether each write is forced to the current end
+    /// @param forceCommit whether unchanged content must still be committed on successful close
+    /// @param writeValidator the pre-write validator, or {@code null} for no additional validation
+    /// @param completionHandler the callback that commits or discards staged state after channel close
+    /// @throws IOException if append mode cannot query or set the initial end position
     public StagedSeekableByteChannel(
             SeekableByteChannel channel,
             boolean readable,

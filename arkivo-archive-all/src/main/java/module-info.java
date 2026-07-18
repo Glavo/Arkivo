@@ -1,7 +1,10 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-/// Aggregates Arkivo archive format modules.
+/// Aggregates all official Arkivo archive format modules.
+///
+/// Requiring this module makes each archive implementation visible to `ArkivoFormat` service discovery. Compression
+/// codecs used for transparently compressed archive streams are supplied separately by codec modules.
 module org.glavo.arkivo.archive.all {
     requires transitive org.glavo.arkivo.archive;
     requires transitive org.glavo.arkivo.archive.sevenzip;

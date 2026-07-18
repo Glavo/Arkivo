@@ -13,6 +13,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
 /// Defines immutable configuration for reading RAR archives.
+///
+/// Archive-wide limits in the common options are enforced during header parsing, decompressor setup, and logical body
+/// decoding. Encrypted headers may require the password while opening or advancing; encrypted entry data requires it
+/// when its body is opened. A missing, rejected, or incorrect password causes the affected operation to fail with
+/// `IOException`. The legacy detector is used only for RAR4 metadata without an encoded Unicode value and falls back to
+/// UTF-8 when it returns `null`.
 @NotNullByDefault
 public final class RarArchiveOptions {
     /// The default detector for legacy RAR4 names.
@@ -48,16 +54,27 @@ public final class RarArchiveOptions {
         }
 
         /// Returns a copy with common read settings.
+        ///
+        /// @param value the format-independent read configuration
+        /// @return a read configuration equal to this one except for `common`
+        /// @throws NullPointerException if `value` is `null`
         public Read withCommon(ArchiveReadOptions value) {
             return new Read(value, passwordProvider, legacyCharsetDetector);
         }
 
         /// Returns a copy with the password provider.
+        ///
+        /// @param value the password provider, or `null` to disable encrypted-archive password lookup
+        /// @return a read configuration equal to this one except for `passwordProvider`
         public Read withPasswordProvider(@Nullable ArkivoPasswordProvider value) {
             return new Read(common, value, legacyCharsetDetector);
         }
 
         /// Returns a copy with the legacy charset detector.
+        ///
+        /// @param value the detector for legacy non-Unicode entry names
+        /// @return a read configuration equal to this one except for `legacyCharsetDetector`
+        /// @throws NullPointerException if `value` is `null`
         public Read withLegacyCharsetDetector(ArchiveMetadataCharsetDetector value) {
             return new Read(common, passwordProvider, value);
         }

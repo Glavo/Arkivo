@@ -35,16 +35,24 @@ public final class ArkivoCommitTargetSupport {
     }
 
     /// Returns a target that writes directly to the original archive path.
+    ///
+    /// @return the shared direct-replacement target
     public static ArkivoCommitTarget replaceOriginal() {
         return REPLACE_ORIGINAL;
     }
 
     /// Returns a target that writes to a temporary file and atomically replaces the original archive path on commit.
+    ///
+    /// @param directory the temporary-output directory
+    /// @return an atomic replacement target using {@code directory}
     public static ArkivoCommitTarget atomicReplace(Path directory) {
         return new AtomicReplaceTarget(directory);
     }
 
     /// Returns a target that writes the assembled archive to the given path.
+    ///
+    /// @param path the fixed output path
+    /// @return a direct target for {@code path}
     public static ArkivoCommitTarget writeTo(Path path) {
         return new FixedPathTarget(path);
     }

@@ -26,6 +26,12 @@ public final class CompressionDecoderSupport {
     /// Rejects a required history window that exceeds a configured maximum.
     ///
     /// A negative maximum leaves the window size unrestricted.
+    ///
+    /// @param maximumWindowSize the maximum permitted window size, or a negative value for no limit
+    /// @param requiredWindowSize the nonnegative window size required by the compressed stream
+    /// @throws IllegalArgumentException if `requiredWindowSize` is negative
+    /// @throws org.glavo.arkivo.codec.DecompressionWindowLimitException if the required window exceeds a nonnegative
+    /// maximum
     public static void requireWindowSize(
             long maximumWindowSize,
             long requiredWindowSize
@@ -44,6 +50,10 @@ public final class CompressionDecoderSupport {
     /// Applies a maximum decoded-output size to a transport-independent decoder.
     ///
     /// A negative value leaves the decoder unchanged.
+    ///
+    /// @param decoder the decoder to constrain
+    /// @param maximumOutputSize the maximum decoded byte count, or a negative value for no limit
+    /// @return `decoder` when the maximum is negative; otherwise, an output-limiting decoder
     public static CompressionDecoder limitEngineOutput(
             CompressionDecoder decoder,
             long maximumOutputSize
@@ -58,6 +68,10 @@ public final class CompressionDecoderSupport {
     /// Applies a maximum decoded-output size while preserving frame support.
     ///
     /// A negative value leaves the decoder unchanged.
+    ///
+    /// @param decoder the frame-capable decoder to constrain
+    /// @param maximumOutputSize the maximum decoded byte count, or a negative value for no limit
+    /// @return `decoder` when the maximum is negative; otherwise, a frame-capable output-limiting decoder
     public static CompressionDecoder.Framed limitEngineOutput(
             CompressionDecoder.Framed decoder,
             long maximumOutputSize
@@ -75,6 +89,9 @@ public final class CompressionDecoderSupport {
     ///
     /// @param <D> the format-specific dictionary type
     /// @param <R> the format-specific dictionary request type
+    /// @param decoder the dictionary-aware decoder to constrain
+    /// @param maximumOutputSize the maximum decoded byte count, or a negative value for no limit
+    /// @return `decoder` when the maximum is negative; otherwise, a dictionary-aware output-limiting decoder
     public static <D extends CompressionDictionary, R extends DictionaryRequest<D>>
             CompressionDecoder.DictionaryAware<D, R> limitEngineOutput(
             CompressionDecoder.DictionaryAware<D, R> decoder,
@@ -93,6 +110,10 @@ public final class CompressionDecoderSupport {
     ///
     /// @param <D> the format-specific dictionary type
     /// @param <R> the format-specific dictionary request type
+    /// @param decoder the frame- and dictionary-aware decoder to constrain
+    /// @param maximumOutputSize the maximum decoded byte count, or a negative value for no limit
+    /// @return `decoder` when the maximum is negative; otherwise, a frame- and dictionary-aware output-limiting
+    /// decoder
     public static <D extends CompressionDictionary, R extends DictionaryRequest<D>>
             CompressionDecoder.FramedDictionaryAware<D, R> limitEngineOutput(
             CompressionDecoder.FramedDictionaryAware<D, R> decoder,
@@ -108,6 +129,11 @@ public final class CompressionDecoderSupport {
     /// Applies a maximum decoded-output size across a complete channel decoding session.
     ///
     /// A negative value leaves the channel unchanged.
+    ///
+    /// @param decoder the decoding channel to constrain
+    /// @param maximumOutputSize the maximum decoded byte count, or a negative value for no limit
+    /// @return `decoder` when the maximum is negative; otherwise, an output-limiting channel that preserves frame
+    /// support when present
     public static DecompressingReadableByteChannel limitChannelOutput(
             DecompressingReadableByteChannel decoder,
             long maximumOutputSize
@@ -125,6 +151,10 @@ public final class CompressionDecoderSupport {
     /// Applies a maximum decoded-output size while preserving channel frame support.
     ///
     /// A negative value leaves the channel unchanged.
+    ///
+    /// @param decoder the frame-capable decoding channel to constrain
+    /// @param maximumOutputSize the maximum decoded byte count, or a negative value for no limit
+    /// @return `decoder` when the maximum is negative; otherwise, a frame-capable output-limiting channel
     public static DecompressingReadableByteChannel.Framed limitChannelOutput(
             DecompressingReadableByteChannel.Framed decoder,
             long maximumOutputSize

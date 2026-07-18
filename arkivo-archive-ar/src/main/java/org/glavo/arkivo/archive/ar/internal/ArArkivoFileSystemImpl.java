@@ -215,6 +215,14 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Opens an AR file system from an archive path.
+    ///
+    /// @param provider the NIO provider that exposes the returned file system
+    /// @param archivePath the archive path used for input and, when selected, publication
+    /// @param archiveUri the URI used as the file-system identity and as the base for entry URIs
+    /// @param options the validated archive environment options
+    /// @param closeAction the provider callback invoked when the file system closes
+    /// @return an initialized read-only, creation, or update file system
+    /// @throws IOException if archive input, staging storage, or output initialization fails
     public static ArArkivoFileSystemImpl open(
             ArArkivoFileSystemProvider provider,
             Path archivePath,
@@ -325,6 +333,12 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Opens an AR file system from a repeatable seekable channel source.
+    ///
+    /// @param provider the NIO provider that exposes the returned file system
+    /// @param source the repeatable logical archive source; the returned file system assumes ownership
+    /// @param options the validated archive environment options
+    /// @return an initialized read-only or complete-rewrite file system
+    /// @throws IOException if the source cannot be opened, parsed, or staged
     public static ArArkivoFileSystemImpl open(
             ArArkivoFileSystemProvider provider,
             ArkivoSeekableChannelSource source,
@@ -583,6 +597,11 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Opens an input stream for an entry.
+    ///
+    /// @param path the regular-file or symbolic-link entry to open
+    /// @param options the read options; AR entry input accepts read-only options
+    /// @return an input stream coordinated with this file system's lifecycle
+    /// @throws IOException if the entry does not exist, is a directory, or its stored content cannot be opened
     public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             requireReadableFileSystem();
@@ -596,6 +615,12 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Opens a byte channel for a member in the current file system mode.
+    ///
+    /// @param path the member path to open
+    /// @param options the requested channel options
+    /// @param attributes attributes applied when a writable channel creates a member
+    /// @return a seekable read channel, an update channel, or a forward-only creation adapter
+    /// @throws IOException if the path or options are invalid for the current mode or the channel cannot be opened
     public SeekableByteChannel newByteChannel(
             Path path,
             Set<? extends OpenOption> options,
@@ -632,6 +657,11 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Opens an output stream for a writable member.
+    ///
+    /// @param path the member path to create, replace, or append as permitted by `options`
+    /// @param options the requested output options
+    /// @return an output stream whose successful close commits the member body
+    /// @throws IOException if the file system is read-only or the member cannot be prepared for writing
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
             return manageOutputStream(newOutputStream(path, Set.of(options)));
@@ -671,6 +701,10 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Creates a new directory member in a writable archive.
+    ///
+    /// @param directory the directory path to create
+    /// @param attributes initial attributes, including an optional POSIX mode
+    /// @throws IOException if the parent is absent, the path exists, or the archive is not writable
     public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
             createDirectoryLocked(directory, attributes);
@@ -703,6 +737,11 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Creates a new symbolic link member in a writable archive.
+    ///
+    /// @param link the symbolic-link path to create
+    /// @param target the logical link target stored as UTF-8 text
+    /// @param attributes initial attributes, including an optional POSIX mode
+    /// @throws IOException if the parent is absent, the path exists, or the archive is not writable
     public void createSymbolicLink(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
             createSymbolicLinkLocked(link, target, attributes);
@@ -742,6 +781,10 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Deletes one member from an update-mode archive.
+    ///
+    /// @param path the member to delete
+    /// @throws IOException if the member does not exist, is a nonempty directory, has an active replacement channel,
+    /// or the file system is not in update mode
     public void delete(Path path) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
             deleteLocked(path);
@@ -770,6 +813,11 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Moves one member and any descendants inside an update-mode archive.
+    ///
+    /// @param source the existing member to move
+    /// @param target the destination member path
+    /// @param options supported move options, `REPLACE_EXISTING` and `ATOMIC_MOVE`
+    /// @throws IOException if the source or target state prevents the move
     public void move(Path source, Path target, CopyOption... options) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
             moveLocked(source, target, options);
@@ -852,6 +900,12 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Updates one named member attribute in update mode.
+    ///
+    /// @param path the member whose attribute is changed
+    /// @param attribute a `view:name` attribute identifier, or a basic attribute name
+    /// @param value the replacement value, or `null` where the selected attribute permits absence
+    /// @param options link-handling options used to select the addressed path
+    /// @throws IOException if the member is unavailable or the attribute cannot be changed in the current mode
     public void setAttribute(Path path, String attribute, @Nullable Object value, LinkOption... options)
             throws IOException {
         try (Operation ignored = beginWriteOperation()) {
@@ -886,6 +940,11 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Opens a directory stream for an entry.
+    ///
+    /// @param directory the directory member to enumerate
+    /// @param filter the filter applied once to each direct child
+    /// @return a lifecycle-managed stream over accepted child paths
+    /// @throws IOException if the path is absent, is not a directory, or its children cannot be enumerated
     public DirectoryStream<Path> newDirectoryStream(Path directory, DirectoryStream.Filter<? super Path> filter)
             throws IOException {
         try (Operation ignored = beginReadOperation()) {
@@ -920,6 +979,10 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Checks access to an entry.
+    ///
+    /// @param path the member whose accessibility is tested
+    /// @param modes the requested access modes
+    /// @throws IOException if the member is absent or any requested mode is unavailable
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             checkAccessLocked(path, modes);
@@ -945,6 +1008,10 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Returns this archive's file store.
+    ///
+    /// @param path a member used to verify association with this file system
+    /// @return the single file-store view for this archive
+    /// @throws IOException if `path` is not an accessible member of this file system
     public FileStore fileStore(Path path) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             return fileStoreLocked(path);
@@ -962,6 +1029,10 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Reads a symbolic link target from an AR archive path.
+    ///
+    /// @param link the symbolic-link member to read
+    /// @return the stored target as a path in this file system
+    /// @throws IOException if the member is absent, is not a symbolic link, or its body cannot be read
     public Path readSymbolicLink(Path link) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             return readSymbolicLinkLocked(link);
@@ -979,6 +1050,12 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Returns an attribute view for a path.
+    ///
+    /// @param <V> the requested attribute-view type
+    /// @param path the member path represented by the view
+    /// @param type the requested view class
+    /// @param options link-handling options used by the view
+    /// @return a view bound to `path`, or `null` when `type` is unsupported
     public <V extends java.nio.file.attribute.FileAttributeView> @Nullable V getFileAttributeView(
             Path path,
             Class<V> type,
@@ -1014,6 +1091,13 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Reads attributes for a path.
+    ///
+    /// @param <A> the requested attribute snapshot type
+    /// @param path the member whose attributes are read
+    /// @param type the requested basic, POSIX, or AR attribute class
+    /// @param options link-handling options used to select the member
+    /// @return a stable attribute snapshot of type `A`
+    /// @throws IOException if the member is absent or its attributes cannot be read
     public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type, LinkOption... options)
             throws IOException {
         try (Operation ignored = beginReadOperation()) {
@@ -1038,6 +1122,12 @@ public final class ArArkivoFileSystemImpl extends ArArkivoFileSystem {
     }
 
     /// Reads named attributes for a path.
+    ///
+    /// @param path the member whose attributes are read
+    /// @param attributes a view-qualified comma-separated attribute selection
+    /// @param options link-handling options used to select the member
+    /// @return a map containing the requested attribute names and values
+    /// @throws IOException if the member is absent or its attributes cannot be read
     public Map<String, Object> readAttributes(Path path, String attributes, LinkOption... options) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             return readAttributesLocked(path, attributes, options);

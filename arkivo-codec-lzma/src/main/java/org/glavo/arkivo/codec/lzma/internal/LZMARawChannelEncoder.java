@@ -43,6 +43,14 @@ public final class LZMARawChannelEncoder implements CompressingWritableByteChann
     private boolean open = true;
 
     /// Creates a raw LZMA encoder with explicit model and termination parameters.
+    ///
+    /// @param target the channel receiving the headerless range-coded stream
+    /// @param ownership whether finishing or closing this encoder also closes {@code target}
+    /// @param properties the externally supplied model and dictionary properties
+    /// @param expectedSize the exact input size, or {@link CompressionCodec#UNKNOWN_SIZE}
+    /// @param endMarker whether finalization emits the reserved LZMA end marker
+    /// @throws NullPointerException if {@code target}, {@code ownership}, or {@code properties} is {@code null}
+    /// @throws IllegalArgumentException if {@code expectedSize} is less than {@link CompressionCodec#UNKNOWN_SIZE}
     public LZMARawChannelEncoder(
             WritableByteChannel target,
             ResourceOwnership ownership,
@@ -79,6 +87,8 @@ public final class LZMARawChannelEncoder implements CompressingWritableByteChann
     }
 
     /// Writes currently staged complete range-coded bytes to the target.
+    ///
+    /// @throws IOException if the encoder is closed or the target cannot accept the staged bytes
     public void flush() throws IOException {
         ensureOpen();
         encoder.flush();

@@ -80,6 +80,11 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
     }
 
     /// Creates a path-backed streaming writer.
+    ///
+    /// @param path the archive path to create or replace when the writer closes successfully
+    /// @param config the validated archive configuration used for encoding and staging
+    /// @return an owned writer that publishes the completed archive on close
+    /// @throws IOException if the output path or seekable staging storage cannot be initialized
     public static SevenZipArkivoStreamingWriterImpl create(
             Path path,
             SevenZipArkivoFileSystemConfig config
@@ -88,6 +93,11 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
     }
 
     /// Opens a streaming writer over an owned output stream.
+    ///
+    /// @param output the stream whose ownership is transferred to the returned writer
+    /// @param config the validated archive configuration used for encoding and staging
+    /// @return a writer that finalizes the archive and closes `output` on close
+    /// @throws IOException if seekable staging storage cannot be initialized
     public static SevenZipArkivoStreamingWriterImpl open(
             OutputStream output,
             SevenZipArkivoFileSystemConfig config
@@ -97,6 +107,12 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
     }
 
     /// Opens a streaming writer over an owned writable channel.
+    ///
+    /// @param output the channel whose ownership is transferred to this operation
+    /// @param config the validated archive configuration used for encoding and staging
+    /// @return a writer that finalizes the archive and closes `output` on close
+    /// @throws IOException if seekable staging storage cannot be initialized; if opening fails, this method closes
+    ///                     `output` before propagating the failure
     public static SevenZipArkivoStreamingWriterImpl open(
             WritableByteChannel output,
             SevenZipArkivoFileSystemConfig config
@@ -115,6 +131,12 @@ public final class SevenZipArkivoStreamingWriterImpl extends SevenZipArkivoStrea
     }
 
     /// Opens a split streaming writer over a transactional volume target.
+    ///
+    /// @param target the caller-owned transactional target that receives completed archive volumes
+    /// @param splitSize the positive maximum number of bytes written to each volume
+    /// @param config the validated archive configuration used for encoding and staging
+    /// @return a writer that commits the target's volume transaction after finalizing the archive on close
+    /// @throws IOException if seekable staging or the first output volume cannot be initialized
     public static SevenZipArkivoStreamingWriterImpl open(
             ArkivoVolumeTarget target,
             long splitSize,

@@ -26,6 +26,8 @@ public final class ReadOnlyByteArrayChannel implements SeekableByteChannel {
     private boolean open = true;
 
     /// Creates a channel over a defensive copy of the given content.
+    ///
+    /// @param content the byte content to copy
     public ReadOnlyByteArrayChannel(byte[] content) {
         this.content = Objects.requireNonNull(content, "content").clone();
     }

@@ -20,6 +20,11 @@ public final class ByteBufferCodecSupport {
     }
 
     /// Compresses remaining source bytes into a dynamically growing heap buffer.
+    ///
+    /// @param codec the immutable codec configuration
+    /// @param source the source buffer consumed from its current position to its limit
+    /// @return a new heap buffer positioned at zero with its limit at the encoded size
+    /// @throws IOException if encoding fails
     public static ByteBuffer compressAllocating(
             CompressionCodec<?> codec,
             ByteBuffer source
@@ -30,6 +35,13 @@ public final class ByteBufferCodecSupport {
     }
 
     /// Decompresses remaining source bytes into a dynamically growing bounded heap buffer.
+    ///
+    /// @param codec the immutable codec configuration
+    /// @param source the source buffer consumed from its current position to its limit
+    /// @param limits the operation-scoped output, window, and memory limits
+    /// @return a new heap buffer positioned at zero with its limit at the decoded size
+    /// @throws IOException if the complete encoding cannot be decoded within the limits
+    /// @throws IllegalArgumentException if the output limit is not finite or exceeds {@link Integer#MAX_VALUE}
     public static ByteBuffer decompressAllocating(
             CompressionCodec<?> codec,
             ByteBuffer source,
@@ -47,6 +59,13 @@ public final class ByteBufferCodecSupport {
     }
 
     /// Decompresses one frame into a dynamically growing bounded heap buffer.
+    ///
+    /// @param codec the immutable codec configuration
+    /// @param source the source buffer beginning with one frame
+    /// @param limits the operation-scoped output, window, and memory limits
+    /// @return a new heap buffer positioned at zero with its limit at the decoded frame size
+    /// @throws IOException if the frame cannot be decoded within the limits
+    /// @throws IllegalArgumentException if the output limit is not finite or exceeds {@link Integer#MAX_VALUE}
     public static ByteBuffer decompressFrameAllocating(
             CompressionCodec<?> codec,
             ByteBuffer source,
@@ -64,6 +83,11 @@ public final class ByteBufferCodecSupport {
     }
 
     /// Compresses all remaining source bytes into a fixed caller-owned target.
+    ///
+    /// @param codec the immutable codec configuration
+    /// @param source the source buffer advanced by consumed uncompressed bytes
+    /// @param target the distinct writable target advanced by produced encoded bytes
+    /// @throws IOException if encoding fails
     public static void compress(
             CompressionCodec<?> codec,
             ByteBuffer source,
@@ -75,6 +99,12 @@ public final class ByteBufferCodecSupport {
     }
 
     /// Decompresses all remaining source bytes into a fixed caller-owned target.
+    ///
+    /// @param codec the immutable codec configuration
+    /// @param source the source buffer advanced by consumed compressed bytes
+    /// @param target the distinct writable target advanced by produced decoded bytes
+    /// @param limits the operation-scoped output, window, and memory limits
+    /// @throws IOException if the complete encoding cannot be decoded within the limits
     public static void decompress(
             CompressionCodec<?> codec,
             ByteBuffer source,
@@ -88,6 +118,12 @@ public final class ByteBufferCodecSupport {
     }
 
     /// Decompresses one complete frame into a fixed caller-owned target.
+    ///
+    /// @param codec the immutable codec configuration
+    /// @param source the source buffer beginning with one frame and advanced only through that frame
+    /// @param target the distinct writable target advanced by produced decoded bytes
+    /// @param limits the operation-scoped output, window, and memory limits
+    /// @throws IOException if the frame cannot be decoded within the limits
     public static void decompressFrame(
             CompressionCodec<?> codec,
             ByteBuffer source,

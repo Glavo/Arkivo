@@ -9,7 +9,10 @@ import org.jetbrains.annotations.Unmodifiable;
 
 import java.util.List;
 
-/// Describes the discoverable raw Deflate64 compression format.
+/// Describes the registered raw Deflate64 compression format.
+///
+/// Raw Deflate64 has no reliable fixed signature or standalone file representation. This immutable descriptor is
+/// intended for explicit selection from container metadata rather than prefix probing.
 @NotNullByDefault
 public final class Deflate64Format implements CompressionFormat {
     /// The stable raw Deflate64 format name.
@@ -23,6 +26,8 @@ public final class Deflate64Format implements CompressionFormat {
     }
 
     /// Returns the canonical raw Deflate64 format instance.
+    ///
+    /// @return the shared immutable format descriptor
     public static Deflate64Format instance() {
         return INSTANCE;
     }

@@ -91,6 +91,12 @@ public final class LZMARawEncoder implements CompressionEncoder {
     }
 
     /// Emits every complete range-coded byte currently derivable without ending the stream.
+    ///
+    /// @param target the buffer receiving staged range-coded bytes; its position advances by the bytes written
+    /// @return {@link CodecOutcome#NEEDS_OUTPUT} while staged bytes remain, or {@link CodecOutcome#FLUSHED} when drained
+    /// @throws IOException if range-coded output cannot be produced
+    /// @throws NullPointerException if {@code target} is {@code null}
+    /// @throws IllegalStateException if a previous flush is not drained, the stream is finishing, or the encoder is closed
     public CodecOutcome flush(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();

@@ -78,11 +78,22 @@ public final class XZChannelDecoder implements DecompressingReadableByteChannel.
     private boolean open = true;
 
     /// Creates a decoder accepting concatenated XZ streams and stream padding.
+    ///
+    /// @param source the channel supplying XZ stream bytes
+    /// @param ownership whether closing this decoder also closes {@code source}
+    /// @throws IOException if the first Stream Header cannot be read or is invalid
+    /// @throws NullPointerException if {@code source} or {@code ownership} is {@code null}
     public XZChannelDecoder(ReadableByteChannel source, ResourceOwnership ownership) throws IOException {
         this(source, ownership, true, CompressionCodec.UNKNOWN_SIZE, true);
     }
 
     /// Creates a decoder with explicit concatenated-stream behavior.
+    ///
+    /// @param source the channel supplying XZ stream bytes
+    /// @param ownership whether closing this decoder also closes {@code source}
+    /// @param concatenated whether decoding continues through Stream Padding into following XZ Streams
+    /// @throws IOException if the first Stream Header cannot be read or is invalid
+    /// @throws NullPointerException if {@code source} or {@code ownership} is {@code null}
     public XZChannelDecoder(
             ReadableByteChannel source,
             ResourceOwnership ownership,
@@ -92,6 +103,13 @@ public final class XZChannelDecoder implements DecompressingReadableByteChannel.
     }
 
     /// Creates a decoder with explicit concatenation and maximum-window behavior.
+    ///
+    /// @param source the channel supplying XZ stream bytes
+    /// @param ownership whether closing this decoder also closes {@code source}
+    /// @param concatenated whether decoding continues through Stream Padding into following XZ Streams
+    /// @param maximumWindowSize the maximum permitted LZMA2 dictionary size, or a negative value for no limit
+    /// @throws IOException if the first Stream Header cannot be read or is invalid
+    /// @throws NullPointerException if {@code source} or {@code ownership} is {@code null}
     public XZChannelDecoder(
             ReadableByteChannel source,
             ResourceOwnership ownership,
@@ -102,6 +120,14 @@ public final class XZChannelDecoder implements DecompressingReadableByteChannel.
     }
 
     /// Creates a decoder with explicit concatenation, window, and block-check behavior.
+    ///
+    /// @param source the channel supplying XZ stream bytes
+    /// @param ownership whether closing this decoder also closes {@code source}
+    /// @param concatenated whether decoding continues through Stream Padding into following XZ Streams
+    /// @param maximumWindowSize the maximum permitted LZMA2 dictionary size, or a negative value for no limit
+    /// @param verifyChecksums whether supported Block checks are calculated and compared
+    /// @throws IOException if the first Stream Header cannot be read or is invalid
+    /// @throws NullPointerException if {@code source} or {@code ownership} is {@code null}
     public XZChannelDecoder(
             ReadableByteChannel source,
             ResourceOwnership ownership,

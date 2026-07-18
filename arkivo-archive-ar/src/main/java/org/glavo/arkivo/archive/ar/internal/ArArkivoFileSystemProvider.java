@@ -52,6 +52,8 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
     }
 
     /// Returns the shared AR file system provider instance.
+    ///
+    /// @return the process-wide provider used by AR convenience factories
     public static ArArkivoFileSystemProvider instance() {
         return INSTANCE;
     }
@@ -86,6 +88,11 @@ public final class ArArkivoFileSystemProvider extends FileSystemProvider {
     }
 
     /// Opens an AR archive path whose format has already been selected explicitly.
+    ///
+    /// @param path the selected AR archive path
+    /// @param options the internal archive environment options
+    /// @return the opened read-only, creation, or update file system
+    /// @throws IOException if the archive or its configured storage cannot be initialized
     public ArArkivoFileSystem openPath(Path path, ArchiveOptions options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");

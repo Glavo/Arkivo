@@ -15,6 +15,14 @@ import java.nio.channels.ReadableByteChannel;
 import java.util.Objects;
 
 /// Applies a stateful byte transform while reading from a channel.
+///
+/// This channel is stateful and not safe for concurrent use. A nonempty read may block while obtaining lookahead and
+/// advances only the target position; its limit is unchanged. When the source reaches end-of-input, an incomplete suffix
+/// retained by the transform is returned unchanged before this channel reports `-1`.
+///
+/// An `IOException` from the source or an invalid/no-progress transform is retained and rethrown by later reads. Closing
+/// does not drain input. It leaves a borrowed source open and closes an owned source; a failed owned-source close can be
+/// retried by calling [#close()] again.
 @NotNullByDefault
 public final class TransformingReadableByteChannel implements ReadableByteChannel {
     /// The bounded filter working-buffer size.
@@ -53,12 +61,22 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
     /// Whether this channel remains open.
     private boolean open = true;
 
-    /// Creates a transforming channel retaining its source.
+    /// Creates a transforming channel that borrows and therefore does not close its source.
+    ///
+    /// @param source the upstream channel to read without closing
+    /// @param transform the stateful transform to apply to bytes read from `source`
     public TransformingReadableByteChannel(ReadableByteChannel source, ByteTransform transform) {
         this(source, transform, ResourceOwnership.BORROWED);
     }
 
     /// Creates a transforming channel with explicit source ownership.
+    ///
+    /// The channel and transform are retained until this wrapper closes. `OWNED` makes [#close()] close the source;
+    /// `BORROWED` leaves it open.
+    ///
+    /// @param source the upstream channel to read
+    /// @param transform the stateful transform to apply to bytes read from `source`
+    /// @param ownership whether closing this wrapper also closes `source`
     public TransformingReadableByteChannel(
             ReadableByteChannel source,
             ByteTransform transform,
@@ -70,6 +88,9 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
     }
 
     /// Reads transformed bytes into the target buffer.
+    ///
+    /// An empty target returns zero without reading the source. Otherwise this method returns a positive count or `-1`;
+    /// a source that returns zero before producing data causes `IOException` rather than a zero-progress result.
     @Override
     public int read(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
@@ -123,7 +144,9 @@ public final class TransformingReadableByteChannel implements ReadableByteChanne
         return open;
     }
 
-    /// Closes this channel and optionally its source.
+    /// Marks this channel closed and applies its source-ownership policy.
+    ///
+    /// `isOpen()` becomes false even if closing an owned source throws. A later call retries only source closure.
     @Override
     public void close() throws IOException {
         open = false;

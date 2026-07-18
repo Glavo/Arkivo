@@ -27,6 +27,10 @@ import java.util.Set;
 
 /// Opens TAR archives as NIO file systems.
 ///
+/// Opening an existing archive builds a logical snapshot and stages expanded entry bodies through the selected edit
+/// storage. Subsequent external changes to the source are not reflected in paths or attribute snapshots. The
+/// thread-safety strategy in the common options governs concurrent operations and close coordination.
+///
 /// `update` opens a complete-rewrite session and atomically replaces the source by default; its
 /// [org.glavo.arkivo.archive.ArchiveUpdateOptions#commitTarget()] can select another publication target.
 /// Indexed sessions stage entry bodies through the configured edit storage, using temporary files under the system
@@ -38,6 +42,12 @@ import java.util.Set;
 /// derivative.
 /// GNU sparse entries are staged as expanded logical files; an update commit normalizes old GNU `S` entries to regular
 /// TAR entries while preserving their expanded content and metadata.
+///
+/// A channel or repeatable source remains caller-owned until factory arguments have been validated. Ownership then
+/// transfers to the open operation: initialization failure closes the source, and a returned file system closes it
+/// during file-system close. Creation uses create-new semantics and fails when the archive path already exists. Closing
+/// a writable session writes the TAR end marker, finishes any outer codec, and closes owned output resources. A
+/// channel-source update requires an explicit commit target.
 @NotNullByDefault
 public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permits TarArkivoFileSystemImpl {
     /// The option for a compression codec wrapping the TAR byte stream.
@@ -63,16 +73,27 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
             );
 
     /// Creates a TAR archive file system base instance.
+    ///
+    /// @param threadSafety the synchronization strategy applied to file-system operations and close coordination
     protected TarArkivoFileSystem(ArkivoFileSystemThreadSafety threadSafety) {
         super(threadSafety);
     }
 
     /// Opens a TAR archive file system.
+    ///
+    /// @param path the existing archive path; an installed outer compression format is detected automatically
+    /// @return a read-only indexed snapshot that owns its decoded-entry staging resources
+    /// @throws IOException if the archive cannot be opened, decoded, indexed, or staged within the default limits
     public static TarArkivoFileSystem open(Path path) throws IOException {
         return open(path, TarArchiveOptions.READ_DEFAULTS);
     }
 
     /// Opens a TAR archive file system with read options.
+    ///
+    /// @param path the existing archive path to open
+    /// @param options the compression selection, metadata decoding, limits, staging, and thread-safety policy
+    /// @return a read-only indexed snapshot that owns its decoded-entry staging resources
+    /// @throws IOException if the archive cannot be opened, decoded, indexed, or staged under `options`
     public static TarArkivoFileSystem open(Path path, TarArchiveOptions.Read options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
@@ -80,11 +101,20 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     }
 
     /// Creates a new path-backed TAR archive file system.
+    ///
+    /// @param path the new archive path; creation fails rather than replacing an existing file
+    /// @return a writable file system that finalizes the TAR end marker and closes its output when closed
+    /// @throws IOException if the path already exists or the archive output cannot be initialized
     public static TarArkivoFileSystem create(Path path) throws IOException {
         return create(path, TarArchiveOptions.CREATE_DEFAULTS);
     }
 
     /// Creates a new path-backed TAR archive file system with options.
+    ///
+    /// @param path the new archive path; creation fails rather than replacing an existing file
+    /// @param options the outer compression, staging, and thread-safety policy for the new archive
+    /// @return a writable file system that finalizes the TAR and outer codec when closed
+    /// @throws IOException if the path already exists or the archive output cannot be initialized
     public static TarArkivoFileSystem create(Path path, TarArchiveOptions.Create options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
@@ -92,11 +122,20 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     }
 
     /// Opens a complete-rewrite update of an existing path-backed TAR archive.
+    ///
+    /// @param path the existing archive path whose logical contents may be changed
+    /// @return an update file system that atomically replaces the source on close when changes were staged
+    /// @throws IOException if the source cannot be opened, decoded, indexed, or staged for rewriting
     public static TarArkivoFileSystem update(Path path) throws IOException {
         return update(path, TarArchiveOptions.UPDATE_DEFAULTS);
     }
 
     /// Opens a complete-rewrite update of an existing path-backed TAR archive with options.
+    ///
+    /// @param path the existing archive path whose logical contents may be changed
+    /// @param options the read, rewrite, compression, staging, publication, limits, and thread-safety policy
+    /// @return an update file system that publishes a complete replacement on close when changes were staged
+    /// @throws IOException if the source cannot be opened, decoded, indexed, or staged under `options`
     public static TarArkivoFileSystem update(Path path, TarArchiveOptions.Update options) throws IOException {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(options, "options");
@@ -107,11 +146,24 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     ///
     /// The channel's current position is the logical archive start. The returned file system owns and closes the
     /// channel.
+    ///
+    /// @param source the seekable channel whose current position is the logical archive start; ownership transfers
+    ///               after argument validation
+    /// @return a read-only indexed snapshot that closes `source` with the file system
+    /// @throws IOException if the source cannot be decoded, indexed, or staged; an open failure closes `source`
     public static TarArkivoFileSystem open(SeekableByteChannel source) throws IOException {
         return open(source, TarArchiveOptions.READ_DEFAULTS);
     }
 
     /// Opens a read-only TAR archive file system directly from one owned seekable channel with options.
+    ///
+    /// The channel's current position is the logical archive start. Ownership transfers after both arguments are
+    /// validated, and the channel is closed on either open failure or file-system close.
+    ///
+    /// @param source the seekable channel positioned at the first logical archive byte
+    /// @param options the compression selection, metadata decoding, limits, staging, and thread-safety policy
+    /// @return a read-only indexed snapshot backed by the owned channel
+    /// @throws IOException if the source cannot be decoded, indexed, or staged under `options`
     public static TarArkivoFileSystem open(
             SeekableByteChannel source,
             TarArchiveOptions.Read options
@@ -123,14 +175,25 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
 
     /// Opens a read-only TAR archive file system from a repeatable seekable channel source.
     ///
-    /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    /// Ownership transfers after argument validation; initialization failure closes the source, and a returned file
+    /// system closes it during file-system close.
+    ///
+    /// @param source the repeatable source whose channels begin at the same logical archive offset
+    /// @return a read-only indexed snapshot that owns `source`
+    /// @throws IOException if the source cannot be opened, decoded, indexed, or staged
     public static TarArkivoFileSystem open(ArkivoSeekableChannelSource source) throws IOException {
         return open(source, TarArchiveOptions.READ_DEFAULTS);
     }
 
     /// Opens a read-only TAR archive file system from a repeatable seekable channel source with options.
     ///
-    /// The returned file system owns the source after this method returns successfully and closes it with the file system.
+    /// Ownership transfers after argument validation; initialization failure closes the source, and a returned file
+    /// system closes it during file-system close.
+    ///
+    /// @param source the repeatable source whose channels begin at the same logical archive offset
+    /// @param options the compression selection, metadata decoding, limits, staging, and thread-safety policy
+    /// @return a read-only indexed snapshot that owns `source`
+    /// @throws IOException if the source cannot be opened, decoded, indexed, or staged under `options`
     public static TarArkivoFileSystem open(
             ArkivoSeekableChannelSource source,
             TarArchiveOptions.Read options
@@ -145,6 +208,16 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     }
 
     /// Opens a complete-rewrite update from one owned seekable channel.
+    ///
+    /// The channel's current position is the logical archive start. Because the source has no replaceable path,
+    /// `options` must provide a commit target. Ownership transfers after argument validation, and the channel is closed
+    /// on open failure or file-system close.
+    ///
+    /// @param source the seekable source channel positioned at the first logical archive byte
+    /// @param options the update policy, including the required publication target
+    /// @return an update file system that publishes a complete replacement through the commit target on close
+    /// @throws IllegalArgumentException if `options` does not provide a commit target
+    /// @throws IOException if the source cannot be decoded, indexed, or staged for rewriting
     public static TarArkivoFileSystem update(
             SeekableByteChannel source,
             TarArchiveOptions.Update options
@@ -155,6 +228,15 @@ public abstract sealed class TarArkivoFileSystem extends ArkivoFileSystem permit
     }
 
     /// Opens a complete-rewrite update from an owned repeatable seekable source.
+    ///
+    /// Because the source has no replaceable path, `options` must provide a commit target. The returned file system
+    /// owns and closes the repeatable source; initialization failure also closes it after ownership transfers.
+    ///
+    /// @param source the repeatable source whose channels begin at the same logical archive offset
+    /// @param options the update policy, including the required publication target
+    /// @return an update file system that publishes a complete replacement through the commit target on close
+    /// @throws IllegalArgumentException if `options` does not provide a commit target
+    /// @throws IOException if the source cannot be opened, decoded, indexed, or staged for rewriting
     public static TarArkivoFileSystem update(
             ArkivoSeekableChannelSource source,
             TarArchiveOptions.Update options

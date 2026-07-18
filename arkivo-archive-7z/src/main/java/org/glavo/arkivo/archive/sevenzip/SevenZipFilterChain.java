@@ -32,6 +32,10 @@ public record SevenZipFilterChain(@Unmodifiable List<SevenZipFilter> filters) {
     }
 
     /// Creates a filter chain from filters in application order.
+    ///
+    /// @param filters the filters in application order; the array is defensively copied
+    /// @return [#EMPTY] when no filters are supplied, otherwise an immutable chain
+    /// @throws IllegalArgumentException if BCJ2 is combined with another filter
     public static SevenZipFilterChain of(SevenZipFilter... filters) {
         Objects.requireNonNull(filters, "filters");
         return filters.length == 0
@@ -40,6 +44,8 @@ public record SevenZipFilterChain(@Unmodifiable List<SevenZipFilter> filters) {
     }
 
     /// Returns whether this chain contains no preprocessing filters.
+    ///
+    /// @return `true` when preprocessing is disabled
     public boolean isEmpty() {
         return filters.isEmpty();
     }

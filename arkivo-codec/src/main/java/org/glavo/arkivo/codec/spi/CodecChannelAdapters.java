@@ -33,6 +33,12 @@ public final class CodecChannelAdapters {
     }
 
     /// Creates an encoding channel whose runtime capabilities match the created engine.
+    ///
+    /// @param target the channel that receives compressed bytes
+    /// @param ownership whether closing the returned channel also closes `target`
+    /// @param factory the factory for a fresh encoder engine
+    /// @return a new encoding channel that preserves the engine's supported capabilities
+    /// @throws IOException if the encoder cannot be created or an owned target cannot be closed after creation fails
     public static CompressingWritableByteChannel newWritableByteChannel(
             WritableByteChannel target,
             ResourceOwnership ownership,
@@ -56,6 +62,12 @@ public final class CodecChannelAdapters {
     }
 
     /// Creates an encoding channel with nonterminal flush support.
+    ///
+    /// @param target the channel that receives compressed bytes
+    /// @param ownership whether closing the returned channel also closes `target`
+    /// @param factory the factory for a fresh flush-capable encoder engine
+    /// @return a new flush-capable encoding channel
+    /// @throws IOException if the encoder cannot be created or an owned target cannot be closed after creation fails
     public static CompressingWritableByteChannel.Flushable newFlushableWritableByteChannel(
             WritableByteChannel target,
             ResourceOwnership ownership,
@@ -73,6 +85,12 @@ public final class CodecChannelAdapters {
     }
 
     /// Creates an encoding channel that can finish independently terminated frames.
+    ///
+    /// @param target the channel that receives compressed bytes
+    /// @param ownership whether closing the returned channel also closes `target`
+    /// @param factory the factory for a fresh frame-capable encoder engine
+    /// @return a new frame-capable encoding channel
+    /// @throws IOException if the encoder cannot be created or an owned target cannot be closed after creation fails
     public static CompressingWritableByteChannel.Framed newFramedWritableByteChannel(
             WritableByteChannel target,
             ResourceOwnership ownership,
@@ -90,6 +108,12 @@ public final class CodecChannelAdapters {
     }
 
     /// Creates an encoding channel with both frame-boundary and nonterminal-flush support.
+    ///
+    /// @param target the channel that receives compressed bytes
+    /// @param ownership whether closing the returned channel also closes `target`
+    /// @param factory the factory for a fresh frame- and flush-capable encoder engine
+    /// @return a new frame- and flush-capable encoding channel
+    /// @throws IOException if the encoder cannot be created or an owned target cannot be closed after creation fails
     public static CompressingWritableByteChannel.FlushableFramed newFlushableFramedWritableByteChannel(
             WritableByteChannel target,
             ResourceOwnership ownership,
@@ -104,6 +128,12 @@ public final class CodecChannelAdapters {
     }
 
     /// Creates a decoding channel whose runtime frame capability matches the created engine.
+    ///
+    /// @param source the channel that supplies compressed bytes
+    /// @param ownership whether closing the returned channel also closes `source`
+    /// @param factory the factory for a fresh decoder engine
+    /// @return a new decoding channel that preserves the engine's frame capability
+    /// @throws IOException if the decoder cannot be created or an owned source cannot be closed after creation fails
     public static DecompressingReadableByteChannel newReadableByteChannel(
             ReadableByteChannel source,
             ResourceOwnership ownership,
@@ -121,6 +151,12 @@ public final class CodecChannelAdapters {
     }
 
     /// Creates a decoding channel that can stop at independently terminated frame boundaries.
+    ///
+    /// @param source the channel that supplies compressed bytes
+    /// @param ownership whether closing the returned channel also closes `source`
+    /// @param factory the factory for a fresh frame-capable decoder engine
+    /// @return a new frame-capable decoding channel
+    /// @throws IOException if the decoder cannot be created or an owned source cannot be closed after creation fails
     public static DecompressingReadableByteChannel.Framed newFramedReadableByteChannel(
             ReadableByteChannel source,
             ResourceOwnership ownership,
@@ -140,6 +176,9 @@ public final class CodecChannelAdapters {
     @FunctionalInterface
     public interface EncoderFactory<E extends CompressionEncoder> {
         /// Creates a fresh encoder engine.
+        ///
+        /// @return the fresh encoder engine
+        /// @throws IOException if the encoder cannot be initialized
         E create() throws IOException;
     }
 
@@ -149,6 +188,9 @@ public final class CodecChannelAdapters {
     @FunctionalInterface
     public interface DecoderFactory<D extends CompressionDecoder> {
         /// Creates a fresh decoder engine.
+        ///
+        /// @return the fresh decoder engine
+        /// @throws IOException if the decoder cannot be initialized
         D create() throws IOException;
     }
 

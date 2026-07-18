@@ -6,7 +6,10 @@ package org.glavo.arkivo.codec.lzma;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.jetbrains.annotations.NotNullByDefault;
 
-/// Describes the discoverable LZMA-alone compression format.
+/// Describes the registered LZMA-alone compression format.
+///
+/// LZMA-alone headers have no sufficiently reliable fixed magic, so this immutable descriptor does not claim prefix
+/// matches. Callers normally select the format from a file extension or other out-of-band metadata.
 @NotNullByDefault
 public final class LZMAFormat implements CompressionFormat {
     /// The stable LZMA-alone format name.
@@ -20,6 +23,8 @@ public final class LZMAFormat implements CompressionFormat {
     }
 
     /// Returns the canonical LZMA-alone format instance.
+    ///
+    /// @return the canonical format instance
     public static LZMAFormat instance() {
         return INSTANCE;
     }

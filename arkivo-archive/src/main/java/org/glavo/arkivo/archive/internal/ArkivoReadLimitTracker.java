@@ -62,12 +62,18 @@ public final class ArkivoReadLimitTracker {
     }
 
     /// Creates a fresh tracker from common archive options.
+    ///
+    /// @param options the internal options containing optional archive read limits
+    /// @return a new tracker with independent counters
     public static ArkivoReadLimitTracker fromOptions(ArchiveOptions options) {
         Objects.requireNonNull(options, "options");
         return fromLimits(options.getOrDefault(ArchiveEnvironmentOptions.READ_LIMITS, ArchiveReadLimits.UNLIMITED));
     }
 
     /// Creates a fresh tracker from immutable archive read limits.
+    ///
+    /// @param limits the immutable limits to enforce
+    /// @return a new tracker with independent counters
     public static ArkivoReadLimitTracker fromLimits(ArchiveReadLimits limits) {
         Objects.requireNonNull(limits, "limits");
         return new ArkivoReadLimitTracker(
@@ -79,6 +85,12 @@ public final class ArkivoReadLimitTracker {
     }
 
     /// Creates a fresh tracker from primitive limits using `-1` for an unconfigured limit.
+    ///
+    /// @param maximumEntryCount the non-negative entry-count limit, or {@code -1}
+    /// @param maximumEntrySize the non-negative per-entry byte limit, or {@code -1}
+    /// @param maximumTotalEntrySize the non-negative total-entry byte limit, or {@code -1}
+    /// @return a new tracker with no metadata-size limit
+    /// @throws IllegalArgumentException if a limit is less than {@code -1}
     public static ArkivoReadLimitTracker fromLimits(
             long maximumEntryCount,
             long maximumEntrySize,
@@ -88,6 +100,13 @@ public final class ArkivoReadLimitTracker {
     }
 
     /// Creates a fresh tracker from primitive limits using `-1` for an unconfigured limit.
+    ///
+    /// @param maximumEntryCount the non-negative entry-count limit, or {@code -1}
+    /// @param maximumEntrySize the non-negative per-entry byte limit, or {@code -1}
+    /// @param maximumTotalEntrySize the non-negative total-entry byte limit, or {@code -1}
+    /// @param maximumMetadataSize the non-negative cumulative metadata byte limit, or {@code -1}
+    /// @return a new tracker with independent counters
+    /// @throws IllegalArgumentException if a limit is less than {@code -1}
     public static ArkivoReadLimitTracker fromLimits(
             long maximumEntryCount,
             long maximumEntrySize,
@@ -107,6 +126,11 @@ public final class ArkivoReadLimitTracker {
     }
 
     /// Accounts for archive metadata before it is buffered or expanded.
+    ///
+    /// @param size the non-negative metadata byte count to add
+    /// @param entryPath the associated archive-local path, or {@code null} for archive-wide metadata
+    /// @throws ArkivoReadLimitException if this addition exceeds the metadata limit or an earlier limit already failed
+    /// @throws IllegalArgumentException if {@code size} is negative
     public void acceptMetadata(long size, @Nullable String entryPath) throws ArkivoReadLimitException {
         requireWithinLimits();
         if (size < 0L) {
@@ -128,6 +152,11 @@ public final class ArkivoReadLimitTracker {
     ///
     /// A negative size means that the format has not discovered the logical size yet. In that case callers must wrap
     /// the decoded body with `trackUnknownEntrySize` so observed bytes contribute to size limits.
+    ///
+    /// @param path the archive-local entry path
+    /// @param size the known non-negative logical size, or {@code -1} when unknown
+    /// @throws ArkivoReadLimitException if entry count or known size exceeds a limit, or an earlier limit already failed
+    /// @throws IllegalArgumentException if {@code size} is less than {@code -1}
     public void acceptEntry(String path, long size) throws ArkivoReadLimitException {
         Objects.requireNonNull(path, "path");
         requireWithinLimits();
@@ -151,6 +180,10 @@ public final class ArkivoReadLimitTracker {
     }
 
     /// Wraps one decoded body whose logical size was unknown when its entry metadata was accepted.
+    ///
+    /// @param path the archive-local entry path used in limit failures
+    /// @param input the decoded stream whose ownership remains with the returned wrapper
+    /// @return a stream that accounts for reads and skips against entry-size limits
     public InputStream trackUnknownEntrySize(String path, InputStream input) {
         Objects.requireNonNull(path, "path");
         Objects.requireNonNull(input, "input");
@@ -180,6 +213,8 @@ public final class ArkivoReadLimitTracker {
     }
 
     /// Re-throws the first limit failure so a rejected archive cannot resume parsing.
+    ///
+    /// @throws ArkivoReadLimitException if any earlier accounting operation exceeded a configured limit
     public void requireWithinLimits() throws ArkivoReadLimitException {
         if (failure != null) {
             throw new ArkivoReadLimitException(

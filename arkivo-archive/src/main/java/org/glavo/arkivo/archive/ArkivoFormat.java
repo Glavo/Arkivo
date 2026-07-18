@@ -17,14 +17,20 @@ import java.util.Objects;
 @NotNullByDefault
 public interface ArkivoFormat {
     /// Returns the stable format name.
+    ///
+    /// @return the non-blank stable name used for registry lookup
     String name();
 
     /// Returns alternative stable names accepted for this format.
+    ///
+    /// @return immutable non-blank aliases used for registry lookup
     default @Unmodifiable List<String> aliases() {
         return List.of();
     }
 
     /// Returns common file extensions for archives of this format, without leading dots.
+    ///
+    /// @return immutable extension strings without leading dots
     default @Unmodifiable List<String> fileExtensions() {
         return List.of(name());
     }
@@ -32,6 +38,8 @@ public interface ArkivoFormat {
     /// Returns the preferred number of leading bytes requested by generic format detection.
     ///
     /// A format may recognize a prefix containing fewer bytes. The returned value must not be negative.
+    ///
+    /// @return the preferred non-negative probe byte count
     default int probeSize() {
         return 0;
     }
@@ -39,6 +47,9 @@ public interface ArkivoFormat {
     /// Returns whether the remaining bytes of the given prefix identify this archive format.
     ///
     /// This operation must not change the prefix position, limit, mark, or byte order.
+    ///
+    /// @param prefix the archive prefix to inspect, from its current position to its limit
+    /// @return {@code true} if the available prefix identifies this format
     default boolean matches(ByteBuffer prefix) {
         Objects.requireNonNull(prefix, "prefix");
         return false;

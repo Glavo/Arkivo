@@ -32,16 +32,26 @@ public final class ArkivoEditStorageSupport {
     }
 
     /// Returns an edit storage that keeps staged content in memory.
+    ///
+    /// @return the shared memory-backed storage strategy
     public static ArkivoEditStorage memory() {
         return MEMORY;
     }
 
     /// Returns an edit storage that keeps staged content in temporary files under the given directory.
+    ///
+    /// @param directory the temporary-content directory
+    /// @return a new temporary-file-backed storage strategy
     public static ArkivoEditStorage temporaryFiles(Path directory) {
         return new TemporaryFileStorage(directory);
     }
 
     /// Returns an edit storage that keeps small staged content in memory and larger content in temporary files.
+    ///
+    /// @param memoryThreshold the non-negative maximum known size retained in memory
+    /// @param directory the fallback temporary-content directory
+    /// @return a new hybrid storage strategy
+    /// @throws IllegalArgumentException if {@code memoryThreshold} is negative
     public static ArkivoEditStorage hybrid(long memoryThreshold, Path directory) {
         if (memoryThreshold < 0) {
             throw new IllegalArgumentException("memoryThreshold must not be negative");

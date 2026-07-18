@@ -13,6 +13,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 
 /// Defines immutable AR configuration for each archive operation lifecycle.
+///
+/// The detector is invoked for member names without an authoritative charset and may throw `IOException` to reject
+/// decoding. Returning `null` selects the AR UTF-8 fallback. The common read and update options supply archive-wide
+/// resource limits; the common create and update options select staging storage owned by the returned file system.
 @NotNullByDefault
 public final class ArArchiveOptions {
     /// The default detector for AR member names.
@@ -54,11 +58,17 @@ public final class ArArchiveOptions {
         }
 
         /// Returns a copy with common read settings.
+        ///
+        /// @param value the replacement format-independent read configuration
+        /// @return an immutable read configuration containing `value`
         public Read withCommon(ArchiveReadOptions value) {
             return new Read(value, metadataCharsetDetector);
         }
 
         /// Returns a copy with the metadata charset detector.
+        ///
+        /// @param value the replacement detector for member names
+        /// @return an immutable read configuration containing `value`
         public Read withMetadataCharsetDetector(ArchiveMetadataCharsetDetector value) {
             return new Read(common, value);
         }
@@ -77,11 +87,17 @@ public final class ArArchiveOptions {
         }
 
         /// Returns a copy with common creation settings.
+        ///
+        /// @param value the replacement format-independent creation configuration
+        /// @return an immutable creation configuration containing `value`
         public Create withCommon(ArchiveCreateOptions value) {
             return new Create(value, metadataCharsetDetector);
         }
 
         /// Returns a copy with the metadata charset detector.
+        ///
+        /// @param value the replacement detector used by file-system metadata views
+        /// @return an immutable creation configuration containing `value`
         public Create withMetadataCharsetDetector(ArchiveMetadataCharsetDetector value) {
             return new Create(common, value);
         }
@@ -100,11 +116,17 @@ public final class ArArchiveOptions {
         }
 
         /// Returns a copy with common update settings.
+        ///
+        /// @param value the replacement format-independent update configuration
+        /// @return an immutable update configuration containing `value`
         public Update withCommon(ArchiveUpdateOptions value) {
             return new Update(value, metadataCharsetDetector);
         }
 
         /// Returns a copy with the metadata charset detector.
+        ///
+        /// @param value the replacement detector for source member names
+        /// @return an immutable update configuration containing `value`
         public Update withMetadataCharsetDetector(ArchiveMetadataCharsetDetector value) {
             return new Update(common, value);
         }

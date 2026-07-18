@@ -8,7 +8,10 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.io.IOException;
 import java.nio.file.attribute.BasicFileAttributeView;
 
-/// Provides RAR-specific attributes for an archive entry.
+/// Provides read-only RAR-specific attributes for an archive entry.
+///
+/// RAR file systems are read-only, and [#readAttributes()] returns a stable snapshot whose values remain valid after
+/// subsequent operations on the file system.
 @NotNullByDefault
 public interface RarArkivoEntryAttributeView extends BasicFileAttributeView {
     /// Returns the attribute view name.
@@ -17,7 +20,7 @@ public interface RarArkivoEntryAttributeView extends BasicFileAttributeView {
         return "rar";
     }
 
-    /// Reads the RAR-specific entry attributes.
+    /// Reads a stable snapshot of the RAR-specific entry attributes.
     @Override
     RarArkivoEntryAttributes readAttributes() throws IOException;
 }

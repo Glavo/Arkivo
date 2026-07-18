@@ -27,12 +27,17 @@ public final class OwnedChannelCloser {
     private boolean complete;
 
     /// Creates a close tracker for a backing channel and ownership policy.
+    ///
+    /// @param channel the backing channel whose ownership obligation is tracked
+    /// @param ownership whether this tracker must close `channel`
     public OwnedChannelCloser(Channel channel, ResourceOwnership ownership) {
         this.channel = Objects.requireNonNull(channel, "channel");
         this.ownership = Objects.requireNonNull(ownership, "ownership");
     }
 
     /// Completes endpoint closure, retrying a previous failed attempt.
+    ///
+    /// @throws IOException if closing an owned channel fails
     public synchronized void close() throws IOException {
         closeAfter(null);
     }
@@ -41,6 +46,9 @@ public final class OwnedChannelCloser {
     ///
     /// A close failure is added to `primaryFailure` when one is present. The ownership obligation remains incomplete so
     /// a later call can retry the endpoint close without repeating codec finalization.
+    ///
+    /// @param primaryFailure an earlier lifecycle failure to rethrow after applying ownership, or `null` if none
+    /// @throws IOException if the primary failure or an unsuppressed close failure is an `IOException`
     public synchronized void closeAfter(@Nullable Throwable primaryFailure) throws IOException {
         if (!complete) {
             if (ownership == ResourceOwnership.BORROWED) {
@@ -64,6 +72,8 @@ public final class OwnedChannelCloser {
     }
 
     /// Returns whether the ownership obligation has completed.
+    ///
+    /// @return whether the channel was borrowed or an owned channel was closed successfully
     public synchronized boolean isComplete() {
         return complete;
     }

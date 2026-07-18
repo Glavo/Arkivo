@@ -24,6 +24,9 @@ public final class PrefixReplayReadableByteChannel implements ReadableByteChanne
     private boolean open = true;
 
     /// Creates a replay channel that owns its source.
+    ///
+    /// @param prefix the remaining probe bytes to replay through an independent buffer view
+    /// @param source the channel, positioned after the probe bytes, whose ownership is transferred to this channel
     public PrefixReplayReadableByteChannel(ByteBuffer prefix, ReadableByteChannel source) {
         this.prefix = Objects.requireNonNull(prefix, "prefix").slice().asReadOnlyBuffer();
         this.source = Objects.requireNonNull(source, "source");

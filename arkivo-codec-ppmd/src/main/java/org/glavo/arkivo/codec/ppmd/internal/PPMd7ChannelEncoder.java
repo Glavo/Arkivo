@@ -40,6 +40,13 @@ public final class PPMd7ChannelEncoder implements CompressingWritableByteChannel
     private boolean open = true;
 
     /// Creates an initialized raw PPMd7 encoder.
+    ///
+    /// @param target the channel receiving the raw arithmetic stream
+    /// @param ownership whether finishing or closing this encoder also closes {@code target}
+    /// @param maximumOrder the Variant H context order, from {@code 2} through {@code 64}
+    /// @param memorySize the model arena size, from 2 KiB through 256 MiB
+    /// @throws IOException if the model configuration is invalid or its arena cannot be allocated
+    /// @throws NullPointerException if {@code target} or {@code ownership} is {@code null}
     public PPMd7ChannelEncoder(
             WritableByteChannel target,
             ResourceOwnership ownership,
@@ -74,6 +81,8 @@ public final class PPMd7ChannelEncoder implements CompressingWritableByteChannel
     }
 
     /// Flushes complete range-coded bytes without ending the stream.
+    ///
+    /// @throws IOException if the encoder is closed or the target cannot accept staged bytes
     public void flush() throws IOException {
         ensureOpen();
         rangeEncoder.flushOutput();

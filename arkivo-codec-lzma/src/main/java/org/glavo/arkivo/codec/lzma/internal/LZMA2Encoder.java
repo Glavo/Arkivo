@@ -77,6 +77,12 @@ public final class LZMA2Encoder implements CompressionEncoder {
     }
 
     /// Emits the current partial chunk without ending the LZMA2 stream.
+    ///
+    /// @param target the buffer receiving complete chunk bytes; its position advances by the bytes written
+    /// @return {@link CodecOutcome#NEEDS_OUTPUT} while staged bytes remain, or {@link CodecOutcome#FLUSHED} when drained
+    /// @throws IOException if the pending chunk cannot be encoded
+    /// @throws NullPointerException if {@code target} is {@code null}
+    /// @throws IllegalStateException if a previous flush is not drained, the stream is finishing, or the encoder is closed
     public CodecOutcome flush(ByteBuffer target) throws IOException {
         Objects.requireNonNull(target, "target");
         requireOpen();

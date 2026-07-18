@@ -23,6 +23,12 @@ public interface ArMetadataCharsetDetector extends ArchiveMetadataCharsetDetecto
     long UNKNOWN_MEMBER_SIZE = -1L;
 
     /// Detects the charset of one AR metadata value, or returns `null` when it is unknown.
+    ///
+    /// The context and its byte-buffer view are valid only for this invocation and must not be retained.
+    ///
+    /// @param context the raw name bytes and available member-name representation metadata
+    /// @return the selected charset, or `null` to use the AR UTF-8 fallback
+    /// @throws IOException if the detector rejects the metadata or cannot complete detection
     @Nullable Charset detect(Context context) throws IOException;
 
     /// Detects bytes without explicit AR context by supplying an unknown context.

@@ -38,6 +38,15 @@ public final class LZMARawChannelDecoder implements DecompressingReadableByteCha
     private boolean open = true;
 
     /// Creates a raw LZMA decoder with explicit model and output-size parameters.
+    ///
+    /// @param source the channel supplying the headerless range-coded stream
+    /// @param ownership whether closing this decoder also closes {@code source}
+    /// @param properties the externally supplied model and dictionary properties
+    /// @param expectedSize the exact decoded size, or {@link CompressionCodec#UNKNOWN_SIZE} for EOS termination
+    /// @param maximumWindowSize the maximum permitted dictionary size, or a negative value for no limit
+    /// @throws IOException if range-decoder initialization fails or the dictionary exceeds the configured limit
+    /// @throws NullPointerException if {@code source}, {@code ownership}, or {@code properties} is {@code null}
+    /// @throws IllegalArgumentException if {@code expectedSize} is less than {@link CompressionCodec#UNKNOWN_SIZE}
     public LZMARawChannelDecoder(
             ReadableByteChannel source,
             ResourceOwnership ownership,

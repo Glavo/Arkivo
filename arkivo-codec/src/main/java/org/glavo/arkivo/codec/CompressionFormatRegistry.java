@@ -67,23 +67,35 @@ public final class CompressionFormatRegistry {
     }
 
     /// Loads formats visible to the current thread's context class loader.
+    ///
+    /// @return an immutable registry containing the discovered formats
     public static CompressionFormatRegistry load() {
         return fromFormats(ServiceLoader.load(CompressionFormat.class));
     }
 
     /// Loads formats visible to the given class loader.
+    ///
+    /// @param loader the class loader from which providers are discovered
+    /// @return an immutable registry containing the discovered formats
     public static CompressionFormatRegistry load(ClassLoader loader) {
         Objects.requireNonNull(loader, "loader");
         return fromFormats(ServiceLoader.load(CompressionFormat.class, loader));
     }
 
     /// Loads formats visible to the given module layer.
+    ///
+    /// @param layer the module layer from which providers are discovered
+    /// @return an immutable registry containing the discovered formats
     public static CompressionFormatRegistry load(ModuleLayer layer) {
         Objects.requireNonNull(layer, "layer");
         return fromFormats(ServiceLoader.load(layer, CompressionFormat.class));
     }
 
     /// Creates a registry from explicit format descriptors.
+    ///
+    /// @param formats the descriptors to canonicalize and index in preferred order
+    /// @return an immutable registry containing each canonical format identity once
+    /// @throws IllegalStateException if a descriptor is inconsistent or names are ambiguous
     public static CompressionFormatRegistry fromFormats(
             Iterable<? extends CompressionFormat> formats
     ) {
@@ -96,11 +108,16 @@ public final class CompressionFormatRegistry {
     }
 
     /// Returns formats in discovery or caller-supplied order, with repeated identities included once.
+    ///
+    /// @return the immutable ordered canonical format list
     public @Unmodifiable List<CompressionFormat> formats() {
         return formats;
     }
 
     /// Returns the format with the given stable name or alias, ignoring case.
+    ///
+    /// @param name the stable format name or alias
+    /// @return the matching format, or {@code null} if none matches
     public @Nullable CompressionFormat find(String name) {
         Objects.requireNonNull(name, "name");
         return formatsByName.get(normalizeName(name));
@@ -108,6 +125,8 @@ public final class CompressionFormatRegistry {
 
     /// Returns the format with the given stable name or alias.
     ///
+    /// @param name the stable format name or alias
+    /// @return the matching format
     /// @throws IllegalArgumentException when no matching format is installed
     public CompressionFormat require(String name) {
         @Nullable CompressionFormat format = find(name);
@@ -120,6 +139,9 @@ public final class CompressionFormatRegistry {
     /// Returns the matching format with the largest preferred probe size.
     ///
     /// The supplied buffer is not modified.
+    ///
+    /// @param prefix the stream prefix to inspect, from its current position to its limit
+    /// @return the best matching format, or {@code null} if no format recognizes the prefix
     public @Nullable CompressionFormat detect(ByteBuffer prefix) {
         Objects.requireNonNull(prefix, "prefix");
         @Nullable CompressionFormat detected = null;
@@ -134,6 +156,8 @@ public final class CompressionFormatRegistry {
     }
 
     /// Returns the largest preferred signature prefix requested by any format.
+    ///
+    /// @return the maximum registered {@link CompressionFormat#probeSize()} value
     public int probeSize() {
         return probeSize;
     }

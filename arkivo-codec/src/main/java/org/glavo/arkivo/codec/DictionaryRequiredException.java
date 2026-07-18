@@ -18,12 +18,16 @@ public final class DictionaryRequiredException extends IOException {
     private final DictionaryRequest<?> request;
 
     /// Creates an exception for the requested dictionary.
+    ///
+    /// @param request the complete format-specific request needed to resume decoding
     public DictionaryRequiredException(DictionaryRequest<?> request) {
         super("Compression decoder requires dictionary: " + Objects.requireNonNull(request, "request"));
         this.request = request;
     }
 
     /// Returns the format-specific dictionary request.
+    ///
+    /// @return the request supplied when this exception was created
     public DictionaryRequest<?> request() {
         return request;
     }

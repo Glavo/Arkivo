@@ -6,7 +6,10 @@ package org.glavo.arkivo.codec.deflate;
 import org.glavo.arkivo.codec.CompressionFormat;
 import org.jetbrains.annotations.NotNullByDefault;
 
-/// Describes the discoverable raw Deflate compression format.
+/// Describes the registered raw Deflate compression format.
+///
+/// Raw Deflate has no reliable fixed signature, so this immutable descriptor does not claim prefix matches. Callers
+/// must select the format from container metadata or other out-of-band information.
 @NotNullByDefault
 public final class DeflateFormat implements CompressionFormat {
     /// The stable raw Deflate format name.
@@ -20,6 +23,8 @@ public final class DeflateFormat implements CompressionFormat {
     }
 
     /// Returns the canonical raw Deflate format instance.
+    ///
+    /// @return the shared immutable format descriptor
     public static DeflateFormat instance() {
         return INSTANCE;
     }

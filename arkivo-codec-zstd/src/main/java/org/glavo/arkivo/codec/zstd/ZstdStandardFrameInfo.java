@@ -8,6 +8,9 @@ import org.jetbrains.annotations.NotNullByDefault;
 
 /// Describes one standard or explicitly selected magicless Zstandard frame header.
 ///
+/// Content size and dictionary identifier are optional header metadata. Window size is the decoder history requirement,
+/// not a statement of decoded output size. The record is immutable and does not retain the source header buffer.
+///
 /// @param headerSize complete frame-header size in bytes
 /// @param contentSize declared decompressed content size, CompressionCodec.UNKNOWN_SIZE when absent, or
 /// CONTENT_SIZE_OVERFLOW when the unsigned field exceeds Long.MAX_VALUE
@@ -26,6 +29,9 @@ public record ZstdStandardFrameInfo(
     public static final long CONTENT_SIZE_OVERFLOW = -2L;
 
     /// Validates parsed frame-header fields.
+    ///
+    /// @throws IllegalArgumentException if a field is outside its encoded domain or the header omits both content size
+    ///                                  and a positive window size
     public ZstdStandardFrameInfo {
         if (headerSize < 2 || headerSize > 18) {
             throw new IllegalArgumentException("headerSize is out of range");

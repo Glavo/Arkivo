@@ -46,6 +46,10 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     private final String text;
 
     /// Creates a path from parsed components.
+    ///
+    /// @param fileSystem the file system that owns the path
+    /// @param absolute whether the path begins at the archive root
+    /// @param names the parsed name elements to copy
     protected AbstractArkivoPath(F fileSystem, boolean absolute, List<String> names) {
         this.fileSystem = Objects.requireNonNull(fileSystem, "fileSystem");
         this.absolute = absolute;
@@ -54,6 +58,10 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     }
 
     /// Creates a path from one or more path text components.
+    ///
+    /// @param fileSystem the file system that owns the path
+    /// @param first the first path text component
+    /// @param more additional path text components joined with archive separators
     protected AbstractArkivoPath(F fileSystem, String first, String... more) {
         this(fileSystem, joinedPathText(first, more));
     }
@@ -64,15 +72,31 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     }
 
     /// Creates another path of the concrete format-specific type.
+    ///
+    /// @param absolute whether the path begins at the archive root
+    /// @param names the immutable parsed name elements
+    /// @return a path of the concrete type owned by this path's file system
     protected abstract AbstractArkivoPath<F> createPath(boolean absolute, List<String> names);
 
     /// Returns the URI scheme for the concrete archive format.
+    ///
+    /// @return the format-specific archive file-system URI scheme
     protected abstract String uriScheme();
 
     /// Returns the underlying archive URI, or `null` when this file system has no URI representation.
+    ///
+    /// @return the backing archive URI, or {@code null} if no stable URI exists
     protected abstract @Nullable URI archiveUri();
 
     /// Returns this path as the concrete path type owned by the expected file system.
+    ///
+    /// @param <F> the expected file-system type
+    /// @param <P> the expected concrete path type
+    /// @param path the path to validate and cast
+    /// @param expectedFileSystem the required owning file-system instance
+    /// @param type the required concrete path class
+    /// @return {@code path} cast to {@code P}
+    /// @throws ProviderMismatchException if the path type or owning file system does not match
     protected static <F extends FileSystem, P extends AbstractArkivoPath<F>> P requirePath(
             Path path,
             F expectedFileSystem,
@@ -89,6 +113,8 @@ public abstract class AbstractArkivoPath<F extends FileSystem> implements Path {
     }
 
     /// Returns this path as a normalized archive entry path without a leading separator.
+    ///
+    /// @return slash-separated name elements without a root marker
     public final String archivePath() {
         return String.join("/", names);
     }

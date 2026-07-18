@@ -16,6 +16,10 @@ import java.io.IOException;
 import java.util.Objects;
 
 /// Provides an immutable raw Deflate64 configuration and pure Java buffer engines.
+///
+/// Deflate64 is exposed as a headerless payload with a fixed 64 KiB history window. It has no wrapper checksum,
+/// dictionary identifier, or discoverable signature. Codec values are thread-safe; each created engine owns one mutable
+/// stream session. Encoder `flush` reaches a nonterminal sync boundary, and `finish` writes the final block.
 @NotNullByDefault
 public final class Deflate64Codec
         implements CompressionCodec.LevelConfigurable<Deflate64Codec>,

@@ -1,7 +1,10 @@
 // Copyright (c) 2026 Glavo
 // SPDX-License-Identifier: MPL-2.0
 
-/// Provides LZMA compression support for Arkivo.
+/// Provides LZMA-alone, raw LZMA, and raw LZMA2 compression and format discovery.
+///
+/// The exported [org.glavo.arkivo.codec.lzma] package separates the LZMA-alone container from headerless LZMA payloads
+/// whose model properties and boundaries are supplied by an embedding format.
 @SuppressWarnings("module")
 module org.glavo.arkivo.codec.lzma {
     requires transitive org.glavo.arkivo.codec;

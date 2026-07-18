@@ -33,6 +33,14 @@ public final class SevenZipCoderGraph {
     private final int finalOutputStreamIndex;
 
     /// Creates and validates an immutable coder graph snapshot.
+    ///
+    /// @param coders                     the non-empty coders in declaration order with contiguous stream ranges
+    /// @param boundOutputByInput         the bound output index for each input, or `-1` for packed inputs
+    /// @param packedStreamOrdinalByInput the packed ordinal for each input, or `-1` for bound inputs
+    /// @param unpackSizes                the non-negative decoded size produced by each graph output
+    /// @param finalOutputStreamIndex      the sole unbound output exposed as the folder result
+    /// @throws IllegalArgumentException if arrays, indexes, bindings, packed ordinals, or graph topology are invalid
+    /// @throws ArithmeticException if the total number of streams exceeds the `int` range
     public SevenZipCoderGraph(
             List<SevenZipCoder> coders,
             int[] boundOutputByInput,
@@ -214,46 +222,70 @@ public final class SevenZipCoderGraph {
     }
 
     /// Returns coders in 7z declaration order.
+    ///
+    /// @return the immutable coder list
     public @Unmodifiable List<SevenZipCoder> coders() {
         return coders;
     }
 
     /// Returns the total number of graph input streams.
+    ///
+    /// @return the graph input count
     public int inputStreamCount() {
         return boundOutputByInput.length;
     }
 
     /// Returns the total number of graph output streams.
+    ///
+    /// @return the graph output count
     public int outputStreamCount() {
         return unpackSizes.length;
     }
 
     /// Returns the number of physical packed input streams.
+    ///
+    /// @return the positive packed input count
     public int packedStreamCount() {
         return packedStreamCount;
     }
 
     /// Returns the bound output for a graph input, or `-1` when the input is physically packed.
+    ///
+    /// @param inputStreamIndex the graph input index
+    /// @return the bound output index, or `-1` for a packed input
+    /// @throws IndexOutOfBoundsException if `inputStreamIndex` is outside the graph input range
     public int boundOutputStreamIndex(int inputStreamIndex) {
         return boundOutputByInput[Objects.checkIndex(inputStreamIndex, boundOutputByInput.length)];
     }
 
     /// Returns the packed-stream ordinal for a graph input, or `-1` when the input is bound.
+    ///
+    /// @param inputStreamIndex the graph input index
+    /// @return the packed-stream ordinal, or `-1` for a bound input
+    /// @throws IndexOutOfBoundsException if `inputStreamIndex` is outside the graph input range
     public int packedStreamOrdinal(int inputStreamIndex) {
         return packedStreamOrdinalByInput[Objects.checkIndex(inputStreamIndex, packedStreamOrdinalByInput.length)];
     }
 
     /// Returns the unpack size produced by a graph output.
+    ///
+    /// @param outputStreamIndex the graph output index
+    /// @return the non-negative decoded output size
+    /// @throws IndexOutOfBoundsException if `outputStreamIndex` is outside the graph output range
     public long unpackSize(int outputStreamIndex) {
         return unpackSizes[Objects.checkIndex(outputStreamIndex, unpackSizes.length)];
     }
 
     /// Returns the sole unbound output exposed as the folder result.
+    ///
+    /// @return the final graph output index
     public int finalOutputStreamIndex() {
         return finalOutputStreamIndex;
     }
 
     /// Returns the final decoded folder size.
+    ///
+    /// @return the non-negative unpack size of the final output
     public long finalUnpackSize() {
         return unpackSizes[finalOutputStreamIndex];
     }

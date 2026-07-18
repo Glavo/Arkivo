@@ -23,18 +23,24 @@ public final class ArkivoStreamingSource implements AutoCloseable {
     private @Nullable ReadableByteChannel channel;
 
     /// Creates a streaming source result and takes ownership of its logical channel.
+    ///
+    /// @param transformed whether a provider recognized and transformed its input
+    /// @param channel the logical channel whose ownership is transferred to this result
     public ArkivoStreamingSource(boolean transformed, ReadableByteChannel channel) {
         this.transformed = transformed;
         this.channel = Objects.requireNonNull(channel, "channel");
     }
 
     /// Returns whether the provider recognized and transformed the source.
+    ///
+    /// @return {@code true} if an outer wrapper was recognized and transformed
     public boolean transformed() {
         return transformed;
     }
 
     /// Transfers and returns the logical source that replaces the provider input.
     ///
+    /// @return the logical channel, whose ownership is transferred to the caller
     /// @throws IllegalStateException when the channel was already transferred or closed
     public synchronized ReadableByteChannel takeChannel() {
         @Nullable ReadableByteChannel current = channel;
@@ -48,6 +54,8 @@ public final class ArkivoStreamingSource implements AutoCloseable {
     /// Closes the logical result channel unless its ownership was transferred.
     ///
     /// A failed close retains ownership so a later call can retry cleanup.
+    ///
+    /// @throws IOException if the owned logical channel cannot be closed
     @Override
     public synchronized void close() throws IOException {
         if (channel != null) {

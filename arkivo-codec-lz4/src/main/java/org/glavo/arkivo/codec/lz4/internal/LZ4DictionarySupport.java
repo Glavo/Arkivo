@@ -15,6 +15,9 @@ public final class LZ4DictionarySupport {
     }
 
     /// Returns a zero-seed xxHash-32 identifier for the effective dictionary content.
+    ///
+    /// @param bytes the effective dictionary suffix
+    /// @return the hash as an unsigned 32-bit value
     public static long contentIdentifier(byte[] bytes) {
         return XXHash32.hash(Objects.requireNonNull(bytes, "bytes"));
     }

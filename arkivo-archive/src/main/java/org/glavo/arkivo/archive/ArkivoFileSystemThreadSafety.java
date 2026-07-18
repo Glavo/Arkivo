@@ -32,6 +32,10 @@ public enum ArkivoFileSystemThreadSafety {
     }
 
     /// Parses a stable thread-safety option name.
+    ///
+    /// @param value the option name, ignoring surrounding whitespace, case, and underscore-versus-hyphen spelling
+    /// @return the matching strategy
+    /// @throws IllegalArgumentException if {@code value} does not name a strategy
     public static ArkivoFileSystemThreadSafety parse(String value) {
         String normalizedValue = value.trim().toLowerCase(Locale.ROOT).replace('_', '-');
         for (ArkivoFileSystemThreadSafety threadSafety : values()) {
@@ -43,6 +47,8 @@ public enum ArkivoFileSystemThreadSafety {
     }
 
     /// Returns the stable environment option name.
+    ///
+    /// @return the lowercase hyphenated option name
     public String optionName() {
         return optionName;
     }

@@ -50,6 +50,12 @@ public final class LZMA2ChannelEncoder implements CompressingWritableByteChannel
     private boolean open = true;
 
     /// Creates a raw LZMA2 encoder with the requested dictionary size.
+    ///
+    /// @param target the channel receiving the raw LZMA2 stream
+    /// @param ownership whether finishing or closing this encoder also closes {@code target}
+    /// @param dictionarySize the dictionary size used for compressed chunks, in bytes
+    /// @throws NullPointerException if {@code target} or {@code ownership} is {@code null}
+    /// @throws IllegalArgumentException if {@code dictionarySize} is outside the supported range
     public LZMA2ChannelEncoder(
             WritableByteChannel target,
             ResourceOwnership ownership,
@@ -59,6 +65,11 @@ public final class LZMA2ChannelEncoder implements CompressingWritableByteChannel
     }
 
     /// Creates a raw LZMA2 encoder with complete model properties.
+    ///
+    /// @param target the channel receiving the raw LZMA2 stream
+    /// @param ownership whether finishing or closing this encoder also closes {@code target}
+    /// @param properties the model properties used for compressed chunks
+    /// @throws NullPointerException if any argument is {@code null}
     public LZMA2ChannelEncoder(
             WritableByteChannel target,
             ResourceOwnership ownership,
@@ -90,6 +101,8 @@ public final class LZMA2ChannelEncoder implements CompressingWritableByteChannel
     }
 
     /// Writes complete compressed chunks already emitted by the encoder.
+    ///
+    /// @throws IOException if the encoder is closed or the target cannot accept the staged bytes
     public void flush() throws IOException {
         ensureOpen();
         output.flush();

@@ -29,6 +29,12 @@ public final class StreamCodecAdapters {
     }
 
     /// Creates an encoding channel around a stream-based codec implementation.
+    ///
+    /// @param target the channel that receives compressed bytes
+    /// @param ownership whether closing the returned channel also closes `target`
+    /// @param factory the factory that opens the codec output stream
+    /// @return a new encoding channel backed by the opened codec stream
+    /// @throws IOException if the codec stream cannot be opened or an owned target cannot be closed after creation fails
     public static CompressingWritableByteChannel newWritableByteChannel(
             WritableByteChannel target,
             ResourceOwnership ownership,
@@ -57,6 +63,12 @@ public final class StreamCodecAdapters {
     }
 
     /// Creates a decoding channel around a stream-based codec implementation.
+    ///
+    /// @param source the channel that supplies compressed bytes
+    /// @param ownership whether closing the returned channel also closes `source`
+    /// @param factory the factory that opens the codec input stream
+    /// @return a new decoding channel backed by the opened codec stream
+    /// @throws IOException if the codec stream cannot be opened or an owned source cannot be closed after creation fails
     public static DecompressingReadableByteChannel newReadableByteChannel(
             ReadableByteChannel source,
             ResourceOwnership ownership,
@@ -89,6 +101,10 @@ public final class StreamCodecAdapters {
     @NotNullByDefault
     public interface OutputStreamFactory {
         /// Opens the codec output stream.
+        ///
+        /// @param target the retained channel-backed stream that receives compressed bytes
+        /// @return the codec output stream to drive and close
+        /// @throws IOException if the codec stream cannot be opened
         OutputStream open(OutputStream target) throws IOException;
     }
 
@@ -97,6 +113,10 @@ public final class StreamCodecAdapters {
     @NotNullByDefault
     public interface InputStreamFactory {
         /// Opens the codec input stream.
+        ///
+        /// @param source the retained channel-backed stream that supplies compressed bytes
+        /// @return the codec input stream to read and close
+        /// @throws IOException if the codec stream cannot be opened
         InputStream open(InputStream source) throws IOException;
     }
 

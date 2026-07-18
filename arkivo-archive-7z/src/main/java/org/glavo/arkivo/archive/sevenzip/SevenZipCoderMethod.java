@@ -81,6 +81,10 @@ public enum SevenZipCoderMethod {
     }
 
     /// Returns the supported method matching a raw 7z identifier.
+    ///
+    /// @param methodId the raw identifier bytes
+    /// @return the matching supported method
+    /// @throws IllegalArgumentException if the identifier is not recognized
     public static SevenZipCoderMethod fromMethodId(byte[] methodId) {
         Objects.requireNonNull(methodId, "methodId");
         for (SevenZipCoderMethod method : values()) {
@@ -92,6 +96,8 @@ public enum SevenZipCoderMethod {
     }
 
     /// Returns a copy of the raw 7z method identifier.
+    ///
+    /// @return a new array containing the method identifier bytes
     public byte[] methodId() {
         return methodId.clone();
     }

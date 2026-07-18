@@ -43,6 +43,10 @@ public enum SevenZipCompressionMethod {
     }
 
     /// Parses a stable case-insensitive compression method name.
+    ///
+    /// @param value the option name, ignoring case and accepting underscores as hyphens
+    /// @return the matching compression method
+    /// @throws IllegalArgumentException if `value` is not a recognized method name
     public static SevenZipCompressionMethod parse(String value) {
         String normalized = value.trim().toLowerCase(Locale.ROOT).replace('_', '-');
         for (SevenZipCompressionMethod method : values()) {
@@ -54,6 +58,8 @@ public enum SevenZipCompressionMethod {
     }
 
     /// Returns the stable environment and display name.
+    ///
+    /// @return the lowercase stable option name
     public String optionName() {
         return optionName;
     }

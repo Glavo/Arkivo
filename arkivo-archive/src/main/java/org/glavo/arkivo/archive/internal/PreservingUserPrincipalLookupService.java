@@ -23,6 +23,8 @@ public final class PreservingUserPrincipalLookupService extends UserPrincipalLoo
     }
 
     /// Returns the shared lookup service.
+    ///
+    /// @return the stateless shared service
     public static PreservingUserPrincipalLookupService instance() {
         return INSTANCE;
     }

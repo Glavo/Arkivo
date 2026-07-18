@@ -9,6 +9,10 @@ import org.jetbrains.annotations.NotNullByDefault;
 import java.nio.ByteBuffer;
 
 /// Describes the discoverable zlib compression format.
+///
+/// This immutable descriptor recognizes a valid Deflate compression method, supported window code, and FCHECK value in
+/// the two-byte zlib header without changing the supplied buffer. Payload and trailer validity are established only by
+/// decoding.
 @NotNullByDefault
 public final class ZlibFormat implements CompressionFormat {
     /// The stable zlib format name.
@@ -22,6 +26,8 @@ public final class ZlibFormat implements CompressionFormat {
     }
 
     /// Returns the canonical zlib format instance.
+    ///
+    /// @return the shared immutable format descriptor
     public static ZlibFormat instance() {
         return INSTANCE;
     }

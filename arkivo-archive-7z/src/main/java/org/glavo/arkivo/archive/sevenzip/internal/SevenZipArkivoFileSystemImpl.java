@@ -213,7 +213,18 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     /// Whether a forward-only 7z entry body is currently open.
     private boolean entryOpen;
 
-    /// Creates a 7z file system implementation.
+    /// Creates a path- or volume-backed 7z file system implementation.
+    ///
+    /// Exactly one of `archivePath` and `volumes` must be non-`null`. Ownership of a supplied volume source transfers
+    /// to this operation and the source is closed either when initialization fails or when the file system closes.
+    ///
+    /// @param provider the provider exposed by the returned file system and its paths
+    /// @param archivePath the archive path to read, create, or update, or `null` when `volumes` supplies the input
+    /// @param volumes the owned ordered input volumes, or `null` when `archivePath` supplies the backing archive
+    /// @param config the validated access, encoding, staging, publication, limits, and thread-safety configuration
+    /// @throws IllegalArgumentException if the backing source and configured access mode are inconsistent
+    /// @throws IOException if the archive, output, or staging storage cannot be opened or existing metadata cannot be
+    ///                     parsed
     public SevenZipArkivoFileSystemImpl(
             SevenZipArkivoFileSystemProvider provider,
             @Nullable Path archivePath,
@@ -231,7 +242,19 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
         );
     }
 
-    /// Creates a 7z file system implementation with a close action.
+    /// Creates a path- or volume-backed 7z file system implementation with a close action.
+    ///
+    /// Exactly one of `archivePath` and `volumes` must be non-`null`. Ownership of a supplied volume source transfers
+    /// to this operation. The close action is also invoked if initialization fails after ownership has transferred.
+    ///
+    /// @param provider the provider exposed by the returned file system and its paths
+    /// @param archivePath the archive path to read, create, or update, or `null` when `volumes` supplies the input
+    /// @param volumes the owned ordered input volumes, or `null` when `archivePath` supplies the backing archive
+    /// @param config the validated access, encoding, staging, publication, limits, and thread-safety configuration
+    /// @param closeAction the action invoked after owned backing resources are closed, or `null` for no callback
+    /// @throws IllegalArgumentException if the backing source and configured access mode are inconsistent
+    /// @throws IOException if the archive, output, or staging storage cannot be opened or existing metadata cannot be
+    ///                     parsed
     public SevenZipArkivoFileSystemImpl(
             SevenZipArkivoFileSystemProvider provider,
             @Nullable Path archivePath,
@@ -251,6 +274,16 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Creates a forward-only 7z file system over an explicit transactional volume target.
+    ///
+    /// The target remains caller-owned. The file system owns the transaction obtained from it and commits all volumes
+    /// only after the archive is finalized on close; initialization or close failure rolls back unpublished output.
+    ///
+    /// @param provider the provider exposed by the returned file system and its paths
+    /// @param outputTarget the caller-owned factory for the output-volume transaction
+    /// @param splitSize the positive maximum number of bytes written to each output volume
+    /// @param config the validated forward-only write configuration; it must not contain a separate split-size option
+    /// @throws IllegalArgumentException if `splitSize` is not positive or the target conflicts with `config`
+    /// @throws IOException if seekable staging or the output transaction cannot be initialized
     public SevenZipArkivoFileSystemImpl(
             SevenZipArkivoFileSystemProvider provider,
             ArkivoVolumeTarget outputTarget,
@@ -261,6 +294,17 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Creates a complete-rewrite 7z update file system over explicit volume input and output.
+    ///
+    /// Ownership of `volumes` transfers to this operation. `outputTarget` remains caller-owned, while the file system
+    /// owns its transaction and commits rewritten volumes only after successful finalization on close.
+    ///
+    /// @param provider the provider exposed by the returned file system and its paths
+    /// @param volumes the owned ordered input volumes, closed on initialization failure or file-system close
+    /// @param outputTarget the caller-owned factory for the replacement-volume transaction
+    /// @param splitSize the positive maximum number of bytes written to each replacement volume
+    /// @param config the validated complete-rewrite update configuration without a single-file commit target
+    /// @throws IllegalArgumentException if the split size, update mode, or publication settings are inconsistent
+    /// @throws IOException if the source archive, staging storage, or output transaction cannot be initialized
     public SevenZipArkivoFileSystemImpl(
             SevenZipArkivoFileSystemProvider provider,
             ArkivoVolumeSource volumes,
@@ -499,11 +543,15 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Returns the archive URI, or `null` when backed by an explicit volume source or output target.
+    ///
+    /// @return the normalized URI of the absolute archive path, or `null` when no path backs this file system
     public @Nullable URI archiveUri() {
         return archivePath != null ? archivePath.toUri().normalize() : null;
     }
 
     /// Returns the file store exposed by this file system.
+    ///
+    /// @return the fixed read-only or writable 7z file-store descriptor selected at construction
     public FileStore fileStore() {
         return fileStore;
     }
@@ -783,6 +831,17 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Opens a byte channel for an entry.
+    ///
+    /// Read channels and update-mode channels provide random access and begin at position zero unless append was
+    /// requested. A forward-only write channel exposes its increasing position but rejects repositioning and
+    /// truncation to any other size; closing it commits that entry body to the archive writer.
+    ///
+    /// @param path the entry to open in this file system
+    /// @param options the read, creation, truncation, append, and write options for the requested access mode
+    /// @param attributes initial attributes for a newly created entry; only supported creation attributes are accepted
+    /// @return a channel owned by the caller and tracked by the file system until the channel is closed
+    /// @throws IOException if the entry cannot be found, created, decoded, staged, or opened
+    /// @throws UnsupportedOperationException if an option, attribute, or access combination is unsupported
     public SeekableByteChannel newByteChannel(
             Path path,
             Set<? extends OpenOption> options,
@@ -843,6 +902,17 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Opens an output stream for a writable file entry.
+    ///
+    /// In update mode, the body is staged and becomes part of the pending rewrite when the stream closes. In
+    /// forward-only mode, only one entry body may be open and closing the stream finalizes that entry. The archive or
+    /// volume transaction itself is published only when the file system closes successfully.
+    ///
+    /// @param path the regular-file entry to create or replace
+    /// @param options the creation, truncation, append, and write options; an empty array selects create, truncate, and
+    ///                write behavior
+    /// @return an output stream positioned according to the requested options and owned by the caller
+    /// @throws IOException if the entry cannot be created, staged, or opened for output
+    /// @throws UnsupportedOperationException if the file system is read-only or an option is unsupported in its mode
     public OutputStream newOutputStream(Path path, OpenOption... options) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
             return manageOutputStream(newOutputStream(path, Set.of(options)));
@@ -897,6 +967,14 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Creates a new directory entry in a writable archive.
+    ///
+    /// The new directory is immediately reflected by update mode or emitted by forward-only mode; publication of the
+    /// completed archive remains deferred until file-system close.
+    ///
+    /// @param directory the archive path of the directory to create
+    /// @param attributes initial attributes for the directory; currently POSIX permissions are supported
+    /// @throws IOException if the entry already exists, its parent is not a directory, or it cannot be staged or encoded
+    /// @throws UnsupportedOperationException if the file system is read-only or an initial attribute is unsupported
     public void createDirectory(Path directory, FileAttribute<?>... attributes) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
             Objects.requireNonNull(attributes, "attributes");
@@ -931,6 +1009,15 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Creates a new symbolic link entry in a writable archive.
+    ///
+    /// The target path is stored as UTF-8 archive path text and is not resolved or required to exist.
+    ///
+    /// @param link the archive path of the symbolic-link entry to create
+    /// @param target the target text to store in the new entry
+    /// @param attributes initial attributes for the link itself; currently POSIX permissions are supported
+    /// @throws IOException if the entry already exists, its parent is not a directory, or link data cannot be staged or
+    ///                     encoded
+    /// @throws UnsupportedOperationException if the file system is read-only or an initial attribute is unsupported
     public void createSymbolicLink(Path link, Path target, FileAttribute<?>... attributes) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
             Objects.requireNonNull(target, "target");
@@ -980,6 +1067,13 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Deletes one entry from an update-mode archive.
+    ///
+    /// The deletion changes only the pending complete-rewrite view until the file system publishes the archive on
+    /// close. The synthetic root and non-empty directories cannot be deleted.
+    ///
+    /// @param path the existing entry to remove
+    /// @throws IOException if the entry does not exist, is a non-empty directory, or is currently open for update
+    /// @throws ReadOnlyFileSystemException if this file system is not in complete-rewrite update mode
     public void delete(Path path) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
             deleteLocked(path);
@@ -1014,6 +1108,18 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Moves one entry and any descendants inside an update-mode archive.
+    ///
+    /// Moving a directory remaps every descendant in the pending archive index. `StandardCopyOption.REPLACE_EXISTING`
+    /// permits replacement of a compatible target; `StandardCopyOption.ATOMIC_MOVE` is accepted because publication is
+    /// already deferred to the archive transaction.
+    ///
+    /// @param source the existing entry or directory subtree to move
+    /// @param target the destination archive path
+    /// @param options the supported replacement or atomic-move options
+    /// @throws IOException if the source or parent is missing, the target conflicts, or an open update channel prevents
+    ///                     the move
+    /// @throws ReadOnlyFileSystemException if this file system is not in complete-rewrite update mode
+    /// @throws UnsupportedOperationException if an option is not supported
     public void move(Path source, Path target, CopyOption... options) throws IOException {
         try (Operation ignored = beginWriteOperation()) {
             moveLocked(source, target, options);
@@ -1119,6 +1225,16 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Updates one named entry attribute in update mode.
+    ///
+    /// Attribute changes update the pending complete-rewrite view and are published only when the file system closes.
+    ///
+    /// @param path the existing entry whose metadata is changed
+    /// @param attribute the `[view:]name` identifying a basic, POSIX, or 7z entry attribute
+    /// @param value the new attribute value, or `null` where the selected attribute supports clearing its stored value
+    /// @param options link-handling options supplied by the provider entry point
+    /// @throws IOException if the entry does not exist or is currently open for update
+    /// @throws ReadOnlyFileSystemException if this file system is not in complete-rewrite update mode
+    /// @throws UnsupportedOperationException if the view, attribute name, or value operation is unsupported
     public void setAttribute(Path path, String attribute, @Nullable Object value, LinkOption... options)
             throws IOException {
         try (Operation ignored = beginWriteOperation()) {
@@ -1145,6 +1261,16 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Opens an input stream for an entry.
+    ///
+    /// The returned stream begins at the first decoded byte and verifies declared integrity data as it is consumed.
+    /// Closing either the stream or the file system releases its decoder and underlying archive channels.
+    ///
+    /// @param path the regular-file or symbolic-link entry to read
+    /// @param options read options; the empty array and `StandardOpenOption.READ` are accepted
+    /// @return a decoded input stream owned by the caller and tracked by the file system until closed
+    /// @throws IOException if the entry is missing, is a directory, exceeds a configured limit, fails integrity
+    ///                     verification, or cannot be decoded
+    /// @throws UnsupportedOperationException if an option requests non-read access
     public InputStream newInputStream(Path path, OpenOption... options) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             return manageInputStream(newInputStreamLocked(path, options));
@@ -1274,6 +1400,14 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Opens a directory stream.
+    ///
+    /// The returned stream iterates a snapshot of the directory's immediate children and supports one iterator. The
+    /// caller owns the stream; closing the file system also closes any directory streams still registered with it.
+    ///
+    /// @param directory the existing directory whose immediate children are listed
+    /// @param filter the predicate applied to each child as it is iterated
+    /// @return a managed directory stream over the matching child paths
+    /// @throws IOException if `directory` does not exist, is not a directory, or cannot be accessed
     public DirectoryStream<Path> newDirectoryStream(
             Path directory,
             DirectoryStream.Filter<? super Path> filter
@@ -1293,6 +1427,13 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Checks access to a path.
+    ///
+    /// An empty mode array performs an existence check. Read-only file systems accept only read access; forward-only
+    /// writers accept only write access to known paths; update mode accepts read and write but not execute access.
+    ///
+    /// @param path the path whose existence and accessibility are checked
+    /// @param modes the requested access modes, or an empty array to check only existence
+    /// @throws IOException if the path does not exist or a requested mode is denied
     public void checkAccess(Path path, AccessMode... modes) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             if (updateMode) {
@@ -1320,6 +1461,13 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Reads a symbolic link target.
+    ///
+    /// The stored UTF-8 target text is converted to a path in this file system without resolving it against the link or
+    /// checking whether the target exists.
+    ///
+    /// @param link the existing symbolic-link entry
+    /// @return a 7z path containing the stored target text
+    /// @throws IOException if the entry does not exist, is not a symbolic link, or its body cannot be decoded
     public Path readSymbolicLink(Path link) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             requireReadableFileSystem();
@@ -1333,6 +1481,13 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Returns a file attribute view for a path.
+    ///
+    /// @param <V> the requested attribute-view interface
+    /// @param path the path to which the view is bound
+    /// @param type the basic, owner, POSIX, or 7z attribute-view type
+    /// @param options options controlling whether the provider entry point resolves a symbolic link before binding
+    /// @return a new view bound to `path`, or `null` when the type is unsupported, the path is absent, or a forward-only
+    ///         writer cannot expose indexed attributes
     public <V extends FileAttributeView> @Nullable V getFileAttributeView(
             Path path,
             Class<V> type,
@@ -1368,6 +1523,14 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Reads file attributes for a path.
+    ///
+    /// @param <A> the requested basic-attribute interface
+    /// @param path the existing path whose current metadata is read
+    /// @param type `BasicFileAttributes`, `PosixFileAttributes`, or `SevenZipArkivoEntryAttributes`
+    /// @return an immutable snapshot implementing the requested attribute interface
+    /// @throws IOException if the path does not exist or its metadata cannot be read
+    /// @throws UnsupportedOperationException if `type` is unsupported or 7z-specific attributes are requested for the
+    ///                                       synthetic root
     public <A extends BasicFileAttributes> A readAttributes(Path path, Class<A> type) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             requireReadableFileSystem();
@@ -1389,6 +1552,14 @@ public final class SevenZipArkivoFileSystemImpl extends SevenZipArkivoFileSystem
     }
 
     /// Reads named file attributes for a path.
+    ///
+    /// @param path the existing path whose current metadata is read
+    /// @param attributes a comma-separated attribute selection in `[view:]name` form, or `[view:]*` for every attribute
+    /// @return an unmodifiable map from requested attribute names to snapshot values
+    /// @throws IOException if the path does not exist or its metadata cannot be read
+    /// @throws IllegalArgumentException if the selection contains no attribute name
+    /// @throws UnsupportedOperationException if the selected view is unsupported or 7z-specific attributes are
+    ///                                       requested for the synthetic root
     public Map<String, Object> readAttributes(Path path, String attributes) throws IOException {
         try (Operation ignored = beginReadOperation()) {
             return readAttributesLocked(path, attributes);

@@ -13,6 +13,10 @@ import java.util.List;
 import java.util.Objects;
 
 /// Describes the discoverable LZ4 frame family decoded by the standard codec.
+///
+/// This immutable descriptor recognizes standard, legacy, and skippable magic values without changing the supplied
+/// buffer. Prefix recognition does not validate the frame descriptor, blocks, or checksums. The default codec encodes
+/// only standard frames.
 @NotNullByDefault
 public final class LZ4Format implements CompressionFormat {
     /// The stable standard LZ4 frame format name.
@@ -38,6 +42,8 @@ public final class LZ4Format implements CompressionFormat {
     }
 
     /// Returns the canonical LZ4 frame format instance.
+    ///
+    /// @return the shared immutable format descriptor
     public static LZ4Format instance() {
         return INSTANCE;
     }
@@ -78,6 +84,9 @@ public final class LZ4Format implements CompressionFormat {
     }
 
     /// Returns whether an unsigned 32-bit value identifies an LZ4 skippable frame.
+    ///
+    /// @param magic the unsigned little-endian frame magic value
+    /// @return `true` for values from [#FIRST_SKIPPABLE_FRAME_MAGIC] through [#LAST_SKIPPABLE_FRAME_MAGIC]
     public static boolean isSkippableFrameMagic(long magic) {
         return magic >= FIRST_SKIPPABLE_FRAME_MAGIC && magic <= LAST_SKIPPABLE_FRAME_MAGIC;
     }

@@ -31,11 +31,18 @@ public record PasswordEncryption(String scheme, int keyLengthBits) {
     }
 
     /// Creates an encryption description whose key length is unknown or inapplicable.
+    ///
+    /// @param scheme the non-blank stable encryption scheme name
+    /// @return an encryption description with {@link #UNKNOWN_KEY_LENGTH}
     public static PasswordEncryption of(String scheme) {
         return new PasswordEncryption(scheme, UNKNOWN_KEY_LENGTH);
     }
 
     /// Creates an encryption description with a known key length.
+    ///
+    /// @param scheme        the non-blank stable encryption scheme name
+    /// @param keyLengthBits the positive encryption key length in bits
+    /// @return an encryption description with the specified key length
     public static PasswordEncryption of(String scheme, int keyLengthBits) {
         return new PasswordEncryption(scheme, keyLengthBits);
     }

@@ -10,6 +10,9 @@ import org.jetbrains.annotations.Unmodifiable;
 import java.nio.ByteBuffer;
 
 /// Describes the discoverable XZ compression format.
+///
+/// This immutable descriptor recognizes the six-byte XZ Stream Header magic without changing the supplied buffer.
+/// Stream flags, Header CRC, Blocks, Index, and Footer are validated only by the decoder.
 @NotNullByDefault
 public final class XZFormat implements CompressionFormat {
     /// The stable XZ format name.
@@ -28,6 +31,8 @@ public final class XZFormat implements CompressionFormat {
     }
 
     /// Returns the canonical XZ format instance.
+    ///
+    /// @return the canonical format instance
     public static XZFormat instance() {
         return INSTANCE;
     }

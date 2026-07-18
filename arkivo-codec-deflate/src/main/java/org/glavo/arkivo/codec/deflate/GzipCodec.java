@@ -17,6 +17,13 @@ import java.io.IOException;
 import java.util.Objects;
 
 /// Provides an immutable gzip configuration and pure Java member engines.
+///
+/// Each frame is one gzip member with its own header, Deflate payload, CRC-32, and decoded-size trailer. `flush`
+/// exposes a decodable Deflate boundary inside the active member; `finishFrame` completes that member and preserves the
+/// immutable configuration for a following member; terminal `finish` ends the complete encoding session.
+///
+/// Codec values are safe for concurrent use and created engines are independent mutable sessions. Decoders enforce the
+/// fixed 32 KiB Deflate window and verify member trailers.
 @NotNullByDefault
 public final class GzipCodec
         implements CompressionCodec.LevelConfigurable<GzipCodec>,

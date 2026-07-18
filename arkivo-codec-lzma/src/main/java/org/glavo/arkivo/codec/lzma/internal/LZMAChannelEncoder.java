@@ -43,6 +43,13 @@ public final class LZMAChannelEncoder implements CompressingWritableByteChannel 
     private boolean open = true;
 
     /// Creates an EOS-terminated LZMA-alone encoder with the requested dictionary size.
+    ///
+    /// @param target the channel receiving the LZMA-alone stream
+    /// @param ownership whether finishing or closing this encoder also closes {@code target}
+    /// @param dictionarySize the dictionary size written to the stream header, in bytes
+    /// @throws IOException if the header cannot be written to {@code target}
+    /// @throws NullPointerException if {@code target} or {@code ownership} is {@code null}
+    /// @throws IllegalArgumentException if {@code dictionarySize} is outside the supported range
     public LZMAChannelEncoder(
             WritableByteChannel target,
             ResourceOwnership ownership,
@@ -57,6 +64,14 @@ public final class LZMAChannelEncoder implements CompressingWritableByteChannel 
     }
 
     /// Creates an LZMA-alone encoder with complete model properties and an optional exact input size.
+    ///
+    /// @param target the channel receiving the LZMA-alone stream
+    /// @param ownership whether finishing or closing this encoder also closes {@code target}
+    /// @param properties the model properties written to the stream header
+    /// @param expectedSize the exact uncompressed size, or {@link CompressionCodec#UNKNOWN_SIZE}
+    /// @throws IOException if the header cannot be written to {@code target}
+    /// @throws NullPointerException if {@code target}, {@code ownership}, or {@code properties} is {@code null}
+    /// @throws IllegalArgumentException if {@code expectedSize} is less than {@link CompressionCodec#UNKNOWN_SIZE}
     public LZMAChannelEncoder(
             WritableByteChannel target,
             ResourceOwnership ownership,
@@ -97,6 +112,8 @@ public final class LZMAChannelEncoder implements CompressingWritableByteChannel 
     }
 
     /// Writes currently staged complete range-coded bytes to the target.
+    ///
+    /// @throws IOException if the encoder is closed or the target cannot accept the staged bytes
     public void flush() throws IOException {
         ensureOpen();
         encoder.flush();

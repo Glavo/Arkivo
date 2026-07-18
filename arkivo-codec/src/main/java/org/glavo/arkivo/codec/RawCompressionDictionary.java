@@ -22,11 +22,17 @@ public final class RawCompressionDictionary implements CompressionDictionary {
     }
 
     /// Creates a raw dictionary by copying the supplied bytes.
+    ///
+    /// @param bytes the raw history bytes to copy
+    /// @return an immutable raw dictionary
     public static RawCompressionDictionary of(byte[] bytes) {
         return new RawCompressionDictionary(bytes);
     }
 
     /// Creates a raw dictionary by copying the buffer's remaining bytes without changing its state.
+    ///
+    /// @param buffer the source buffer, read from its current position to its limit without modification
+    /// @return an immutable raw dictionary
     public static RawCompressionDictionary of(ByteBuffer buffer) {
         Objects.requireNonNull(buffer, "buffer");
         ByteBuffer source = buffer.slice();
@@ -36,16 +42,22 @@ public final class RawCompressionDictionary implements CompressionDictionary {
     }
 
     /// Returns a copy of the raw history bytes.
+    ///
+    /// @return a new mutable copy
     public byte[] bytes() {
         return bytes.clone();
     }
 
     /// Returns an independent read-only view of the raw history bytes at position zero.
+    ///
+    /// @return a new read-only buffer view
     public @UnmodifiableView ByteBuffer buffer() {
         return ByteBuffer.wrap(bytes).asReadOnlyBuffer();
     }
 
     /// Returns the number of raw history bytes.
+    ///
+    /// @return the dictionary size in bytes
     public int size() {
         return bytes.length;
     }

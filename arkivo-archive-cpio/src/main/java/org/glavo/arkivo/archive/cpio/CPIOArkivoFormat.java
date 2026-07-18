@@ -19,7 +19,12 @@ import java.nio.channels.WritableByteChannel;
 import java.util.List;
 import java.util.Objects;
 
-/// Describes CPIO streaming support provided by Arkivo.
+/// Describes Arkivo's forward-only CPIO support.
+///
+/// This descriptor probes all four supported header dialects and opens streaming readers and writers. Generic creation
+/// options retain the new ASCII dialect, UTF-8 metadata, big-endian old-binary word order, and 512-byte block size.
+/// Factory methods transfer source or target ownership to the returned reader or writer, which closes it with the
+/// archive cursor.
 @NotNullByDefault
 public final class CPIOArkivoFormat implements ArkivoStreamingReaderFormat, ArkivoStreamingWriterFormat {
     /// The stable CPIO format name.
@@ -33,6 +38,8 @@ public final class CPIOArkivoFormat implements ArkivoStreamingReaderFormat, Arki
     }
 
     /// Returns the shared CPIO format descriptor.
+    ///
+    /// @return the process-wide immutable descriptor
     public static CPIOArkivoFormat instance() {
         return INSTANCE;
     }

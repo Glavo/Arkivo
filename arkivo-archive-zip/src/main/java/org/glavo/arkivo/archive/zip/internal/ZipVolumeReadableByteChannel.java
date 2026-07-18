@@ -33,6 +33,13 @@ public final class ZipVolumeReadableByteChannel implements ReadableByteChannel {
     private boolean open = true;
 
     /// Opens all source volumes and transfers successful reader ownership to this wrapper.
+    ///
+    /// Every consecutive volume channel is opened, its size is snapshotted, and physical byte offset zero becomes the
+    /// volume's logical start. A setup failure closes channels already opened but leaves the source caller-owned.
+    ///
+    /// @param source the finite volume source to own after successful construction
+    /// @throws NullPointerException if `source` is `null`
+    /// @throws IOException if volume zero is absent or a volume cannot be opened, sized, or cleaned up after failure
     public ZipVolumeReadableByteChannel(ArkivoVolumeSource source) throws IOException {
         this.source = Objects.requireNonNull(source, "source");
         this.channel = ArkivoVolumeChannel.open(source);

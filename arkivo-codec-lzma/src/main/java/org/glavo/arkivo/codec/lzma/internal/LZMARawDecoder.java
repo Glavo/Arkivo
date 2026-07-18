@@ -52,6 +52,9 @@ public final class LZMARawDecoder implements CompressionDecoder {
     /// @param properties        LZMA model and dictionary properties
     /// @param decodedSize       exact decoded size, or `CompressionCodec.UNKNOWN_SIZE`
     /// @param maximumWindowSize maximum permitted dictionary allocation
+    /// @throws IOException if the dictionary size exceeds {@code maximumWindowSize}
+    /// @throws NullPointerException if {@code properties} is {@code null}
+    /// @throws IllegalArgumentException if {@code decodedSize} is less than {@link CompressionCodec#UNKNOWN_SIZE}
     public LZMARawDecoder(
             LZMAProperties properties,
             long decodedSize,

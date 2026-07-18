@@ -25,7 +25,18 @@ import java.util.Set;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-/// Provides shared behavior for archive-backed file systems.
+/// Provides lifecycle and operation coordination for archive-backed file systems.
+///
+/// Subclasses participate in the selected [ArkivoFileSystemThreadSafety] contract by enclosing each implementation
+/// operation in the token returned by [#beginReadOperation()] or [#beginWriteOperation()]. Read tokens may coexist;
+/// write and close tokens wait for and exclude all other coordinated operations. This coordination classifies operations
+/// across the file system but does not make concurrent calls on the same mutable stream, channel, iterator, or path
+/// object safe.
+///
+/// Entry resources returned to callers should be passed through the appropriate `manage` method. With
+/// [ArkivoFileSystemThreadSafety#CONCURRENT_READ], wrappers reject work after coordinated close but remain caller-owned.
+/// With [ArkivoFileSystemThreadSafety#STRICT], close first force-closes registered wrappers. With
+/// [ArkivoFileSystemThreadSafety#NONE], operation tokens are no-ops and `manage` methods return their arguments unchanged.
 @NotNullByDefault
 public abstract class ArkivoFileSystem extends FileSystem {
     /// The requested file system thread-safety strategy.
@@ -47,12 +58,16 @@ public abstract class ArkivoFileSystem extends FileSystem {
     /// Whether a close operation has completed and new coordinated operations must be rejected.
     private volatile boolean lifecycleClosed;
 
-    /// Creates an archive-backed file system.
+    /// Creates an archive-backed file system with concurrent reads and serialized writes.
     protected ArkivoFileSystem() {
         this(ArkivoFileSystemThreadSafety.CONCURRENT_READ);
     }
 
     /// Creates an archive-backed file system with a thread-safety strategy.
+    ///
+    /// Subclasses must consistently use the operation and resource-management methods for this strategy to be effective.
+    ///
+    /// @param threadSafety the lifecycle coordination strategy
     protected ArkivoFileSystem(ArkivoFileSystemThreadSafety threadSafety) {
         this.threadSafety = Objects.requireNonNull(threadSafety, "threadSafety");
         this.operationLock = threadSafety == ArkivoFileSystemThreadSafety.NONE
@@ -61,21 +76,42 @@ public abstract class ArkivoFileSystem extends FileSystem {
     }
 
     /// Returns the requested file system thread-safety strategy.
+    ///
+    /// @return this file system's lifecycle coordination strategy
     public final ArkivoFileSystemThreadSafety threadSafety() {
         return threadSafety;
     }
 
     /// Begins one coordinated read operation.
+    ///
+    /// The call may block behind a write or close operation. After coordinated close completes it throws
+    /// [ClosedFileSystemException]. The returned token must be closed, normally by try-with-resources.
+    ///
+    /// @return a token that releases the shared operation lock when closed
+    /// @throws ClosedFileSystemException if coordinated close has completed or is running on another thread
     protected final Operation beginReadOperation() {
         return beginOperation(false);
     }
 
     /// Begins one coordinated mutating operation.
+    ///
+    /// The call may block until all earlier read and write operations release their tokens. After coordinated close
+    /// completes it throws [ClosedFileSystemException]. The returned token must be closed.
+    ///
+    /// @return a token that releases the exclusive operation lock when closed
+    /// @throws ClosedFileSystemException if coordinated close has completed or is running on another thread
     protected final Operation beginWriteOperation() {
         return beginOperation(true);
     }
 
     /// Begins a close operation that excludes other coordinated operations and closes strict-mode resources.
+    ///
+    /// The call blocks until all coordinated operations finish, then prevents new operations from starting. In strict
+    /// mode it attempts to close every registered resource before returning. Subclass backing-resource cleanup belongs
+    /// inside the returned token's scope; closing the token marks coordinated close complete, releases the exclusive
+    /// lock, and reports any strict-resource cleanup failure.
+    ///
+    /// @return a token that completes coordinated close and releases the exclusive operation lock
     protected final CloseOperation beginCloseOperation() {
         @Nullable ReentrantReadWriteLock currentLock = operationLock;
         @Nullable Lock writeLock = null;
@@ -104,36 +140,70 @@ public abstract class ArkivoFileSystem extends FileSystem {
     }
 
     /// Coordinates a seekable read-only channel with this file system's lifecycle.
+    ///
+    /// The returned wrapper owns the delegate and closes it when the wrapper closes. In strict mode the file system may
+    /// close it first. The delegate itself is returned unchanged when synchronization is disabled.
+    ///
+    /// @param channel the channel whose ownership is transferred to the returned managed resource
+    /// @return a lifecycle-coordinated channel, or {@code channel} when synchronization is disabled
     protected final SeekableByteChannel manageReadChannel(SeekableByteChannel channel) {
         Objects.requireNonNull(channel, "channel");
         return operationLock == null ? channel : new ManagedSeekableByteChannel(this, channel, false);
     }
 
     /// Coordinates a forward-only readable channel with this file system's lifecycle.
+    ///
+    /// The returned wrapper owns the delegate and treats its reads as coordinated read operations.
+    ///
+    /// @param channel the channel whose ownership is transferred to the returned managed resource
+    /// @return a lifecycle-coordinated channel, or {@code channel} when synchronization is disabled
     protected final ReadableByteChannel manageReadableChannel(ReadableByteChannel channel) {
         Objects.requireNonNull(channel, "channel");
         return operationLock == null ? channel : new ManagedReadableByteChannel(this, channel);
     }
 
     /// Coordinates a seekable writable channel with this file system's lifecycle.
+    ///
+    /// Every wrapper operation, including reads and position queries, uses exclusive coordination because the channel
+    /// represents mutable entry state. The wrapper owns the delegate.
+    ///
+    /// @param channel the channel whose ownership is transferred to the returned managed resource
+    /// @return a lifecycle-coordinated channel, or {@code channel} when synchronization is disabled
     protected final SeekableByteChannel manageWriteChannel(SeekableByteChannel channel) {
         Objects.requireNonNull(channel, "channel");
         return operationLock == null ? channel : new ManagedSeekableByteChannel(this, channel, true);
     }
 
     /// Coordinates a readable stream with this file system's lifecycle.
+    ///
+    /// The returned stream owns the delegate and coordinates reads, skips, availability, marks, and resets.
+    ///
+    /// @param input the stream whose ownership is transferred to the returned managed resource
+    /// @return a lifecycle-coordinated stream, or {@code input} when synchronization is disabled
     protected final InputStream manageInputStream(InputStream input) {
         Objects.requireNonNull(input, "input");
         return operationLock == null ? input : new ManagedInputStream(this, input);
     }
 
     /// Coordinates a writable stream with this file system's lifecycle.
+    ///
+    /// The returned stream owns the delegate and coordinates writes and flushes as exclusive operations.
+    ///
+    /// @param output the stream whose ownership is transferred to the returned managed resource
+    /// @return a lifecycle-coordinated stream, or {@code output} when synchronization is disabled
     protected final OutputStream manageOutputStream(OutputStream output) {
         Objects.requireNonNull(output, "output");
         return operationLock == null ? output : new ManagedOutputStream(this, output);
     }
 
     /// Coordinates a directory stream with this file system's lifecycle.
+    ///
+    /// The returned stream owns the delegate. Iterator traversal uses read coordination and iterator removal uses write
+    /// coordination.
+    ///
+    /// @param <P> the directory entry type
+    /// @param stream the directory stream whose ownership is transferred to the returned managed resource
+    /// @return a lifecycle-coordinated directory stream, or {@code stream} when synchronization is disabled
     protected final <P> DirectoryStream<P> manageDirectoryStream(DirectoryStream<P> stream) {
         Objects.requireNonNull(stream, "stream");
         return operationLock == null ? stream : new ManagedDirectoryStream<>(this, stream);
@@ -206,6 +276,9 @@ public abstract class ArkivoFileSystem extends FileSystem {
     }
 
     /// Represents one held file system operation lock.
+    ///
+    /// Instances are scope tokens rather than reusable locks. Closing a token is idempotent; the no-synchronization
+    /// strategy returns a shared no-op token.
     @NotNullByDefault
     protected static final class Operation implements AutoCloseable {
         /// The shared no-op operation used when synchronization is disabled.
@@ -231,6 +304,8 @@ public abstract class ArkivoFileSystem extends FileSystem {
     }
 
     /// Represents an exclusive close operation and any strict resource-close failure.
+    ///
+    /// This token must be closed even when subclass backing cleanup fails. Its close operation is idempotent.
     @NotNullByDefault
     protected static final class CloseOperation implements AutoCloseable {
         /// The file system whose lifecycle this operation closes.

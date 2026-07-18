@@ -25,6 +25,13 @@ public interface TarMetadataCharsetDetector extends ArchiveMetadataCharsetDetect
     int UNKNOWN_TYPE_FLAG = -1;
 
     /// Detects the charset of one TAR metadata value, or returns `null` when it is unknown.
+    ///
+    /// The context's buffer position identifies the first byte and its limit identifies the exclusive end. A detector
+    /// may change that view's position while inspecting it; doing so does not change the reader's source position.
+    ///
+    /// @param context the raw value and available TAR field context, valid only for this invocation
+    /// @return the charset to use, or `null` to request the reader's UTF-8 fallback
+    /// @throws IOException if detection requires external data that cannot be read
     @Nullable Charset detect(Context context) throws IOException;
 
     /// Detects bytes without explicit TAR context by supplying an unknown context.

@@ -22,9 +22,18 @@ public interface ArkivoPathVolumeFormat extends ArkivoFormat {
     ///
     /// The returned list starts with logical volume zero, is immutable, and contains at least two paths. This method
     /// returns `null` when the path does not identify a recognized multi-volume layout.
+    ///
+    /// @param path the candidate archive path
+    /// @return ordered physical volume paths, or {@code null} if {@code path} does not identify a split layout
+    /// @throws IOException if the surrounding storage cannot be inspected
     @Nullable @Unmodifiable List<Path> discoverVolumePaths(Path path) throws IOException;
 
     /// Opens a path-backed volume source, using one physical volume when no split layout is discovered.
+    ///
+    /// @param path the archive path or one member recognized by this format's volume convention
+    /// @return a new source over the discovered volumes, or over {@code path} alone when no split layout is found
+    /// @throws IOException           if volume discovery fails
+    /// @throws IllegalStateException if discovery returns fewer than two paths
     default ArkivoVolumeSource openVolumeSource(Path path) throws IOException {
         Objects.requireNonNull(path, "path");
         @Nullable @Unmodifiable List<Path> volumePaths = discoverVolumePaths(path);

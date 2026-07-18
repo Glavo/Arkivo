@@ -12,6 +12,9 @@ public final class DecompressionMemoryLimitException extends DecompressionLimitE
     private static final long serialVersionUID = 0L;
 
     /// Creates an exception for one exceeded decoder working-memory limit.
+    ///
+    /// @param maximumMemorySize the configured non-negative maximum
+    /// @param requiredMemorySize the required size greater than {@code maximumMemorySize}
     public DecompressionMemoryLimitException(long maximumMemorySize, long requiredMemorySize) {
         super(
                 "Required decoder memory of " + requiredMemorySize
@@ -23,11 +26,15 @@ public final class DecompressionMemoryLimitException extends DecompressionLimitE
     }
 
     /// Returns the configured maximum decoder working-memory size.
+    ///
+    /// @return the configured maximum in bytes
     public long maximumMemorySize() {
         return maximum();
     }
 
     /// Returns the decoder working-memory size required by the codec configuration.
+    ///
+    /// @return the required size in bytes
     public long requiredMemorySize() {
         return actual();
     }

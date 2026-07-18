@@ -12,6 +12,9 @@ import java.nio.ByteBuffer;
 import java.util.List;
 
 /// Describes the discoverable lzip compression format.
+///
+/// This immutable descriptor recognizes the fixed lzip member magic without changing the supplied buffer. Member
+/// version, dictionary size, payload, and trailer are validated only by the decoder.
 @NotNullByDefault
 public final class LzipFormat implements CompressionFormat {
     /// The stable lzip format name.
@@ -25,6 +28,8 @@ public final class LzipFormat implements CompressionFormat {
     }
 
     /// Returns the canonical lzip format instance.
+    ///
+    /// @return the canonical format instance
     public static LzipFormat instance() {
         return INSTANCE;
     }

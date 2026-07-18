@@ -37,6 +37,12 @@ public final class LZ4BlockDecoder implements CompressionDecoder {
     private State state = State.COLLECTING;
 
     /// Creates a decoder for one bounded raw LZ4 block.
+    ///
+    /// @param maximumBlockSize the maximum decoded byte count
+    /// @param maximumCompressedSize the maximum collected compressed byte count
+    /// @param maximumWindowSize the largest permitted match distance, or the unlimited sentinel
+    /// @param maximumMemorySize the working-memory bound, or the unlimited sentinel
+    /// @throws IllegalArgumentException if either block-size bound is negative
     public LZ4BlockDecoder(
             int maximumBlockSize,
             int maximumCompressedSize,

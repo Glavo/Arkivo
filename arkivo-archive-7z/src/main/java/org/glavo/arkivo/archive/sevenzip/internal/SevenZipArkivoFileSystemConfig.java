@@ -129,6 +129,16 @@ public final class SevenZipArkivoFileSystemConfig {
     private final ArchiveReadLimits readLimits;
 
     /// Creates parsed 7z file system configuration.
+    ///
+    /// @param openOptions the options used to select read-only, forward-only creation, or complete-rewrite update mode
+    /// @param passwordProvider the password source for encrypted input or output, or `null` when encryption is unavailable
+    /// @param compression the default compression for non-empty output entries
+    /// @param filters the preprocessing filter chain applied before `compression`
+    /// @param splitSize the positive output-volume limit, or `NO_SPLIT_SIZE` for single-volume output
+    /// @param encryptHeaders whether newly written archive metadata is encrypted
+    /// @param threadSafety the synchronization strategy for file-system operations
+    /// @throws IllegalArgumentException if `splitSize` or the access-mode combination is invalid
+    /// @throws UnsupportedOperationException if `openOptions` requests append or another unsupported access option
     public SevenZipArkivoFileSystemConfig(
             Set<? extends OpenOption> openOptions,
             @Nullable ArkivoPasswordProvider passwordProvider,
@@ -192,18 +202,32 @@ public final class SevenZipArkivoFileSystemConfig {
 
 
     /// Parses 7z file system configuration from archive options.
+    ///
+    /// @param options the generic options, interpreted with read-only access as the default
+    /// @return the validated 7z configuration, or `DEFAULTS` when no options override the read defaults
+    /// @throws IllegalArgumentException if mutually exclusive options are present or an option is invalid for the
+    ///                                  selected access mode
     public static SevenZipArkivoFileSystemConfig fromOptions(ArchiveOptions options) {
         return fromOptions(options, DEFAULT_READ_OPEN_OPTIONS);
     }
 
 
     /// Parses 7z output configuration from archive options.
+    ///
+    /// @param options the generic options, interpreted with create-or-replace write access as the default
+    /// @return a validated forward-only output configuration
+    /// @throws IllegalArgumentException if mutually exclusive options are present or an option is invalid for
+    ///                                  forward-only output
     public static SevenZipArkivoFileSystemConfig fromWriterOptions(ArchiveOptions options) {
         return fromOptions(options, DEFAULT_WRITE_OPEN_OPTIONS);
     }
 
 
     /// Parses 7z complete-rewrite update configuration from archive options.
+    ///
+    /// @param options the generic options, interpreted with read/write access as the default
+    /// @return a validated complete-rewrite update configuration
+    /// @throws IllegalArgumentException if mutually exclusive options are present or an option is invalid for update
     public static SevenZipArkivoFileSystemConfig fromUpdateOptions(ArchiveOptions options) {
         return fromOptions(
                 options,
@@ -275,6 +299,9 @@ public final class SevenZipArkivoFileSystemConfig {
     }
 
     /// Creates 7z configuration from a strongly typed read operation.
+    ///
+    /// @param options the password, storage, limits, and thread-safety settings for the read operation
+    /// @return a read-only configuration using the standard archive path open options
     public static SevenZipArkivoFileSystemConfig fromReadOptions(SevenZipArchiveOptions.Read options) {
         Objects.requireNonNull(options, "options");
         return new SevenZipArkivoFileSystemConfig(
@@ -294,11 +321,19 @@ public final class SevenZipArkivoFileSystemConfig {
     }
 
     /// Creates 7z configuration from a strongly typed creation operation.
+    ///
+    /// @param options the encoding, storage, and thread-safety settings for the creation operation
+    /// @return a single-volume create-or-replace configuration
     public static SevenZipArkivoFileSystemConfig fromCreateOptions(SevenZipArchiveOptions.Create options) {
         return fromCreateOptions(options, NO_SPLIT_SIZE, false);
     }
 
     /// Creates 7z configuration from a strongly typed creation operation with explicit split output.
+    ///
+    /// @param options the encoding, storage, and thread-safety settings for the creation operation
+    /// @param splitSize the positive output-volume limit, or `NO_SPLIT_SIZE` to disable splitting
+    /// @return a create-or-replace configuration that records the split-size choice as explicit
+    /// @throws IllegalArgumentException if `splitSize` is neither positive nor `NO_SPLIT_SIZE`
     public static SevenZipArkivoFileSystemConfig fromCreateOptions(
             SevenZipArchiveOptions.Create options,
             long splitSize
@@ -330,11 +365,19 @@ public final class SevenZipArkivoFileSystemConfig {
     }
 
     /// Creates 7z configuration from a strongly typed update operation.
+    ///
+    /// @param options the decoding, encoding, staging, publication, limits, and thread-safety settings for the update
+    /// @return a single-volume complete-rewrite update configuration
     public static SevenZipArkivoFileSystemConfig fromUpdateOptions(SevenZipArchiveOptions.Update options) {
         return fromUpdateOptions(options, NO_SPLIT_SIZE, false);
     }
 
     /// Creates 7z configuration from a strongly typed update operation with explicit split output.
+    ///
+    /// @param options the decoding, encoding, staging, publication, limits, and thread-safety settings for the update
+    /// @param splitSize the positive output-volume limit, or `NO_SPLIT_SIZE` to disable splitting
+    /// @return a complete-rewrite update configuration that records the split-size choice as explicit
+    /// @throws IllegalArgumentException if `splitSize` is neither positive nor `NO_SPLIT_SIZE`
     public static SevenZipArkivoFileSystemConfig fromUpdateOptions(
             SevenZipArchiveOptions.Update options,
             long splitSize
@@ -367,18 +410,24 @@ public final class SevenZipArkivoFileSystemConfig {
 
 
     /// Returns the open options used to open the backing archive path.
+    ///
+    /// @return the immutable, normalized archive-path open options
     public @Unmodifiable Set<OpenOption> openOptions() {
         return openOptions;
     }
 
 
     /// Returns whether the archive file should be opened for writes.
+    ///
+    /// @return `true` when the normalized open options include `StandardOpenOption.WRITE`
     public boolean archiveWritable() {
         return openOptions.contains(StandardOpenOption.WRITE);
     }
 
 
     /// Returns whether the archive should be opened for complete-rewrite updates.
+    ///
+    /// @return `true` when the normalized open options include both read and write access
     public boolean archiveUpdate() {
         return openOptions.contains(StandardOpenOption.READ)
                 && openOptions.contains(StandardOpenOption.WRITE);
@@ -386,88 +435,118 @@ public final class SevenZipArkivoFileSystemConfig {
 
 
     /// Returns the provider used to decrypt encrypted 7z content and metadata or encrypt newly written content.
+    ///
+    /// @return the password provider, or `null` when none was configured
     public @Nullable ArkivoPasswordProvider passwordProvider() {
         return passwordProvider;
     }
 
 
     /// Returns the default compression applied to non-empty output entries.
+    ///
+    /// @return the output compression configuration
     public SevenZipCompression compression() {
         return compression;
     }
 
 
     /// Returns the preprocessing filters applied in order before default output compression.
+    ///
+    /// @return the ordered output filter chain
     public SevenZipFilterChain filters() {
         return filters;
     }
 
 
     /// Returns the maximum number of non-empty files encoded into one solid folder.
+    ///
+    /// @return the positive solid-folder file limit
     public int solidFileCount() {
         return solidFileCount;
     }
 
 
     /// Returns the maximum size of each output volume, or `NO_SPLIT_SIZE` when split output is disabled.
+    ///
+    /// @return the positive volume-size limit, or `NO_SPLIT_SIZE`
     public long splitSize() {
         return splitSize;
     }
 
 
     /// Returns whether the split size was explicitly configured.
+    ///
+    /// @return `true` when the caller supplied the split-size choice rather than inheriting it
     public boolean splitSizeConfigured() {
         return splitSizeConfigured;
     }
 
 
     /// Returns whether new 7z archives should encrypt metadata headers.
+    ///
+    /// @return `true` when output metadata headers are encrypted
     public boolean encryptHeaders() {
         return encryptHeaders;
     }
 
 
     /// Returns the requested 7z file system thread-safety strategy.
+    ///
+    /// @return the synchronization strategy for file-system operations
     public ArkivoFileSystemThreadSafety threadSafety() {
         return threadSafety;
     }
 
 
     /// Returns the configured update entry storage, or `null` for the default temporary-file storage.
+    ///
+    /// @return the caller-supplied staging storage, or `null` to use temporary files
     public @Nullable ArkivoEditStorage editStorage() {
         return editStorage;
     }
 
 
     /// Returns the configured single-volume update commit target.
+    ///
+    /// @return the caller-supplied publication target, or `null` to replace the source path by default
     public @Nullable ArkivoCommitTarget commitTarget() {
         return commitTarget;
     }
 
 
     /// Returns the maximum accepted logical entry count, or `NO_READ_LIMIT`.
+    ///
+    /// @return the non-negative entry-count limit, or `NO_READ_LIMIT`
     public long maximumEntryCount() {
         return readLimits.maximumEntryCount();
     }
 
 
     /// Returns the maximum accepted logical size of one entry, or `NO_READ_LIMIT`.
+    ///
+    /// @return the non-negative per-entry decoded-size limit, or `NO_READ_LIMIT`
     public long maximumEntrySize() {
         return readLimits.maximumEntrySize();
     }
 
 
     /// Returns the maximum accepted sum of logical entry sizes, or `NO_READ_LIMIT`.
+    ///
+    /// @return the non-negative aggregate decoded-size limit, or `NO_READ_LIMIT`
     public long maximumTotalEntrySize() {
         return readLimits.maximumTotalEntrySize();
     }
 
-    /// Returns the maximum cumulative archive metadata size, or NO_READ_LIMIT.
+    /// Returns the maximum cumulative archive metadata size, or `NO_READ_LIMIT`.
+    ///
+    /// @return the non-negative metadata-size limit, or `NO_READ_LIMIT`
     public long maximumMetadataSize() {
         return readLimits.maximumMetadataSize();
     }
 
     /// Returns all resource limits for the archive read portion of this operation.
+    ///
+    /// @return the complete immutable read-limit policy
     public ArchiveReadLimits readLimits() {
         return readLimits;
     }

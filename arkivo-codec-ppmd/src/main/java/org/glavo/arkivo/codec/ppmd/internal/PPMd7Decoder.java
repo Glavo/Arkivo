@@ -44,6 +44,7 @@ public final class PPMd7Decoder implements CompressionDecoder {
     /// @param maximumOrder maximum Variant H context order from two through sixty-four
     /// @param memorySize model arena size in bytes
     /// @param decodedSize exact number of bytes the raw stream represents
+    /// @throws IOException if the model configuration is invalid or its arena cannot be allocated
     public PPMd7Decoder(int maximumOrder, long memorySize, long decodedSize) throws IOException {
         this.maximumOrder = maximumOrder;
         this.memorySize = memorySize;

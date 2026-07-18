@@ -428,16 +428,23 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     private boolean sourceClosed;
 
     /// Creates a streaming RAR reader.
+    ///
+    /// @param source the owned archive stream positioned at its signature
     public RarArkivoStreamingReaderImpl(InputStream source) {
         this(source, null, ArchiveOptions.EMPTY);
     }
 
     /// Creates a streaming RAR reader that owns a multi-volume source.
+    ///
+    /// @param source the ordered, repeatable archive volume source owned by this reader
     public RarArkivoStreamingReaderImpl(ArkivoVolumeSource source) {
         this(source, null, ArchiveOptions.EMPTY);
     }
 
     /// Creates a streaming RAR reader that owns a multi-volume source with an optional password provider.
+    ///
+    /// @param source the ordered, repeatable archive volume source owned by this reader
+    /// @param passwordProvider the archive password provider, or `null` to disable password lookup
     public RarArkivoStreamingReaderImpl(
             ArkivoVolumeSource source,
             @Nullable ArkivoPasswordProvider passwordProvider
@@ -446,6 +453,10 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     }
 
     /// Creates a configured streaming RAR reader that owns a multi-volume source.
+    ///
+    /// @param source the ordered, repeatable archive volume source owned by this reader
+    /// @param passwordProvider the archive password provider, or `null` to disable password lookup
+    /// @param options the validated archive environment options
     public RarArkivoStreamingReaderImpl(
             ArkivoVolumeSource source,
             @Nullable ArkivoPasswordProvider passwordProvider,
@@ -455,11 +466,18 @@ public final class RarArkivoStreamingReaderImpl extends RarArkivoStreamingReader
     }
 
     /// Creates a streaming RAR reader with an optional password provider.
+    ///
+    /// @param source the owned archive stream positioned at its signature
+    /// @param passwordProvider the archive password provider, or `null` to disable password lookup
     public RarArkivoStreamingReaderImpl(InputStream source, @Nullable ArkivoPasswordProvider passwordProvider) {
         this(source, passwordProvider, ArchiveOptions.EMPTY);
     }
 
     /// Creates a configured streaming RAR reader with an optional password provider.
+    ///
+    /// @param source the owned archive stream positioned at its signature
+    /// @param passwordProvider the archive password provider, or `null` to disable password lookup
+    /// @param options the validated archive environment options
     public RarArkivoStreamingReaderImpl(
             InputStream source,
             @Nullable ArkivoPasswordProvider passwordProvider,

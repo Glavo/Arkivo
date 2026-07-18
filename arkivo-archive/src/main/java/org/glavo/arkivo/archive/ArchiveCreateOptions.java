@@ -29,11 +29,17 @@ public record ArchiveCreateOptions(
     }
 
     /// Returns a copy with the requested thread-safety strategy.
+    ///
+    /// @param value the strategy for the returned options
+    /// @return a copy with {@code threadSafety} set to {@code value}
     public ArchiveCreateOptions withThreadSafety(ArkivoFileSystemThreadSafety value) {
         return new ArchiveCreateOptions(value, editStorage);
     }
 
     /// Returns a copy with the requested edit storage.
+    ///
+    /// @param value the storage for the returned options, or {@code null} to select the format default
+    /// @return a copy with {@code editStorage} set to {@code value}
     public ArchiveCreateOptions withEditStorage(@Nullable ArkivoEditStorage value) {
         return new ArchiveCreateOptions(threadSafety, value);
     }

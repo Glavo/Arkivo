@@ -274,6 +274,12 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     private final @Nullable Runnable closeAction;
 
     /// Creates a writable ZIP archive file system.
+    ///
+    /// @param provider the provider that created this file system
+    /// @param archivePath the backing archive path
+    /// @param config the validated write configuration
+    /// @throws NullPointerException if an argument is `null`
+    /// @throws IOException if the path, source archive, edit storage, or output cannot be prepared
     public ZipArkivoWritableFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             Path archivePath,
@@ -283,6 +289,13 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     }
 
     /// Creates a writable ZIP archive file system.
+    ///
+    /// @param provider the provider that created this file system
+    /// @param archivePath the backing archive path
+    /// @param config the validated write configuration
+    /// @param closeAction the callback invoked during close, or `null` when none is needed
+    /// @throws NullPointerException if `provider`, `archivePath`, or `config` is `null`
+    /// @throws IOException if the path, source archive, edit storage, or output cannot be prepared
     public ZipArkivoWritableFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             Path archivePath,
@@ -293,6 +306,14 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     }
 
     /// Creates a writable ZIP archive file system.
+    ///
+    /// @param provider the provider that created this file system
+    /// @param archivePath the backing archive path
+    /// @param config the validated write configuration
+    /// @param closeAction the callback invoked during close, or `null` when none is needed
+    /// @param replaceExistingEntries whether newly written paths replace entries from the source snapshot
+    /// @throws NullPointerException if `provider`, `archivePath`, or `config` is `null`
+    /// @throws IOException if the path, source archive, edit storage, or output cannot be prepared
     public ZipArkivoWritableFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             Path archivePath,
@@ -490,6 +511,18 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     }
 
     /// Opens a complete-rewrite ZIP update over an owned repeatable single-volume source.
+    ///
+    /// The returned file system owns `source`; a setup failure after argument validation also closes it. Replacement
+    /// output is published through the commit target in `config` when the file system closes.
+    ///
+    /// @param provider the provider that creates the file system
+    /// @param source the owned repeatable single-volume source
+    /// @param config the validated update configuration with a commit target
+    /// @return a new open complete-rewrite file system
+    /// @throws NullPointerException if an argument is `null`
+    /// @throws IllegalArgumentException if `config` has no commit target
+    /// @throws UnsupportedOperationException if `config` is not a supported nonsplit update configuration
+    /// @throws IOException if source metadata cannot be read or staging cannot be prepared
     public static ZipArkivoWritableFileSystemImpl openUpdate(
             ZipArkivoFileSystemProvider provider,
             ArkivoSeekableChannelSource source,
@@ -530,6 +563,20 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     }
 
     /// Opens a complete-rewrite ZIP update over an owned multi-volume source.
+    ///
+    /// The returned file system owns `source`; a setup failure after argument validation also closes it. The target itself
+    /// remains caller-owned, while the file system owns and finalizes the transaction opened from it.
+    ///
+    /// @param provider the provider that creates the file system
+    /// @param source the owned repeatable source volumes
+    /// @param target the caller-owned transactional replacement target
+    /// @param splitSize the maximum number of bytes written to each replacement volume
+    /// @param config the validated update configuration
+    /// @return a new open complete-rewrite file system
+    /// @throws NullPointerException if an object argument is `null`
+    /// @throws IllegalArgumentException if `splitSize` is outside the ZIP split-volume range
+    /// @throws UnsupportedOperationException if `config` is not a supported volume update configuration
+    /// @throws IOException if source metadata, staging, or the target transaction cannot be prepared
     public static ZipArkivoWritableFileSystemImpl openUpdate(
             ZipArkivoFileSystemProvider provider,
             ArkivoVolumeSource source,
@@ -661,6 +708,15 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     }
 
     /// Creates a writable ZIP archive file system over a writable channel.
+    ///
+    /// A successful construction transfers channel ownership to the file system. No repositioning is attempted; a
+    /// seekable channel begins at and advances its current position.
+    ///
+    /// @param provider the provider that created this file system
+    /// @param output the owned destination channel
+    /// @param config the validated creation configuration
+    /// @throws NullPointerException if an argument is `null`
+    /// @throws UnsupportedOperationException if `config` requests split output
     public ZipArkivoWritableFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             WritableByteChannel output,
@@ -696,6 +752,15 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     }
 
     /// Creates a writable ZIP archive file system over an output stream.
+    ///
+    /// A successful construction transfers stream ownership to the file system. ZIP output begins at the stream's
+    /// current write location.
+    ///
+    /// @param provider the provider that created this file system
+    /// @param output the owned destination stream
+    /// @param config the validated creation configuration
+    /// @throws NullPointerException if an argument is `null`
+    /// @throws UnsupportedOperationException if `config` requests split output
     public ZipArkivoWritableFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             OutputStream output,
@@ -709,6 +774,17 @@ public final class ZipArkivoWritableFileSystemImpl extends ZipArkivoFileSystem
     }
 
     /// Creates a writable ZIP archive file system over a transactional volume target.
+    ///
+    /// The target remains caller-owned; this file system owns the transaction opened from it.
+    ///
+    /// @param provider the provider that created this file system
+    /// @param target the caller-owned transactional destination
+    /// @param splitSize the maximum number of bytes written to each volume
+    /// @param config the validated creation configuration
+    /// @throws NullPointerException if an object argument is `null`
+    /// @throws IllegalArgumentException if `splitSize` is outside the ZIP split-volume range
+    /// @throws UnsupportedOperationException if `config` specifies a separate commit target
+    /// @throws IOException if the output transaction cannot be opened
     public ZipArkivoWritableFileSystemImpl(
             ZipArkivoFileSystemProvider provider,
             ArkivoVolumeTarget target,

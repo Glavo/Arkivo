@@ -42,11 +42,22 @@ public final class LZMAChannelDecoder implements DecompressingReadableByteChanne
     private boolean open = true;
 
     /// Creates an LZMA-alone decoder and consumes its header.
+    ///
+    /// @param source the channel supplying the LZMA-alone stream
+    /// @param ownership whether closing this decoder also closes {@code source}
+    /// @throws IOException if the header cannot be read or contains unsupported properties or size metadata
+    /// @throws NullPointerException if {@code source} or {@code ownership} is {@code null}
     public LZMAChannelDecoder(ReadableByteChannel source, ResourceOwnership ownership) throws IOException {
         this(source, ownership, CompressionCodec.UNKNOWN_SIZE);
     }
 
     /// Creates an LZMA-alone decoder with an optional maximum dictionary size.
+    ///
+    /// @param source the channel supplying the LZMA-alone stream
+    /// @param ownership whether closing this decoder also closes {@code source}
+    /// @param maximumWindowSize the maximum permitted dictionary size, or a negative value for no limit
+    /// @throws IOException if the header cannot be read, is invalid, or declares a dictionary above the limit
+    /// @throws NullPointerException if {@code source} or {@code ownership} is {@code null}
     public LZMAChannelDecoder(
             ReadableByteChannel source,
             ResourceOwnership ownership,

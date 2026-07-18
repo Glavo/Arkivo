@@ -16,6 +16,13 @@ import java.io.IOException;
 import java.util.Objects;
 
 /// Provides an immutable headerless LZMA configuration for containers that carry model properties separately.
+///
+/// Raw payloads do not carry [LZMAProperties] or a decoded-size field. A decoder therefore uses this codec's properties
+/// and either stops at an enabled end marker or at the configured decoded size. When neither boundary is available,
+/// exhaustion of the surrounding input is not by itself a successful raw LZMA termination.
+///
+/// Codec values are safe for concurrent use and created engines are independent mutable sessions. A pledged encoder
+/// source size, when present, is exact and is checked while accepting input and during finalization.
 @NotNullByDefault
 public final class RawLZMACodec
         implements CompressionCodec.PledgedSourceSizeEncoderFactory<RawLZMACodec, CompressionEncoder> {
@@ -67,21 +74,31 @@ public final class RawLZMACodec
 
 
     /// Returns the configured externally declared LZMA properties.
+    ///
+    /// @return the immutable model properties used by newly created engines
     public LZMAProperties properties() {
         return properties;
     }
 
     /// Returns whether encoders emit an end marker.
+    ///
+    /// @return {@code true} if newly created encoders terminate payloads with an end marker
     public boolean emitsEndMarker() {
         return endMarker;
     }
 
     /// Returns the externally declared decoded size, or UNKNOWN_SIZE.
+    ///
+    /// @return the exact decoded size, or {@link CompressionCodec#UNKNOWN_SIZE} if termination must use an end marker
     public long decodedSize() {
         return decodedSize;
     }
 
     /// Returns an immutable raw LZMA codec with the requested properties.
+    ///
+    /// @param properties the replacement externally declared model properties
+    /// @return this codec if the properties are unchanged; otherwise, a new codec with the requested properties
+    /// @throws NullPointerException if {@code properties} is {@code null}
     public RawLZMACodec withProperties(LZMAProperties properties) {
         Objects.requireNonNull(properties, "properties");
         return properties.equals(this.properties)
@@ -90,11 +107,18 @@ public final class RawLZMACodec
     }
 
     /// Returns an immutable raw LZMA codec with the requested dictionary size.
+    ///
+    /// @param dictionarySize the replacement externally declared dictionary size, in bytes
+    /// @return this codec if the size is unchanged; otherwise, a new codec with the requested size
+    /// @throws IllegalArgumentException if {@code dictionarySize} is outside the supported range
     public RawLZMACodec withDictionarySize(int dictionarySize) {
         return withProperties(properties.withDictionarySize(dictionarySize));
     }
 
     /// Returns an immutable raw LZMA codec with the requested end-marker behavior.
+    ///
+    /// @param endMarker whether newly created encoders emit an end marker
+    /// @return this codec if the setting is unchanged; otherwise, a new codec with the requested setting
     public RawLZMACodec withEndMarker(boolean endMarker) {
         return endMarker == this.endMarker
                 ? this
@@ -102,6 +126,10 @@ public final class RawLZMACodec
     }
 
     /// Returns an immutable raw LZMA codec with the externally declared decoded size.
+    ///
+    /// @param decodedSize the exact decoded size, or {@link CompressionCodec#UNKNOWN_SIZE}
+    /// @return this codec if the size is unchanged; otherwise, a new codec with the requested size
+    /// @throws IllegalArgumentException if {@code decodedSize} is less than {@link CompressionCodec#UNKNOWN_SIZE}
     public RawLZMACodec withDecodedSize(long decodedSize) {
         return decodedSize == this.decodedSize
                 ? this

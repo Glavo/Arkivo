@@ -89,6 +89,9 @@ public final class CPIOArkivoStreamingReaderImpl extends CPIOArkivoStreamingRead
     private boolean currentBodyOpened;
 
     /// Creates a streaming CPIO reader.
+    ///
+    /// @param source the owned stream supplying CPIO archive bytes
+    /// @param options the read configuration and operation limits
     public CPIOArkivoStreamingReaderImpl(InputStream source, CPIOArchiveOptions.Read options) {
         this.source = Objects.requireNonNull(source, "source");
         CPIOArchiveOptions.Read checkedOptions = Objects.requireNonNull(options, "options");

@@ -42,17 +42,22 @@ public final class CompressionProbeResult implements AutoCloseable {
     }
 
     /// Returns the detected format, or `null` when no installed format matched.
+    ///
+    /// @return the detected format, or {@code null} when no format matched
     public @Nullable CompressionFormat format() {
         return format;
     }
 
     /// Returns an independent read-only view of bytes consumed during detection.
+    ///
+    /// @return a new read-only view positioned at the beginning of the copied prefix
     public @UnmodifiableView ByteBuffer prefix() {
         return prefix.asReadOnlyBuffer();
     }
 
     /// Transfers and returns the channel that replays the consumed prefix before the remaining source.
     ///
+    /// @return the logical channel, whose ownership is transferred to the caller
     /// @throws IllegalStateException when the channel was already transferred or closed
     public synchronized ReadableByteChannel takeChannel() {
         @Nullable ReadableByteChannel current = channel;
@@ -64,6 +69,8 @@ public final class CompressionProbeResult implements AutoCloseable {
     }
 
     /// Returns whether an installed format matched the probed prefix.
+    ///
+    /// @return {@code true} if {@link #format()} is non-null
     public boolean detected() {
         return format != null;
     }
@@ -71,6 +78,8 @@ public final class CompressionProbeResult implements AutoCloseable {
     /// Closes the prefix-replaying channel unless its ownership was transferred.
     ///
     /// A failed close retains ownership so a later call can retry cleanup.
+    ///
+    /// @throws IOException if the owned replay channel cannot be closed
     @Override
     public synchronized void close() throws IOException {
         if (channel != null) {

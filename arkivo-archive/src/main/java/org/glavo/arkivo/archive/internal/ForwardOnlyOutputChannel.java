@@ -33,6 +33,8 @@ public final class ForwardOnlyOutputChannel implements SeekableByteChannel {
     private boolean open = true;
 
     /// Creates a forward-only channel over the given output stream.
+    ///
+    /// @param output the output stream owned and closed by this channel
     public ForwardOnlyOutputChannel(OutputStream output) {
         this.output = Objects.requireNonNull(output, "output");
     }
